@@ -78,5 +78,4 @@ backups/
 
 # git
 .github/agents
-.github/instructions
 .github/prompts

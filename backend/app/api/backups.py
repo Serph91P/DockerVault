@@ -65,10 +65,23 @@ async def list_backups(
     target_id: Optional[int] = None,
     status: Optional[str] = None,
     limit: int = 50,
+    offset: int = 0,
 ):
-    """List backups with optional filters."""
+    """List backups with optional filters and pagination.
+    
+    Args:
+        target_id: Filter by target ID
+        status: Filter by backup status
+        limit: Maximum number of results (default 50)
+        offset: Number of results to skip for pagination (default 0)
+    """
     async with async_session() as session:
-        query = select(Backup).order_by(Backup.created_at.desc()).limit(limit)
+        query = (
+            select(Backup)
+            .order_by(Backup.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
         
         if target_id:
             query = query.where(Backup.target_id == target_id)
@@ -266,3 +279,73 @@ async def get_backup_stats(backup_id: int):
             "duration_seconds": backup.duration_seconds,
             "status": backup.status.value,
         }
+
+
+@router.get("/metrics/summary")
+async def get_backup_metrics():
+    """Get overall backup metrics and statistics.
+    
+    Returns aggregate statistics about backup operations including:
+    - Total number of backups
+    - Success/failure counts and rate
+    - Total data backed up
+    - Last backup timestamp
+    """
+    return backup_engine.metrics.to_dict()
+
+
+@router.get("/metrics/target/{target_id}")
+async def get_target_metrics(target_id: int):
+    """Get metrics for a specific backup target.
+    
+    Returns:
+    - Average backup duration
+    - Average backup size
+    - Recent backup history
+    """
+    avg_duration = backup_engine.metrics.get_average_duration(target_id)
+    avg_size = backup_engine.metrics.get_average_size(target_id)
+    
+    return {
+        "target_id": target_id,
+        "average_duration_seconds": avg_duration,
+        "average_size_bytes": avg_size,
+        "average_size_human": format_size(avg_size) if avg_size else None,
+        "backup_count": len(backup_engine.metrics.target_durations.get(target_id, [])),
+    }
+
+
+@router.post("/{backup_id}/validate")
+async def validate_backup_target(backup_id: int):
+    """Validate backup prerequisites before running.
+    
+    Checks:
+    - Target container/volume/path exists
+    - Sufficient disk space
+    - Dependencies are available
+    
+    Returns list of validation issues, or empty list if valid.
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(Backup).where(Backup.id == backup_id)
+        )
+        backup = result.scalar_one_or_none()
+        
+        if not backup:
+            raise HTTPException(status_code=404, detail="Backup not found")
+        
+        result = await session.execute(
+            select(BackupTarget).where(BackupTarget.id == backup.target_id)
+        )
+        target = result.scalar_one_or_none()
+        
+        if not target:
+            raise HTTPException(status_code=404, detail="Target not found")
+    
+    issues = await backup_engine.validate_backup_prerequisites(target)
+    
+    return {
+        "valid": len(issues) == 0,
+        "issues": issues,
+    }

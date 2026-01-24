@@ -1,0 +1,545 @@
+"""
+Tests for backups API endpoints.
+"""
+
+import json
+from unittest.mock import patch, AsyncMock, MagicMock
+import pytest
+from httpx import AsyncClient
+
+from app.database import Backup, BackupTarget, BackupStatus, BackupType
+
+
+@pytest.mark.asyncio
+class TestBackupsAPI:
+    """Test backups API endpoints."""
+
+    async def test_list_backups_empty(self, async_client: AsyncClient):
+        """Test listing backups when none exist."""
+        response = await async_client.get("/api/v1/backups")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    async def test_list_backups_with_data(self, async_client: AsyncClient, db_session):
+        """Test listing backups with data."""
+        # Create target and backup
+        target = BackupTarget(
+            name="test-target",
+            target_type="volume",
+            volume_name="test-volume",
+            enabled=True
+        )
+        db_session.add(target)
+        await db_session.commit()
+        await db_session.refresh(target)
+        
+        backup = Backup(
+            target_id=target.id,
+            backup_type=BackupType.FULL,
+            status=BackupStatus.COMPLETED,
+            file_path="/backups/test.tar.gz",
+            file_size=1024,
+            checksum="abc123",
+            backup_metadata={"target_name": "test-target"}
+        )
+        db_session.add(backup)
+        await db_session.commit()
+        
+        response = await async_client.get("/api/v1/backups")
+        assert response.status_code == 200
+        
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["id"] == backup.id
+        assert data[0]["target_id"] == target.id
+        assert data[0]["target_name"] == "test-target"
+        assert data[0]["status"] == "completed"
+        assert data[0]["file_size"] == 1024
+        assert data[0]["checksum"] == "abc123"
+
+    @patch('app.api.backups.backup_engine')
+    async def test_create_backup_success(self, mock_engine, async_client: AsyncClient, db_session):
+        """Test successful backup creation."""
+        # Create target
+        target = BackupTarget(
+            name="test-target",
+            target_type="volume",
+            volume_name="test-volume",
+            enabled=True
+        )
+        db_session.add(target)
+        await db_session.commit()
+        await db_session.refresh(target)
+        
+        # Mock backup engine
+        mock_backup = Backup(
+            id=1,
+            target_id=target.id,
+            backup_type=BackupType.FULL,
+            status=BackupStatus.PENDING
+        )
+        mock_engine.create_backup.return_value = mock_backup
+        mock_engine.run_backup.return_value = AsyncMock(return_value=True)
+        
+        response = await async_client.post("/api/v1/backups", json={
+            "target_id": target.id,
+            "backup_type": "full"
+        })
+        
+        assert response.status_code == 201
+        data = response.json()
+        assert data["target_id"] == target.id
+        assert data["backup_type"] == "full"
+        assert data["status"] == "pending"
+
+    async def test_create_backup_invalid_target(self, async_client: AsyncClient):
+        """Test backup creation with invalid target."""
+        response = await async_client.post("/api/v1/backups", json={
+            "target_id": 99999,
+            "backup_type": "full"
+        })
+        
+        assert response.status_code == 404
+        assert "Target not found" in response.json()["detail"]
+
+    async def test_create_backup_invalid_type(self, async_client: AsyncClient, db_session):
+        """Test backup creation with invalid backup type."""
+        # Create target
+        target = BackupTarget(
+            name="test-target",
+            target_type="volume",
+            volume_name="test-volume",
+            enabled=True
+        )
+        db_session.add(target)
+        await db_session.commit()
+        await db_session.refresh(target)
+        
+        response = await async_client.post("/api/v1/backups", json={
+            "target_id": target.id,
+            "backup_type": "invalid_type"
+        })
+        
+        assert response.status_code == 422  # Validation error
+
+    async def test_create_backup_disabled_target(self, async_client: AsyncClient, db_session):
+        """Test backup creation with disabled target."""
+        # Create disabled target
+        target = BackupTarget(
+            name="disabled-target",
+            target_type="volume",
+            volume_name="test-volume",
+            enabled=False  # Disabled
+        )
+        db_session.add(target)
+        await db_session.commit()
+        await db_session.refresh(target)
+        
+        response = await async_client.post("/api/v1/backups", json={
+            "target_id": target.id,
+            "backup_type": "full"
+        })
+        
+        assert response.status_code == 400
+        assert "disabled" in response.json()["detail"].lower()
+
+    async def test_get_backup_by_id(self, async_client: AsyncClient, db_session):
+        """Test getting backup by ID."""
+        # Create target and backup
+        target = BackupTarget(
+            name="test-target",
+            target_type="volume",
+            volume_name="test-volume",
+            enabled=True
+        )
+        db_session.add(target)
+        await db_session.commit()
+        await db_session.refresh(target)
+        
+        backup = Backup(
+            target_id=target.id,
+            backup_type=BackupType.FULL,
+            status=BackupStatus.COMPLETED,
+            backup_metadata={"target_name": "test-target"}
+        )
+        db_session.add(backup)
+        await db_session.commit()
+        await db_session.refresh(backup)
+        
+        response = await async_client.get(f"/api/v1/backups/{backup.id}")
+        assert response.status_code == 200
+        
+        data = response.json()
+        assert data["id"] == backup.id
+        assert data["target_id"] == target.id
+        assert data["status"] == "completed"
+
+    async def test_get_backup_not_found(self, async_client: AsyncClient):
+        """Test getting non-existent backup."""
+        response = await async_client.get("/api/v1/backups/99999")
+        assert response.status_code == 404
+        assert "Backup not found" in response.json()["detail"]
+
+    @patch('os.path.exists')
+    @patch('os.remove')
+    async def test_delete_backup(self, mock_remove, mock_exists, async_client: AsyncClient, db_session):
+        """Test backup deletion."""
+        mock_exists.return_value = True
+        
+        # Create target and backup
+        target = BackupTarget(
+            name="test-target",
+            target_type="volume",
+            volume_name="test-volume",
+            enabled=True
+        )
+        db_session.add(target)
+        await db_session.commit()
+        await db_session.refresh(target)
+        
+        backup = Backup(
+            target_id=target.id,
+            backup_type=BackupType.FULL,
+            status=BackupStatus.COMPLETED,
+            file_path="/backups/test.tar.gz",
+            backup_metadata={"target_name": "test-target"}
+        )
+        db_session.add(backup)
+        await db_session.commit()
+        await db_session.refresh(backup)
+        
+        response = await async_client.delete(f"/api/v1/backups/{backup.id}")
+        assert response.status_code == 204
+        
+        # Verify file deletion was attempted
+        mock_remove.assert_called_once_with("/backups/test.tar.gz")
+        
+        # Verify backup was removed from database
+        response = await async_client.get(f"/api/v1/backups/{backup.id}")
+        assert response.status_code == 404
+
+    async def test_security_sql_injection_prevention(self, async_client: AsyncClient):
+        """Test that SQL injection attempts are blocked."""
+        # Try SQL injection in backup ID parameter
+        malicious_id = "1; DROP TABLE backups; --"
+        response = await async_client.get(f"/api/v1/backups/{malicious_id}")
+        
+        # Should return 422 (validation error) not 500 (server error)
+        assert response.status_code == 422
+
+    async def test_input_validation_large_backup_type(self, async_client: AsyncClient, db_session):
+        """Test input validation for oversized backup type."""
+        target = BackupTarget(
+            name="test-target",
+            target_type="volume",
+            volume_name="test-volume",
+            enabled=True
+        )
+        db_session.add(target)
+        await db_session.commit()
+        await db_session.refresh(target)
+        
+        response = await async_client.post("/api/v1/backups", json={
+            "target_id": target.id,
+            "backup_type": "x" * 1000  # Very long string
+        })
+        
+        assert response.status_code == 422  # Validation error
+
+    @patch('app.api.backups.backup_engine')
+    async def test_restore_backup_success(self, mock_engine, async_client: AsyncClient, db_session):
+        """Test successful backup restoration."""
+        # Create target and backup
+        target = BackupTarget(
+            name="test-target",
+            target_type="volume",
+            volume_name="test-volume",
+            enabled=True
+        )
+        db_session.add(target)
+        await db_session.commit()
+        await db_session.refresh(target)
+        
+        backup = Backup(
+            target_id=target.id,
+            backup_type=BackupType.FULL,
+            status=BackupStatus.COMPLETED,
+            file_path="/backups/test.tar.gz",
+            backup_metadata={"target_name": "test-target"}
+        )
+        db_session.add(backup)
+        await db_session.commit()
+        await db_session.refresh(backup)
+        
+        # Mock restore operation
+        mock_engine.restore_backup.return_value = AsyncMock(return_value=True)
+        
+        response = await async_client.post(f"/api/v1/backups/{backup.id}/restore")
+        assert response.status_code == 200
+        
+        data = response.json()
+        assert data["message"] == "Restore initiated"
+        
+        # Verify restore was called
+        mock_engine.restore_backup.assert_called_once_with(backup.id, None)
+
+    async def test_restore_backup_path_traversal_prevention(self, async_client: AsyncClient, db_session):
+        """Test that restore prevents path traversal attacks."""
+        # Create target and backup
+        target = BackupTarget(
+            name="test-target",
+            target_type="volume",
+            volume_name="test-volume",
+            enabled=True
+        )
+        db_session.add(target)
+        await db_session.commit()
+        await db_session.refresh(target)
+        
+        backup = Backup(
+            target_id=target.id,
+            backup_type=BackupType.FULL,
+            status=BackupStatus.COMPLETED,
+            file_path="/backups/test.tar.gz",
+            backup_metadata={"target_name": "test-target"}
+        )
+        db_session.add(backup)
+        await db_session.commit()
+        await db_session.refresh(backup)
+        
+        # Attempt path traversal in restore request
+        response = await async_client.post(
+            f"/api/v1/backups/{backup.id}/restore",
+            json={"target_path": "../../../etc/passwd"}
+        )
+        
+        assert response.status_code == 400
+        assert "invalid path" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+class TestBackupsPaginationAPI:
+    """Test backups API pagination functionality."""
+
+    async def test_list_backups_with_pagination(self, async_client: AsyncClient, db_session):
+        """Test listing backups with pagination."""
+        # Create target
+        target = BackupTarget(
+            name="test-target",
+            target_type="volume",
+            volume_name="test-volume",
+            enabled=True
+        )
+        db_session.add(target)
+        await db_session.commit()
+        await db_session.refresh(target)
+        
+        # Create multiple backups
+        for i in range(15):
+            backup = Backup(
+                target_id=target.id,
+                backup_type=BackupType.FULL,
+                status=BackupStatus.COMPLETED,
+                backup_metadata={"target_name": "test-target", "index": i}
+            )
+            db_session.add(backup)
+        await db_session.commit()
+        
+        # Test first page
+        response = await async_client.get("/api/v1/backups?limit=5&offset=0")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 5
+        
+        # Test second page
+        response = await async_client.get("/api/v1/backups?limit=5&offset=5")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 5
+        
+        # Test third page
+        response = await async_client.get("/api/v1/backups?limit=5&offset=10")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 5
+        
+        # Test beyond available data
+        response = await async_client.get("/api/v1/backups?limit=5&offset=20")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 0
+
+    async def test_list_backups_default_pagination(self, async_client: AsyncClient, db_session):
+        """Test default pagination values."""
+        # Create target
+        target = BackupTarget(
+            name="test-target",
+            target_type="volume",
+            volume_name="test-volume",
+            enabled=True
+        )
+        db_session.add(target)
+        await db_session.commit()
+        await db_session.refresh(target)
+        
+        # Create 60 backups (more than default limit)
+        for i in range(60):
+            backup = Backup(
+                target_id=target.id,
+                backup_type=BackupType.FULL,
+                status=BackupStatus.COMPLETED,
+                backup_metadata={"target_name": "test-target"}
+            )
+            db_session.add(backup)
+        await db_session.commit()
+        
+        # Without pagination params, should use defaults
+        response = await async_client.get("/api/v1/backups")
+        assert response.status_code == 200
+        data = response.json()
+        # Default limit is 50
+        assert len(data) == 50
+
+
+@pytest.mark.asyncio
+class TestBackupsMetricsAPI:
+    """Test backups metrics API endpoints."""
+
+    @patch('app.api.backups.backup_engine')
+    async def test_get_backup_metrics_summary(self, mock_engine, async_client: AsyncClient):
+        """Test getting backup metrics summary."""
+        # Mock metrics
+        mock_engine.metrics.to_dict.return_value = {
+            "total_backups": 100,
+            "successful_backups": 95,
+            "failed_backups": 5,
+            "success_rate": 95.0,
+            "total_bytes_backed_up": 1073741824,  # 1 GB
+            "last_backup_time": "2026-01-24T12:00:00",
+        }
+        
+        response = await async_client.get("/api/v1/backups/metrics/summary")
+        assert response.status_code == 200
+        
+        data = response.json()
+        assert data["total_backups"] == 100
+        assert data["successful_backups"] == 95
+        assert data["failed_backups"] == 5
+        assert data["success_rate"] == 95.0
+
+    @patch('app.api.backups.backup_engine')
+    async def test_get_target_metrics(self, mock_engine, async_client: AsyncClient):
+        """Test getting metrics for a specific target."""
+        # Mock metrics methods
+        mock_engine.metrics.get_average_duration.return_value = 120.5
+        mock_engine.metrics.get_average_size.return_value = 1048576  # 1 MB
+        mock_engine.metrics.target_durations = {1: [100, 120, 141.5]}
+        
+        response = await async_client.get("/api/v1/backups/metrics/target/1")
+        assert response.status_code == 200
+        
+        data = response.json()
+        assert data["target_id"] == 1
+        assert data["average_duration_seconds"] == 120.5
+        assert data["average_size_bytes"] == 1048576
+        assert "average_size_human" in data
+        assert data["backup_count"] == 3
+
+    @patch('app.api.backups.backup_engine')
+    async def test_get_target_metrics_no_data(self, mock_engine, async_client: AsyncClient):
+        """Test getting metrics for target with no data."""
+        mock_engine.metrics.get_average_duration.return_value = None
+        mock_engine.metrics.get_average_size.return_value = None
+        mock_engine.metrics.target_durations = {}
+        
+        response = await async_client.get("/api/v1/backups/metrics/target/999")
+        assert response.status_code == 200
+        
+        data = response.json()
+        assert data["target_id"] == 999
+        assert data["average_duration_seconds"] is None
+        assert data["average_size_bytes"] is None
+        assert data["backup_count"] == 0
+
+
+@pytest.mark.asyncio
+class TestBackupsValidationAPI:
+    """Test backup validation API endpoints."""
+
+    @patch('app.api.backups.backup_engine')
+    async def test_validate_backup_success(self, mock_engine, async_client: AsyncClient, db_session):
+        """Test validating backup prerequisites successfully."""
+        # Create target and backup
+        target = BackupTarget(
+            name="test-target",
+            target_type="volume",
+            volume_name="test-volume",
+            enabled=True
+        )
+        db_session.add(target)
+        await db_session.commit()
+        await db_session.refresh(target)
+        
+        backup = Backup(
+            target_id=target.id,
+            backup_type=BackupType.FULL,
+            status=BackupStatus.PENDING,
+            backup_metadata={"target_name": "test-target"}
+        )
+        db_session.add(backup)
+        await db_session.commit()
+        await db_session.refresh(backup)
+        
+        # Mock validation returns no issues
+        mock_engine.validate_backup_prerequisites = AsyncMock(return_value=[])
+        
+        response = await async_client.post(f"/api/v1/backups/{backup.id}/validate")
+        assert response.status_code == 200
+        
+        data = response.json()
+        assert data["valid"] is True
+        assert data["issues"] == []
+
+    @patch('app.api.backups.backup_engine')
+    async def test_validate_backup_with_issues(self, mock_engine, async_client: AsyncClient, db_session):
+        """Test validating backup that has issues."""
+        # Create target and backup
+        target = BackupTarget(
+            name="test-target",
+            target_type="volume",
+            volume_name="missing-volume",
+            enabled=True
+        )
+        db_session.add(target)
+        await db_session.commit()
+        await db_session.refresh(target)
+        
+        backup = Backup(
+            target_id=target.id,
+            backup_type=BackupType.FULL,
+            status=BackupStatus.PENDING,
+            backup_metadata={"target_name": "test-target"}
+        )
+        db_session.add(backup)
+        await db_session.commit()
+        await db_session.refresh(backup)
+        
+        # Mock validation returns issues
+        mock_engine.validate_backup_prerequisites = AsyncMock(
+            return_value=["Volume 'missing-volume' not found", "Low disk space"]
+        )
+        
+        response = await async_client.post(f"/api/v1/backups/{backup.id}/validate")
+        assert response.status_code == 200
+        
+        data = response.json()
+        assert data["valid"] is False
+        assert len(data["issues"]) == 2
+        assert "Volume 'missing-volume' not found" in data["issues"]
+        assert "Low disk space" in data["issues"]
+
+    async def test_validate_backup_not_found(self, async_client: AsyncClient):
+        """Test validating non-existent backup."""
+        response = await async_client.post("/api/v1/backups/99999/validate")
+        assert response.status_code == 404
+        assert "Backup not found" in response.json()["detail"]

@@ -115,8 +115,8 @@ class Backup(Base):
     error_message = Column(Text, nullable=True)
     retry_count = Column(Integer, default=0)
     
-    # Metadata
-    metadata = Column(JSON, default=dict)
+    # Extra data
+    backup_metadata = Column(JSON, default=dict)
     
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -233,3 +233,7 @@ async def get_session() -> AsyncSession:
     """Get database session."""
     async with async_session() as session:
         yield session
+
+
+# Alias for backwards compatibility
+get_db = get_session

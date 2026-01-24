@@ -18,6 +18,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+      build_env: ${{ steps.version.outputs.build_env }}
       docker_tags: ${{ steps.docker_meta.outputs.tags }}
       docker_labels: ${{ steps.docker_meta.outputs.labels }}
     steps:
@@ -36,22 +37,27 @@ jobs:
             # Dev tag (e.g., vdev.0.0.103 -> dev.0.0.103)
             VERSION=${GITHUB_REF#refs/tags/v}
             IS_PRERELEASE=true
+            BUILD_ENV=development
           elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             # Stable tag (e.g., v1.2.3 -> 1.2.3)
             VERSION=${GITHUB_REF#refs/tags/v}
             IS_PRERELEASE=false
+            BUILD_ENV=production
           elif [[ "${{ github.ref }}" == refs/heads/main ]]; then
             # Main branch - stable release with same count as dev
             VERSION="0.0.${COMMIT_COUNT}"
             IS_PRERELEASE=false
+            BUILD_ENV=production
           else
             # Develop branch - prerelease with dev prefix
             VERSION="dev.0.0.${COMMIT_COUNT}"
             IS_PRERELEASE=true
+            BUILD_ENV=development
           fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
-          echo "Version: ${VERSION}, Prerelease: ${IS_PRERELEASE}"
+          echo "build_env=${BUILD_ENV}" >> $GITHUB_OUTPUT
+          echo "Version: ${VERSION}, Prerelease: ${IS_PRERELEASE}, Build Env: ${BUILD_ENV}"
 
       - name: Docker metadata
         id: docker_meta
@@ -110,6 +116,7 @@ jobs:
             VERSION=${{ needs.prepare.outputs.version }}
             COMMIT_SHA=${{ github.sha }}
             BRANCH=${{ github.ref_name }}
+            BUILD_ENV=${{ needs.prepare.outputs.build_env }}
 
   create-release:
     needs: [prepare, build-and-push]
@@ -162,11 +169,14 @@ jobs:
         env:
           CHANGELOG_CONTENT: ${{ steps.changelog.outputs.content }}
           VERSION: ${{ needs.prepare.outputs.version }}
+          BUILD_ENV: ${{ needs.prepare.outputs.build_env }}
           REPO_OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.repository }}
         run: |
           cat > release_notes.md << EOF
           ## What's Changed in ${VERSION}
+          
+          **Build Environment:** \`${BUILD_ENV}\`
           
           EOF
           
@@ -212,6 +222,7 @@ jobs:
           | Registry | GitHub Container Registry (ghcr.io) |
           | Image | \`ghcr.io/${REPO_OWNER}/dockervault\` |
           | Version | \`${VERSION}\` |
+          | Environment | \`${BUILD_ENV}\` |
           | Architectures | linux/amd64, linux/arm64 |
           
           ## Documentation
