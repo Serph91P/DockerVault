@@ -1,8 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Target, Plus, Edit, Trash2, Play, Clock, CheckCircle, XCircle } from 'lucide-react'
+import { Target, Trash2, Play, Clock } from 'lucide-react'
 import { targetsApi, backupsApi, BackupTarget } from '../api'
 import toast from 'react-hot-toast'
-import { useState } from 'react'
 
 function TargetCard({ target }: { target: BackupTarget }) {
   const queryClient = useQueryClient()

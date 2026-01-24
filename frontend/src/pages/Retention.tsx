@@ -278,7 +278,6 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
 }
 
 export default function Retention() {
-  const queryClient = useQueryClient()
   const [showCreate, setShowCreate] = useState(false)
 
   const { data: policies, isLoading } = useQuery({

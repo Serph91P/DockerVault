@@ -6,7 +6,7 @@ import { useState } from 'react'
 
 function ContainerCard({ container }: { container: Container }) {
   const queryClient = useQueryClient()
-  const [showAddTarget, setShowAddTarget] = useState(false)
+  const [, setShowAddTarget] = useState(false)
 
   const stopMutation = useMutation({
     mutationFn: () => dockerApi.stopContainer(container.id),
@@ -128,8 +128,6 @@ function ContainerCard({ container }: { container: Container }) {
 }
 
 export default function Containers() {
-  const queryClient = useQueryClient()
-
   const { data: containers, isLoading, refetch } = useQuery({
     queryKey: ['containers'],
     queryFn: () => dockerApi.listContainers().then((r) => r.data),

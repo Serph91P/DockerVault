@@ -7,10 +7,9 @@ import {
   Loader2,
   Trash2,
   RotateCcw,
-  Download,
 } from 'lucide-react'
 import { backupsApi, Backup } from '../api'
-import { formatDistanceToNow, format } from 'date-fns'
+import { format } from 'date-fns'
 import { de } from 'date-fns/locale'
 import toast from 'react-hot-toast'
 import { useWebSocketStore } from '../store/websocket'

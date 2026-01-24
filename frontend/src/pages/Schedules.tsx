@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Clock, Play, HelpCircle } from 'lucide-react'
 import { schedulesApi, Schedule } from '../api'
-import { formatDistanceToNow, format } from 'date-fns'
+import { formatDistanceToNow } from 'date-fns'
 import { de } from 'date-fns/locale'
 import toast from 'react-hot-toast'
 import { useState } from 'react'

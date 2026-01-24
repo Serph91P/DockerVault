@@ -17,7 +17,7 @@ import {
   Globe,
   Database,
 } from 'lucide-react';
-import { api } from '../api';
+import api from '../api';
 
 interface RemoteStorage {
   id: number;

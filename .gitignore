@@ -75,3 +75,8 @@ Thumbs.db
 
 # Backups (local dev)
 backups/
+
+# git
+.github/agents
+.github/instructions
+.github/prompts
