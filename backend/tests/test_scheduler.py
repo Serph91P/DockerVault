@@ -6,10 +6,9 @@ import asyncio
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
-from apscheduler.job import Job
 
 from app.scheduler import BackupScheduler
-from app.database import BackupTarget, BackupSchedule, TargetType, ScheduleType, BackupType
+from app.database import BackupTarget, BackupSchedule, BackupType
 
 
 @pytest.mark.asyncio
@@ -46,21 +45,17 @@ class TestBackupScheduler:
         target = BackupTarget(
             id=1,
             name="test-volume",
-            target_type=TargetType.VOLUME,
-            source_path="test-volume",
+            target_type="volume",
+            volume_name="test-volume",
             enabled=True
         )
         
         # Mock schedule
         schedule = BackupSchedule(
             id=1,
-            name="Daily Backup",
             target_id=1,
-            schedule_type=ScheduleType.CRON,
             cron_expression="0 2 * * *",
-            backup_type=BackupType.FULL,
-            enabled=True,
-            retention_days=30
+            enabled=True
         )
         schedule.target = target  # Set relationship
         
@@ -90,8 +85,8 @@ class TestBackupScheduler:
         target = BackupTarget(
             id=1,
             name="test-volume",
-            target_type=TargetType.VOLUME,
-            source_path="test-volume",
+            target_type="volume",
+            volume_name="test-volume",
             enabled=True
         )
         
@@ -112,8 +107,8 @@ class TestBackupScheduler:
         target = BackupTarget(
             id=1,
             name="test-volume",
-            target_type=TargetType.VOLUME,
-            source_path="test-volume",
+            target_type="volume",
+            volume_name="test-volume",
             enabled=True
         )
         
@@ -131,8 +126,8 @@ class TestBackupScheduler:
         target = BackupTarget(
             id=1,
             name="test-volume",
-            target_type=TargetType.VOLUME,
-            source_path="test-volume",
+            target_type="volume",
+            volume_name="test-volume",
             enabled=True
         )
         
@@ -160,8 +155,8 @@ class TestBackupScheduler:
         target = BackupTarget(
             id=1,
             name="test-volume",
-            target_type=TargetType.VOLUME,
-            source_path="test-volume",
+            target_type="volume",
+            volume_name="test-volume",
             enabled=True
         )
         
@@ -193,8 +188,8 @@ class TestBackupScheduler:
         target = BackupTarget(
             id=1,
             name="test-volume",
-            target_type=TargetType.VOLUME,
-            source_path="test-volume",
+            target_type="volume",
+            volume_name="test-volume",
             enabled=True
         )
         
@@ -227,16 +222,16 @@ class TestBackupScheduler:
         target1 = BackupTarget(
             id=1,
             name="test-volume-1",
-            target_type=TargetType.VOLUME,
-            source_path="test-volume-1",
+            target_type="volume",
+            volume_name="test-volume-1",
             enabled=True
         )
         
         target2 = BackupTarget(
             id=2,
             name="test-volume-2",
-            target_type=TargetType.VOLUME,
-            source_path="test-volume-2",
+            target_type="volume",
+            volume_name="test-volume-2",
             enabled=True
         )
         
@@ -303,8 +298,8 @@ class TestBackupScheduler:
             target = BackupTarget(
                 id=1,
                 name="test-volume",
-                target_type=TargetType.VOLUME,
-                source_path="test-volume",
+                target_type="volume",
+                volume_name="test-volume",
                 enabled=True
             )
             
@@ -324,18 +319,15 @@ class TestBackupScheduler:
             target = BackupTarget(
                 id=1,
                 name="persistent-volume",
-                target_type=TargetType.VOLUME,
-                source_path="persistent-volume",
+                target_type="volume",
+                volume_name="persistent-volume",
                 enabled=True
             )
             
             schedule = BackupSchedule(
                 id=1,
-                name="Persistent Schedule",
                 target_id=1,
-                schedule_type=ScheduleType.CRON,
                 cron_expression="0 3 * * *",
-                backup_type=BackupType.FULL,
                 enabled=True
             )
             schedule.target = target
@@ -369,18 +361,15 @@ class TestBackupScheduler:
             target = BackupTarget(
                 id=1,
                 name="disabled-volume",
-                target_type=TargetType.VOLUME,
-                source_path="disabled-volume",
+                target_type="volume",
+                volume_name="disabled-volume",
                 enabled=False  # Disabled
             )
             
             schedule = BackupSchedule(
                 id=1,
-                name="Schedule for Disabled Target",
                 target_id=1,
-                schedule_type=ScheduleType.CRON,
                 cron_expression="0 3 * * *",
-                backup_type=BackupType.FULL,
                 enabled=True  # Schedule enabled but target disabled
             )
             schedule.target = target
@@ -409,8 +398,8 @@ class TestBackupScheduler:
             target = BackupTarget(
                 id=4,
                 name="test-volume",
-                target_type=TargetType.VOLUME,
-                source_path="test-volume",
+                target_type="volume",
+                volume_name="test-volume",
                 enabled=True
             )
             

@@ -8,8 +8,8 @@ from sqlalchemy.exc import IntegrityError
 from datetime import datetime
 
 from app.database import (
-    Backup, BackupTarget, BackupSchedule, RemoteStorageConfig,
-    BackupStatus, BackupType, TargetType, StorageType, ScheduleType
+    Backup, BackupTarget, BackupSchedule, RemoteStorage,
+    BackupStatus, BackupType
 )
 
 
@@ -21,10 +21,9 @@ class TestDatabaseModels:
         """Test backup target creation."""
         target = BackupTarget(
             name="test-volume",
-            target_type=TargetType.VOLUME,
-            source_path="test-volume",
-            enabled=True,
-            description="Test volume for backup"
+            target_type="volume",
+            volume_name="test-volume",
+            enabled=True
         )
         
         db_session.add(target)
@@ -33,41 +32,32 @@ class TestDatabaseModels:
         
         assert target.id is not None
         assert target.name == "test-volume"
-        assert target.target_type == TargetType.VOLUME
+        assert target.target_type == "volume"
         assert target.enabled is True
         assert target.created_at is not None
 
-    async def test_backup_target_unique_name_constraint(self, db_session):
-        """Test unique name constraint on backup targets."""
-        # Create first target
-        target1 = BackupTarget(
-            name="duplicate-name",
-            target_type=TargetType.VOLUME,
-            source_path="volume1",
+    async def test_backup_target_with_path(self, db_session):
+        """Test backup target with host path."""
+        target = BackupTarget(
+            name="path-target",
+            target_type="path",
+            host_path="/data/backup",
             enabled=True
         )
-        db_session.add(target1)
+        db_session.add(target)
         await db_session.commit()
+        await db_session.refresh(target)
         
-        # Try to create second target with same name
-        target2 = BackupTarget(
-            name="duplicate-name",
-            target_type=TargetType.HOST_PATH,
-            source_path="/path/to/data",
-            enabled=True
-        )
-        db_session.add(target2)
-        
-        with pytest.raises(IntegrityError):
-            await db_session.commit()
+        assert target.host_path == "/data/backup"
+        assert target.target_type == "path"
 
     async def test_backup_creation(self, db_session):
         """Test backup creation with target relationship."""
         # Create target first
         target = BackupTarget(
             name="test-target",
-            target_type=TargetType.VOLUME,
-            source_path="test-volume",
+            target_type="volume",
+            volume_name="test-volume",
             enabled=True
         )
         db_session.add(target)
@@ -93,7 +83,7 @@ class TestDatabaseModels:
         assert backup.target_id == target.id
         assert backup.backup_type == BackupType.FULL
         assert backup.status == BackupStatus.PENDING
-        assert backup.metadata == {"test": "data"}
+        assert backup.backup_metadata == {"test": "data"}
         assert backup.created_at is not None
 
     async def test_backup_target_relationship(self, db_session):
@@ -101,8 +91,8 @@ class TestDatabaseModels:
         # Create target
         target = BackupTarget(
             name="relationship-test",
-            target_type=TargetType.VOLUME,
-            source_path="test-volume",
+            target_type="volume",
+            volume_name="test-volume",
             enabled=True
         )
         db_session.add(target)
@@ -145,8 +135,8 @@ class TestDatabaseModels:
         # Create target first
         target = BackupTarget(
             name="scheduled-target",
-            target_type=TargetType.VOLUME,
-            source_path="test-volume",
+            target_type="volume",
+            volume_name="test-volume",
             enabled=True
         )
         db_session.add(target)
@@ -155,13 +145,9 @@ class TestDatabaseModels:
         
         # Create schedule
         schedule = BackupSchedule(
-            name="Daily Backup",
             target_id=target.id,
-            schedule_type=ScheduleType.CRON,
             cron_expression="0 2 * * *",  # Daily at 2 AM
-            backup_type=BackupType.FULL,
-            enabled=True,
-            retention_days=30
+            enabled=True
         )
         
         db_session.add(schedule)
@@ -169,44 +155,39 @@ class TestDatabaseModels:
         await db_session.refresh(schedule)
         
         assert schedule.id is not None
-        assert schedule.name == "Daily Backup"
         assert schedule.target_id == target.id
-        assert schedule.schedule_type == ScheduleType.CRON
         assert schedule.cron_expression == "0 2 * * *"
         assert schedule.enabled is True
-        assert schedule.retention_days == 30
 
-    async def test_remote_storage_config_creation(self, db_session):
+    async def test_remote_storage_creation(self, db_session):
         """Test remote storage configuration."""
-        storage_config = RemoteStorageConfig(
+        storage = RemoteStorage(
             name="S3 Storage",
-            storage_type=StorageType.S3,
-            config={
-                "bucket": "my-backup-bucket",
-                "region": "us-east-1",
-                "access_key_id": "AKIAIOSFODNN7EXAMPLE",
-                "secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-            },
+            storage_type="s3",
+            s3_bucket="my-backup-bucket",
+            s3_region="us-east-1",
+            s3_access_key="AKIAIOSFODNN7EXAMPLE",
+            s3_secret_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
             enabled=True
         )
         
-        db_session.add(storage_config)
+        db_session.add(storage)
         await db_session.commit()
-        await db_session.refresh(storage_config)
+        await db_session.refresh(storage)
         
-        assert storage_config.id is not None
-        assert storage_config.name == "S3 Storage"
-        assert storage_config.storage_type == StorageType.S3
-        assert storage_config.config["bucket"] == "my-backup-bucket"
-        assert storage_config.enabled is True
+        assert storage.id is not None
+        assert storage.name == "S3 Storage"
+        assert storage.storage_type == "s3"
+        assert storage.s3_bucket == "my-backup-bucket"
+        assert storage.enabled is True
 
     async def test_backup_status_transitions(self, db_session):
         """Test backup status transitions."""
         # Create target
         target = BackupTarget(
             name="status-test",
-            target_type=TargetType.VOLUME,
-            source_path="test-volume",
+            target_type="volume",
+            volume_name="test-volume",
             enabled=True
         )
         db_session.add(target)
@@ -264,8 +245,8 @@ class TestDatabaseModels:
         """Test JSON metadata field functionality."""
         target = BackupTarget(
             name="json-test",
-            target_type=TargetType.VOLUME,
-            source_path="test-volume",
+            target_type="volume",
+            volume_name="test-volume",
             enabled=True
         )
         db_session.add(target)
@@ -309,8 +290,8 @@ class TestDatabaseModels:
         for i in range(10):
             target = BackupTarget(
                 name=f"target-{i}",
-                target_type=TargetType.VOLUME,
-                source_path=f"volume-{i}",
+                target_type="volume",
+                volume_name=f"volume-{i}",
                 enabled=True
             )
             targets.append(target)
