@@ -1,177 +1,190 @@
 # DockerVault
 
-Ein modernes, containerisiertes Backup-System für Docker Volumes und Host-Pfade mit Web-Interface.
+A modern, containerized backup system for Docker volumes and host paths with a web interface.
 
 ## Features
 
-- **Docker Integration**: Automatische Erkennung von Containern, Volumes und Compose-Stacks
-- **Flexible Backup-Ziele**: Container, Volumes, Host-Pfade oder ganze Stacks
-- **Abhängigkeitsverwaltung**: Beachtet `depends_on` Beziehungen beim Stoppen/Starten
-- **Zeitplanung**: Cron-basierte automatische Backups mit Schätzung der Backup-Dauer
-- **GFS Retention**: Grandfather-Father-Son Aufbewahrungsstrategie (täglich/wöchentlich/monatlich/jährlich)
-- **Remote Storage**: Off-Site Backups via SSH, S3, WebDAV, FTP oder Rclone
-- **Komodo Integration**: Optionale Anbindung an Komodo für Container-Orchestrierung
-- **Echtzeit-Updates**: WebSocket-basierte Live-Updates im Frontend
-- **Sicherheit**: Docker Socket wird read-only gemountet
+- **Docker Integration**: Automatic detection of containers, volumes, and Compose stacks
+- **Flexible Backup Targets**: Containers, volumes, host paths, or entire stacks
+- **Dependency Management**: Respects `depends_on` relationships when stopping/starting containers
+- **Scheduling**: Cron-based automatic backups with duration estimation
+- **GFS Retention**: Grandfather-Father-Son retention strategy per backup target
+- **Remote Storage**: Off-site backups via SSH, S3, WebDAV, FTP, or Rclone
+- **Komodo Integration**: Optional integration with Komodo for container orchestration
+- **Real-time Updates**: WebSocket-based live updates in the frontend
+- **Security**: Docker socket mounted read-only
 
-## Voraussetzungen
+## Requirements
 
 - Docker 20.10+
 - Docker Compose 2.0+
-- Linux Host (für Docker Socket)
+- Linux Host (for Docker socket access)
 
 ## Installation
 
-### 1. Repository klonen oder Dateien herunterladen
+### 1. Clone the repository
 
 ```bash
 git clone https://github.com/Serph91P/DockerVault.git
 cd DockerVault
 ```
 
-### 2. Umgebungsvariablen konfigurieren
+### 2. Configure environment variables
 
 ```bash
 cp .env.example .env
 ```
 
-Wichtige Einstellungen in `.env`:
+Important settings in `.env`:
 
 ```env
-# Docker Group ID ermitteln
+# Get Docker group ID
 DOCKER_GID=$(getent group docker | cut -d: -f3)
 
-# Backup-Speicherort
+# Backup storage location
 BACKUP_PATH=/path/to/backups
 
-# Web-Interface Port
+# Web interface port
 PORT=8080
 ```
 
-### 3. Starten
+### 3. Start
 
 ```bash
 docker compose up -d
 ```
 
-Das Web-Interface ist dann unter `http://localhost:8080` erreichbar.
+The web interface is available at `http://localhost:8080`.
 
-## Verwendung
+## Usage
 
 ### Dashboard
 
-Zeigt eine Übersicht über:
-- Aktive Container und Volumes
-- Letzte Backups mit Status
-- Nächste geplante Backups
-- Statistiken
+Overview showing:
+- Active containers and volumes
+- Recent backups with status
+- Upcoming scheduled backups
+- Statistics
 
-### Container
+### Containers
 
-- Liste aller Docker Container
+- List of all Docker containers
 - Status (running/stopped)
-- Zugehörige Volumes
-- Compose Stack Informationen
-- Ein-Klick Backup-Target Erstellung
+- Associated volumes
+- Compose stack information
+- One-click backup target creation
 
 ### Volumes
 
-- Liste aller Docker Volumes
-- Verwendende Container
+- List of all Docker volumes
+- Containers using the volume
 - Mountpoints
-- Ein-Klick Backup-Target Erstellung
+- One-click backup target creation
 
 ### Stacks
 
-- Docker Compose Stacks
-- Enthaltene Container und Volumes
-- Netzwerk-Informationen
-- Kompletter Stack als Backup-Target
+- Docker Compose stacks
+- Included containers and volumes
+- Network information
+- Complete stack as backup target
 
 ### Backup Targets
 
-Konfigurierte Backup-Ziele mit:
-- Target-Typ (Container/Volume/Pfad/Stack)
-- Zeitplan (Cron-Expression)
-- Abhängigkeiten
-- Pre/Post Backup Commands
-- Container Stop/Start Option
-- Komprimierung
+Configured backup targets with:
+- Target type (container/volume/path/stack)
+- Schedule (cron expression)
+- Dependencies
+- Pre/Post backup commands
+- Container stop/start option
+- Compression
+- **Individual retention policy**
 
 ### Backups
 
-- Liste aller Backups
-- Status und Fortschritt
-- Dateigrösse und Dauer
-- Wiederherstellen
-- Loeschen
+- List of all backups
+- Status and progress
+- File size and duration
+- Restore
+- Delete
 
-### Zeitplaene
+### Schedules
 
-- Uebersicht geplanter Backups
-- Cron-Expression Editor
-- Naechste/Letzte Ausfuehrung
-- Manuelles Ausloesen
+- Overview of scheduled backups
+- Cron expression editor
+- Next/Last execution
+- Manual trigger
 
 ### Retention Policies
 
-- GFS Strategie Konfiguration
-- Taeglich/Woechentlich/Monatlich/Jaehrlich
-- Automatisches Aufraeumen
-- Verwaiste Dateien loeschen
+Each backup target can have its own GFS (Grandfather-Father-Son) retention policy:
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| `keep_last` | Keep the last N backups regardless of age | `3` |
+| `keep_daily` | Keep one backup per day for N days | `7` |
+| `keep_weekly` | Keep one backup per week for N weeks | `4` |
+| `keep_monthly` | Keep one backup per month for N months | `6` |
+| `keep_yearly` | Keep one backup per year for N years | `2` |
+
+Example configuration (similar to restic):
+```
+--keep-last 3 --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --keep-yearly 2
+```
+
+This keeps:
+- The 3 most recent backups
+- 7 daily backups (last week)
+- 4 weekly backups (last month)
+- 6 monthly backups (last 6 months)
+- 2 yearly backups
 
 ### Remote Storage
 
-Off-Site Backup-Synchronisation zu externen Speicherorten:
+Off-site backup synchronization to external storage:
 
-| Typ | Beschreibung | Verwendung |
-|-----|--------------|------------|
-| **Local/NFS** | Lokales Verzeichnis oder NFS-Mount | `/mnt/nas/backups` |
-| **SSH/SFTP** | SSH-Server mit rsync | `user@server:/backups` |
+| Type | Description | Example |
+|------|-------------|---------|
+| **Local/NFS** | Local directory or NFS mount | `/mnt/nas/backups` |
+| **SSH/SFTP** | SSH server with rsync | `user@server:/backups` |
 | **S3** | AWS S3, MinIO, Backblaze B2 | `s3://bucket/path` |
 | **WebDAV** | Nextcloud, ownCloud | `https://cloud.example.com/dav/` |
-| **FTP/FTPS** | FTP-Server | `ftp://server/path` |
-| **Rclone** | 40+ Provider (GDrive, Dropbox, OneDrive, ...) | `remote:path` |
+| **FTP/FTPS** | FTP server | `ftp://server/path` |
+| **Rclone** | 40+ providers (GDrive, Dropbox, OneDrive, ...) | `remote:path` |
 
 **Features:**
-- Automatische Synchronisation nach Backup
-- Pro Backup-Target konfigurierbar
-- Mehrere Remote-Ziele gleichzeitig
-- Verbindungstest im UI
-- Verschluesselte Passwort-Speicherung
+- Automatic sync after backup
+- Configurable per backup target
+- Multiple remote destinations
+- Connection test in UI
+- Encrypted password storage
 
-## Konfiguration
+## Configuration
 
 ### Cron Expressions
 
-Format: `Minute Stunde Tag Monat Wochentag`
+Format: `Minute Hour Day Month Weekday`
 
-Beispiele:
-- `0 2 * * *` - Taeglich um 02:00
-- `0 3 * * 0` - Sonntags um 03:00
-- `0 */6 * * *` - Alle 6 Stunden
-- `30 1 1 * *` - Am 1. jeden Monats um 01:30
+Examples:
+- `0 2 * * *` - Daily at 02:00
+- `0 3 * * 0` - Sundays at 03:00
+- `0 */6 * * *` - Every 6 hours
+- `30 1 1 * *` - 1st of every month at 01:30
 
-### Retention Policy (GFS)
+### Default Retention Policy
 
-Die Grandfather-Father-Son Strategie behaelt:
-- **Taeglich**: Die letzten N taeglichen Backups
-- **Woechentlich**: Ein Backup pro Woche fuer N Wochen
-- **Monatlich**: Ein Backup pro Monat fuer N Monate
-- **Jaehrlich**: Ein Backup pro Jahr fuer N Jahre
+Default GFS retention (can be overridden per target):
 
-Beispiel-Konfiguration:
-```
-keep_daily: 7      # Letzte 7 Tage
-keep_weekly: 4     # Letzte 4 Wochen
-keep_monthly: 6    # Letzte 6 Monate
-keep_yearly: 2     # Letzte 2 Jahre
-max_age_days: 365  # Maximal 1 Jahr alt
+```env
+DEFAULT_KEEP_LAST=3
+DEFAULT_KEEP_DAILY=7
+DEFAULT_KEEP_WEEKLY=4
+DEFAULT_KEEP_MONTHLY=6
+DEFAULT_KEEP_YEARLY=2
 ```
 
 ### Komodo Integration
 
-Fuer die Integration mit Komodo:
+For integration with Komodo:
 
 ```env
 KOMODO_ENABLED=true
@@ -180,61 +193,61 @@ KOMODO_API_KEY=your-api-key
 ```
 
 Features:
-- Backup-Benachrichtigungen
-- Container Start/Stop ueber Komodo
-- Status-Synchronisation
+- Backup notifications
+- Container start/stop via Komodo
+- Status synchronization
 
-## Sicherheit
+## Security
 
 ### Docker Socket
 
-Der Docker Socket wird **read-only** gemountet:
+The Docker socket is mounted **read-only**:
 ```yaml
 volumes:
   - /var/run/docker.sock:/var/run/docker.sock:ro
 ```
 
-### Container-Berechtigungen
+### Container Permissions
 
-Der Container laeuft nicht als root, benoetigt aber Zugriff auf die Docker-Gruppe:
+The container does not run as root but requires Docker group access:
 ```yaml
 group_add:
-  - \${DOCKER_GID:-999}
+  - ${DOCKER_GID:-999}
 ```
 
-### Volume-Zugriff
+### Volume Access
 
-Docker Volumes werden ebenfalls read-only gemountet:
+Docker volumes are also mounted read-only:
 ```yaml
 volumes:
   - /var/lib/docker/volumes:/var/lib/docker/volumes:ro
 ```
 
-## Projektstruktur
+## Project Structure
 
 ```
 DockerVault/
 ├── backend/
 │   ├── app/
-│   │   ├── api/              # REST API Endpoints
-│   │   ├── main.py           # FastAPI Anwendung
-│   │   ├── config.py         # Konfiguration
-│   │   ├── database.py       # SQLAlchemy Modelle
-│   │   ├── docker_client.py  # Docker SDK Wrapper
-│   │   ├── backup_engine.py  # Backup-Logik
-│   │   ├── retention.py      # Retention Manager
+│   │   ├── api/              # REST API endpoints
+│   │   ├── main.py           # FastAPI application
+│   │   ├── config.py         # Configuration
+│   │   ├── database.py       # SQLAlchemy models
+│   │   ├── docker_client.py  # Docker SDK wrapper
+│   │   ├── backup_engine.py  # Backup logic
+│   │   ├── retention.py      # Retention manager
 │   │   ├── scheduler.py      # APScheduler
-│   │   ├── komodo.py         # Komodo Client
-│   │   ├── remote_storage.py # Remote Storage Backends
-│   │   └── websocket.py      # WebSocket Handler
+│   │   ├── komodo.py         # Komodo client
+│   │   ├── remote_storage.py # Remote storage backends
+│   │   └── websocket.py      # WebSocket handler
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
-│   │   ├── api/              # API Client
-│   │   ├── components/       # React Komponenten
-│   │   ├── pages/            # Seiten
-│   │   └── store/            # Zustand (WebSocket)
+│   │   ├── api/              # API client
+│   │   ├── components/       # React components
+│   │   ├── pages/            # Pages
+│   │   └── store/            # State (WebSocket)
 │   ├── Dockerfile
 │   └── package.json
 ├── docker-compose.yml
@@ -242,9 +255,9 @@ DockerVault/
 └── README.md
 ```
 
-## Entwicklung
+## Development
 
-### Backend lokal starten
+### Start backend locally
 
 ```bash
 cd backend
@@ -254,7 +267,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-### Frontend lokal starten
+### Start frontend locally
 
 ```bash
 cd frontend
@@ -262,13 +275,13 @@ npm install
 npm run dev
 ```
 
-## API Dokumentation
+## API Documentation
 
-Nach dem Start ist die API-Dokumentation verfuegbar unter:
+After starting, API documentation is available at:
 - Swagger UI: `http://localhost:8000/docs`
 - ReDoc: `http://localhost:8000/redoc`
 
-## Lizenz
+## License
 
 MIT License
 

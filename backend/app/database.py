@@ -30,11 +30,15 @@ class BackupType(enum.Enum):
 
 
 class RetentionPolicy(Base):
-    """Retention policy configuration."""
+    """Retention policy configuration using GFS (Grandfather-Father-Son) strategy."""
     __tablename__ = "retention_policies"
     
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), unique=True, nullable=False)
+    description = Column(Text, nullable=True)
+    
+    # GFS retention settings (similar to restic)
+    keep_last = Column(Integer, default=3)  # Keep last N backups regardless of age
     keep_daily = Column(Integer, default=7)  # Keep last N daily backups
     keep_weekly = Column(Integer, default=4)  # Keep last N weekly backups
     keep_monthly = Column(Integer, default=6)  # Keep last N monthly backups
