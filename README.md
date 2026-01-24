@@ -1,8 +1,8 @@
-# Docker Backup Manager
+# DockerVault
 
 Ein modernes, containerisiertes Backup-System für Docker Volumes und Host-Pfade mit Web-Interface.
 
-## 🚀 Features
+## Features
 
 - **Docker Integration**: Automatische Erkennung von Containern, Volumes und Compose-Stacks
 - **Flexible Backup-Ziele**: Container, Volumes, Host-Pfade oder ganze Stacks
@@ -14,19 +14,19 @@ Ein modernes, containerisiertes Backup-System für Docker Volumes und Host-Pfade
 - **Echtzeit-Updates**: WebSocket-basierte Live-Updates im Frontend
 - **Sicherheit**: Docker Socket wird read-only gemountet
 
-## 📋 Voraussetzungen
+## Voraussetzungen
 
 - Docker 20.10+
 - Docker Compose 2.0+
 - Linux Host (für Docker Socket)
 
-## 🛠️ Installation
+## Installation
 
 ### 1. Repository klonen oder Dateien herunterladen
 
 ```bash
-git clone <repository-url>
-cd docker-volume-backup
+git clone https://github.com/Serph91P/DockerVault.git
+cd DockerVault
 ```
 
 ### 2. Umgebungsvariablen konfigurieren
@@ -56,7 +56,7 @@ docker compose up -d
 
 Das Web-Interface ist dann unter `http://localhost:8080` erreichbar.
 
-## 🖥️ Verwendung
+## Verwendung
 
 ### Dashboard
 
@@ -102,23 +102,23 @@ Konfigurierte Backup-Ziele mit:
 
 - Liste aller Backups
 - Status und Fortschritt
-- Dateigröße und Dauer
+- Dateigrösse und Dauer
 - Wiederherstellen
-- Löschen
+- Loeschen
 
-### Zeitpläne
+### Zeitplaene
 
-- Übersicht geplanter Backups
+- Uebersicht geplanter Backups
 - Cron-Expression Editor
-- Nächste/Letzte Ausführung
-- Manuelles Auslösen
+- Naechste/Letzte Ausfuehrung
+- Manuelles Ausloesen
 
 ### Retention Policies
 
 - GFS Strategie Konfiguration
-- Täglich/Wöchentlich/Monatlich/Jährlich
-- Automatisches Aufräumen
-- Verwaiste Dateien löschen
+- Taeglich/Woechentlich/Monatlich/Jaehrlich
+- Automatisches Aufraeumen
+- Verwaiste Dateien loeschen
 
 ### Remote Storage
 
@@ -138,27 +138,27 @@ Off-Site Backup-Synchronisation zu externen Speicherorten:
 - Pro Backup-Target konfigurierbar
 - Mehrere Remote-Ziele gleichzeitig
 - Verbindungstest im UI
-- Verschlüsselte Passwort-Speicherung
+- Verschluesselte Passwort-Speicherung
 
-## ⚙️ Konfiguration
+## Konfiguration
 
 ### Cron Expressions
 
 Format: `Minute Stunde Tag Monat Wochentag`
 
 Beispiele:
-- `0 2 * * *` - Täglich um 02:00
+- `0 2 * * *` - Taeglich um 02:00
 - `0 3 * * 0` - Sonntags um 03:00
 - `0 */6 * * *` - Alle 6 Stunden
 - `30 1 1 * *` - Am 1. jeden Monats um 01:30
 
 ### Retention Policy (GFS)
 
-Die Grandfather-Father-Son Strategie behält:
-- **Täglich**: Die letzten N täglichen Backups
-- **Wöchentlich**: Ein Backup pro Woche für N Wochen
-- **Monatlich**: Ein Backup pro Monat für N Monate
-- **Jährlich**: Ein Backup pro Jahr für N Jahre
+Die Grandfather-Father-Son Strategie behaelt:
+- **Taeglich**: Die letzten N taeglichen Backups
+- **Woechentlich**: Ein Backup pro Woche fuer N Wochen
+- **Monatlich**: Ein Backup pro Monat fuer N Monate
+- **Jaehrlich**: Ein Backup pro Jahr fuer N Jahre
 
 Beispiel-Konfiguration:
 ```
@@ -171,7 +171,7 @@ max_age_days: 365  # Maximal 1 Jahr alt
 
 ### Komodo Integration
 
-Für die Integration mit Komodo:
+Fuer die Integration mit Komodo:
 
 ```env
 KOMODO_ENABLED=true
@@ -181,10 +181,10 @@ KOMODO_API_KEY=your-api-key
 
 Features:
 - Backup-Benachrichtigungen
-- Container Start/Stop über Komodo
+- Container Start/Stop ueber Komodo
 - Status-Synchronisation
 
-## 🔒 Sicherheit
+## Sicherheit
 
 ### Docker Socket
 
@@ -196,10 +196,10 @@ volumes:
 
 ### Container-Berechtigungen
 
-Der Container läuft nicht als root, benötigt aber Zugriff auf die Docker-Gruppe:
+Der Container laeuft nicht als root, benoetigt aber Zugriff auf die Docker-Gruppe:
 ```yaml
 group_add:
-  - ${DOCKER_GID:-999}
+  - \${DOCKER_GID:-999}
 ```
 
 ### Volume-Zugriff
@@ -210,10 +210,10 @@ volumes:
   - /var/lib/docker/volumes:/var/lib/docker/volumes:ro
 ```
 
-## 📁 Projektstruktur
+## Projektstruktur
 
 ```
-docker-volume-backup/
+DockerVault/
 ├── backend/
 │   ├── app/
 │   │   ├── api/              # REST API Endpoints
@@ -225,6 +225,7 @@ docker-volume-backup/
 │   │   ├── retention.py      # Retention Manager
 │   │   ├── scheduler.py      # APScheduler
 │   │   ├── komodo.py         # Komodo Client
+│   │   ├── remote_storage.py # Remote Storage Backends
 │   │   └── websocket.py      # WebSocket Handler
 │   ├── Dockerfile
 │   └── requirements.txt
@@ -241,7 +242,7 @@ docker-volume-backup/
 └── README.md
 ```
 
-## 🛠️ Entwicklung
+## Entwicklung
 
 ### Backend lokal starten
 
@@ -261,17 +262,17 @@ npm install
 npm run dev
 ```
 
-## 📝 API Dokumentation
+## API Dokumentation
 
-Nach dem Start ist die API-Dokumentation verfügbar unter:
+Nach dem Start ist die API-Dokumentation verfuegbar unter:
 - Swagger UI: `http://localhost:8000/docs`
 - ReDoc: `http://localhost:8000/redoc`
 
-## 🤝 Lizenz
+## Lizenz
 
 MIT License
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - [FastAPI](https://fastapi.tiangolo.com/)
 - [React](https://react.dev/)

@@ -1,0 +1,236 @@
+name: Release & Docker Build
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    tags:
+      - 'v*'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/dockervault
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+      docker_tags: ${{ steps.docker_meta.outputs.tags }}
+      docker_labels: ${{ steps.docker_meta.outputs.labels }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        run: |
+          # Get commit count for consistent versioning across branches
+          COMMIT_COUNT=$(git rev-list --count HEAD)
+          
+          if [[ "${{ github.ref }}" == refs/tags/vdev.* ]]; then
+            # Dev tag (e.g., vdev.0.0.103 -> dev.0.0.103)
+            VERSION=${GITHUB_REF#refs/tags/v}
+            IS_PRERELEASE=true
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            # Stable tag (e.g., v1.2.3 -> 1.2.3)
+            VERSION=${GITHUB_REF#refs/tags/v}
+            IS_PRERELEASE=false
+          elif [[ "${{ github.ref }}" == refs/heads/main ]]; then
+            # Main branch - stable release with same count as dev
+            VERSION="0.0.${COMMIT_COUNT}"
+            IS_PRERELEASE=false
+          else
+            # Develop branch - prerelease with dev prefix
+            VERSION="dev.0.0.${COMMIT_COUNT}"
+            IS_PRERELEASE=true
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
+          echo "Version: ${VERSION}, Prerelease: ${IS_PRERELEASE}"
+
+      - name: Docker metadata
+        id: docker_meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # For tagged releases
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{major}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            # For main branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=stable,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=${{ steps.version.outputs.version }},enable=${{ github.ref == 'refs/heads/main' }}
+            # For develop branch
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/develop' }}
+            type=raw,value=${{ steps.version.outputs.version }},enable=${{ github.ref == 'refs/heads/develop' }}
+            # SHA for all
+            type=sha,prefix=sha-
+
+  build-and-push:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ needs.prepare.outputs.docker_tags }}
+          labels: ${{ needs.prepare.outputs.docker_labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BRANCH=${{ github.ref_name }}
+
+  create-release:
+    needs: [prepare, build-and-push]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Create releases for tags, develop and main branch pushes
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate Changelog
+        id: changelog
+        run: |
+          CURRENT_VERSION="${{ needs.prepare.outputs.version }}"
+          BRANCH="${{ github.ref_name }}"
+          
+          # Find the last tag based on branch
+          if [[ "$BRANCH" == "develop" ]]; then
+            LAST_TAG=$(git tag -l 'vdev.*' --sort=-version:refname | head -n1 || echo "")
+          else
+            LAST_TAG=$(git tag -l 'v*' --sort=-version:refname | grep -v '^vdev\.' | head -n1 || echo "")
+          fi
+          
+          echo "Branch: $BRANCH"
+          echo "Current version: $CURRENT_VERSION"
+          echo "Last tag found: $LAST_TAG"
+          
+          if [ -n "$LAST_TAG" ]; then
+            COMMITS=$(git log "$LAST_TAG"..HEAD --pretty=format:"- %s" --no-merges 2>/dev/null || echo "")
+          else
+            COMMITS=$(git log --pretty=format:"- %s" --no-merges -20 2>/dev/null || echo "")
+          fi
+          
+          if [ -n "$COMMITS" ]; then
+            echo "content<<EOF" >> $GITHUB_OUTPUT
+            echo "### Changes" >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_OUTPUT
+            echo "$COMMITS" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "content=No changes recorded for this release." >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create release notes
+        id: notes
+        env:
+          CHANGELOG_CONTENT: ${{ steps.changelog.outputs.content }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.repository }}
+        run: |
+          cat > release_notes.md << EOF
+          ## What's Changed in ${VERSION}
+          
+          EOF
+          
+          if [ -n "$CHANGELOG_CONTENT" ]; then
+            echo "$CHANGELOG_CONTENT" >> release_notes.md
+          else
+            echo "No changelog entries for this release." >> release_notes.md
+          fi
+          
+          cat >> release_notes.md << EOF
+          
+          ---
+          
+          ## Docker Images
+          
+          This release is available as multi-architecture Docker images (amd64, arm64):
+          
+          ### Pull the image:
+          \`\`\`bash
+          # Specific version
+          docker pull ghcr.io/${REPO_OWNER}/dockervault:${VERSION}
+          
+          # Or latest stable (main branch)
+          docker pull ghcr.io/${REPO_OWNER}/dockervault:latest
+          
+          # Or development (develop branch)
+          docker pull ghcr.io/${REPO_OWNER}/dockervault:dev
+          \`\`\`
+          
+          ### Run with Docker Compose:
+          \`\`\`bash
+          # Download docker-compose.yml
+          curl -O https://raw.githubusercontent.com/${REPO}/main/docker-compose.yml
+          
+          # Start services
+          docker compose up -d
+          \`\`\`
+          
+          ## Registry Information
+          
+          | Property | Value |
+          |----------|-------|
+          | Registry | GitHub Container Registry (ghcr.io) |
+          | Image | \`ghcr.io/${REPO_OWNER}/dockervault\` |
+          | Version | \`${VERSION}\` |
+          | Architectures | linux/amd64, linux/arm64 |
+          
+          ## Documentation
+          
+          See the [README.md](https://github.com/${REPO}/blob/main/README.md) for full configuration options.
+          EOF
+          
+          echo "Release notes created"
+          cat release_notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', needs.prepare.outputs.version) }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ github.ref_name == 'develop' && format('Development Build {0}', needs.prepare.outputs.version) || format('Release {0}', needs.prepare.outputs.version) }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: ${{ needs.prepare.outputs.is_prerelease }}
+          make_latest: ${{ github.ref == 'refs/heads/main' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
