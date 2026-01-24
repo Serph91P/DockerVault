@@ -14,6 +14,7 @@ import asyncio
 import os
 import subprocess
 import shutil
+import shlex
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -212,7 +213,9 @@ class SSHStorage(StorageBackend):
         try:
             # Create remote directory first
             remote_dir = os.path.dirname(f"{self.config.base_path}/{remote_path}")
-            mkdir_cmd = self._build_ssh_command(f"mkdir -p {remote_dir}")
+            # Sanitize the path to prevent command injection
+            safe_dir = shlex.quote(remote_dir)
+            mkdir_cmd = self._build_ssh_command(f"mkdir -p {safe_dir}")
             
             process = await asyncio.create_subprocess_exec(
                 *mkdir_cmd,
@@ -266,7 +269,11 @@ class SSHStorage(StorageBackend):
             return False
     
     def _build_ssh_command(self, remote_cmd: str) -> List[str]:
-        """Build SSH command"""
+        """Build SSH command.
+        
+        Note: The remote_cmd should already have paths sanitized with shlex.quote()
+        before being passed to this method.
+        """
         cmd = ["ssh"]
         if self.config.port:
             cmd.extend(["-p", str(self.config.port)])
@@ -281,7 +288,9 @@ class SSHStorage(StorageBackend):
     async def delete(self, remote_path: str) -> bool:
         try:
             full_path = f"{self.config.base_path}/{remote_path}"
-            cmd = self._build_ssh_command(f"rm -f {full_path}")
+            # Sanitize the path to prevent command injection
+            safe_path = shlex.quote(full_path)
+            cmd = self._build_ssh_command(f"rm -f {safe_path}")
             
             process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -297,7 +306,9 @@ class SSHStorage(StorageBackend):
     async def list_files(self, remote_path: str = "") -> List[Dict[str, Any]]:
         try:
             full_path = f"{self.config.base_path}/{remote_path}".replace("//", "/")
-            cmd = self._build_ssh_command(f"ls -la {full_path}")
+            # Sanitize the path to prevent command injection
+            safe_path = shlex.quote(full_path)
+            cmd = self._build_ssh_command(f"ls -la {safe_path}")
             
             process = await asyncio.create_subprocess_exec(
                 *cmd,

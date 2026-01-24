@@ -4,13 +4,31 @@ Backup targets API endpoints.
 
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from croniter import croniter
 
 from app.database import BackupTarget, RetentionPolicy, get_session, async_session
 
 router = APIRouter()
+
+
+def validate_cron_expression(cron_expr: Optional[str]) -> Optional[str]:
+    """Validate a cron expression."""
+    if cron_expr is None:
+        return None
+    
+    # Trim whitespace
+    cron_expr = cron_expr.strip()
+    if not cron_expr:
+        return None
+    
+    # Validate using croniter
+    if not croniter.is_valid(cron_expr):
+        raise ValueError(f"Invalid cron expression: {cron_expr}")
+    
+    return cron_expr
 
 
 class TargetCreate(BaseModel):
@@ -29,6 +47,11 @@ class TargetCreate(BaseModel):
     post_backup_command: Optional[str] = None
     stop_container: bool = True
     compression_enabled: bool = True
+    
+    @field_validator('schedule_cron')
+    @classmethod
+    def validate_schedule_cron(cls, v: Optional[str]) -> Optional[str]:
+        return validate_cron_expression(v)
 
 
 class TargetUpdate(BaseModel):
@@ -42,6 +65,11 @@ class TargetUpdate(BaseModel):
     post_backup_command: Optional[str] = None
     stop_container: Optional[bool] = None
     compression_enabled: Optional[bool] = None
+    
+    @field_validator('schedule_cron')
+    @classmethod
+    def validate_schedule_cron(cls, v: Optional[str]) -> Optional[str]:
+        return validate_cron_expression(v)
 
 
 class TargetResponse(BaseModel):

@@ -3,6 +3,7 @@ Backups API endpoints.
 """
 
 import asyncio
+import os
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -11,6 +12,7 @@ from sqlalchemy import select
 from app.database import Backup, BackupTarget, BackupStatus, BackupType, async_session
 from app.backup_engine import backup_engine
 from app.retention import retention_manager
+from app.config import settings
 
 router = APIRouter()
 
@@ -180,7 +182,39 @@ async def create_backup(request: CreateBackupRequest):
 
 @router.post("/{backup_id}/restore")
 async def restore_backup(backup_id: int, request: RestoreBackupRequest):
-    """Restore a backup."""
+    """Restore a backup.
+    
+    If target_path is provided, it must be within allowed restore directories
+    to prevent path traversal attacks.
+    """
+    if request.target_path:
+        # Validate the target path to prevent path traversal
+        abs_path = os.path.abspath(request.target_path)
+        
+        # Check for path traversal attempts
+        if ".." in request.target_path:
+            raise HTTPException(
+                status_code=400, 
+                detail="Invalid restore path: path traversal not allowed"
+            )
+        
+        # Ensure path is within allowed restore directories
+        # Allow restoring to backup base path or Docker volume paths
+        allowed_prefixes = [
+            os.path.abspath(settings.BACKUP_BASE_PATH),
+            "/var/lib/docker/volumes",
+        ]
+        
+        is_allowed = any(
+            abs_path.startswith(prefix) for prefix in allowed_prefixes
+        )
+        
+        if not is_allowed:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid restore path: must be within allowed directories"
+            )
+    
     success = await backup_engine.restore_backup(backup_id, request.target_path)
     
     if not success:

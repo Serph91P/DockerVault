@@ -8,6 +8,7 @@ import tarfile
 import hashlib
 import gzip
 import shutil
+import shlex
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
@@ -314,9 +315,22 @@ class BackupEngine:
         return await loop.run_in_executor(None, calc)
     
     async def _run_hook(self, command: str):
-        """Run a pre/post backup hook command."""
-        process = await asyncio.create_subprocess_shell(
-            command,
+        """Run a pre/post backup hook command safely.
+        
+        Uses shlex.split to parse the command into arguments, preventing
+        shell injection attacks by avoiding shell=True.
+        """
+        try:
+            # Parse command into safe argument list
+            args = shlex.split(command)
+        except ValueError as e:
+            raise Exception(f"Invalid hook command syntax: {e}")
+        
+        if not args:
+            raise Exception("Empty hook command")
+        
+        process = await asyncio.create_subprocess_exec(
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -421,8 +435,41 @@ class BackupEngine:
             return False
     
     def _extract_tar(self, source: str, dest: str, mode: str):
-        """Extract tar archive."""
+        """Extract tar archive safely.
+        
+        Validates that all extracted files stay within the destination
+        directory to prevent path traversal attacks (CVE-2007-4559).
+        """
+        abs_dest = os.path.abspath(dest)
+        
         with tarfile.open(source, mode) as tar:
+            # Validate all members before extraction
+            for member in tar.getmembers():
+                member_path = os.path.join(dest, member.name)
+                abs_member = os.path.abspath(member_path)
+                
+                # Check for path traversal
+                if not abs_member.startswith(abs_dest + os.sep) and abs_member != abs_dest:
+                    raise ValueError(
+                        f"Path traversal detected in archive: {member.name}"
+                    )
+                
+                # Check for absolute paths in archive
+                if os.path.isabs(member.name):
+                    raise ValueError(
+                        f"Absolute path detected in archive: {member.name}"
+                    )
+                
+                # Check for suspicious symlinks
+                if member.issym() or member.islnk():
+                    link_path = os.path.join(dest, os.path.dirname(member.name), member.linkname)
+                    abs_link = os.path.abspath(link_path)
+                    if not abs_link.startswith(abs_dest + os.sep):
+                        raise ValueError(
+                            f"Symlink escape detected in archive: {member.name} -> {member.linkname}"
+                        )
+            
+            # Safe to extract after validation
             tar.extractall(dest)
     
     async def estimate_backup_duration(self, target: BackupTarget) -> int:
