@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter } from 'react-router-dom'
@@ -240,7 +240,7 @@ describe('Backups Page', () => {
     })
 
     // Simulate WebSocket message for progress update
-    const progressMessage = {
+    const _progressMessage = {
       type: 'backup_progress',
       backup_id: 2,
       progress: 50,

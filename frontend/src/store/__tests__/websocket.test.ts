@@ -30,7 +30,7 @@ class MockWebSocket {
   })
   
   // Helper method to simulate receiving messages
-  simulateMessage(data: any) {
+  simulateMessage(data: Record<string, unknown>) {
     const event = new MessageEvent('message', {
       data: JSON.stringify(data)
     })
