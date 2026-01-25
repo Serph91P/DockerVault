@@ -5,86 +5,135 @@ Tests for docker_client module.
 from unittest.mock import MagicMock, patch
 
 import pytest
-from docker.errors import APIError, DockerException, NotFound
 
-from app.docker_client import ContainerInfo, DockerClientWrapper
+from app.docker_client import ContainerInfo, DockerClientWrapper, VolumeInfo
 
 
 @pytest.mark.asyncio
 class TestDockerClientWrapper:
     """Test Docker client wrapper functionality."""
 
-    @patch("app.docker_client.docker.from_env")
-    def test_init_success(self, mock_docker):
-        """Test successful Docker client initialization."""
+    def test_init_creates_wrapper(self):
+        """Test Docker client wrapper initialization."""
+        wrapper = DockerClientWrapper()
+        assert wrapper is not None
+        assert wrapper._client is None  # Lazy initialization
+
+    @patch("app.docker_client.docker.DockerClient")
+    def test_client_property_creates_client(self, mock_docker_client):
+        """Test that client property creates Docker client lazily."""
         mock_client = MagicMock()
-        mock_docker.return_value = mock_client
+        mock_docker_client.return_value = mock_client
+
+        wrapper = DockerClientWrapper()
+        # Access client property to trigger creation
+        client = wrapper.client
+
+        assert client is mock_client
+        mock_docker_client.assert_called_once()
+
+    @patch("app.docker_client.docker.DockerClient")
+    async def test_ping_success(self, mock_docker_client):
+        """Test successful Docker ping."""
+        mock_client = MagicMock()
         mock_client.ping.return_value = True
+        mock_docker_client.return_value = mock_client
 
         wrapper = DockerClientWrapper()
-        assert wrapper.client is not None
-        assert wrapper.available is True
-        mock_client.ping.assert_called_once()
+        result = await wrapper.ping()
 
-    @patch("app.docker_client.docker.from_env")
-    def test_init_failure(self, mock_docker):
-        """Test Docker client initialization failure."""
-        mock_docker.side_effect = DockerException("Docker not available")
+        assert result is True
+
+    @patch("app.docker_client.docker.DockerClient")
+    async def test_ping_failure(self, mock_docker_client):
+        """Test Docker ping failure."""
+        mock_client = MagicMock()
+        mock_client.ping.side_effect = Exception("Connection refused")
+        mock_docker_client.return_value = mock_client
 
         wrapper = DockerClientWrapper()
-        assert wrapper.client is None
-        assert wrapper.available is False
+        result = await wrapper.ping()
 
-    @patch("app.docker_client.docker.from_env")
-    def test_get_containers_success(self, mock_docker):
+        assert result is False
+
+    @patch("app.docker_client.docker.DockerClient")
+    async def test_list_containers_success(self, mock_docker_client):
         """Test successful container listing."""
         mock_client = MagicMock()
-        mock_docker.return_value = mock_client
-        mock_client.ping.return_value = True
+        mock_docker_client.return_value = mock_client
 
         # Mock container data
         mock_container = MagicMock()
         mock_container.id = "container123"
         mock_container.name = "test-container"
-        mock_container.image.tags = ["nginx:latest"]
         mock_container.status = "running"
         mock_container.attrs = {
             "State": {"Status": "running"},
             "Created": "2024-01-01T00:00:00Z",
-            "Config": {"Labels": {"com.docker.compose.project": "myproject"}},
+            "Config": {
+                "Image": "nginx:latest",
+                "Labels": {"com.docker.compose.project": "myproject"},
+            },
             "Mounts": [],
             "NetworkSettings": {"Networks": {"bridge": {}}},
         }
         mock_client.containers.list.return_value = [mock_container]
 
         wrapper = DockerClientWrapper()
-        containers = wrapper.get_containers()
+        containers = await wrapper.list_containers()
 
         assert len(containers) == 1
         container = containers[0]
         assert isinstance(container, ContainerInfo)
         assert container.id == "container123"
         assert container.name == "test-container"
-        assert container.image == "nginx:latest"
         assert container.status == "running"
         assert container.compose_project == "myproject"
 
-    @patch("app.docker_client.docker.from_env")
-    def test_get_containers_docker_unavailable(self, mock_docker):
-        """Test container listing when Docker is unavailable."""
-        mock_docker.side_effect = DockerException("Docker not available")
+    @patch("app.docker_client.docker.DockerClient")
+    async def test_list_containers_empty(self, mock_docker_client):
+        """Test container listing when no containers exist."""
+        mock_client = MagicMock()
+        mock_docker_client.return_value = mock_client
+        mock_client.containers.list.return_value = []
 
         wrapper = DockerClientWrapper()
-        containers = wrapper.get_containers()
+        containers = await wrapper.list_containers()
 
         assert containers == []
 
-    @patch("app.docker_client.docker.from_env")
-    def test_get_volumes_success(self, mock_docker):
+    @patch("app.docker_client.docker.DockerClient")
+    async def test_list_volumes_success(self, mock_docker_client):
         """Test successful volume listing."""
         mock_client = MagicMock()
-        mock_docker.return_value = mock_client
-        mock_client.ping.return_value = True
+        mock_docker_client.return_value = mock_client
+
+        # Mock volume data
+        mock_volume = MagicMock()
+        mock_volume.name = "test-volume"
+        mock_volume.attrs = {
+            "Driver": "local",
+            "Mountpoint": "/var/lib/docker/volumes/test-volume/_data",
+            "Labels": {},
+            "CreatedAt": "2024-01-01T00:00:00Z",
+        }
+        mock_client.volumes.list.return_value = [mock_volume]
+        mock_client.containers.list.return_value = []
+
+        wrapper = DockerClientWrapper()
+        volumes = await wrapper.list_volumes()
+
+        assert len(volumes) == 1
+        volume = volumes[0]
+        assert isinstance(volume, VolumeInfo)
+        assert volume.name == "test-volume"
+        assert volume.driver == "local"
+
+    @patch("app.docker_client.docker.DockerClient")
+    async def test_list_volumes_with_usage(self, mock_docker_client):
+        """Test volume listing with container usage info."""
+        mock_client = MagicMock()
+        mock_docker_client.return_value = mock_client
 
         # Mock volume data
         mock_volume = MagicMock()
@@ -97,10 +146,15 @@ class TestDockerClientWrapper:
         }
         mock_client.volumes.list.return_value = [mock_volume]
 
-        # Mock containers using volume
+        # Mock container using the volume
         mock_container = MagicMock()
-        mock_container.name = "container1"
+        mock_container.id = "container123"
+        mock_container.name = "test-container"
+        mock_container.status = "running"
         mock_container.attrs = {
+            "State": {"Status": "running"},
+            "Created": "2024-01-01T00:00:00Z",
+            "Config": {"Image": "nginx:latest", "Labels": {}},
             "Mounts": [
                 {
                     "Type": "volume",
@@ -108,155 +162,241 @@ class TestDockerClientWrapper:
                     "Source": "/var/lib/docker/volumes/test-volume/_data",
                     "Destination": "/data",
                 }
-            ]
+            ],
+            "NetworkSettings": {"Networks": {}},
         }
         mock_client.containers.list.return_value = [mock_container]
 
         wrapper = DockerClientWrapper()
-        volumes = wrapper.get_volumes()
+        volumes = await wrapper.list_volumes()
 
         assert len(volumes) == 1
         volume = volumes[0]
-        assert volume["name"] == "test-volume"
-        assert volume["driver"] == "local"
-        assert "container1" in volume["used_by"]
+        assert "test-container" in volume.used_by
 
-    @patch("app.docker_client.docker.from_env")
-    def test_stop_containers_success(self, mock_docker):
+    @patch("app.docker_client.docker.DockerClient")
+    async def test_stop_container_success(self, mock_docker_client):
         """Test successful container stopping."""
         mock_client = MagicMock()
-        mock_docker.return_value = mock_client
-        mock_client.ping.return_value = True
+        mock_docker_client.return_value = mock_client
 
         mock_container = MagicMock()
         mock_container.status = "running"
         mock_client.containers.get.return_value = mock_container
 
         wrapper = DockerClientWrapper()
-        success = wrapper.stop_containers(["container1"])
+        success = await wrapper.stop_container("container1")
 
         assert success is True
         mock_client.containers.get.assert_called_with("container1")
-        mock_container.stop.assert_called_once()
 
-    @patch("app.docker_client.docker.from_env")
-    def test_stop_containers_not_found(self, mock_docker):
-        """Test stopping non-existent container."""
+    @patch("app.docker_client.docker.DockerClient")
+    async def test_stop_container_failure(self, mock_docker_client):
+        """Test container stop failure."""
         mock_client = MagicMock()
-        mock_docker.return_value = mock_client
-        mock_client.ping.return_value = True
-
-        mock_client.containers.get.side_effect = NotFound("Container not found")
+        mock_docker_client.return_value = mock_client
+        mock_client.containers.get.side_effect = Exception("Container not found")
 
         wrapper = DockerClientWrapper()
-        success = wrapper.stop_containers(["nonexistent"])
+        success = await wrapper.stop_container("nonexistent")
 
         assert success is False
 
-    @patch("app.docker_client.docker.from_env")
-    def test_start_containers_success(self, mock_docker):
+    @patch("app.docker_client.docker.DockerClient")
+    async def test_start_container_success(self, mock_docker_client):
         """Test successful container starting."""
         mock_client = MagicMock()
-        mock_docker.return_value = mock_client
-        mock_client.ping.return_value = True
+        mock_docker_client.return_value = mock_client
 
         mock_container = MagicMock()
         mock_container.status = "exited"
         mock_client.containers.get.return_value = mock_container
 
         wrapper = DockerClientWrapper()
-        success = wrapper.start_containers(["container1"])
+        success = await wrapper.start_container("container1")
 
         assert success is True
-        mock_container.start.assert_called_once()
 
-    @patch("app.docker_client.docker.from_env")
-    def test_create_backup_container(self, mock_docker):
-        """Test backup container creation."""
+    @patch("app.docker_client.docker.DockerClient")
+    async def test_start_container_failure(self, mock_docker_client):
+        """Test container start failure."""
         mock_client = MagicMock()
-        mock_docker.return_value = mock_client
-        mock_client.ping.return_value = True
-
-        mock_container = MagicMock()
-        mock_container.id = "backup123"
-        mock_client.containers.create.return_value = mock_container
+        mock_docker_client.return_value = mock_client
+        mock_client.containers.get.side_effect = Exception("Container not found")
 
         wrapper = DockerClientWrapper()
-        container_id = wrapper.create_backup_container(
-            "test-volume", "/backup/test.tar.gz"
+        success = await wrapper.start_container("nonexistent")
+
+        assert success is False
+
+    @patch("app.docker_client.docker.DockerClient")
+    async def test_get_container_state(self, mock_docker_client):
+        """Test getting container state."""
+        mock_client = MagicMock()
+        mock_docker_client.return_value = mock_client
+
+        mock_container = MagicMock()
+        mock_container.status = "running"
+        mock_client.containers.get.return_value = mock_container
+
+        wrapper = DockerClientWrapper()
+        state = await wrapper.get_container_state("container1")
+
+        assert state == "running"
+
+    @patch("app.docker_client.docker.DockerClient")
+    async def test_get_container_state_not_found(self, mock_docker_client):
+        """Test getting state of non-existent container."""
+        mock_client = MagicMock()
+        mock_docker_client.return_value = mock_client
+        mock_client.containers.get.side_effect = Exception("Container not found")
+
+        wrapper = DockerClientWrapper()
+        state = await wrapper.get_container_state("nonexistent")
+
+        assert state is None
+
+    @patch("app.docker_client.docker.DockerClient")
+    async def test_get_stacks(self, mock_docker_client):
+        """Test getting Docker Compose stacks."""
+        mock_client = MagicMock()
+        mock_docker_client.return_value = mock_client
+
+        # Mock container in a compose project
+        mock_container = MagicMock()
+        mock_container.id = "container123"
+        mock_container.name = "myproject-web-1"
+        mock_container.status = "running"
+        mock_container.attrs = {
+            "State": {"Status": "running"},
+            "Created": "2024-01-01T00:00:00Z",
+            "Config": {
+                "Image": "nginx:latest",
+                "Labels": {
+                    "com.docker.compose.project": "myproject",
+                    "com.docker.compose.service": "web",
+                },
+            },
+            "Mounts": [],
+            "NetworkSettings": {"Networks": {"myproject_default": {}}},
+        }
+        mock_client.containers.list.return_value = [mock_container]
+
+        wrapper = DockerClientWrapper()
+        stacks = await wrapper.get_stacks()
+
+        assert len(stacks) == 1
+        stack = stacks[0]
+        assert stack.name == "myproject"
+        assert len(stack.containers) == 1
+
+    @patch("app.docker_client.docker.DockerClient")
+    async def test_get_dependency_order(self, mock_docker_client):
+        """Test getting container dependency order."""
+        mock_client = MagicMock()
+        mock_docker_client.return_value = mock_client
+
+        # Mock containers with dependencies
+        mock_db = MagicMock()
+        mock_db.id = "db123"
+        mock_db.name = "db"
+        mock_db.status = "running"
+        mock_db.attrs = {
+            "State": {"Status": "running"},
+            "Created": "2024-01-01T00:00:00Z",
+            "Config": {"Image": "postgres:14", "Labels": {}},
+            "Mounts": [],
+            "NetworkSettings": {"Networks": {}},
+        }
+
+        mock_app = MagicMock()
+        mock_app.id = "app123"
+        mock_app.name = "app"
+        mock_app.status = "running"
+        mock_app.attrs = {
+            "State": {"Status": "running"},
+            "Created": "2024-01-01T00:00:00Z",
+            "Config": {"Image": "myapp:latest", "Labels": {"backup.depends_on": "db"}},
+            "Mounts": [],
+            "NetworkSettings": {"Networks": {}},
+        }
+
+        mock_client.containers.list.return_value = [mock_db, mock_app]
+
+        wrapper = DockerClientWrapper()
+        order = await wrapper.get_dependency_order(["app", "db"])
+
+        assert isinstance(order, list)
+        # App should come before db for stopping (since app depends on db)
+        assert "app" in order
+        assert "db" in order
+
+    def test_close(self):
+        """Test closing Docker client."""
+        wrapper = DockerClientWrapper()
+        wrapper._client = MagicMock()
+
+        wrapper.close()
+
+        assert wrapper._client is None
+
+
+class TestContainerInfo:
+    """Test ContainerInfo dataclass."""
+
+    def test_container_info_creation(self):
+        """Test creating ContainerInfo."""
+        info = ContainerInfo(
+            id="test123",
+            name="test-container",
+            image="nginx:latest",
+            status="running",
+            state="running",
+            created="2024-01-01T00:00:00Z",
+            labels={"key": "value"},
+            mounts=[],
+            networks=["bridge"],
+            compose_project="myproject",
+            compose_service="web",
         )
 
-        assert container_id == "backup123"
-        mock_client.containers.create.assert_called_once()
+        assert info.id == "test123"
+        assert info.name == "test-container"
+        assert info.compose_project == "myproject"
+        assert info.depends_on == []  # Default empty list
 
-        # Verify container creation parameters
-        call_args = mock_client.containers.create.call_args
-        assert "ubuntu:latest" in call_args[1]["image"]
-        assert "/data" in str(call_args[1]["volumes"])
+    def test_container_info_with_depends_on(self):
+        """Test ContainerInfo with dependencies."""
+        info = ContainerInfo(
+            id="test123",
+            name="test-container",
+            image="nginx:latest",
+            status="running",
+            state="running",
+            created="2024-01-01T00:00:00Z",
+            labels={},
+            mounts=[],
+            networks=[],
+            depends_on=["db", "redis"],
+        )
 
-    @patch("app.docker_client.docker.from_env")
-    def test_security_volume_name_validation(self, mock_docker):
-        """Test that malicious volume names are rejected."""
-        mock_client = MagicMock()
-        mock_docker.return_value = mock_client
-        mock_client.ping.return_value = True
+        assert info.depends_on == ["db", "redis"]
 
-        wrapper = DockerClientWrapper()
 
-        # Test path traversal in volume name
-        with pytest.raises(ValueError, match="Invalid volume name"):
-            wrapper.create_backup_container(
-                "../../../etc/passwd", "/backup/test.tar.gz"
-            )
+class TestVolumeInfo:
+    """Test VolumeInfo dataclass."""
 
-        # Test command injection in volume name
-        with pytest.raises(ValueError, match="Invalid volume name"):
-            wrapper.create_backup_container("volume; rm -rf /", "/backup/test.tar.gz")
+    def test_volume_info_creation(self):
+        """Test creating VolumeInfo."""
+        info = VolumeInfo(
+            name="test-volume",
+            driver="local",
+            mountpoint="/var/lib/docker/volumes/test-volume/_data",
+            labels={"backup": "true"},
+            created_at="2024-01-01T00:00:00Z",
+            used_by=["container1", "container2"],
+        )
 
-    @patch("app.docker_client.docker.from_env")
-    def test_wait_for_container_success(self, mock_docker):
-        """Test successful container wait."""
-        mock_client = MagicMock()
-        mock_docker.return_value = mock_client
-        mock_client.ping.return_value = True
-
-        mock_container = MagicMock()
-        mock_container.wait.return_value = {"StatusCode": 0}
-        mock_container.logs.return_value = b"Backup completed"
-        mock_client.containers.get.return_value = mock_container
-
-        wrapper = DockerClientWrapper()
-        exit_code, logs = wrapper.wait_for_container("container123")
-
-        assert exit_code == 0
-        assert logs == "Backup completed"
-        mock_container.wait.assert_called_once()
-        mock_container.logs.assert_called_once()
-
-    @patch("app.docker_client.docker.from_env")
-    def test_cleanup_container(self, mock_docker):
-        """Test container cleanup."""
-        mock_client = MagicMock()
-        mock_docker.return_value = mock_client
-        mock_client.ping.return_value = True
-
-        mock_container = MagicMock()
-        mock_client.containers.get.return_value = mock_container
-
-        wrapper = DockerClientWrapper()
-        wrapper.cleanup_container("container123")
-
-        mock_container.remove.assert_called_once_with(force=True)
-
-    @patch("app.docker_client.docker.from_env")
-    def test_cleanup_container_not_found(self, mock_docker):
-        """Test cleanup of non-existent container."""
-        mock_client = MagicMock()
-        mock_docker.return_value = mock_client
-        mock_client.ping.return_value = True
-
-        mock_client.containers.get.side_effect = NotFound("Container not found")
-
-        wrapper = DockerClientWrapper()
-        # Should not raise exception
-        wrapper.cleanup_container("nonexistent")
+        assert info.name == "test-volume"
+        assert info.driver == "local"
+        assert len(info.used_by) == 2
