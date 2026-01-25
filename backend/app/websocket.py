@@ -17,32 +17,36 @@ router = APIRouter()
 
 class ConnectionManager:
     """Manages WebSocket connections."""
-    
+
     def __init__(self):
         self.active_connections: Set[WebSocket] = set()
         self._lock = asyncio.Lock()
-    
+
     async def connect(self, websocket: WebSocket):
         """Accept and store a new connection."""
         await websocket.accept()
         async with self._lock:
             self.active_connections.add(websocket)
-        logger.info(f"WebSocket connected. Total connections: {len(self.active_connections)}")
-    
+        logger.info(
+            f"WebSocket connected. Total connections: {len(self.active_connections)}"
+        )
+
     async def disconnect(self, websocket: WebSocket):
         """Remove a connection."""
         async with self._lock:
             self.active_connections.discard(websocket)
-        logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
-    
+        logger.info(
+            f"WebSocket disconnected. Total connections: {len(self.active_connections)}"
+        )
+
     async def broadcast(self, message: Dict):
         """Broadcast message to all connections."""
         if not self.active_connections:
             return
-        
+
         message_json = json.dumps(message)
         disconnected = set()
-        
+
         async with self._lock:
             for connection in self.active_connections:
                 try:
@@ -50,10 +54,10 @@ class ConnectionManager:
                 except Exception as e:
                     logger.warning(f"Failed to send to WebSocket: {e}")
                     disconnected.add(connection)
-            
+
             # Remove disconnected clients
             self.active_connections -= disconnected
-    
+
     async def send_to_client(self, websocket: WebSocket, message: Dict):
         """Send message to specific client."""
         try:
@@ -84,18 +88,18 @@ backup_engine.add_progress_callback(backup_progress_callback)
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time updates."""
     await manager.connect(websocket)
-    
+
     try:
         # Send initial connection message
         await manager.send_to_client(websocket, {
             "type": "connected",
             "message": "Connected to backup manager",
         })
-        
+
         while True:
             # Wait for messages from client
             data = await websocket.receive_text()
-            
+
             try:
                 message = json.loads(data)
                 await handle_client_message(websocket, message)
@@ -104,7 +108,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     "type": "error",
                     "message": "Invalid JSON",
                 })
-                
+
     except WebSocketDisconnect:
         await manager.disconnect(websocket)
     except Exception as e:
@@ -115,10 +119,10 @@ async def websocket_endpoint(websocket: WebSocket):
 async def handle_client_message(websocket: WebSocket, message: Dict):
     """Handle incoming client messages."""
     msg_type = message.get("type")
-    
+
     if msg_type == "ping":
         await manager.send_to_client(websocket, {"type": "pong"})
-    
+
     elif msg_type == "subscribe":
         # Subscribe to specific backup updates
         backup_id = message.get("backup_id")
@@ -127,7 +131,7 @@ async def handle_client_message(websocket: WebSocket, message: Dict):
                 "type": "subscribed",
                 "backup_id": backup_id,
             })
-    
+
     else:
         await manager.send_to_client(websocket, {
             "type": "error",

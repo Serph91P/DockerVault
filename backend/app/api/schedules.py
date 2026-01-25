@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from app.database import BackupTarget, BackupSchedule, async_session
+from app.database import BackupTarget, async_session
 from app.scheduler import BackupScheduler
 from app.backup_engine import backup_engine
 
@@ -45,7 +45,7 @@ async def list_schedules():
             select(BackupTarget).where(BackupTarget.schedule_cron.isnot(None))
         )
         targets = result.scalars().all()
-        
+
         schedules = []
         for target in targets:
             # Calculate next run
@@ -54,9 +54,9 @@ async def list_schedules():
             if target.schedule_cron:
                 try:
                     next_run = scheduler.get_next_run(target.schedule_cron)
-                except:
+                except Exception:
                     pass
-            
+
             schedules.append(ScheduleResponse(
                 id=target.id,
                 target_id=target.id,
@@ -66,7 +66,7 @@ async def list_schedules():
                 last_run=None,  # Would need to track this
                 enabled=target.enabled,
             ))
-        
+
         return schedules
 
 
@@ -82,10 +82,10 @@ async def trigger_backup(target_id: int, request: Request):
     """Trigger a backup immediately for a target."""
     scheduler: BackupScheduler = request.app.state.scheduler
     success = await scheduler.trigger_backup_now(target_id)
-    
+
     if not success:
         raise HTTPException(status_code=404, detail="Target not found")
-    
+
     return {"status": "triggered"}
 
 
@@ -97,26 +97,26 @@ async def update_schedule(target_id: int, update: UpdateScheduleRequest, request
             select(BackupTarget).where(BackupTarget.id == target_id)
         )
         target = result.scalar_one_or_none()
-        
+
         if not target:
             raise HTTPException(status_code=404, detail="Target not found")
-        
+
         if update.cron_expression is not None:
             target.schedule_cron = update.cron_expression
         if update.enabled is not None:
             target.enabled = update.enabled
-        
+
         await session.commit()
         await session.refresh(target)
-    
+
     # Update scheduler
     scheduler: BackupScheduler = request.app.state.scheduler
-    
+
     if target.enabled and target.schedule_cron:
         await scheduler.add_schedule(target)
     else:
         await scheduler.remove_schedule(target_id)
-    
+
     return {"status": "updated"}
 
 
@@ -128,20 +128,20 @@ async def estimate_backup_window(request: EstimateRequest, app_request: Request)
             select(BackupTarget).where(BackupTarget.id == request.target_id)
         )
         target = result.scalar_one_or_none()
-        
+
         if not target:
             raise HTTPException(status_code=404, detail="Target not found")
-    
+
     # Get estimated duration
     estimated_duration = await backup_engine.estimate_backup_duration(target)
-    
+
     # Get backup window
     scheduler: BackupScheduler = app_request.app.state.scheduler
     window = scheduler.estimate_backup_window(
         request.cron_expression,
         estimated_duration,
     )
-    
+
     return window
 
 

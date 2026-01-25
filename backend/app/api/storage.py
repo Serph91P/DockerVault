@@ -2,12 +2,10 @@
 
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
-from enum import Enum
+from typing import Optional, List
 
 from ..remote_storage import (
-    StorageType, StorageConfig, storage_manager,
-    RemoteStorageManager
+    StorageType, StorageConfig, storage_manager
 )
 from ..database import get_db, RemoteStorage as RemoteStorageModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,29 +19,29 @@ class StorageCreate(BaseModel):
     name: str
     storage_type: StorageType
     enabled: bool = True
-    
+
     # Connection settings
     host: Optional[str] = None
     port: Optional[int] = None
     username: Optional[str] = None
     password: Optional[str] = None
-    
+
     # Path settings
     base_path: str = "/backups"
-    
+
     # SSH/SFTP specific
     ssh_key_path: Optional[str] = None
-    
+
     # S3 specific
     s3_bucket: Optional[str] = None
     s3_region: Optional[str] = None
     s3_access_key: Optional[str] = None
     s3_secret_key: Optional[str] = None
     s3_endpoint_url: Optional[str] = None
-    
+
     # WebDAV specific
     webdav_url: Optional[str] = None
-    
+
     # Rclone specific
     rclone_remote: Optional[str] = None
 
@@ -68,7 +66,7 @@ class StorageResponse(BaseModel):
     host: Optional[str]
     base_path: str
     created_at: str
-    
+
     class Config:
         from_attributes = True
 
@@ -162,15 +160,15 @@ async def create_storage(
         webdav_url=data.webdav_url,
         rclone_remote=data.rclone_remote
     )
-    
+
     db.add(storage)
     await db.commit()
     await db.refresh(storage)
-    
+
     # Register with manager
     config = _db_to_config(storage)
     storage_manager.add_storage(config)
-    
+
     return StorageResponse(
         id=storage.id,
         name=storage.name,
@@ -188,7 +186,7 @@ async def get_storage(storage_id: int, db: AsyncSession = Depends(get_db)):
     storage = await db.get(RemoteStorageModel, storage_id)
     if not storage:
         raise HTTPException(status_code=404, detail="Storage not found")
-    
+
     return StorageResponse(
         id=storage.id,
         name=storage.name,
@@ -210,18 +208,18 @@ async def update_storage(
     storage = await db.get(RemoteStorageModel, storage_id)
     if not storage:
         raise HTTPException(status_code=404, detail="Storage not found")
-    
+
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(storage, field, value)
-    
+
     await db.commit()
     await db.refresh(storage)
-    
+
     # Update manager
     storage_manager.remove_storage(storage_id)
     config = _db_to_config(storage)
     storage_manager.add_storage(config)
-    
+
     return StorageResponse(
         id=storage.id,
         name=storage.name,
@@ -239,12 +237,12 @@ async def delete_storage(storage_id: int, db: AsyncSession = Depends(get_db)):
     storage = await db.get(RemoteStorageModel, storage_id)
     if not storage:
         raise HTTPException(status_code=404, detail="Storage not found")
-    
+
     await db.delete(storage)
     await db.commit()
-    
+
     storage_manager.remove_storage(storage_id)
-    
+
     return {"message": "Storage deleted"}
 
 
@@ -254,13 +252,13 @@ async def test_storage(storage_id: int, db: AsyncSession = Depends(get_db)):
     storage = await db.get(RemoteStorageModel, storage_id)
     if not storage:
         raise HTTPException(status_code=404, detail="Storage not found")
-    
+
     # Ensure backend is registered
     backend = storage_manager.get_backend(storage_id)
     if not backend:
         config = _db_to_config(storage)
         backend = storage_manager.add_storage(config)
-    
+
     result = await backend.test_connection()
     return StorageTestResult(**result)
 
@@ -275,12 +273,12 @@ async def list_files(
     storage = await db.get(RemoteStorageModel, storage_id)
     if not storage:
         raise HTTPException(status_code=404, detail="Storage not found")
-    
+
     backend = storage_manager.get_backend(storage_id)
     if not backend:
         config = _db_to_config(storage)
         backend = storage_manager.add_storage(config)
-    
+
     files = await backend.list_files(path)
     return {"files": files, "path": path}
 
@@ -294,30 +292,30 @@ async def sync_backup_to_storage(
     """Manually sync a specific backup to remote storage"""
     from ..database import Backup, BackupTarget
     from pathlib import Path
-    
+
     storage = await db.get(RemoteStorageModel, storage_id)
     if not storage:
         raise HTTPException(status_code=404, detail="Storage not found")
-    
+
     backup = await db.get(Backup, backup_id)
     if not backup:
         raise HTTPException(status_code=404, detail="Backup not found")
-    
+
     if not backup.file_path:
         raise HTTPException(status_code=400, detail="Backup has no file")
-    
+
     target = await db.get(BackupTarget, backup.target_id)
-    
+
     backend = storage_manager.get_backend(storage_id)
     if not backend:
         config = _db_to_config(storage)
         backend = storage_manager.add_storage(config)
-    
+
     local_path = Path(backup.file_path)
     remote_path = f"{target.name}/{local_path.name}"
-    
+
     success = await backend.upload(local_path, remote_path)
-    
+
     if success:
         return {"message": f"Backup synced to {storage.name}", "remote_path": remote_path}
     else:

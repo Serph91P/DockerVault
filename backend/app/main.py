@@ -3,7 +3,6 @@ Docker Volume Backup Manager - Main Application
 FastAPI backend with Docker integration, scheduling, and WebSocket support.
 """
 
-import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,9 +22,9 @@ async def lifespan(app: FastAPI):
     scheduler = BackupScheduler()
     await scheduler.start()
     app.state.scheduler = scheduler
-    
+
     yield
-    
+
     # Shutdown
     await scheduler.stop()
 

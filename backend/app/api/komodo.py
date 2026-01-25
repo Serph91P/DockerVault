@@ -30,7 +30,7 @@ class ContainerActionRequest(BaseModel):
 async def get_komodo_status():
     """Get Komodo integration status."""
     is_available = await komodo_client.is_available()
-    
+
     return {
         "enabled": settings.KOMODO_ENABLED,
         "api_url": settings.KOMODO_API_URL or None,
@@ -45,14 +45,14 @@ async def test_komodo_connection():
         raise HTTPException(
             status_code=400, detail="Komodo integration is not enabled"
         )
-    
+
     is_available = await komodo_client.is_available()
-    
+
     if not is_available:
         raise HTTPException(
             status_code=503, detail="Cannot connect to Komodo"
         )
-    
+
     return {"status": "connected"}
 
 
@@ -63,7 +63,7 @@ async def request_container_action(request: ContainerActionRequest):
         raise HTTPException(
             status_code=400, detail="Komodo integration is not enabled"
         )
-    
+
     if request.action == "stop":
         success = await komodo_client.request_container_stop(
             request.container_name,
@@ -78,12 +78,12 @@ async def request_container_action(request: ContainerActionRequest):
         raise HTTPException(
             status_code=400, detail=f"Unknown action: {request.action}"
         )
-    
+
     if not success:
         raise HTTPException(
             status_code=500, detail=f"Failed to {request.action} container"
         )
-    
+
     return {"status": "success", "action": request.action}
 
 
@@ -94,12 +94,12 @@ async def get_container_status(container_name: str):
         raise HTTPException(
             status_code=400, detail="Komodo integration is not enabled"
         )
-    
+
     status = await komodo_client.get_container_status(container_name)
-    
+
     if status is None:
         raise HTTPException(
             status_code=404, detail="Container not found or Komodo unavailable"
         )
-    
+
     return status

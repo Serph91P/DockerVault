@@ -6,7 +6,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.docker_client import docker_client, ContainerInfo, VolumeInfo, StackInfo
+from app.docker_client import docker_client
 
 router = APIRouter()
 

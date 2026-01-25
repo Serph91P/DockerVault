@@ -5,13 +5,12 @@ Backups API endpoints.
 import asyncio
 import os
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.database import Backup, BackupTarget, BackupStatus, BackupType, async_session
 from app.backup_engine import backup_engine
-from app.retention import retention_manager
 from app.config import settings
 
 router = APIRouter()
@@ -68,7 +67,7 @@ async def list_backups(
     offset: int = 0,
 ):
     """List backups with optional filters and pagination.
-    
+
     Args:
         target_id: Filter by target ID
         status: Filter by backup status
@@ -82,22 +81,22 @@ async def list_backups(
             .limit(limit)
             .offset(offset)
         )
-        
+
         if target_id:
             query = query.where(Backup.target_id == target_id)
         if status:
             query = query.where(Backup.status == BackupStatus(status))
-        
+
         result = await session.execute(query)
         backups = result.scalars().all()
-        
+
         # Get target names
         target_ids = set(b.target_id for b in backups)
         targets_result = await session.execute(
             select(BackupTarget).where(BackupTarget.id.in_(target_ids))
         )
         targets = {t.id: t.name for t in targets_result.scalars().all()}
-        
+
         return [
             BackupResponse(
                 id=b.id,
@@ -127,16 +126,16 @@ async def get_backup(backup_id: int):
             select(Backup).where(Backup.id == backup_id)
         )
         backup = result.scalar_one_or_none()
-        
+
         if not backup:
             raise HTTPException(status_code=404, detail="Backup not found")
-        
+
         # Get target name
         target_result = await session.execute(
             select(BackupTarget).where(BackupTarget.id == backup.target_id)
         )
         target = target_result.scalar_one_or_none()
-        
+
         return BackupResponse(
             id=backup.id,
             target_id=backup.target_id,
@@ -164,17 +163,17 @@ async def create_backup(request: CreateBackupRequest):
             select(BackupTarget).where(BackupTarget.id == request.target_id)
         )
         target = result.scalar_one_or_none()
-        
+
         if not target:
             raise HTTPException(status_code=404, detail="Target not found")
-    
+
     # Create backup
     backup_type = BackupType.FULL if request.backup_type == "full" else BackupType.INCREMENTAL
     backup = await backup_engine.create_backup(target, backup_type)
-    
+
     # Run backup in background
     asyncio.create_task(backup_engine.run_backup(backup.id))
-    
+
     return BackupResponse(
         id=backup.id,
         target_id=backup.target_id,
@@ -196,43 +195,43 @@ async def create_backup(request: CreateBackupRequest):
 @router.post("/{backup_id}/restore")
 async def restore_backup(backup_id: int, request: RestoreBackupRequest):
     """Restore a backup.
-    
+
     If target_path is provided, it must be within allowed restore directories
     to prevent path traversal attacks.
     """
     if request.target_path:
         # Validate the target path to prevent path traversal
         abs_path = os.path.abspath(request.target_path)
-        
+
         # Check for path traversal attempts
         if ".." in request.target_path:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail="Invalid restore path: path traversal not allowed"
             )
-        
+
         # Ensure path is within allowed restore directories
         # Allow restoring to backup base path or Docker volume paths
         allowed_prefixes = [
             os.path.abspath(settings.BACKUP_BASE_PATH),
             "/var/lib/docker/volumes",
         ]
-        
+
         is_allowed = any(
             abs_path.startswith(prefix) for prefix in allowed_prefixes
         )
-        
+
         if not is_allowed:
             raise HTTPException(
                 status_code=400,
                 detail="Invalid restore path: must be within allowed directories"
             )
-    
+
     success = await backup_engine.restore_backup(backup_id, request.target_path)
-    
+
     if not success:
         raise HTTPException(status_code=500, detail="Restore failed")
-    
+
     return {"status": "restored"}
 
 
@@ -244,19 +243,19 @@ async def delete_backup(backup_id: int):
             select(Backup).where(Backup.id == backup_id)
         )
         backup = result.scalar_one_or_none()
-        
+
         if not backup:
             raise HTTPException(status_code=404, detail="Backup not found")
-        
+
         # Delete file if exists
         if backup.file_path:
             import os
             if os.path.exists(backup.file_path):
                 os.remove(backup.file_path)
-        
+
         await session.delete(backup)
         await session.commit()
-        
+
         return {"status": "deleted"}
 
 
@@ -268,10 +267,10 @@ async def get_backup_stats(backup_id: int):
             select(Backup).where(Backup.id == backup_id)
         )
         backup = result.scalar_one_or_none()
-        
+
         if not backup:
             raise HTTPException(status_code=404, detail="Backup not found")
-        
+
         return {
             "backup_id": backup.id,
             "file_size": backup.file_size,
@@ -284,7 +283,7 @@ async def get_backup_stats(backup_id: int):
 @router.get("/metrics/summary")
 async def get_backup_metrics():
     """Get overall backup metrics and statistics.
-    
+
     Returns aggregate statistics about backup operations including:
     - Total number of backups
     - Success/failure counts and rate
@@ -297,7 +296,7 @@ async def get_backup_metrics():
 @router.get("/metrics/target/{target_id}")
 async def get_target_metrics(target_id: int):
     """Get metrics for a specific backup target.
-    
+
     Returns:
     - Average backup duration
     - Average backup size
@@ -305,7 +304,7 @@ async def get_target_metrics(target_id: int):
     """
     avg_duration = backup_engine.metrics.get_average_duration(target_id)
     avg_size = backup_engine.metrics.get_average_size(target_id)
-    
+
     return {
         "target_id": target_id,
         "average_duration_seconds": avg_duration,
@@ -318,12 +317,12 @@ async def get_target_metrics(target_id: int):
 @router.post("/{backup_id}/validate")
 async def validate_backup_target(backup_id: int):
     """Validate backup prerequisites before running.
-    
+
     Checks:
     - Target container/volume/path exists
     - Sufficient disk space
     - Dependencies are available
-    
+
     Returns list of validation issues, or empty list if valid.
     """
     async with async_session() as session:
@@ -331,20 +330,20 @@ async def validate_backup_target(backup_id: int):
             select(Backup).where(Backup.id == backup_id)
         )
         backup = result.scalar_one_or_none()
-        
+
         if not backup:
             raise HTTPException(status_code=404, detail="Backup not found")
-        
+
         result = await session.execute(
             select(BackupTarget).where(BackupTarget.id == backup.target_id)
         )
         target = result.scalar_one_or_none()
-        
+
         if not target:
             raise HTTPException(status_code=404, detail="Target not found")
-    
+
     issues = await backup_engine.validate_backup_prerequisites(target)
-    
+
     return {
         "valid": len(issues) == 0,
         "issues": issues,
