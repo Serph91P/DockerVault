@@ -3,23 +3,24 @@ Backup engine - handles the actual backup process.
 """
 
 import asyncio
-import os
-import tarfile
 import hashlib
-import shutil
+import logging
+import os
 import shlex
+import shutil
+import tarfile
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Callable
-import logging
+from typing import Any, Callable, Dict, List, Optional
+
+from sqlalchemy import select, update
 
 from app.config import settings
+from app.database import Backup, BackupStatus, BackupTarget, BackupType, async_session
 from app.docker_client import docker_client
-from app.database import Backup, BackupTarget, BackupStatus, BackupType, async_session
-from sqlalchemy import select, update
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +28,17 @@ logger = logging.getLogger(__name__)
 @dataclass
 class BackupMetrics:
     """Metrics for backup operations."""
+
     total_backups: int = 0
     successful_backups: int = 0
     failed_backups: int = 0
     total_bytes_backed_up: int = 0
-    target_durations: Dict[int, List[float]] = field(default_factory=lambda: defaultdict(list))
-    target_sizes: Dict[int, List[int]] = field(default_factory=lambda: defaultdict(list))
+    target_durations: Dict[int, List[float]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
+    target_sizes: Dict[int, List[int]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
     last_backup_time: Optional[datetime] = None
 
     @property
@@ -89,7 +95,9 @@ class BackupMetrics:
             "failed_backups": self.failed_backups,
             "success_rate": round(self.success_rate, 2),
             "total_bytes_backed_up": self.total_bytes_backed_up,
-            "last_backup_time": self.last_backup_time.isoformat() if self.last_backup_time else None,
+            "last_backup_time": (
+                self.last_backup_time.isoformat() if self.last_backup_time else None
+            ),
         }
 
 
@@ -148,7 +156,7 @@ class BackupEngine:
                         "target_id": target.id,
                         "target_name": target.name,
                         "container_name": target.container_name,
-                    }
+                    },
                 )
 
         elif target.target_type == "volume" and target.volume_name:
@@ -161,7 +169,7 @@ class BackupEngine:
                         "target_id": target.id,
                         "target_name": target.name,
                         "volume_name": target.volume_name,
-                    }
+                    },
                 )
 
         elif target.target_type == "path" and target.host_path:
@@ -173,7 +181,7 @@ class BackupEngine:
                         "target_id": target.id,
                         "target_name": target.name,
                         "host_path": target.host_path,
-                    }
+                    },
                 )
             elif not os.access(target.host_path, os.R_OK):
                 issues.append(f"Path '{target.host_path}' is not readable")
@@ -183,7 +191,7 @@ class BackupEngine:
                         "target_id": target.id,
                         "target_name": target.name,
                         "host_path": target.host_path,
-                    }
+                    },
                 )
 
         # Check available disk space in backup directory
@@ -195,7 +203,8 @@ class BackupEngine:
             min_free_bytes = 1024 * 1024 * 1024  # 1 GB
             if stat.free < min_free_bytes:
                 issues.append(
-                    f"Low disk space in backup directory: {stat.free / (1024**3):.2f} GB free"
+                    f"Low disk space in backup directory: "
+                    f"{stat.free / (1024**3):.2f} GB free"
                 )
                 logger.warning(
                     "Low disk space in backup directory",
@@ -203,7 +212,7 @@ class BackupEngine:
                         "target_id": target.id,
                         "free_bytes": stat.free,
                         "min_required_bytes": min_free_bytes,
-                    }
+                    },
                 )
         except Exception as e:
             issues.append(f"Cannot check disk space: {e}")
@@ -225,7 +234,7 @@ class BackupEngine:
                             "target_id": target.id,
                             "target_name": target.name,
                             "dependency": dep,
-                        }
+                        },
                     )
 
         return issues
@@ -346,7 +355,9 @@ class BackupEngine:
 
             # Get dependency order for safe stopping
             if containers_to_stop:
-                containers_to_stop = await docker_client.get_dependency_order(containers_to_stop)
+                containers_to_stop = await docker_client.get_dependency_order(
+                    containers_to_stop
+                )
 
                 # Store original states
                 for container_name in containers_to_stop:
@@ -381,7 +392,9 @@ class BackupEngine:
 
             # Run post-backup hook
             if target.post_backup_command:
-                await self._notify_progress(backup_id, 85, "Running post-backup hook...")
+                await self._notify_progress(
+                    backup_id, 85, "Running post-backup hook..."
+                )
                 await self._run_hook(target.post_backup_command)
 
             # Restart containers in reverse order
@@ -485,10 +498,7 @@ class BackupEngine:
         if target.target_type == "volume":
             # Volume backup - get mountpoint
             volumes = await docker_client.list_volumes()
-            volume = next(
-                (v for v in volumes if v.name == target.volume_name),
-                None
-            )
+            volume = next((v for v in volumes if v.name == target.volume_name), None)
             if not volume:
                 raise ValueError(f"Volume {target.volume_name} not found")
             source_path = volume.mountpoint
@@ -498,8 +508,7 @@ class BackupEngine:
             # Get all volume mounts from container
             containers = await docker_client.list_containers()
             container = next(
-                (c for c in containers if c.name == target.container_name),
-                None
+                (c for c in containers if c.name == target.container_name), None
             )
             if not container:
                 raise ValueError(f"Container {target.container_name} not found")
@@ -510,11 +519,12 @@ class BackupEngine:
                 if mount.get("type") == "volume":
                     volumes = await docker_client.list_volumes()
                     volume = next(
-                        (v for v in volumes if v.name == mount.get("name")),
-                        None
+                        (v for v in volumes if v.name == mount.get("name")), None
                     )
                     if volume:
-                        source_paths.append((mount.get("destination"), volume.mountpoint))
+                        source_paths.append(
+                            (mount.get("destination"), volume.mountpoint)
+                        )
         else:
             raise ValueError(f"Unknown target type: {target.target_type}")
 
@@ -556,7 +566,9 @@ class BackupEngine:
     def _create_tar(self, source: str, dest: str, compress: bool = True):
         """Create tar archive."""
         mode = "w:gz" if compress else "w"
-        with tarfile.open(dest, mode, compresslevel=settings.COMPRESSION_LEVEL if compress else None) as tar:
+        with tarfile.open(
+            dest, mode, compresslevel=settings.COMPRESSION_LEVEL if compress else None
+        ) as tar:
             tar.add(source, arcname=os.path.basename(source))
 
     def _create_multi_source_tar(
@@ -567,7 +579,9 @@ class BackupEngine:
     ):
         """Create tar archive from multiple sources."""
         mode = "w:gz" if compress else "w"
-        with tarfile.open(dest, mode, compresslevel=settings.COMPRESSION_LEVEL if compress else None) as tar:
+        with tarfile.open(
+            dest, mode, compresslevel=settings.COMPRESSION_LEVEL if compress else None
+        ) as tar:
             for archive_name, source_path in sources:
                 if os.path.exists(source_path):
                     tar.add(source_path, arcname=archive_name.lstrip("/"))
@@ -612,12 +626,12 @@ class BackupEngine:
 
         logger.info(f"Hook output: {stdout.decode()}")
 
-    async def restore_backup(self, backup_id: int, target_path: Optional[str] = None) -> bool:
+    async def restore_backup(
+        self, backup_id: int, target_path: Optional[str] = None
+    ) -> bool:
         """Restore a backup."""
         async with async_session() as session:
-            result = await session.execute(
-                select(Backup).where(Backup.id == backup_id)
-            )
+            result = await session.execute(select(Backup).where(Backup.id == backup_id))
             backup = result.scalar_one_or_none()
 
             if not backup:
@@ -643,10 +657,7 @@ class BackupEngine:
             restore_path = target_path
         elif target.target_type == "volume":
             volumes = await docker_client.list_volumes()
-            volume = next(
-                (v for v in volumes if v.name == target.volume_name),
-                None
-            )
+            volume = next((v for v in volumes if v.name == target.volume_name), None)
             if not volume:
                 raise ValueError(f"Volume {target.volume_name} not found")
             restore_path = volume.mountpoint
@@ -720,7 +731,10 @@ class BackupEngine:
                 abs_member = os.path.abspath(member_path)
 
                 # Check for path traversal
-                if not abs_member.startswith(abs_dest + os.sep) and abs_member != abs_dest:
+                if (
+                    not abs_member.startswith(abs_dest + os.sep)
+                    and abs_member != abs_dest
+                ):
                     raise ValueError(
                         f"Path traversal detected in archive: {member.name}"
                     )
@@ -733,11 +747,14 @@ class BackupEngine:
 
                 # Check for suspicious symlinks
                 if member.issym() or member.islnk():
-                    link_path = os.path.join(dest, os.path.dirname(member.name), member.linkname)
+                    link_path = os.path.join(
+                        dest, os.path.dirname(member.name), member.linkname
+                    )
                     abs_link = os.path.abspath(link_path)
                     if not abs_link.startswith(abs_dest + os.sep):
                         raise ValueError(
-                            f"Symlink escape detected in archive: {member.name} -> {member.linkname}"
+                            f"Symlink escape detected in archive: "
+                            f"{member.name} -> {member.linkname}"
                         )
 
             # Safe to extract after validation

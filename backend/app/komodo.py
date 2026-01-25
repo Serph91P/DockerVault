@@ -4,11 +4,12 @@ Provides API client and webhook support for Komodo.
 """
 
 import asyncio
-import aiohttp
-from typing import Optional, Dict, List
-from datetime import datetime
-import logging
 import json
+import logging
+from datetime import datetime
+from typing import Dict, List, Optional
+
+import aiohttp
 
 from app.config import settings
 
@@ -224,11 +225,13 @@ class KomodoClient:
             self._ws = await self.session.ws_connect(ws_url)
 
             # Send authentication
-            await self._ws.send_json({
-                "type": "auth",
-                "token": self.api_key,
-                "client": "backup-manager",
-            })
+            await self._ws.send_json(
+                {
+                    "type": "auth",
+                    "token": self.api_key,
+                    "client": "backup-manager",
+                }
+            )
 
             # Start listening
             asyncio.create_task(self._websocket_listener(on_message))

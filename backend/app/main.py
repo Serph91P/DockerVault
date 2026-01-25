@@ -4,14 +4,15 @@ FastAPI backend with Docker integration, scheduling, and WebSocket support.
 """
 
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router as api_router
-from app.websocket import router as ws_router
-from app.scheduler import BackupScheduler
-from app.database import init_db
 from app.config import settings
+from app.database import init_db
+from app.scheduler import BackupScheduler
+from app.websocket import router as ws_router
 
 
 @asynccontextmanager
@@ -31,7 +32,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Docker Volume Backup Manager",
-    description="Automated backup solution for Docker volumes and host paths with dependency management",
+    description=(
+        "Automated backup solution for Docker volumes "
+        "and host paths with dependency management"
+    ),
     version="1.0.0",
     lifespan=lifespan,
 )

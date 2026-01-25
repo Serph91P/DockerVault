@@ -3,19 +3,21 @@ Schedules API endpoints.
 """
 
 from typing import List, Optional
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from app.backup_engine import backup_engine
 from app.database import BackupTarget, async_session
 from app.scheduler import BackupScheduler
-from app.backup_engine import backup_engine
 
 router = APIRouter()
 
 
 class ScheduleResponse(BaseModel):
     """Schedule response model."""
+
     id: int
     target_id: int
     target_name: str
@@ -27,12 +29,14 @@ class ScheduleResponse(BaseModel):
 
 class UpdateScheduleRequest(BaseModel):
     """Update schedule request."""
+
     cron_expression: Optional[str] = None
     enabled: Optional[bool] = None
 
 
 class EstimateRequest(BaseModel):
     """Backup window estimation request."""
+
     target_id: int
     cron_expression: str
 
@@ -57,15 +61,17 @@ async def list_schedules():
                 except Exception:
                     pass
 
-            schedules.append(ScheduleResponse(
-                id=target.id,
-                target_id=target.id,
-                target_name=target.name,
-                cron_expression=target.schedule_cron,
-                next_run=next_run.isoformat() if next_run else None,
-                last_run=None,  # Would need to track this
-                enabled=target.enabled,
-            ))
+            schedules.append(
+                ScheduleResponse(
+                    id=target.id,
+                    target_id=target.id,
+                    target_name=target.name,
+                    cron_expression=target.schedule_cron,
+                    next_run=next_run.isoformat() if next_run else None,
+                    last_run=None,  # Would need to track this
+                    enabled=target.enabled,
+                )
+            )
 
         return schedules
 
@@ -90,7 +96,9 @@ async def trigger_backup(target_id: int, request: Request):
 
 
 @router.put("/{target_id}")
-async def update_schedule(target_id: int, update: UpdateScheduleRequest, request: Request):
+async def update_schedule(
+    target_id: int, update: UpdateScheduleRequest, request: Request
+):
     """Update a backup schedule."""
     async with async_session() as session:
         result = await session.execute(
@@ -153,7 +161,10 @@ async def cron_help():
         "examples": [
             {"expression": "0 2 * * *", "description": "Every day at 2:00 AM"},
             {"expression": "0 3 * * 0", "description": "Every Sunday at 3:00 AM"},
-            {"expression": "0 4 1 * *", "description": "First day of every month at 4:00 AM"},
+            {
+                "expression": "0 4 1 * *",
+                "description": "First day of every month at 4:00 AM",
+            },
             {"expression": "0 */6 * * *", "description": "Every 6 hours"},
             {"expression": "30 1 * * 1-5", "description": "Weekdays at 1:30 AM"},
         ],

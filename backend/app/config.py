@@ -2,11 +2,12 @@
 Configuration settings for the backup manager.
 """
 
-from pydantic_settings import BaseSettings
-from pydantic import field_validator
-from typing import List
 import logging
 import warnings
+from typing import List
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ class Settings(BaseSettings):
     # Scheduling
     SCHEDULER_TIMEZONE: str = "Europe/Berlin"
 
-    @field_validator('SECRET_KEY')
+    @field_validator("SECRET_KEY")
     @classmethod
     def validate_secret_key(cls, v: str) -> str:
         """Validate that SECRET_KEY has been changed from default."""
@@ -60,7 +61,7 @@ class Settings(BaseSettings):
                 "Please set a strong SECRET_KEY (at least 32 characters) "
                 "via environment variable for production use.",
                 UserWarning,
-                stacklevel=2
+                stacklevel=2,
             )
 
         return v

@@ -3,10 +3,11 @@ Docker client wrapper for safe container and volume management.
 """
 
 import asyncio
-from typing import Optional, List, Dict, Any
-from dataclasses import dataclass
-import docker
 import logging
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+
+import docker
 
 from app.config import settings
 
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ContainerInfo:
     """Container information."""
+
     id: str
     name: str
     image: str
@@ -37,6 +39,7 @@ class ContainerInfo:
 @dataclass
 class VolumeInfo:
     """Volume information."""
+
     name: str
     driver: str
     mountpoint: str
@@ -48,6 +51,7 @@ class VolumeInfo:
 @dataclass
 class StackInfo:
     """Docker Compose stack information."""
+
     name: str
     containers: List[ContainerInfo]
     volumes: List[str]
@@ -83,8 +87,7 @@ class DockerClientWrapper:
         """List all containers with details."""
         loop = asyncio.get_event_loop()
         containers = await loop.run_in_executor(
-            None,
-            lambda: self.client.containers.list(all=all)
+            None, lambda: self.client.containers.list(all=all)
         )
 
         result = []
@@ -99,14 +102,16 @@ class DockerClientWrapper:
             # Extract mounts
             mounts = []
             for mount in attrs.get("Mounts", []):
-                mounts.append({
-                    "type": mount.get("Type"),
-                    "source": mount.get("Source"),
-                    "destination": mount.get("Destination"),
-                    "name": mount.get("Name"),
-                    "mode": mount.get("Mode"),
-                    "rw": mount.get("RW"),
-                })
+                mounts.append(
+                    {
+                        "type": mount.get("Type"),
+                        "source": mount.get("Source"),
+                        "destination": mount.get("Destination"),
+                        "name": mount.get("Name"),
+                        "mode": mount.get("Mode"),
+                        "rw": mount.get("RW"),
+                    }
+                )
 
             # Extract networks
             networks = list(attrs.get("NetworkSettings", {}).get("Networks", {}).keys())
@@ -115,30 +120,29 @@ class DockerClientWrapper:
             depends_on = labels.get("backup.depends_on", "").split(",")
             depends_on = [d.strip() for d in depends_on if d.strip()]
 
-            result.append(ContainerInfo(
-                id=container.id,
-                name=container.name,
-                image=attrs.get("Config", {}).get("Image", ""),
-                status=container.status,
-                state=attrs.get("State", {}).get("Status", ""),
-                created=attrs.get("Created", ""),
-                labels=labels,
-                mounts=mounts,
-                networks=networks,
-                compose_project=compose_project,
-                compose_service=compose_service,
-                depends_on=depends_on,
-            ))
+            result.append(
+                ContainerInfo(
+                    id=container.id,
+                    name=container.name,
+                    image=attrs.get("Config", {}).get("Image", ""),
+                    status=container.status,
+                    state=attrs.get("State", {}).get("Status", ""),
+                    created=attrs.get("Created", ""),
+                    labels=labels,
+                    mounts=mounts,
+                    networks=networks,
+                    compose_project=compose_project,
+                    compose_service=compose_service,
+                    depends_on=depends_on,
+                )
+            )
 
         return result
 
     async def list_volumes(self) -> List[VolumeInfo]:
         """List all volumes with usage information."""
         loop = asyncio.get_event_loop()
-        volumes = await loop.run_in_executor(
-            None,
-            lambda: self.client.volumes.list()
-        )
+        volumes = await loop.run_in_executor(None, lambda: self.client.volumes.list())
 
         # Get container volume usage
         containers = await self.list_containers()
@@ -155,14 +159,16 @@ class DockerClientWrapper:
         result = []
         for volume in volumes:
             attrs = volume.attrs
-            result.append(VolumeInfo(
-                name=volume.name,
-                driver=attrs.get("Driver", "local"),
-                mountpoint=attrs.get("Mountpoint", ""),
-                labels=attrs.get("Labels", {}) or {},
-                created_at=attrs.get("CreatedAt", ""),
-                used_by=volume_usage.get(volume.name, []),
-            ))
+            result.append(
+                VolumeInfo(
+                    name=volume.name,
+                    driver=attrs.get("Driver", "local"),
+                    mountpoint=attrs.get("Mountpoint", ""),
+                    labels=attrs.get("Labels", {}) or {},
+                    created_at=attrs.get("CreatedAt", ""),
+                    used_by=volume_usage.get(volume.name, []),
+                )
+            )
 
         return result
 
@@ -190,27 +196,27 @@ class DockerClientWrapper:
                         volumes.add(mount["name"])
                 networks.update(container.networks)
 
-            result.append(StackInfo(
-                name=stack_name,
-                containers=stack_containers,
-                volumes=list(volumes),
-                networks=list(networks),
-            ))
+            result.append(
+                StackInfo(
+                    name=stack_name,
+                    containers=stack_containers,
+                    volumes=list(volumes),
+                    networks=list(networks),
+                )
+            )
 
         return result
 
-    async def stop_container(self, container_id_or_name: str, timeout: int = 30) -> bool:
+    async def stop_container(
+        self, container_id_or_name: str, timeout: int = 30
+    ) -> bool:
         """Stop a container safely."""
         try:
             loop = asyncio.get_event_loop()
             container = await loop.run_in_executor(
-                None,
-                lambda: self.client.containers.get(container_id_or_name)
+                None, lambda: self.client.containers.get(container_id_or_name)
             )
-            await loop.run_in_executor(
-                None,
-                lambda: container.stop(timeout=timeout)
-            )
+            await loop.run_in_executor(None, lambda: container.stop(timeout=timeout))
             logger.info(f"Stopped container: {container_id_or_name}")
             return True
         except Exception as e:
@@ -222,13 +228,9 @@ class DockerClientWrapper:
         try:
             loop = asyncio.get_event_loop()
             container = await loop.run_in_executor(
-                None,
-                lambda: self.client.containers.get(container_id_or_name)
+                None, lambda: self.client.containers.get(container_id_or_name)
             )
-            await loop.run_in_executor(
-                None,
-                container.start
-            )
+            await loop.run_in_executor(None, container.start)
             logger.info(f"Started container: {container_id_or_name}")
             return True
         except Exception as e:
@@ -240,8 +242,7 @@ class DockerClientWrapper:
         try:
             loop = asyncio.get_event_loop()
             container = await loop.run_in_executor(
-                None,
-                lambda: self.client.containers.get(container_id_or_name)
+                None, lambda: self.client.containers.get(container_id_or_name)
             )
             return container.status
         except Exception as e:
@@ -253,8 +254,7 @@ class DockerClientWrapper:
         try:
             loop = asyncio.get_event_loop()
             volume = await loop.run_in_executor(
-                None,
-                lambda: self.client.volumes.get(volume_name)
+                None, lambda: self.client.volumes.get(volume_name)
             )
             # Docker doesn't provide volume size directly
             # We'd need to run a container to calculate it

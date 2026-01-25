@@ -3,19 +3,20 @@ Backup scheduler using APScheduler.
 """
 
 import asyncio
+import logging
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List
+from typing import Dict, List, Optional
+
+from apscheduler.jobstores.memory import MemoryJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from apscheduler.jobstores.memory import MemoryJobStore
 from croniter import croniter
-import logging
-
 from sqlalchemy import select, update
-from app.database import BackupTarget, BackupSchedule, async_session
-from app.backup_engine import backup_engine, BackupType
-from app.retention import retention_manager
+
+from app.backup_engine import BackupType, backup_engine
 from app.config import settings
+from app.database import BackupSchedule, BackupTarget, async_session
+from app.retention import retention_manager
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +104,9 @@ class BackupScheduler:
                 )
                 await session.commit()
 
-            logger.info(f"Scheduled backup for target {target.id}: {target.schedule_cron}")
+            logger.info(
+                f"Scheduled backup for target {target.id}: {target.schedule_cron}"
+            )
             return True
 
         except Exception as e:
@@ -189,7 +192,9 @@ class BackupScheduler:
         # Also cleanup orphaned files
         await retention_manager.cleanup_orphaned_files()
 
-    def get_next_run(self, cron_expr: str, base_time: Optional[datetime] = None) -> datetime:
+    def get_next_run(
+        self, cron_expr: str, base_time: Optional[datetime] = None
+    ) -> datetime:
         """Get next run time for a cron expression."""
         base = base_time or datetime.now()
         cron = croniter(cron_expr, base)
@@ -200,11 +205,15 @@ class BackupScheduler:
         jobs = []
         for job in self.scheduler.get_jobs():
             if job.id.startswith("backup_target_"):
-                jobs.append({
-                    "id": job.id,
-                    "name": job.name,
-                    "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
-                })
+                jobs.append(
+                    {
+                        "id": job.id,
+                        "name": job.name,
+                        "next_run": (
+                            job.next_run_time.isoformat() if job.next_run_time else None
+                        ),
+                    }
+                )
         return jobs
 
     async def trigger_backup_now(self, target_id: int) -> bool:
@@ -241,11 +250,13 @@ class BackupScheduler:
             if job.id.startswith("backup_target_") and job.next_run_time:
                 job_start = job.next_run_time
                 if job_start and next_run <= job_start <= end_time:
-                    conflicts.append({
-                        "job_id": job.id,
-                        "job_name": job.name,
-                        "scheduled_time": job_start.isoformat(),
-                    })
+                    conflicts.append(
+                        {
+                            "job_id": job.id,
+                            "job_name": job.name,
+                            "scheduled_time": job_start.isoformat(),
+                        }
+                    )
 
         return {
             "start_time": next_run.isoformat(),

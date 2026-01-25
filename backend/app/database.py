@@ -2,11 +2,14 @@
 Database configuration and models using SQLAlchemy with async support.
 """
 
-from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, JSON, Enum as SQLEnum, Text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.orm import DeclarativeBase, relationship
 import enum
+from datetime import datetime
+
+from sqlalchemy import JSON, Boolean, Column, DateTime
+from sqlalchemy import Enum as SQLEnum
+from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase, relationship
 
 from app.config import settings
 
@@ -30,6 +33,7 @@ class BackupType(enum.Enum):
 
 class RetentionPolicy(Base):
     """Retention policy configuration using GFS (Grandfather-Father-Son) strategy."""
+
     __tablename__ = "retention_policies"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -49,6 +53,7 @@ class RetentionPolicy(Base):
 
 class BackupTarget(Base):
     """Defines what to backup (container, volume, or path)."""
+
     __tablename__ = "backup_targets"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -65,7 +70,9 @@ class BackupTarget(Base):
     enabled = Column(Boolean, default=True)
 
     # Retention
-    retention_policy_id = Column(Integer, ForeignKey("retention_policies.id"), nullable=True)
+    retention_policy_id = Column(
+        Integer, ForeignKey("retention_policies.id"), nullable=True
+    )
     retention_policy = relationship("RetentionPolicy")
 
     # Dependencies (other targets that must be stopped before backup)
@@ -91,6 +98,7 @@ class BackupTarget(Base):
 
 class Backup(Base):
     """Individual backup record."""
+
     __tablename__ = "backups"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -122,6 +130,7 @@ class Backup(Base):
 
 class BackupSchedule(Base):
     """Scheduled backup jobs."""
+
     __tablename__ = "backup_schedules"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -139,11 +148,14 @@ class BackupSchedule(Base):
 
 class RemoteStorage(Base):
     """Remote storage configuration for off-site backups."""
+
     __tablename__ = "remote_storages"
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), unique=True, nullable=False)
-    storage_type = Column(String(50), nullable=False)  # local, ssh, webdav, s3, ftp, rclone
+    storage_type = Column(
+        String(50), nullable=False
+    )  # local, ssh, webdav, s3, ftp, rclone
     enabled = Column(Boolean, default=True)
 
     # Connection settings
@@ -177,6 +189,7 @@ class RemoteStorage(Base):
 
 class BackupStorageSync(Base):
     """Track which backups are synced to which remote storages."""
+
     __tablename__ = "backup_storage_syncs"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -184,7 +197,9 @@ class BackupStorageSync(Base):
     storage_id = Column(Integer, ForeignKey("remote_storages.id"), nullable=False)
     remote_path = Column(String(1024), nullable=True)
     synced_at = Column(DateTime, nullable=True)
-    sync_status = Column(String(50), default="pending")  # pending, syncing, completed, failed
+    sync_status = Column(
+        String(50), default="pending"
+    )  # pending, syncing, completed, failed
     error_message = Column(Text, nullable=True)
 
     backup = relationship("Backup")
@@ -212,6 +227,7 @@ async def init_db():
     # Create default retention policy
     async with async_session() as session:
         from sqlalchemy import select
+
         result = await session.execute(
             select(RetentionPolicy).where(RetentionPolicy.name == "default")
         )

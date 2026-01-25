@@ -3,6 +3,7 @@ Retention policy API endpoints.
 """
 
 from typing import List, Optional
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -15,6 +16,7 @@ router = APIRouter()
 
 class RetentionPolicyResponse(BaseModel):
     """Retention policy response model."""
+
     id: int
     name: str
     keep_daily: int
@@ -31,6 +33,7 @@ class RetentionPolicyResponse(BaseModel):
 
 class CreateRetentionPolicyRequest(BaseModel):
     """Create retention policy request."""
+
     name: str
     keep_daily: int = 7
     keep_weekly: int = 4
@@ -41,6 +44,7 @@ class CreateRetentionPolicyRequest(BaseModel):
 
 class UpdateRetentionPolicyRequest(BaseModel):
     """Update retention policy request."""
+
     name: Optional[str] = None
     keep_daily: Optional[int] = None
     keep_weekly: Optional[int] = None
@@ -137,7 +141,9 @@ async def get_retention_policy(policy_id: int):
 
 
 @router.put("/{policy_id}", response_model=RetentionPolicyResponse)
-async def update_retention_policy(policy_id: int, request: UpdateRetentionPolicyRequest):
+async def update_retention_policy(
+    policy_id: int, request: UpdateRetentionPolicyRequest
+):
     """Update a retention policy."""
     async with async_session() as session:
         result = await session.execute(
@@ -190,9 +196,7 @@ async def delete_retention_policy(policy_id: int):
             raise HTTPException(status_code=404, detail="Policy not found")
 
         if policy.name == "default":
-            raise HTTPException(
-                status_code=400, detail="Cannot delete default policy"
-            )
+            raise HTTPException(status_code=400, detail="Cannot delete default policy")
 
         await session.delete(policy)
         await session.commit()

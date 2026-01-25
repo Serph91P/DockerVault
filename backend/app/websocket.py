@@ -3,10 +3,11 @@ WebSocket support for real-time updates.
 """
 
 import asyncio
-from typing import Dict, Set
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import json
 import logging
+from typing import Dict, Set
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.backup_engine import backup_engine
 
@@ -72,12 +73,14 @@ manager = ConnectionManager()
 
 async def backup_progress_callback(backup_id: int, progress: float, message: str):
     """Callback for backup progress updates."""
-    await manager.broadcast({
-        "type": "backup_progress",
-        "backup_id": backup_id,
-        "progress": progress,
-        "message": message,
-    })
+    await manager.broadcast(
+        {
+            "type": "backup_progress",
+            "backup_id": backup_id,
+            "progress": progress,
+            "message": message,
+        }
+    )
 
 
 # Register callback with backup engine
@@ -91,10 +94,13 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         # Send initial connection message
-        await manager.send_to_client(websocket, {
-            "type": "connected",
-            "message": "Connected to backup manager",
-        })
+        await manager.send_to_client(
+            websocket,
+            {
+                "type": "connected",
+                "message": "Connected to backup manager",
+            },
+        )
 
         while True:
             # Wait for messages from client
@@ -104,10 +110,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 message = json.loads(data)
                 await handle_client_message(websocket, message)
             except json.JSONDecodeError:
-                await manager.send_to_client(websocket, {
-                    "type": "error",
-                    "message": "Invalid JSON",
-                })
+                await manager.send_to_client(
+                    websocket,
+                    {
+                        "type": "error",
+                        "message": "Invalid JSON",
+                    },
+                )
 
     except WebSocketDisconnect:
         await manager.disconnect(websocket)
@@ -127,21 +136,29 @@ async def handle_client_message(websocket: WebSocket, message: Dict):
         # Subscribe to specific backup updates
         backup_id = message.get("backup_id")
         if backup_id:
-            await manager.send_to_client(websocket, {
-                "type": "subscribed",
-                "backup_id": backup_id,
-            })
+            await manager.send_to_client(
+                websocket,
+                {
+                    "type": "subscribed",
+                    "backup_id": backup_id,
+                },
+            )
 
     else:
-        await manager.send_to_client(websocket, {
-            "type": "error",
-            "message": f"Unknown message type: {msg_type}",
-        })
+        await manager.send_to_client(
+            websocket,
+            {
+                "type": "error",
+                "message": f"Unknown message type: {msg_type}",
+            },
+        )
 
 
 async def broadcast_backup_event(event_type: str, data: Dict):
     """Broadcast a backup event to all clients."""
-    await manager.broadcast({
-        "type": event_type,
-        **data,
-    })
+    await manager.broadcast(
+        {
+            "type": event_type,
+            **data,
+        }
+    )

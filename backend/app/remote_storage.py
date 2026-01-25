@@ -11,18 +11,19 @@ Supported backends:
 """
 
 import asyncio
-import os
-import shutil
-import shlex
-from abc import ABC, abstractmethod
-from pathlib import Path
-from typing import Optional, Dict, Any, List
-from dataclasses import dataclass
-from enum import Enum
-import aiofiles
-import aiohttp
 import hashlib
 import logging
+import os
+import shlex
+import shutil
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import aiofiles
+import aiohttp
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ class StorageType(str, Enum):
 @dataclass
 class StorageConfig:
     """Configuration for a remote storage backend"""
+
     id: int
     name: str
     storage_type: StorageType
@@ -166,12 +168,14 @@ class LocalStorage(StorageBackend):
             files = []
             if path.exists():
                 for f in path.iterdir():
-                    files.append({
-                        "name": f.name,
-                        "size": f.stat().st_size if f.is_file() else 0,
-                        "is_dir": f.is_dir(),
-                        "modified": f.stat().st_mtime
-                    })
+                    files.append(
+                        {
+                            "name": f.name,
+                            "size": f.stat().st_size if f.is_file() else 0,
+                            "is_dir": f.is_dir(),
+                            "modified": f.stat().st_mtime,
+                        }
+                    )
             return files
         except Exception as e:
             logger.error(f"Local list failed: {e}")
@@ -203,7 +207,11 @@ class SSHStorage(StorageBackend):
 
     def _get_remote_path(self, remote_path: str) -> str:
         """Build full remote path with user@host prefix"""
-        user_host = f"{self.config.username}@{self.config.host}" if self.config.username else self.config.host
+        user_host = (
+            f"{self.config.username}@{self.config.host}"
+            if self.config.username
+            else self.config.host
+        )
         full_path = f"{self.config.base_path}/{remote_path}".replace("//", "/")
         return f"{user_host}:{full_path}"
 
@@ -218,7 +226,7 @@ class SSHStorage(StorageBackend):
             process = await asyncio.create_subprocess_exec(
                 *mkdir_cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
             )
             await process.communicate()
 
@@ -229,9 +237,7 @@ class SSHStorage(StorageBackend):
             cmd.append(self._get_remote_path(remote_path))
 
             process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
             stdout, stderr = await process.communicate()
 
@@ -255,9 +261,7 @@ class SSHStorage(StorageBackend):
             cmd.append(str(local_path))
 
             process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
             stdout, stderr = await process.communicate()
 
@@ -278,7 +282,11 @@ class SSHStorage(StorageBackend):
         if self.config.ssh_key_path:
             cmd.extend(["-i", self.config.ssh_key_path])
 
-        user_host = f"{self.config.username}@{self.config.host}" if self.config.username else self.config.host
+        user_host = (
+            f"{self.config.username}@{self.config.host}"
+            if self.config.username
+            else self.config.host
+        )
         cmd.append(user_host)
         cmd.append(remote_cmd)
         return cmd
@@ -291,9 +299,7 @@ class SSHStorage(StorageBackend):
             cmd = self._build_ssh_command(f"rm -f {safe_path}")
 
             process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
             await process.communicate()
             return process.returncode == 0
@@ -309,9 +315,7 @@ class SSHStorage(StorageBackend):
             cmd = self._build_ssh_command(f"ls -la {safe_path}")
 
             process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
             stdout, stderr = await process.communicate()
 
@@ -319,12 +323,14 @@ class SSHStorage(StorageBackend):
             for line in stdout.decode().split("\n")[1:]:  # Skip total line
                 parts = line.split()
                 if len(parts) >= 9:
-                    files.append({
-                        "name": parts[-1],
-                        "size": int(parts[4]) if parts[4].isdigit() else 0,
-                        "is_dir": parts[0].startswith("d"),
-                        "permissions": parts[0]
-                    })
+                    files.append(
+                        {
+                            "name": parts[-1],
+                            "size": int(parts[4]) if parts[4].isdigit() else 0,
+                            "is_dir": parts[0].startswith("d"),
+                            "permissions": parts[0],
+                        }
+                    )
             return files
         except Exception as e:
             logger.error(f"SSH list error: {e}")
@@ -335,9 +341,7 @@ class SSHStorage(StorageBackend):
             cmd = self._build_ssh_command("echo 'Connection successful'")
 
             process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
             stdout, stderr = await process.communicate()
 
@@ -439,7 +443,9 @@ class WebDAVStorage(StorageBackend):
                     </d:prop>
                 </d:propfind>"""
 
-                async with session.request("PROPFIND", url, data=body, headers=headers) as resp:
+                async with session.request(
+                    "PROPFIND", url, data=body, headers=headers
+                ) as resp:
                     if resp.status == 207:
                         # Parse XML response (simplified)
                         _ = await resp.text()
@@ -454,9 +460,14 @@ class WebDAVStorage(StorageBackend):
         try:
             async with self._get_session() as session:
                 url = self._get_url("")
-                async with session.request("PROPFIND", url, headers={"Depth": "0"}) as resp:
+                async with session.request(
+                    "PROPFIND", url, headers={"Depth": "0"}
+                ) as resp:
                     if resp.status in (200, 207):
-                        return {"success": True, "message": "WebDAV connection successful"}
+                        return {
+                            "success": True,
+                            "message": "WebDAV connection successful",
+                        }
                     else:
                         return {"success": False, "message": f"HTTP {resp.status}"}
         except Exception as e:
@@ -475,6 +486,7 @@ class S3Storage(StorageBackend):
         if self._client is None:
             try:
                 import aioboto3
+
                 session = aioboto3.Session()
 
                 endpoint_url = self.config.s3_endpoint_url
@@ -486,7 +498,7 @@ class S3Storage(StorageBackend):
                     region_name=self.config.s3_region or "us-east-1",
                     aws_access_key_id=self.config.s3_access_key,
                     aws_secret_access_key=self.config.s3_secret_key,
-                    endpoint_url=endpoint_url
+                    endpoint_url=endpoint_url,
                 ).__aenter__()
             except ImportError:
                 logger.error("aioboto3 not installed. Run: pip install aioboto3")
@@ -501,11 +513,7 @@ class S3Storage(StorageBackend):
             async with aiofiles.open(local_path, "rb") as f:
                 data = await f.read()
 
-            await client.put_object(
-                Bucket=self.config.s3_bucket,
-                Key=key,
-                Body=data
-            )
+            await client.put_object(Bucket=self.config.s3_bucket, Key=key, Body=data)
             logger.info(f"S3 upload successful: {key}")
             return True
         except Exception as e:
@@ -544,18 +552,19 @@ class S3Storage(StorageBackend):
             prefix = f"{self.config.base_path}/{remote_path}".lstrip("/")
 
             response = await client.list_objects_v2(
-                Bucket=self.config.s3_bucket,
-                Prefix=prefix
+                Bucket=self.config.s3_bucket, Prefix=prefix
             )
 
             files = []
             for obj in response.get("Contents", []):
-                files.append({
-                    "name": obj["Key"].split("/")[-1],
-                    "size": obj["Size"],
-                    "is_dir": False,
-                    "modified": obj["LastModified"].isoformat()
-                })
+                files.append(
+                    {
+                        "name": obj["Key"].split("/")[-1],
+                        "size": obj["Size"],
+                        "is_dir": False,
+                        "modified": obj["LastModified"].isoformat(),
+                    }
+                )
             return files
         except Exception as e:
             logger.error(f"S3 list error: {e}")
@@ -565,7 +574,10 @@ class S3Storage(StorageBackend):
         try:
             client = await self._get_client()
             await client.head_bucket(Bucket=self.config.s3_bucket)
-            return {"success": True, "message": f"S3 bucket '{self.config.s3_bucket}' accessible"}
+            return {
+                "success": True,
+                "message": f"S3 bucket '{self.config.s3_bucket}' accessible",
+            }
         except Exception as e:
             return {"success": False, "message": str(e)}
 
@@ -578,9 +590,7 @@ class RcloneStorage(StorageBackend):
         cmd = ["rclone"] + args
 
         process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         stdout, stderr = await process.communicate()
         return process.returncode, stdout.decode(), stderr.decode()
@@ -599,9 +609,9 @@ class RcloneStorage(StorageBackend):
             await self._run_rclone(["mkdir", parent])
 
             # Copy file
-            code, stdout, stderr = await self._run_rclone([
-                "copyto", str(local_path), dest, "--progress"
-            ])
+            code, stdout, stderr = await self._run_rclone(
+                ["copyto", str(local_path), dest, "--progress"]
+            )
 
             if code == 0:
                 logger.info(f"Rclone upload successful: {remote_path}")
@@ -618,9 +628,9 @@ class RcloneStorage(StorageBackend):
             local_path.parent.mkdir(parents=True, exist_ok=True)
             src = self._get_remote_path(remote_path)
 
-            code, stdout, stderr = await self._run_rclone([
-                "copyto", src, str(local_path), "--progress"
-            ])
+            code, stdout, stderr = await self._run_rclone(
+                ["copyto", src, str(local_path), "--progress"]
+            )
             return code == 0
         except Exception as e:
             logger.error(f"Rclone download error: {e}")
@@ -638,19 +648,21 @@ class RcloneStorage(StorageBackend):
     async def list_files(self, remote_path: str = "") -> List[Dict[str, Any]]:
         try:
             path = self._get_remote_path(remote_path)
-            code, stdout, stderr = await self._run_rclone([
-                "lsjson", path
-            ])
+            code, stdout, stderr = await self._run_rclone(["lsjson", path])
 
             if code == 0:
                 import json
+
                 items = json.loads(stdout)
-                return [{
-                    "name": item["Name"],
-                    "size": item.get("Size", 0),
-                    "is_dir": item["IsDir"],
-                    "modified": item.get("ModTime", "")
-                } for item in items]
+                return [
+                    {
+                        "name": item["Name"],
+                        "size": item.get("Size", 0),
+                        "is_dir": item["IsDir"],
+                        "modified": item.get("ModTime", ""),
+                    }
+                    for item in items
+                ]
             return []
         except Exception as e:
             logger.error(f"Rclone list error: {e}")
@@ -658,11 +670,16 @@ class RcloneStorage(StorageBackend):
 
     async def test_connection(self) -> Dict[str, Any]:
         try:
-            code, stdout, stderr = await self._run_rclone([
-                "lsd", f"{self.config.rclone_remote}:"
-            ])
+            code, stdout, stderr = await self._run_rclone(
+                ["lsd", f"{self.config.rclone_remote}:"]
+            )
             if code == 0:
-                return {"success": True, "message": f"Rclone remote '{self.config.rclone_remote}' accessible"}
+                return {
+                    "success": True,
+                    "message": (
+                        f"Rclone remote '{self.config.rclone_remote}' accessible"
+                    ),
+                }
             else:
                 return {"success": False, "message": stderr}
         except Exception as e:
@@ -677,15 +694,9 @@ class FTPStorage(StorageBackend):
         import aioftp
 
         client = aioftp.Client()
-        await client.connect(
-            self.config.host,
-            port=self.config.port or 21
-        )
+        await client.connect(self.config.host, port=self.config.port or 21)
         if self.config.username:
-            await client.login(
-                self.config.username,
-                self.config.password or ""
-            )
+            await client.login(self.config.username, self.config.password or "")
         return client
 
     async def upload(self, local_path: Path, remote_path: str) -> bool:
@@ -749,12 +760,14 @@ class FTPStorage(StorageBackend):
                 full_path = f"{self.config.base_path}/{remote_path}"
                 files = []
                 async for path, info in client.list(full_path):
-                    files.append({
-                        "name": path.name,
-                        "size": info.get("size", 0),
-                        "is_dir": info.get("type") == "dir",
-                        "modified": info.get("modify", "")
-                    })
+                    files.append(
+                        {
+                            "name": path.name,
+                            "size": info.get("size", 0),
+                            "is_dir": info.get("type") == "dir",
+                            "modified": info.get("modify", ""),
+                        }
+                    )
                 return files
             finally:
                 await client.quit()
@@ -812,7 +825,7 @@ class RemoteStorageManager:
         self,
         local_path: Path,
         remote_path: str,
-        storage_ids: Optional[List[int]] = None
+        storage_ids: Optional[List[int]] = None,
     ) -> Dict[int, bool]:
         """Upload a file to multiple storage backends"""
         results = {}
@@ -839,7 +852,7 @@ class RemoteStorageManager:
         local_backup_path: Path,
         target_name: str,
         backup_filename: str,
-        storage_ids: Optional[List[int]] = None
+        storage_ids: Optional[List[int]] = None,
     ) -> Dict[int, bool]:
         """Sync a backup file to remote storage(s)"""
         remote_path = f"{target_name}/{backup_filename}"

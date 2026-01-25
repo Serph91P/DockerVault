@@ -5,19 +5,21 @@ Backups API endpoints.
 import asyncio
 import os
 from typing import List, Optional
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from app.database import Backup, BackupTarget, BackupStatus, BackupType, async_session
 from app.backup_engine import backup_engine
 from app.config import settings
+from app.database import Backup, BackupStatus, BackupTarget, BackupType, async_session
 
 router = APIRouter()
 
 
 class BackupResponse(BaseModel):
     """Backup response model."""
+
     id: int
     target_id: int
     target_name: Optional[str] = None
@@ -39,12 +41,14 @@ class BackupResponse(BaseModel):
 
 class CreateBackupRequest(BaseModel):
     """Create backup request."""
+
     target_id: int
     backup_type: str = "full"
 
 
 class RestoreBackupRequest(BaseModel):
     """Restore backup request."""
+
     target_path: Optional[str] = None
 
 
@@ -122,9 +126,7 @@ async def list_backups(
 async def get_backup(backup_id: int):
     """Get a specific backup."""
     async with async_session() as session:
-        result = await session.execute(
-            select(Backup).where(Backup.id == backup_id)
-        )
+        result = await session.execute(select(Backup).where(Backup.id == backup_id))
         backup = result.scalar_one_or_none()
 
         if not backup:
@@ -147,7 +149,9 @@ async def get_backup(backup_id: int):
             file_size_human=format_size(backup.file_size),
             checksum=backup.checksum,
             started_at=backup.started_at.isoformat() if backup.started_at else None,
-            completed_at=backup.completed_at.isoformat() if backup.completed_at else None,
+            completed_at=(
+                backup.completed_at.isoformat() if backup.completed_at else None
+            ),
             duration_seconds=backup.duration_seconds,
             error_message=backup.error_message,
             created_at=backup.created_at.isoformat(),
@@ -168,7 +172,9 @@ async def create_backup(request: CreateBackupRequest):
             raise HTTPException(status_code=404, detail="Target not found")
 
     # Create backup
-    backup_type = BackupType.FULL if request.backup_type == "full" else BackupType.INCREMENTAL
+    backup_type = (
+        BackupType.FULL if request.backup_type == "full" else BackupType.INCREMENTAL
+    )
     backup = await backup_engine.create_backup(target, backup_type)
 
     # Run backup in background
@@ -207,7 +213,7 @@ async def restore_backup(backup_id: int, request: RestoreBackupRequest):
         if ".." in request.target_path:
             raise HTTPException(
                 status_code=400,
-                detail="Invalid restore path: path traversal not allowed"
+                detail="Invalid restore path: path traversal not allowed",
             )
 
         # Ensure path is within allowed restore directories
@@ -217,14 +223,12 @@ async def restore_backup(backup_id: int, request: RestoreBackupRequest):
             "/var/lib/docker/volumes",
         ]
 
-        is_allowed = any(
-            abs_path.startswith(prefix) for prefix in allowed_prefixes
-        )
+        is_allowed = any(abs_path.startswith(prefix) for prefix in allowed_prefixes)
 
         if not is_allowed:
             raise HTTPException(
                 status_code=400,
-                detail="Invalid restore path: must be within allowed directories"
+                detail="Invalid restore path: must be within allowed directories",
             )
 
     success = await backup_engine.restore_backup(backup_id, request.target_path)
@@ -239,9 +243,7 @@ async def restore_backup(backup_id: int, request: RestoreBackupRequest):
 async def delete_backup(backup_id: int):
     """Delete a backup."""
     async with async_session() as session:
-        result = await session.execute(
-            select(Backup).where(Backup.id == backup_id)
-        )
+        result = await session.execute(select(Backup).where(Backup.id == backup_id))
         backup = result.scalar_one_or_none()
 
         if not backup:
@@ -250,6 +252,7 @@ async def delete_backup(backup_id: int):
         # Delete file if exists
         if backup.file_path:
             import os
+
             if os.path.exists(backup.file_path):
                 os.remove(backup.file_path)
 
@@ -263,9 +266,7 @@ async def delete_backup(backup_id: int):
 async def get_backup_stats(backup_id: int):
     """Get statistics for a backup."""
     async with async_session() as session:
-        result = await session.execute(
-            select(Backup).where(Backup.id == backup_id)
-        )
+        result = await session.execute(select(Backup).where(Backup.id == backup_id))
         backup = result.scalar_one_or_none()
 
         if not backup:
@@ -326,9 +327,7 @@ async def validate_backup_target(backup_id: int):
     Returns list of validation issues, or empty list if valid.
     """
     async with async_session() as session:
-        result = await session.execute(
-            select(Backup).where(Backup.id == backup_id)
-        )
+        result = await session.execute(select(Backup).where(Backup.id == backup_id))
         backup = result.scalar_one_or_none()
 
         if not backup:

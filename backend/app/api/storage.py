@@ -1,21 +1,22 @@
 """Remote Storage API endpoints"""
 
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
-from typing import Optional, List
+from typing import List, Optional
 
-from ..remote_storage import (
-    StorageType, StorageConfig, storage_manager
-)
-from ..database import get_db, RemoteStorage as RemoteStorageModel
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..database import RemoteStorage as RemoteStorageModel
+from ..database import get_db
+from ..remote_storage import StorageConfig, StorageType, storage_manager
 
 router = APIRouter(prefix="/storage", tags=["Remote Storage"])
 
 
 class StorageCreate(BaseModel):
     """Create a new remote storage configuration"""
+
     name: str
     storage_type: StorageType
     enabled: bool = True
@@ -48,6 +49,7 @@ class StorageCreate(BaseModel):
 
 class StorageUpdate(BaseModel):
     """Update remote storage configuration"""
+
     name: Optional[str] = None
     enabled: Optional[bool] = None
     host: Optional[str] = None
@@ -59,6 +61,7 @@ class StorageUpdate(BaseModel):
 
 class StorageResponse(BaseModel):
     """Remote storage response"""
+
     id: int
     name: str
     storage_type: str
@@ -73,6 +76,7 @@ class StorageResponse(BaseModel):
 
 class StorageTestResult(BaseModel):
     """Result of connection test"""
+
     success: bool
     message: str
 
@@ -82,15 +86,18 @@ async def list_storage(db: AsyncSession = Depends(get_db)):
     """List all configured remote storage backends"""
     result = await db.execute(select(RemoteStorageModel))
     storages = result.scalars().all()
-    return [StorageResponse(
-        id=s.id,
-        name=s.name,
-        storage_type=s.storage_type,
-        enabled=s.enabled,
-        host=s.host,
-        base_path=s.base_path,
-        created_at=s.created_at.isoformat()
-    ) for s in storages]
+    return [
+        StorageResponse(
+            id=s.id,
+            name=s.name,
+            storage_type=s.storage_type,
+            enabled=s.enabled,
+            host=s.host,
+            base_path=s.base_path,
+            created_at=s.created_at.isoformat(),
+        )
+        for s in storages
+    ]
 
 
 @router.get("/types")
@@ -101,46 +108,43 @@ async def list_storage_types():
             "name": "Local/Network Path",
             "description": "Local filesystem or mounted network storage (NFS, SMB)",
             "required": ["base_path"],
-            "optional": []
+            "optional": [],
         },
         "ssh": {
             "name": "SSH/SFTP",
             "description": "Remote server via SSH with rsync",
             "required": ["host", "username", "base_path"],
-            "optional": ["port", "ssh_key_path", "password"]
+            "optional": ["port", "ssh_key_path", "password"],
         },
         "webdav": {
             "name": "WebDAV",
             "description": "WebDAV compatible storage (Nextcloud, ownCloud, etc.)",
             "required": ["webdav_url", "base_path"],
-            "optional": ["username", "password"]
+            "optional": ["username", "password"],
         },
         "s3": {
             "name": "S3 Compatible",
             "description": "AWS S3, MinIO, Backblaze B2, Wasabi, etc.",
             "required": ["s3_bucket", "s3_access_key", "s3_secret_key"],
-            "optional": ["s3_region", "s3_endpoint_url", "base_path"]
+            "optional": ["s3_region", "s3_endpoint_url", "base_path"],
         },
         "ftp": {
             "name": "FTP/FTPS",
             "description": "FTP or FTPS server",
             "required": ["host", "username", "password", "base_path"],
-            "optional": ["port"]
+            "optional": ["port"],
         },
         "rclone": {
             "name": "Rclone",
             "description": "Any rclone-supported backend (40+ providers)",
             "required": ["rclone_remote", "base_path"],
-            "optional": []
-        }
+            "optional": [],
+        },
     }
 
 
 @router.post("", response_model=StorageResponse)
-async def create_storage(
-    data: StorageCreate,
-    db: AsyncSession = Depends(get_db)
-):
+async def create_storage(data: StorageCreate, db: AsyncSession = Depends(get_db)):
     """Create a new remote storage configuration"""
     storage = RemoteStorageModel(
         name=data.name,
@@ -158,7 +162,7 @@ async def create_storage(
         s3_secret_key=data.s3_secret_key,
         s3_endpoint_url=data.s3_endpoint_url,
         webdav_url=data.webdav_url,
-        rclone_remote=data.rclone_remote
+        rclone_remote=data.rclone_remote,
     )
 
     db.add(storage)
@@ -176,7 +180,7 @@ async def create_storage(
         enabled=storage.enabled,
         host=storage.host,
         base_path=storage.base_path,
-        created_at=storage.created_at.isoformat()
+        created_at=storage.created_at.isoformat(),
     )
 
 
@@ -194,15 +198,13 @@ async def get_storage(storage_id: int, db: AsyncSession = Depends(get_db)):
         enabled=storage.enabled,
         host=storage.host,
         base_path=storage.base_path,
-        created_at=storage.created_at.isoformat()
+        created_at=storage.created_at.isoformat(),
     )
 
 
 @router.put("/{storage_id}", response_model=StorageResponse)
 async def update_storage(
-    storage_id: int,
-    data: StorageUpdate,
-    db: AsyncSession = Depends(get_db)
+    storage_id: int, data: StorageUpdate, db: AsyncSession = Depends(get_db)
 ):
     """Update a remote storage configuration"""
     storage = await db.get(RemoteStorageModel, storage_id)
@@ -227,7 +229,7 @@ async def update_storage(
         enabled=storage.enabled,
         host=storage.host,
         base_path=storage.base_path,
-        created_at=storage.created_at.isoformat()
+        created_at=storage.created_at.isoformat(),
     )
 
 
@@ -265,9 +267,7 @@ async def test_storage(storage_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.get("/{storage_id}/files")
 async def list_files(
-    storage_id: int,
-    path: str = "",
-    db: AsyncSession = Depends(get_db)
+    storage_id: int, path: str = "", db: AsyncSession = Depends(get_db)
 ):
     """List files in remote storage"""
     storage = await db.get(RemoteStorageModel, storage_id)
@@ -285,13 +285,12 @@ async def list_files(
 
 @router.post("/{storage_id}/sync/{backup_id}")
 async def sync_backup_to_storage(
-    storage_id: int,
-    backup_id: int,
-    db: AsyncSession = Depends(get_db)
+    storage_id: int, backup_id: int, db: AsyncSession = Depends(get_db)
 ):
     """Manually sync a specific backup to remote storage"""
-    from ..database import Backup, BackupTarget
     from pathlib import Path
+
+    from ..database import Backup, BackupTarget
 
     storage = await db.get(RemoteStorageModel, storage_id)
     if not storage:
@@ -317,7 +316,10 @@ async def sync_backup_to_storage(
     success = await backend.upload(local_path, remote_path)
 
     if success:
-        return {"message": f"Backup synced to {storage.name}", "remote_path": remote_path}
+        return {
+            "message": f"Backup synced to {storage.name}",
+            "remote_path": remote_path,
+        }
     else:
         raise HTTPException(status_code=500, detail="Sync failed")
 
@@ -341,5 +343,5 @@ def _db_to_config(storage: RemoteStorageModel) -> StorageConfig:
         s3_secret_key=storage.s3_secret_key,
         s3_endpoint_url=storage.s3_endpoint_url,
         webdav_url=storage.webdav_url,
-        rclone_remote=storage.rclone_remote
+        rclone_remote=storage.rclone_remote,
     )

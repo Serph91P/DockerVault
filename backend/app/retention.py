@@ -3,15 +3,22 @@ Retention policy management.
 Implements Grandfather-Father-Son (GFS) backup retention strategy.
 """
 
+import logging
 import os
 from datetime import datetime, timedelta
-from typing import List, Dict
 from pathlib import Path
-import logging
+from typing import Dict, List
 
-from sqlalchemy import select, delete
-from app.database import Backup, BackupTarget, RetentionPolicy, BackupStatus, async_session
+from sqlalchemy import delete, select
+
 from app.config import settings
+from app.database import (
+    Backup,
+    BackupStatus,
+    BackupTarget,
+    RetentionPolicy,
+    async_session,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,9 +88,7 @@ class RetentionManager:
                         logger.info(f"Deleted backup file: {backup.file_path}")
 
                     # Delete record
-                    await session.execute(
-                        delete(Backup).where(Backup.id == backup.id)
-                    )
+                    await session.execute(delete(Backup).where(Backup.id == backup.id))
                     deleted_count += 1
                 except Exception as e:
                     logger.error(f"Failed to delete backup {backup.id}: {e}")
@@ -185,7 +190,9 @@ class RetentionManager:
                 "total_backups": len(backups),
                 "total_size_bytes": total_size,
                 "total_size_human": self._format_size(total_size),
-                "oldest_backup": backups[-1].created_at.isoformat() if backups else None,
+                "oldest_backup": (
+                    backups[-1].created_at.isoformat() if backups else None
+                ),
                 "newest_backup": backups[0].created_at.isoformat() if backups else None,
             }
 

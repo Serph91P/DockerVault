@@ -3,10 +3,11 @@ Backup targets API endpoints.
 """
 
 from typing import List, Optional
+
+from croniter import croniter
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
 from sqlalchemy import select
-from croniter import croniter
 
 from app.database import BackupTarget, async_session
 
@@ -32,6 +33,7 @@ def validate_cron_expression(cron_expr: Optional[str]) -> Optional[str]:
 
 class TargetCreate(BaseModel):
     """Create backup target request."""
+
     name: str
     target_type: str  # container, volume, path, stack
     container_name: Optional[str] = None
@@ -47,7 +49,7 @@ class TargetCreate(BaseModel):
     stop_container: bool = True
     compression_enabled: bool = True
 
-    @field_validator('schedule_cron')
+    @field_validator("schedule_cron")
     @classmethod
     def validate_schedule_cron(cls, v: Optional[str]) -> Optional[str]:
         return validate_cron_expression(v)
@@ -55,6 +57,7 @@ class TargetCreate(BaseModel):
 
 class TargetUpdate(BaseModel):
     """Update backup target request."""
+
     name: Optional[str] = None
     schedule_cron: Optional[str] = None
     enabled: Optional[bool] = None
@@ -65,7 +68,7 @@ class TargetUpdate(BaseModel):
     stop_container: Optional[bool] = None
     compression_enabled: Optional[bool] = None
 
-    @field_validator('schedule_cron')
+    @field_validator("schedule_cron")
     @classmethod
     def validate_schedule_cron(cls, v: Optional[str]) -> Optional[str]:
         return validate_cron_expression(v)
@@ -73,6 +76,7 @@ class TargetUpdate(BaseModel):
 
 class TargetResponse(BaseModel):
     """Backup target response."""
+
     id: int
     name: str
     target_type: str
