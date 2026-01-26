@@ -1,9 +1,9 @@
 services:
-  backend:
+  dockervault:
     build:
-      context: ./backend
+      context: .
       dockerfile: Dockerfile
-    container_name: backup-manager-backend
+    container_name: dockervault
     restart: unless-stopped
     environment:
       - TZ=${TZ:-Europe/Berlin}
@@ -20,36 +20,19 @@ services:
       - ${BACKUP_PATH:-./backups}:/backups
       # Access to Docker volumes (read-only for backup)
       - /var/lib/docker/volumes:/var/lib/docker/volumes:ro
+    ports:
+      - "${PORT:-8080}:80"
     networks:
       - backup-network
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/docker/health')"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 15s
     # Required for Docker socket access
     group_add:
       - ${DOCKER_GID:-999}
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: backup-manager-frontend
-    restart: unless-stopped
-    ports:
-      - "${PORT:-8080}:80"
-    depends_on:
-      backend:
-        condition: service_healthy
-    networks:
-      - backup-network
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
 networks:
   backup-network:
@@ -57,4 +40,4 @@ networks:
 
 volumes:
   backup-data:
-    name: backup-manager-data
+    name: dockervault-data
