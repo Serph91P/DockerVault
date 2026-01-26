@@ -35,7 +35,7 @@ describe('Backups Page', () => {
     render(<Backups />, { wrapper: createWrapper() })
     
     expect(screen.getByText('Backups')).toBeInTheDocument()
-    expect(screen.getByText('Alle erstellten Backups')).toBeInTheDocument()
+    expect(screen.getByText('All created backups')).toBeInTheDocument()
   })
 
   it('should display loading skeleton initially', () => {
@@ -63,16 +63,16 @@ describe('Backups Page', () => {
     expect(screen.getByText('db-volume')).toBeInTheDocument()
   })
 
-  it('should display backup status in German', async () => {
+  it('should display backup status in English', async () => {
     render(<Backups />, { wrapper: createWrapper() })
 
     await waitFor(() => {
       expect(screen.getByText('test-volume')).toBeInTheDocument()
     })
 
-    // Check for German status labels
-    expect(screen.getByText('Abgeschlossen')).toBeInTheDocument() // completed
-    expect(screen.getByText('Läuft')).toBeInTheDocument() // running
+    // Check for English status labels
+    expect(screen.getByText('Completed')).toBeInTheDocument() // completed
+    expect(screen.getByText('Running')).toBeInTheDocument() // running
   })
 
   it('should display empty state when no backups exist', async () => {
@@ -85,7 +85,7 @@ describe('Backups Page', () => {
     render(<Backups />, { wrapper: createWrapper() })
 
     await waitFor(() => {
-      expect(screen.getByText('Noch keine Backups vorhanden')).toBeInTheDocument()
+      expect(screen.getByText('No backups yet')).toBeInTheDocument()
     })
   })
 
@@ -117,10 +117,10 @@ describe('Backups Page', () => {
     await waitFor(() => {
       expect(screen.getByText('Target')).toBeInTheDocument()
       expect(screen.getByText('Status')).toBeInTheDocument()
-      expect(screen.getByText('Größe')).toBeInTheDocument()
-      expect(screen.getByText('Dauer')).toBeInTheDocument()
-      expect(screen.getByText('Erstellt')).toBeInTheDocument()
-      expect(screen.getByText('Aktionen')).toBeInTheDocument()
+      expect(screen.getByText('Size')).toBeInTheDocument()
+      expect(screen.getByText('Duration')).toBeInTheDocument()
+      expect(screen.getByText('Created')).toBeInTheDocument()
+      expect(screen.getByText('Actions')).toBeInTheDocument()
     })
   })
 
@@ -131,8 +131,8 @@ describe('Backups Page', () => {
       expect(screen.getByText('test-volume')).toBeInTheDocument()
     })
 
-    // Find delete button by title attribute (German: "Löschen")
-    const deleteButtons = screen.getAllByTitle('Löschen')
+    // Find delete button by title attribute
+    const deleteButtons = screen.getAllByTitle('Delete')
     expect(deleteButtons.length).toBeGreaterThan(0)
 
     await user.click(deleteButtons[0])
@@ -140,7 +140,7 @@ describe('Backups Page', () => {
     // Wait for the mutation to complete
     await waitFor(() => {
       // The button should still be in the document (component re-rendered)
-      expect(screen.getAllByTitle('Löschen').length).toBeGreaterThan(0)
+      expect(screen.getAllByTitle('Delete').length).toBeGreaterThan(0)
     })
   })
 
@@ -151,8 +151,8 @@ describe('Backups Page', () => {
       expect(screen.getByText('test-volume')).toBeInTheDocument()
     })
 
-    // Find restore button by title attribute (German: "Wiederherstellen")
-    const restoreButtons = screen.getAllByTitle('Wiederherstellen')
+    // Find restore button by title attribute
+    const restoreButtons = screen.getAllByTitle('Restore')
     expect(restoreButtons.length).toBeGreaterThan(0)
 
     await user.click(restoreButtons[0])
@@ -163,15 +163,15 @@ describe('Backups Page', () => {
     })
   })
 
-  it('should display backup creation date formatted in German locale', async () => {
+  it('should display backup creation date formatted', async () => {
     render(<Backups />, { wrapper: createWrapper() })
 
     await waitFor(() => {
       expect(screen.getByText('test-volume')).toBeInTheDocument()
     })
 
-    // Date should be formatted as DD.MM.YYYY HH:mm (German format)
-    const dateElements = screen.getAllByText(/\d{2}\.\d{2}\.\d{4}/)
+    // Date should be formatted as YYYY-MM-DD HH:mm (international format)
+    const dateElements = screen.getAllByText(/\d{4}-\d{2}-\d{2}/)
     expect(dateElements.length).toBeGreaterThan(0)
   })
 

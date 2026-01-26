@@ -18,20 +18,20 @@ function PolicyCard({ policy }: { policy: RetentionPolicy }) {
   const updateMutation = useMutation({
     mutationFn: () => retentionApi.updatePolicy(policy.id, formData),
     onSuccess: () => {
-      toast.success('Policy aktualisiert')
+      toast.success('Policy updated')
       queryClient.invalidateQueries({ queryKey: ['retention-policies'] })
       setIsEditing(false)
     },
-    onError: () => toast.error('Fehler beim Aktualisieren'),
+    onError: () => toast.error('Failed to update policy'),
   })
 
   const deleteMutation = useMutation({
     mutationFn: () => retentionApi.deletePolicy(policy.id),
     onSuccess: () => {
-      toast.success('Policy gelöscht')
+      toast.success('Policy deleted')
       queryClient.invalidateQueries({ queryKey: ['retention-policies'] })
     },
-    onError: (err: Error) => toast.error(err.message || 'Fehler beim Löschen'),
+    onError: (err: Error) => toast.error(err.message || 'Failed to delete policy'),
   })
 
   return (
@@ -40,7 +40,7 @@ function PolicyCard({ policy }: { policy: RetentionPolicy }) {
         <div>
           <h3 className="text-lg font-semibold text-dark-100">{policy.name}</h3>
           <p className="text-sm text-dark-400">
-            Max. {policy.max_age_days} Tage Aufbewahrung
+            Max. {policy.max_age_days} days retention
           </p>
         </div>
         <div className="flex gap-2">
@@ -83,7 +83,7 @@ function PolicyCard({ policy }: { policy: RetentionPolicy }) {
       {/* Retention Settings */}
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <label className="block text-xs text-dark-400 mb-1">Täglich behalten</label>
+          <label className="block text-xs text-dark-400 mb-1">Keep Daily</label>
           {isEditing ? (
             <input
               type="number"
@@ -98,7 +98,7 @@ function PolicyCard({ policy }: { policy: RetentionPolicy }) {
           )}
         </div>
         <div>
-          <label className="block text-xs text-dark-400 mb-1">Wöchentlich behalten</label>
+          <label className="block text-xs text-dark-400 mb-1">Keep Weekly</label>
           {isEditing ? (
             <input
               type="number"
@@ -113,7 +113,7 @@ function PolicyCard({ policy }: { policy: RetentionPolicy }) {
           )}
         </div>
         <div>
-          <label className="block text-xs text-dark-400 mb-1">Monatlich behalten</label>
+          <label className="block text-xs text-dark-400 mb-1">Keep Monthly</label>
           {isEditing ? (
             <input
               type="number"
@@ -128,7 +128,7 @@ function PolicyCard({ policy }: { policy: RetentionPolicy }) {
           )}
         </div>
         <div>
-          <label className="block text-xs text-dark-400 mb-1">Jährlich behalten</label>
+          <label className="block text-xs text-dark-400 mb-1">Keep Yearly</label>
           {isEditing ? (
             <input
               type="number"
@@ -175,16 +175,16 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
   const createMutation = useMutation({
     mutationFn: () => retentionApi.createPolicy(formData),
     onSuccess: () => {
-      toast.success('Policy erstellt')
+      toast.success('Policy created')
       queryClient.invalidateQueries({ queryKey: ['retention-policies'] })
       onClose()
     },
-    onError: () => toast.error('Fehler beim Erstellen'),
+    onError: () => toast.error('Failed to create policy'),
   })
 
   return (
     <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
-      <h3 className="text-lg font-semibold text-dark-100 mb-4">Neue Retention Policy</h3>
+      <h3 className="text-lg font-semibold text-dark-100 mb-4">New Retention Policy</h3>
 
       <div className="space-y-4">
         <div>
@@ -194,13 +194,13 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
             value={formData.name}
             onChange={(e) => setFormData({ ...formData, name: e.target.value })}
             className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
-            placeholder="z.B. aggressive, conservative"
+            placeholder="e.g. aggressive, conservative"
           />
         </div>
 
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-xs text-dark-400 mb-1">Täglich</label>
+            <label className="block text-xs text-dark-400 mb-1">Daily</label>
             <input
               type="number"
               value={formData.keep_daily}
@@ -211,7 +211,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
             />
           </div>
           <div>
-            <label className="block text-xs text-dark-400 mb-1">Wöchentlich</label>
+            <label className="block text-xs text-dark-400 mb-1">Weekly</label>
             <input
               type="number"
               value={formData.keep_weekly}
@@ -222,7 +222,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
             />
           </div>
           <div>
-            <label className="block text-xs text-dark-400 mb-1">Monatlich</label>
+            <label className="block text-xs text-dark-400 mb-1">Monthly</label>
             <input
               type="number"
               value={formData.keep_monthly}
@@ -233,7 +233,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
             />
           </div>
           <div>
-            <label className="block text-xs text-dark-400 mb-1">Jährlich</label>
+            <label className="block text-xs text-dark-400 mb-1">Yearly</label>
             <input
               type="number"
               value={formData.keep_yearly}
@@ -246,7 +246,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
         </div>
 
         <div>
-          <label className="block text-xs text-dark-400 mb-1">Max. Alter (Tage)</label>
+          <label className="block text-xs text-dark-400 mb-1">Max Age (Days)</label>
           <input
             type="number"
             value={formData.max_age_days}
@@ -263,13 +263,13 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
             disabled={!formData.name || createMutation.isPending}
             className="flex-1 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 disabled:opacity-50"
           >
-            Erstellen
+            Create
           </button>
           <button
             onClick={onClose}
             className="px-4 py-2 bg-dark-600 text-dark-300 rounded-lg hover:bg-dark-500"
           >
-            Abbrechen
+            Cancel
           </button>
         </div>
       </div>
@@ -288,9 +288,9 @@ export default function Retention() {
   const cleanupMutation = useMutation({
     mutationFn: () => retentionApi.cleanupOrphaned(),
     onSuccess: (data) => {
-      toast.success(`${data.data.deleted} verwaiste Dateien gelöscht`)
+      toast.success(`${data.data.deleted} orphaned files deleted`)
     },
-    onError: () => toast.error('Fehler beim Aufräumen'),
+    onError: () => toast.error('Failed to cleanup'),
   })
 
   return (
@@ -298,7 +298,7 @@ export default function Retention() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-dark-100">Retention Policies</h1>
-          <p className="text-dark-400 mt-1">Konfiguriere wie lange Backups aufbewahrt werden</p>
+          <p className="text-dark-400 mt-1">Configure how long backups are retained</p>
         </div>
         <div className="flex gap-2">
           <button
@@ -307,14 +307,14 @@ export default function Retention() {
             className="flex items-center gap-2 px-4 py-2 bg-dark-700 text-dark-200 rounded-lg hover:bg-dark-600 transition-colors"
           >
             <Trash2 className="w-4 h-4" />
-            Aufräumen
+            Cleanup
           </button>
           <button
             onClick={() => setShowCreate(true)}
             className="flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors"
           >
             <Plus className="w-4 h-4" />
-            Neue Policy
+            New Policy
           </button>
         </div>
       </div>
@@ -322,26 +322,26 @@ export default function Retention() {
       {/* Info Box */}
       <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
         <h2 className="text-lg font-semibold text-dark-100 mb-2">
-          Grandfather-Father-Son (GFS) Strategie
+          Grandfather-Father-Son (GFS) Strategy
         </h2>
         <p className="text-sm text-dark-400">
-          Die Retention Policy verwendet die GFS-Strategie zur intelligenten Backup-Aufbewahrung:
+          The retention policy uses the GFS strategy for intelligent backup retention:
         </p>
         <ul className="mt-2 space-y-1 text-sm text-dark-400">
           <li>
-            • <span className="text-dark-200">Täglich:</span> Behält die letzten N täglichen Backups
+            • <span className="text-dark-200">Daily:</span> Keeps the last N daily backups
           </li>
           <li>
-            • <span className="text-dark-200">Wöchentlich:</span> Behält ein Backup pro Woche für die
-            letzten N Wochen
+            • <span className="text-dark-200">Weekly:</span> Keeps one backup per week for the
+            last N weeks
           </li>
           <li>
-            • <span className="text-dark-200">Monatlich:</span> Behält ein Backup pro Monat für die
-            letzten N Monate
+            • <span className="text-dark-200">Monthly:</span> Keeps one backup per month for the
+            last N months
           </li>
           <li>
-            • <span className="text-dark-200">Jährlich:</span> Behält ein Backup pro Jahr für die
-            letzten N Jahre
+            • <span className="text-dark-200">Yearly:</span> Keeps one backup per year for the
+            last N years
           </li>
         </ul>
       </div>

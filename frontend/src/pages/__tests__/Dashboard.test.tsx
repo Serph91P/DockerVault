@@ -31,7 +31,7 @@ describe('Dashboard Page', () => {
     render(<Dashboard />, { wrapper: createWrapper() })
     
     expect(screen.getByText('Dashboard')).toBeInTheDocument()
-    expect(screen.getByText('Überblick über deine Docker Backups')).toBeInTheDocument()
+    expect(screen.getByText('Overview of your Docker backups')).toBeInTheDocument()
   })
 
   it('should display stat cards with correct data', async () => {
@@ -45,7 +45,7 @@ describe('Dashboard Page', () => {
       // Backup Targets stat card
       expect(screen.getByText('Backup Targets')).toBeInTheDocument()
       // Scheduled backups stat card
-      expect(screen.getByText('Geplante Backups')).toBeInTheDocument()
+      expect(screen.getByText('Scheduled Backups')).toBeInTheDocument()
     })
   })
 
@@ -53,7 +53,7 @@ describe('Dashboard Page', () => {
     render(<Dashboard />, { wrapper: createWrapper() })
     
     await waitFor(() => {
-      expect(screen.getByText('Letzte Backups')).toBeInTheDocument()
+      expect(screen.getByText('Recent Backups')).toBeInTheDocument()
     })
   })
 
@@ -61,7 +61,7 @@ describe('Dashboard Page', () => {
     render(<Dashboard />, { wrapper: createWrapper() })
     
     await waitFor(() => {
-      expect(screen.getByText('Nächste geplante Backups')).toBeInTheDocument()
+      expect(screen.getByText('Upcoming Scheduled Backups')).toBeInTheDocument()
     })
   })
 
@@ -69,10 +69,10 @@ describe('Dashboard Page', () => {
     render(<Dashboard />, { wrapper: createWrapper() })
     
     await waitFor(() => {
-      expect(screen.getByText('Status Zusammenfassung')).toBeInTheDocument()
-      expect(screen.getByText('Erfolgreich')).toBeInTheDocument()
-      expect(screen.getByText('Fehlgeschlagen')).toBeInTheDocument()
-      expect(screen.getByText('Container aktiv')).toBeInTheDocument()
+      expect(screen.getByText('Status Summary')).toBeInTheDocument()
+      expect(screen.getByText('Successful')).toBeInTheDocument()
+      expect(screen.getByText('Failed')).toBeInTheDocument()
+      expect(screen.getByText('Active Containers')).toBeInTheDocument()
     })
   })
 
@@ -234,7 +234,7 @@ describe('Dashboard Page', () => {
     render(<Dashboard />, { wrapper: createWrapper() })
     
     await waitFor(() => {
-      expect(screen.getByText('Noch keine Backups vorhanden')).toBeInTheDocument()
+      expect(screen.getByText('No backups yet')).toBeInTheDocument()
     })
   })
 
@@ -248,7 +248,7 @@ describe('Dashboard Page', () => {
     render(<Dashboard />, { wrapper: createWrapper() })
     
     await waitFor(() => {
-      expect(screen.getByText('Keine geplanten Backups')).toBeInTheDocument()
+      expect(screen.getByText('No scheduled backups')).toBeInTheDocument()
     })
   })
 
@@ -352,7 +352,7 @@ describe('Dashboard Page', () => {
     
     await waitFor(() => {
       // Status summary should show 2 completed
-      const summarySection = screen.getByText('Status Zusammenfassung').parentElement
+      const summarySection = screen.getByText('Status Summary').parentElement
       expect(summarySection).toBeInTheDocument()
     })
   })
@@ -366,9 +366,9 @@ describe('Dashboard Page', () => {
     
     await waitFor(() => {
       // Check for section headings
-      expect(screen.getByText('Letzte Backups')).toBeInTheDocument()
-      expect(screen.getByText('Nächste geplante Backups')).toBeInTheDocument()
-      expect(screen.getByText('Status Zusammenfassung')).toBeInTheDocument()
+      expect(screen.getByText('Recent Backups')).toBeInTheDocument()
+      expect(screen.getByText('Upcoming Scheduled Backups')).toBeInTheDocument()
+      expect(screen.getByText('Status Summary')).toBeInTheDocument()
     })
   })
 })

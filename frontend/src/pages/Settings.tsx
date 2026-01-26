@@ -17,15 +17,15 @@ export default function Settings() {
 
   const testKomodoMutation = useMutation({
     mutationFn: () => komodoApi.test(),
-    onSuccess: () => toast.success('Komodo Verbindung erfolgreich'),
-    onError: () => toast.error('Komodo Verbindung fehlgeschlagen'),
+    onSuccess: () => toast.success('Komodo connection successful'),
+    onError: () => toast.error('Komodo connection failed'),
   })
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-dark-100">Einstellungen</h1>
-        <p className="text-dark-400 mt-1">Konfiguration und Integrationen</p>
+        <h1 className="text-2xl font-bold text-dark-100">Settings</h1>
+        <p className="text-dark-400 mt-1">Configuration and integrations</p>
       </div>
 
       {/* Docker Status */}
@@ -36,8 +36,8 @@ export default function Settings() {
               🐳
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-dark-100">Docker Verbindung</h2>
-              <p className="text-sm text-dark-400">Status der Docker Socket Verbindung</p>
+              <h2 className="text-lg font-semibold text-dark-100">Docker Connection</h2>
+              <p className="text-sm text-dark-400">Docker socket connection status</p>
             </div>
           </div>
           <button
@@ -52,12 +52,12 @@ export default function Settings() {
           {dockerHealth ? (
             <>
               <Check className="w-5 h-5 text-green-500" />
-              <span className="text-green-400">Verbunden</span>
+              <span className="text-green-400">Connected</span>
             </>
           ) : (
             <>
               <X className="w-5 h-5 text-red-500" />
-              <span className="text-red-400">Nicht verbunden</span>
+              <span className="text-red-400">Not connected</span>
             </>
           )}
         </div>
@@ -77,7 +77,7 @@ export default function Settings() {
             <div>
               <h2 className="text-lg font-semibold text-dark-100">Komodo Integration</h2>
               <p className="text-sm text-dark-400">
-                Verbindung zu Komodo für Container-Orchestrierung
+                Connection to Komodo for container orchestration
               </p>
             </div>
           </div>
@@ -96,18 +96,18 @@ export default function Settings() {
               komodoStatus?.connected ? (
                 <>
                   <Check className="w-4 h-4 text-green-500" />
-                  <span className="text-green-400">Verbunden</span>
+                  <span className="text-green-400">Connected</span>
                 </>
               ) : (
                 <>
                   <X className="w-4 h-4 text-yellow-500" />
-                  <span className="text-yellow-400">Aktiviert, nicht verbunden</span>
+                  <span className="text-yellow-400">Enabled, not connected</span>
                 </>
               )
             ) : (
               <>
                 <X className="w-4 h-4 text-dark-500" />
-                <span className="text-dark-400">Deaktiviert</span>
+                <span className="text-dark-400">Disabled</span>
               </>
             )}
           </div>
@@ -125,14 +125,14 @@ export default function Settings() {
               disabled={testKomodoMutation.isPending}
               className="px-4 py-2 bg-purple-500/10 text-purple-400 rounded-lg hover:bg-purple-500/20 transition-colors text-sm"
             >
-              Verbindung testen
+              Test Connection
             </button>
           )}
 
           {!komodoStatus?.enabled && (
             <div className="p-4 bg-dark-700 rounded-lg">
               <p className="text-sm text-dark-300">
-                Um Komodo zu aktivieren, setze folgende Umgebungsvariablen:
+                To enable Komodo, set the following environment variables:
               </p>
               <pre className="mt-2 text-xs text-dark-400 font-mono">
 {`KOMODO_ENABLED=true
@@ -151,42 +151,42 @@ KOMODO_API_KEY=your-api-key`}
             <SettingsIcon className="w-5 h-5 text-green-400" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-dark-100">Backup Einstellungen</h2>
-            <p className="text-sm text-dark-400">Allgemeine Backup-Konfiguration</p>
+            <h2 className="text-lg font-semibold text-dark-100">Backup Settings</h2>
+            <p className="text-sm text-dark-400">General backup configuration</p>
           </div>
         </div>
 
         <div className="space-y-4 text-sm">
           <div className="flex justify-between py-2 border-b border-dark-700">
-            <span className="text-dark-400">Backup Verzeichnis</span>
+            <span className="text-dark-400">Backup Directory</span>
             <span className="text-dark-200 font-mono">/backups</span>
           </div>
           <div className="flex justify-between py-2 border-b border-dark-700">
-            <span className="text-dark-400">Standard Retention (Tage)</span>
+            <span className="text-dark-400">Default Retention (Days)</span>
             <span className="text-dark-200">30</span>
           </div>
           <div className="flex justify-between py-2 border-b border-dark-700">
-            <span className="text-dark-400">Standard Retention (Anzahl)</span>
+            <span className="text-dark-400">Default Retention (Count)</span>
             <span className="text-dark-200">10</span>
           </div>
           <div className="flex justify-between py-2 border-b border-dark-700">
-            <span className="text-dark-400">Max. parallele Backups</span>
+            <span className="text-dark-400">Max Parallel Backups</span>
             <span className="text-dark-200">2</span>
           </div>
           <div className="flex justify-between py-2 border-b border-dark-700">
-            <span className="text-dark-400">Komprimierungslevel</span>
+            <span className="text-dark-400">Compression Level</span>
             <span className="text-dark-200">6 (1-9)</span>
           </div>
           <div className="flex justify-between py-2">
-            <span className="text-dark-400">Zeitzone</span>
+            <span className="text-dark-400">Timezone</span>
             <span className="text-dark-200">Europe/Berlin</span>
           </div>
         </div>
 
         <div className="mt-4 p-4 bg-dark-700 rounded-lg">
           <p className="text-sm text-dark-300">
-            Diese Einstellungen können über Umgebungsvariablen angepasst werden.
-            Siehe die .env.example Datei für alle verfügbaren Optionen.
+            These settings can be customized via environment variables.
+            See the .env.example file for all available options.
           </p>
         </div>
       </div>

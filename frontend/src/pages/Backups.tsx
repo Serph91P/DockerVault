@@ -10,7 +10,6 @@ import {
 } from 'lucide-react'
 import { backupsApi, Backup } from '../api'
 import { format } from 'date-fns'
-import { de } from 'date-fns/locale'
 import toast from 'react-hot-toast'
 import { useWebSocketStore } from '../store/websocket'
 
@@ -22,18 +21,18 @@ function BackupRow({ backup }: { backup: Backup }) {
   const deleteMutation = useMutation({
     mutationFn: () => backupsApi.delete(backup.id),
     onSuccess: () => {
-      toast.success('Backup gelöscht')
+      toast.success('Backup deleted')
       queryClient.invalidateQueries({ queryKey: ['backups'] })
     },
-    onError: () => toast.error('Fehler beim Löschen'),
+    onError: () => toast.error('Failed to delete backup'),
   })
 
   const restoreMutation = useMutation({
     mutationFn: () => backupsApi.restore(backup.id),
     onSuccess: () => {
-      toast.success('Backup wiederhergestellt')
+      toast.success('Backup restored')
     },
-    onError: () => toast.error('Fehler bei der Wiederherstellung'),
+    onError: () => toast.error('Failed to restore backup'),
   })
 
   const getStatusIcon = () => {
@@ -54,15 +53,15 @@ function BackupRow({ backup }: { backup: Backup }) {
   const getStatusText = () => {
     switch (backup.status) {
       case 'completed':
-        return 'Abgeschlossen'
+        return 'Completed'
       case 'failed':
-        return 'Fehlgeschlagen'
+        return 'Failed'
       case 'running':
-        return 'Läuft'
+        return 'Running'
       case 'pending':
-        return 'Wartend'
+        return 'Pending'
       case 'cancelled':
-        return 'Abgebrochen'
+        return 'Cancelled'
       default:
         return backup.status
     }
@@ -112,7 +111,7 @@ function BackupRow({ backup }: { backup: Backup }) {
         {backup.duration_seconds ? `${backup.duration_seconds}s` : '-'}
       </td>
       <td className="px-6 py-4 text-sm text-dark-400">
-        {format(new Date(backup.created_at), 'dd.MM.yyyy HH:mm', { locale: de })}
+        {format(new Date(backup.created_at), 'yyyy-MM-dd HH:mm')}
       </td>
       <td className="px-6 py-4">
         <div className="flex items-center gap-2">
@@ -121,7 +120,7 @@ function BackupRow({ backup }: { backup: Backup }) {
               onClick={() => restoreMutation.mutate()}
               disabled={restoreMutation.isPending}
               className="p-2 text-dark-400 hover:text-primary-400 hover:bg-dark-700 rounded-lg transition-colors"
-              title="Wiederherstellen"
+              title="Restore"
             >
               <RotateCcw className="w-4 h-4" />
             </button>
@@ -130,7 +129,7 @@ function BackupRow({ backup }: { backup: Backup }) {
             onClick={() => deleteMutation.mutate()}
             disabled={deleteMutation.isPending}
             className="p-2 text-dark-400 hover:text-red-400 hover:bg-dark-700 rounded-lg transition-colors"
-            title="Löschen"
+            title="Delete"
           >
             <Trash2 className="w-4 h-4" />
           </button>
@@ -151,7 +150,7 @@ export default function Backups() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-dark-100">Backups</h1>
-        <p className="text-dark-400 mt-1">Alle erstellten Backups</p>
+        <p className="text-dark-400 mt-1">All created backups</p>
       </div>
 
       <div className="bg-dark-800 rounded-xl border border-dark-700 overflow-hidden">
@@ -166,16 +165,16 @@ export default function Backups() {
                   Status
                 </th>
                 <th className="px-6 py-3 text-xs font-medium text-dark-400 uppercase tracking-wider">
-                  Größe
+                  Size
                 </th>
                 <th className="px-6 py-3 text-xs font-medium text-dark-400 uppercase tracking-wider">
-                  Dauer
+                  Duration
                 </th>
                 <th className="px-6 py-3 text-xs font-medium text-dark-400 uppercase tracking-wider">
-                  Erstellt
+                  Created
                 </th>
                 <th className="px-6 py-3 text-xs font-medium text-dark-400 uppercase tracking-wider">
-                  Aktionen
+                  Actions
                 </th>
               </tr>
             </thead>
@@ -198,7 +197,7 @@ export default function Backups() {
         {!isLoading && backups?.length === 0 && (
           <div className="p-12 text-center">
             <Archive className="w-12 h-12 text-dark-500 mx-auto mb-4" />
-            <p className="text-dark-400">Noch keine Backups vorhanden</p>
+            <p className="text-dark-400">No backups yet</p>
           </div>
         )}
       </div>
