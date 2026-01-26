@@ -9,7 +9,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router as api_router
-from app.config import settings
 from app.database import init_db
 from app.scheduler import BackupScheduler
 from app.websocket import router as ws_router
