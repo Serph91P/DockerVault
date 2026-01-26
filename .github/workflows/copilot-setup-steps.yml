@@ -80,15 +80,15 @@ jobs:
       
       - name: Validate Docker Compose configuration
         run: |
-          docker-compose config
+          docker compose config
       
       - name: Build Docker images
         run: |
-          docker-compose build
+          docker compose build
       
       - name: Run Docker Compose health check
         run: |
-          docker-compose up -d
+          docker compose up -d
           sleep 30
-          docker-compose ps
-          docker-compose down
+          docker compose ps
+          docker compose down
