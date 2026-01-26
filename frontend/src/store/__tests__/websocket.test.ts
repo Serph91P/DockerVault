@@ -47,13 +47,17 @@ describe('WebSocket Store', () => {
   let mockWebSocket: MockWebSocket
   
   beforeEach(() => {
-    // Create a proper WebSocket constructor mock
-    const MockWebSocketConstructor = class extends MockWebSocket {
-      constructor(url: string) {
-        super(url)
-        mockWebSocket = this
-      }
+    // Create a factory function that captures the instance
+    const createMockWebSocket = (url: string): MockWebSocket => {
+      const instance = new MockWebSocket(url)
+      mockWebSocket = instance
+      return instance
     }
+    
+    // Create constructor that uses the factory
+    const MockWebSocketConstructor = function(url: string) {
+      return createMockWebSocket(url)
+    } as unknown as typeof WebSocket
     
     // Add static constants
     Object.defineProperty(MockWebSocketConstructor, 'CONNECTING', { value: 0 })
