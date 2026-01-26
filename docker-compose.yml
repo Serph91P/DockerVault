@@ -11,7 +11,7 @@ services:
       - KOMODO_API_KEY=${KOMODO_API_KEY:-}
     volumes:
       # Docker socket - required for container management
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/docker.sock:/var/run/docker.sock
       # App data (SQLite database, config)
       - backup-data:/app/data
       # Backup storage - mount your backup location here
@@ -28,9 +28,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
-    # Required for Docker socket access
-    group_add:
-      - ${DOCKER_GID:-999}
 
 networks:
   backup-network:

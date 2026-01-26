@@ -114,6 +114,10 @@ COPY docker/supervisord.conf /etc/supervisor/conf.d/dockervault.conf
 RUN chown -R dockervault:dockervault /var/log/nginx /var/lib/nginx /run/nginx && \
     chmod 755 /var/log/nginx /var/lib/nginx /run/nginx
 
+# Copy entrypoint script
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 # Environment variables
 ENV DATABASE_URL=sqlite+aiosqlite:///./data/backup.db \
     DOCKER_SOCKET=/var/run/docker.sock \
@@ -133,8 +137,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
 # Declare volumes
 VOLUME ["/app/data", "/backups"]
 
-# Use tini as init system for proper signal handling
-ENTRYPOINT ["/usr/bin/tini", "--"]
-
-# Start supervisor
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]
+# Entrypoint handles docker group setup and starts supervisord
+ENTRYPOINT ["/entrypoint.sh"]
