@@ -566,9 +566,7 @@ class BackupEngine:
     def _create_tar(self, source: str, dest: str, compress: bool = True):
         """Create tar archive."""
         mode = "w:gz" if compress else "w"
-        with tarfile.open(
-            dest, mode, compresslevel=6 if compress else None
-        ) as tar:
+        with tarfile.open(dest, mode, compresslevel=6 if compress else None) as tar:
             tar.add(source, arcname=os.path.basename(source))
 
     def _create_multi_source_tar(
@@ -579,9 +577,7 @@ class BackupEngine:
     ):
         """Create tar archive from multiple sources."""
         mode = "w:gz" if compress else "w"
-        with tarfile.open(
-            dest, mode, compresslevel=6 if compress else None
-        ) as tar:
+        with tarfile.open(dest, mode, compresslevel=6 if compress else None) as tar:
             for archive_name, source_path in sources:
                 if os.path.exists(source_path):
                     tar.add(source_path, arcname=archive_name.lstrip("/"))
