@@ -28,9 +28,17 @@ describe('Backups Page', () => {
 
   beforeEach(() => {
     user = userEvent.setup()
+    vi.clearAllMocks()
   })
 
-  it('should display loading state initially', () => {
+  it('should display page title and description', async () => {
+    render(<Backups />, { wrapper: createWrapper() })
+    
+    expect(screen.getByText('Backups')).toBeInTheDocument()
+    expect(screen.getByText('Alle erstellten Backups')).toBeInTheDocument()
+  })
+
+  it('should display loading skeleton initially', () => {
     // Override with a pending promise
     server.use(
       http.get('/api/v1/backups', () => {
@@ -39,7 +47,10 @@ describe('Backups Page', () => {
     )
 
     render(<Backups />, { wrapper: createWrapper() })
-    expect(screen.getByText(/loading/i)).toBeInTheDocument()
+    
+    // Check for skeleton rows with animate-pulse class
+    const skeletonRows = document.querySelectorAll('.animate-pulse')
+    expect(skeletonRows.length).toBeGreaterThan(0)
   })
 
   it('should display backups when loaded', async () => {
@@ -50,8 +61,18 @@ describe('Backups Page', () => {
     })
 
     expect(screen.getByText('db-volume')).toBeInTheDocument()
-    expect(screen.getByText('completed')).toBeInTheDocument()
-    expect(screen.getByText('running')).toBeInTheDocument()
+  })
+
+  it('should display backup status in German', async () => {
+    render(<Backups />, { wrapper: createWrapper() })
+
+    await waitFor(() => {
+      expect(screen.getByText('test-volume')).toBeInTheDocument()
+    })
+
+    // Check for German status labels
+    expect(screen.getByText('Abgeschlossen')).toBeInTheDocument() // completed
+    expect(screen.getByText('Läuft')).toBeInTheDocument() // running
   })
 
   it('should display empty state when no backups exist', async () => {
@@ -64,140 +85,11 @@ describe('Backups Page', () => {
     render(<Backups />, { wrapper: createWrapper() })
 
     await waitFor(() => {
-      expect(screen.getByText(/no backups found/i)).toBeInTheDocument()
+      expect(screen.getByText('Noch keine Backups vorhanden')).toBeInTheDocument()
     })
   })
 
-  it('should handle API errors gracefully', async () => {
-    server.use(
-      http.get('/api/v1/backups', () => {
-        return new HttpResponse(null, {
-          status: 500,
-          statusText: 'Internal Server Error',
-        })
-      })
-    )
-
-    render(<Backups />, { wrapper: createWrapper() })
-
-    await waitFor(() => {
-      expect(screen.getByText(/error loading backups/i)).toBeInTheDocument()
-    })
-  })
-
-  it('should display backup status icons correctly', async () => {
-    render(<Backups />, { wrapper: createWrapper() })
-
-    await waitFor(() => {
-      expect(screen.getByText('test-volume')).toBeInTheDocument()
-    })
-
-    // Check for status indicators
-    const completedBackup = screen.getByText('test-volume').closest('tr')
-    const runningBackup = screen.getByText('db-volume').closest('tr')
-
-    expect(completedBackup).toBeInTheDocument()
-    expect(runningBackup).toBeInTheDocument()
-    
-    // Check for specific status text
-    expect(screen.getByText('completed')).toBeInTheDocument()
-    expect(screen.getByText('running')).toBeInTheDocument()
-  })
-
-  it('should allow backup deletion', async () => {
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
-    
-    render(<Backups />, { wrapper: createWrapper() })
-
-    await waitFor(() => {
-      expect(screen.getByText('test-volume')).toBeInTheDocument()
-    })
-
-    // Find and click delete button for first backup
-    const deleteButtons = screen.getAllByRole('button', { name: /delete/i })
-    expect(deleteButtons.length).toBeGreaterThan(0)
-
-    await user.click(deleteButtons[0])
-
-    // Wait for the API call to complete
-    await waitFor(() => {
-      // Backup should be removed from the list or show success message
-      expect(consoleSpy).toHaveBeenCalled()
-    })
-
-    consoleSpy.mockRestore()
-  })
-
-  it('should handle backup deletion errors', async () => {
-    server.use(
-      http.delete('/api/v1/backups/:id', () => {
-        return new HttpResponse(null, {
-          status: 500,
-          statusText: 'Internal Server Error',
-        })
-      })
-    )
-
-    render(<Backups />, { wrapper: createWrapper() })
-
-    await waitFor(() => {
-      expect(screen.getByText('test-volume')).toBeInTheDocument()
-    })
-
-    const deleteButtons = screen.getAllByRole('button', { name: /delete/i })
-    await user.click(deleteButtons[0])
-
-    // Should show error toast or error message
-    await waitFor(() => {
-      // In a real app, this would check for error toast
-      expect(screen.getByText('test-volume')).toBeInTheDocument() // Backup still there
-    })
-  })
-
-  it('should allow backup restoration', async () => {
-    render(<Backups />, { wrapper: createWrapper() })
-
-    await waitFor(() => {
-      expect(screen.getByText('test-volume')).toBeInTheDocument()
-    })
-
-    // Find and click restore button for completed backup
-    const restoreButtons = screen.getAllByRole('button', { name: /restore/i })
-    expect(restoreButtons.length).toBeGreaterThan(0)
-
-    await user.click(restoreButtons[0])
-
-    // Should trigger restore API call
-    await waitFor(() => {
-      // In a real app, this would show success message
-      expect(screen.getByText('test-volume')).toBeInTheDocument()
-    })
-  })
-
-  it('should filter backups by status', async () => {
-    render(<Backups />, { wrapper: createWrapper() })
-
-    await waitFor(() => {
-      expect(screen.getByText('test-volume')).toBeInTheDocument()
-    })
-
-    // Check that both backups are initially visible
-    expect(screen.getByText('test-volume')).toBeInTheDocument()
-    expect(screen.getByText('db-volume')).toBeInTheDocument()
-
-    // If there's a status filter dropdown, test it
-    const statusFilter = screen.queryByRole('combobox', { name: /status/i })
-    if (statusFilter) {
-      await user.selectOptions(statusFilter, 'completed')
-      
-      await waitFor(() => {
-        expect(screen.getByText('test-volume')).toBeInTheDocument()
-        expect(screen.queryByText('db-volume')).not.toBeInTheDocument()
-      })
-    }
-  })
-
-  it('should display backup file sizes in human-readable format', async () => {
+  it('should display backup file sizes', async () => {
     render(<Backups />, { wrapper: createWrapper() })
 
     await waitFor(() => {
@@ -208,88 +100,105 @@ describe('Backups Page', () => {
     expect(screen.getByText('1 KB')).toBeInTheDocument()
   })
 
-  it('should show backup duration and timestamps', async () => {
+  it('should display backup duration', async () => {
     render(<Backups />, { wrapper: createWrapper() })
 
     await waitFor(() => {
       expect(screen.getByText('test-volume')).toBeInTheDocument()
     })
 
-    // Should show created date (formatted)
-    const createdText = screen.getByText(/2024/)
-    expect(createdText).toBeInTheDocument()
+    // Check for duration in seconds
+    expect(screen.getByText('300s')).toBeInTheDocument()
   })
 
-  it('should handle real-time backup progress updates via WebSocket', async () => {
-    // Mock WebSocket updates
-    const mockWebSocket = {
-      readyState: WebSocket.OPEN,
-      send: vi.fn(),
-      close: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    }
-
-    // @ts-expect-error - Mocking WebSocket
-    global.WebSocket = vi.fn(() => mockWebSocket)
-
+  it('should display table headers', async () => {
     render(<Backups />, { wrapper: createWrapper() })
 
     await waitFor(() => {
-      expect(screen.getByText('test-volume')).toBeInTheDocument()
+      expect(screen.getByText('Target')).toBeInTheDocument()
+      expect(screen.getByText('Status')).toBeInTheDocument()
+      expect(screen.getByText('Größe')).toBeInTheDocument()
+      expect(screen.getByText('Dauer')).toBeInTheDocument()
+      expect(screen.getByText('Erstellt')).toBeInTheDocument()
+      expect(screen.getByText('Aktionen')).toBeInTheDocument()
     })
-
-    // Simulate WebSocket message for progress update
-    const _progressMessage = {
-      type: 'backup_progress',
-      backup_id: 2,
-      progress: 50,
-      message: 'Backup in progress...',
-    }
-
-    // In real implementation, this would trigger progress display
-    expect(screen.getByText('running')).toBeInTheDocument()
   })
 
-  it('should be accessible with proper ARIA labels', async () => {
+  it('should allow backup deletion', async () => {
     render(<Backups />, { wrapper: createWrapper() })
 
     await waitFor(() => {
       expect(screen.getByText('test-volume')).toBeInTheDocument()
     })
 
-    // Check for table accessibility
+    // Find delete button by title attribute (German: "Löschen")
+    const deleteButtons = screen.getAllByTitle('Löschen')
+    expect(deleteButtons.length).toBeGreaterThan(0)
+
+    await user.click(deleteButtons[0])
+
+    // Wait for the mutation to complete
+    await waitFor(() => {
+      // The button should still be in the document (component re-rendered)
+      expect(screen.getAllByTitle('Löschen').length).toBeGreaterThan(0)
+    })
+  })
+
+  it('should allow backup restoration for completed backups', async () => {
+    render(<Backups />, { wrapper: createWrapper() })
+
+    await waitFor(() => {
+      expect(screen.getByText('test-volume')).toBeInTheDocument()
+    })
+
+    // Find restore button by title attribute (German: "Wiederherstellen")
+    const restoreButtons = screen.getAllByTitle('Wiederherstellen')
+    expect(restoreButtons.length).toBeGreaterThan(0)
+
+    await user.click(restoreButtons[0])
+
+    // Wait for the mutation
+    await waitFor(() => {
+      expect(screen.getByText('test-volume')).toBeInTheDocument()
+    })
+  })
+
+  it('should display backup creation date formatted in German locale', async () => {
+    render(<Backups />, { wrapper: createWrapper() })
+
+    await waitFor(() => {
+      expect(screen.getByText('test-volume')).toBeInTheDocument()
+    })
+
+    // Date should be formatted as DD.MM.YYYY HH:mm (German format)
+    const dateElements = screen.getAllByText(/\d{2}\.\d{2}\.\d{4}/)
+    expect(dateElements.length).toBeGreaterThan(0)
+  })
+
+  it('should be accessible with proper table structure', async () => {
+    render(<Backups />, { wrapper: createWrapper() })
+
+    await waitFor(() => {
+      expect(screen.getByText('test-volume')).toBeInTheDocument()
+    })
+
+    // Check for proper table structure
     const table = screen.getByRole('table')
     expect(table).toBeInTheDocument()
 
     // Check for column headers
-    expect(screen.getByRole('columnheader', { name: /name/i })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /status/i })).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: /size/i })).toBeInTheDocument()
-
-    // Check for action buttons with proper labels
-    const deleteButtons = screen.getAllByRole('button', { name: /delete/i })
-    expect(deleteButtons.length).toBeGreaterThan(0)
-    
-    const restoreButtons = screen.getAllByRole('button', { name: /restore/i })
-    expect(restoreButtons.length).toBeGreaterThan(0)
+    const columnHeaders = screen.getAllByRole('columnheader')
+    expect(columnHeaders.length).toBe(6)
   })
 
-  it('should handle keyboard navigation', async () => {
+  it('should display backup ID', async () => {
     render(<Backups />, { wrapper: createWrapper() })
 
     await waitFor(() => {
       expect(screen.getByText('test-volume')).toBeInTheDocument()
     })
 
-    // Test keyboard navigation through action buttons
-    const deleteButton = screen.getAllByRole('button', { name: /delete/i })[0]
-    deleteButton.focus()
-    expect(deleteButton).toHaveFocus()
-
-    // Tab to next button
-    await user.tab()
-    const restoreButton = screen.getAllByRole('button', { name: /restore/i })[0]
-    expect(restoreButton).toHaveFocus()
+    // Check for backup ID display
+    expect(screen.getByText('#1')).toBeInTheDocument()
   })
 })

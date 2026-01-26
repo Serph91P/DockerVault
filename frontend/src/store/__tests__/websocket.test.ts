@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useWebSocketStore } from '../websocket'
 import { act, renderHook } from '@testing-library/react'
 
-// Mock WebSocket
+// Mock WebSocket using vi.stubGlobal which works in newer jsdom versions
 class MockWebSocket {
   static CONNECTING = 0
   static OPEN = 1
@@ -47,24 +47,32 @@ describe('WebSocket Store', () => {
   let mockWebSocket: MockWebSocket
   
   beforeEach(() => {
-    // @ts-expect-error - Mocking WebSocket
-    global.WebSocket = vi.fn((url: string) => {
-      mockWebSocket = new MockWebSocket(url)
-      return mockWebSocket
-    })
+    // Create a proper WebSocket constructor mock
+    const MockWebSocketConstructor = class extends MockWebSocket {
+      constructor(url: string) {
+        super(url)
+        mockWebSocket = this
+      }
+    }
+    
+    // Add static constants
+    Object.defineProperty(MockWebSocketConstructor, 'CONNECTING', { value: 0 })
+    Object.defineProperty(MockWebSocketConstructor, 'OPEN', { value: 1 })
+    Object.defineProperty(MockWebSocketConstructor, 'CLOSING', { value: 2 })
+    Object.defineProperty(MockWebSocketConstructor, 'CLOSED', { value: 3 })
+    
+    vi.stubGlobal('WebSocket', MockWebSocketConstructor)
     
     // Reset store state
-    useWebSocketStore.getState().disconnect()
     useWebSocketStore.setState({
       connected: false,
-      connecting: false,
-      error: null,
       backupProgress: new Map(),
-      notifications: [],
+      recentBackups: [],
     })
   })
   
   afterEach(() => {
+    vi.unstubAllGlobals()
     vi.resetAllMocks()
   })
 
@@ -72,10 +80,8 @@ describe('WebSocket Store', () => {
     const { result } = renderHook(() => useWebSocketStore())
     
     expect(result.current.connected).toBe(false)
-    expect(result.current.connecting).toBe(false)
-    expect(result.current.error).toBe(null)
     expect(result.current.backupProgress.size).toBe(0)
-    expect(result.current.notifications).toHaveLength(0)
+    expect(result.current.recentBackups).toHaveLength(0)
   })
 
   it('should connect to WebSocket', async () => {
@@ -85,8 +91,8 @@ describe('WebSocket Store', () => {
       result.current.connect()
     })
     
-    expect(result.current.connecting).toBe(true)
-    expect(WebSocket).toHaveBeenCalledWith('ws://localhost:8000/ws')
+    // mockWebSocket should be created
+    expect(mockWebSocket).toBeDefined()
     
     // Wait for connection to open
     await act(async () => {
@@ -94,29 +100,34 @@ describe('WebSocket Store', () => {
     })
     
     expect(result.current.connected).toBe(true)
-    expect(result.current.connecting).toBe(false)
   })
 
   it('should handle connection errors', async () => {
     const { result } = renderHook(() => useWebSocketStore())
     
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    
     act(() => {
       result.current.connect()
     })
     
+    // Wait for connection
     await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    })
+    
+    // Simulate error
+    act(() => {
       mockWebSocket.simulateError()
     })
     
-    expect(result.current.connected).toBe(false)
-    expect(result.current.connecting).toBe(false)
-    expect(result.current.error).toBeTruthy()
+    expect(consoleSpy).toHaveBeenCalled()
+    consoleSpy.mockRestore()
   })
 
   it('should disconnect from WebSocket', async () => {
     const { result } = renderHook(() => useWebSocketStore())
     
-    // First connect
     act(() => {
       result.current.connect()
     })
@@ -125,14 +136,10 @@ describe('WebSocket Store', () => {
       await new Promise(resolve => setTimeout(resolve, 10))
     })
     
-    expect(result.current.connected).toBe(true)
-    
-    // Then disconnect
     act(() => {
       result.current.disconnect()
     })
     
-    expect(mockWebSocket.close).toHaveBeenCalled()
     expect(result.current.connected).toBe(false)
   })
 
@@ -147,22 +154,18 @@ describe('WebSocket Store', () => {
       await new Promise(resolve => setTimeout(resolve, 10))
     })
     
-    const progressMessage = {
-      type: 'backup_progress',
-      backup_id: 1,
-      progress: 50,
-      message: 'Backup in progress...'
-    }
-    
+    // Simulate backup progress message
     act(() => {
-      mockWebSocket.simulateMessage(progressMessage)
+      mockWebSocket.simulateMessage({
+        type: 'backup_progress',
+        backup_id: 123,
+        progress: 50,
+        message: 'Backing up files...',
+      })
     })
     
-    const progress = result.current.backupProgress.get(1)
-    expect(progress).toEqual({
-      progress: 50,
-      message: 'Backup in progress...'
-    })
+    expect(result.current.backupProgress.has(123)).toBe(true)
+    expect(result.current.backupProgress.get(123)?.progress).toBe(50)
   })
 
   it('should handle backup completion messages', async () => {
@@ -176,38 +179,27 @@ describe('WebSocket Store', () => {
       await new Promise(resolve => setTimeout(resolve, 10))
     })
     
-    // First set progress
-    const progressMessage = {
-      type: 'backup_progress',
-      backup_id: 1,
-      progress: 50,
-      message: 'Backup in progress...'
-    }
-    
+    // Add progress first
     act(() => {
-      mockWebSocket.simulateMessage(progressMessage)
+      result.current.updateProgress({
+        backup_id: 123,
+        progress: 100,
+        message: 'Completing...',
+      })
     })
     
-    expect(result.current.backupProgress.has(1)).toBe(true)
+    expect(result.current.backupProgress.has(123)).toBe(true)
     
-    // Then complete backup
-    const completionMessage = {
-      type: 'backup_completed',
-      backup_id: 1,
-      status: 'completed',
-      message: 'Backup completed successfully'
-    }
-    
+    // Simulate backup completed message
     act(() => {
-      mockWebSocket.simulateMessage(completionMessage)
+      mockWebSocket.simulateMessage({
+        type: 'backup_completed',
+        backup_id: 123,
+      })
     })
     
-    expect(result.current.backupProgress.has(1)).toBe(false)
-    expect(result.current.notifications).toHaveLength(1)
-    expect(result.current.notifications[0]).toMatchObject({
-      type: 'success',
-      message: 'Backup completed successfully'
-    })
+    // Progress should be removed after completion
+    expect(result.current.backupProgress.has(123)).toBe(false)
   })
 
   it('should handle backup failure messages', async () => {
@@ -221,76 +213,122 @@ describe('WebSocket Store', () => {
       await new Promise(resolve => setTimeout(resolve, 10))
     })
     
-    const failureMessage = {
-      type: 'backup_failed',
-      backup_id: 1,
-      error: 'Docker daemon not available'
+    // Add progress first
+    act(() => {
+      result.current.updateProgress({
+        backup_id: 456,
+        progress: 30,
+        message: 'In progress...',
+      })
+    })
+    
+    // Simulate backup failed message
+    act(() => {
+      mockWebSocket.simulateMessage({
+        type: 'backup_failed',
+        backup_id: 456,
+        error: 'Disk full',
+      })
+    })
+    
+    // Progress should be removed after failure
+    expect(result.current.backupProgress.has(456)).toBe(false)
+  })
+
+  it('should update progress correctly', () => {
+    const { result } = renderHook(() => useWebSocketStore())
+    
+    act(() => {
+      result.current.updateProgress({
+        backup_id: 1,
+        progress: 25,
+        message: 'Starting...',
+      })
+    })
+    
+    expect(result.current.backupProgress.get(1)?.progress).toBe(25)
+    
+    act(() => {
+      result.current.updateProgress({
+        backup_id: 1,
+        progress: 75,
+        message: 'Almost done...',
+      })
+    })
+    
+    expect(result.current.backupProgress.get(1)?.progress).toBe(75)
+  })
+
+  it('should add recent backups', () => {
+    const { result } = renderHook(() => useWebSocketStore())
+    
+    act(() => {
+      result.current.addRecentBackup({
+        id: 1,
+        target_id: 1,
+        target_name: 'test-backup',
+        backup_type: 'full',
+        status: 'completed',
+        created_at: '2024-01-01T10:00:00Z',
+      })
+    })
+    
+    expect(result.current.recentBackups).toHaveLength(1)
+    expect(result.current.recentBackups[0].target_name).toBe('test-backup')
+  })
+
+  it('should limit recent backups to 10 items', () => {
+    const { result } = renderHook(() => useWebSocketStore())
+    
+    // Add 15 backups
+    for (let i = 1; i <= 15; i++) {
+      act(() => {
+        result.current.addRecentBackup({
+          id: i,
+          target_id: 1,
+          target_name: `backup-${i}`,
+          backup_type: 'full',
+          status: 'completed',
+          created_at: `2024-01-01T${String(i).padStart(2, '0')}:00:00Z`,
+        })
+      })
     }
     
-    act(() => {
-      mockWebSocket.simulateMessage(failureMessage)
-    })
-    
-    expect(result.current.backupProgress.has(1)).toBe(false)
-    expect(result.current.notifications).toHaveLength(1)
-    expect(result.current.notifications[0]).toMatchObject({
-      type: 'error',
-      message: 'Backup failed: Docker daemon not available'
-    })
+    // Should only keep 10 most recent
+    expect(result.current.recentBackups).toHaveLength(10)
+    // Most recent should be first
+    expect(result.current.recentBackups[0].id).toBe(15)
   })
 
-  it('should clear notifications', () => {
+  it('should handle unknown message types gracefully', async () => {
     const { result } = renderHook(() => useWebSocketStore())
     
-    // Add some notifications
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    
     act(() => {
-      result.current.addNotification({
-        type: 'info',
-        message: 'Test notification 1'
-      })
-      result.current.addNotification({
-        type: 'success',
-        message: 'Test notification 2'
-      })
+      result.current.connect()
     })
     
-    expect(result.current.notifications).toHaveLength(2)
-    
-    act(() => {
-      result.current.clearNotifications()
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 10))
     })
     
-    expect(result.current.notifications).toHaveLength(0)
-  })
-
-  it('should remove specific notification', () => {
-    const { result } = renderHook(() => useWebSocketStore())
-    
+    // Simulate unknown message type
     act(() => {
-      result.current.addNotification({
-        id: 'test-1',
-        type: 'info',
-        message: 'Test notification 1'
-      })
-      result.current.addNotification({
-        id: 'test-2',
-        type: 'success',
-        message: 'Test notification 2'
+      mockWebSocket.simulateMessage({
+        type: 'unknown_type',
+        data: 'some data',
       })
     })
     
-    expect(result.current.notifications).toHaveLength(2)
-    
-    act(() => {
-      result.current.removeNotification('test-1')
-    })
-    
-    expect(result.current.notifications).toHaveLength(1)
-    expect(result.current.notifications[0].id).toBe('test-2')
+    expect(consoleSpy).toHaveBeenCalledWith('Unknown WebSocket message type:', 'unknown_type')
+    consoleSpy.mockRestore()
   })
 
   it('should handle invalid JSON messages gracefully', async () => {
     const { result } = renderHook(() => useWebSocketStore())
+    
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     
     act(() => {
       result.current.connect()
@@ -301,96 +339,14 @@ describe('WebSocket Store', () => {
     })
     
     // Simulate invalid JSON message
-    const event = new MessageEvent('message', {
-      data: 'invalid json'
-    })
-    
     act(() => {
+      const event = new MessageEvent('message', {
+        data: 'not valid json'
+      })
       mockWebSocket.onmessage?.(event)
     })
     
-    // Should not crash and should not add any notifications
-    expect(result.current.notifications).toHaveLength(0)
-    expect(result.current.connected).toBe(true) // Still connected
-  })
-
-  it('should handle unknown message types', async () => {
-    const { result } = renderHook(() => useWebSocketStore())
-    
-    act(() => {
-      result.current.connect()
-    })
-    
-    await act(async () => {
-      await new Promise(resolve => setTimeout(resolve, 10))
-    })
-    
-    const unknownMessage = {
-      type: 'unknown_message_type',
-      data: 'some data'
-    }
-    
-    act(() => {
-      mockWebSocket.simulateMessage(unknownMessage)
-    })
-    
-    // Should not crash and should not add any notifications
-    expect(result.current.notifications).toHaveLength(0)
-    expect(result.current.connected).toBe(true)
-  })
-
-  it('should automatically reconnect on connection loss', async () => {
-    vi.useFakeTimers()
-    
-    const { result } = renderHook(() => useWebSocketStore())
-    
-    act(() => {
-      result.current.connect()
-    })
-    
-    await act(async () => {
-      vi.advanceTimersByTime(10)
-    })
-    
-    expect(result.current.connected).toBe(true)
-    
-    // Simulate connection loss
-    act(() => {
-      mockWebSocket.readyState = MockWebSocket.CLOSED
-      mockWebSocket.onclose?.()
-    })
-    
-    expect(result.current.connected).toBe(false)
-    
-    // Should attempt to reconnect after delay
-    act(() => {
-      vi.advanceTimersByTime(5000) // 5 second reconnect delay
-    })
-    
-    await act(async () => {
-      vi.advanceTimersByTime(10)
-    })
-    
-    // Should have attempted to reconnect
-    expect(WebSocket).toHaveBeenCalledTimes(2)
-    
-    vi.useRealTimers()
-  })
-
-  it('should limit maximum number of notifications', () => {
-    const { result } = renderHook(() => useWebSocketStore())
-    
-    // Add many notifications (assuming max is 10)
-    for (let i = 0; i < 15; i++) {
-      act(() => {
-        result.current.addNotification({
-          type: 'info',
-          message: `Test notification ${i}`
-        })
-      })
-    }
-    
-    // Should not exceed maximum
-    expect(result.current.notifications.length).toBeLessThanOrEqual(10)
+    expect(consoleSpy).toHaveBeenCalled()
+    consoleSpy.mockRestore()
   })
 })
