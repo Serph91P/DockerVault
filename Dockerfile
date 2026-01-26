@@ -83,7 +83,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \
     tini \
     && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+    && apt-get clean \
+    && rm -f /etc/nginx/sites-enabled/default
 
 # Copy Python virtual environment from builder
 COPY --from=python-deps /opt/venv /opt/venv
