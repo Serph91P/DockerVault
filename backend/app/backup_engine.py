@@ -108,7 +108,7 @@ class BackupEngine:
         self.active_backups: Dict[int, asyncio.Task] = {}
         self.progress_callbacks: List[Callable] = []
         self.metrics = BackupMetrics()
-        self._backup_semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_BACKUPS)
+        self._backup_semaphore = asyncio.Semaphore(2)  # Max concurrent backups
 
     def add_progress_callback(self, callback: Callable):
         """Add a callback for progress updates."""
@@ -567,7 +567,7 @@ class BackupEngine:
         """Create tar archive."""
         mode = "w:gz" if compress else "w"
         with tarfile.open(
-            dest, mode, compresslevel=settings.COMPRESSION_LEVEL if compress else None
+            dest, mode, compresslevel=6 if compress else None
         ) as tar:
             tar.add(source, arcname=os.path.basename(source))
 
@@ -580,7 +580,7 @@ class BackupEngine:
         """Create tar archive from multiple sources."""
         mode = "w:gz" if compress else "w"
         with tarfile.open(
-            dest, mode, compresslevel=settings.COMPRESSION_LEVEL if compress else None
+            dest, mode, compresslevel=6 if compress else None
         ) as tar:
             for archive_name, source_path in sources:
                 if os.path.exists(source_path):

@@ -27,7 +27,7 @@ class BackupScheduler:
     def __init__(self):
         self.scheduler = AsyncIOScheduler(
             jobstores={"default": MemoryJobStore()},
-            timezone=settings.SCHEDULER_TIMEZONE,
+            timezone=settings.TZ,
         )
         self._running = False
 
