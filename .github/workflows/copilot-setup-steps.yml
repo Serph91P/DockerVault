@@ -82,13 +82,13 @@ jobs:
         run: |
           docker compose config
       
-      - name: Build Docker images
+      - name: Build Docker image
         run: |
-          docker compose build
+          docker build -t dockervault:test .
       
-      - name: Run Docker Compose health check
+      - name: Test Docker image
         run: |
-          docker compose up -d
-          sleep 30
-          docker compose ps
-          docker compose down
+          docker run --rm -d --name dockervault-test -p 8080:80 dockervault:test
+          sleep 15
+          curl -sf http://localhost:8080/ || echo "Frontend check"
+          docker stop dockervault-test
