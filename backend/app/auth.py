@@ -31,13 +31,24 @@ security = HTTPBearer(auto_error=False)
 
 
 def hash_password(password: str) -> str:
-    """Hash a password using bcrypt."""
-    return pwd_context.hash(password)
+    """Hash a password using bcrypt.
+    
+    Bcrypt has a 72-byte password limit. Passwords are truncated
+    to 72 bytes to prevent errors during hashing.
+    """
+    # Bcrypt has a 72-byte limit, truncate if necessary
+    password_bytes = password.encode('utf-8')[:72]
+    return pwd_context.hash(password_bytes.decode('utf-8', errors='ignore'))
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a password against a hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+    """Verify a password against a hash.
+    
+    Passwords are truncated to 72 bytes to match bcrypt's limit.
+    """
+    # Truncate to 72 bytes to match hash_password behavior
+    password_bytes = plain_password.encode('utf-8')[:72]
+    return pwd_context.verify(password_bytes.decode('utf-8', errors='ignore'), hashed_password)
 
 
 def generate_session_token() -> str:
