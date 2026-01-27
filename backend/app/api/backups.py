@@ -237,9 +237,7 @@ async def restore_backup(backup_id: int, request: RestoreBackupRequest):
             )
 
     success = await backup_engine.restore_backup(
-        backup_id, 
-        request.target_path,
-        request.private_key
+        backup_id, request.target_path, request.private_key
     )
 
     if not success:

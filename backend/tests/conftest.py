@@ -60,28 +60,37 @@ async def db_session(test_db):
 
 @pytest_asyncio.fixture
 async def async_client(test_db):
-    """Create async test client with mocked database."""
-    # Patch the async_session in all modules that import it
-    with patch("app.database.async_session", test_db), patch(
-        "app.api.backups.async_session", test_db
-    ), patch("app.api.targets.async_session", test_db), patch(
-        "app.api.schedules.async_session", test_db
-    ), patch(
-        "app.api.retention.async_session", test_db
-    ), patch(
-        "app.backup_engine.async_session", test_db
-    ), patch(
-        "app.scheduler.async_session", test_db
-    ), patch(
-        "app.retention.async_session", test_db
-    ):
+    """Create async test client with mocked database and auth bypassed."""
+    # Create a mock user for authentication
+    mock_user = AsyncMock()
+    mock_user.id = 1
+    mock_user.username = "testuser"
+    mock_user.is_admin = True
 
+    # Patch the async_session in all modules that import it
+    with (
+        patch("app.database.async_session", test_db),
+        patch("app.api.backups.async_session", test_db),
+        patch("app.api.targets.async_session", test_db),
+        patch("app.api.schedules.async_session", test_db),
+        patch("app.api.retention.async_session", test_db),
+        patch("app.backup_engine.async_session", test_db),
+        patch("app.scheduler.async_session", test_db),
+        patch("app.retention.async_session", test_db),
+        patch("app.api.auth.async_session", test_db),
+        patch("app.auth.async_session", test_db),
+        patch("app.main.async_session", test_db),
+        # Bypass authentication middleware
+        patch("app.main.is_setup_complete", return_value=True),
+        patch("app.main.get_session_user", return_value=mock_user),
+    ):
         # Import app after patching
         from app.main import app
 
         async with AsyncClient(
             transport=ASGITransport(app=app),
             base_url="http://test",
+            cookies={"session_token": "test-token"},
         ) as client:
             yield client
 

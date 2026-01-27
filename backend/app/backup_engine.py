@@ -28,7 +28,12 @@ from app.database import (
     async_session,
 )
 from app.docker_client import docker_client
-from app.encryption import encrypt_backup, decrypt_backup, EncryptionError, DecryptionError
+from app.encryption import (
+    DecryptionError,
+    EncryptionError,
+    decrypt_backup,
+    encrypt_backup,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -401,7 +406,7 @@ class BackupEngine:
             # Encrypt backup if enabled
             encrypted = False
             encryption_key_path = None
-            
+
             encryption_config = await self._get_encryption_config()
             if encryption_config and encryption_config.encryption_enabled:
                 await self._notify_progress(backup_id, 82, "Encrypting backup...")
@@ -658,11 +663,13 @@ class BackupEngine:
         logger.info(f"Hook output: {stdout.decode()}")
 
     async def restore_backup(
-        self, backup_id: int, target_path: Optional[str] = None,
-        private_key: Optional[str] = None
+        self,
+        backup_id: int,
+        target_path: Optional[str] = None,
+        private_key: Optional[str] = None,
     ) -> bool:
         """Restore a backup.
-        
+
         Args:
             backup_id: ID of the backup to restore
             target_path: Optional custom restore path
@@ -670,7 +677,7 @@ class BackupEngine:
         """
         is_encrypted = False
         encryption_key_path = None
-        
+
         async with async_session() as session:
             result = await session.execute(select(Backup).where(Backup.id == backup_id))
             backup = result.scalar_one_or_none()
@@ -682,7 +689,7 @@ class BackupEngine:
             if backup.status != BackupStatus.COMPLETED:
                 logger.error(f"Backup {backup_id} is not completed")
                 return False
-            
+
             # Check if backup is encrypted
             is_encrypted = backup.encrypted and backup.encryption_key_path
             encryption_key_path = backup.encryption_key_path
@@ -736,17 +743,15 @@ class BackupEngine:
             # Handle encrypted backups
             backup_file_to_extract = backup.file_path
             temp_decrypted_file = None
-            
+
             if is_encrypted:
                 try:
                     encrypted_path = Path(backup.file_path)
                     key_path = Path(encryption_key_path)
-                    
+
                     # Decrypt to temp file
                     decrypted_path = await decrypt_backup(
-                        encrypted_path,
-                        key_path,
-                        private_key
+                        encrypted_path, key_path, private_key
                     )
                     backup_file_to_extract = str(decrypted_path)
                     temp_decrypted_file = decrypted_path
@@ -765,7 +770,7 @@ class BackupEngine:
                 None,
                 lambda: self._extract_tar(backup_file_to_extract, restore_path, mode),
             )
-            
+
             # Clean up temp decrypted file
             if temp_decrypted_file and temp_decrypted_file.exists():
                 temp_decrypted_file.unlink()
@@ -780,7 +785,7 @@ class BackupEngine:
 
         except Exception as e:
             logger.error(f"Restore failed: {e}")
-            
+
             # Clean up temp decrypted file on error
             if temp_decrypted_file and temp_decrypted_file.exists():
                 try:

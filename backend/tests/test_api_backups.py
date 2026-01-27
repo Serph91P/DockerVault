@@ -370,8 +370,8 @@ class TestBackupsAPI:
         data = response.json()
         assert data["status"] == "restored"
 
-        # Verify restore was called
-        mock_engine.restore_backup.assert_called_once_with(backup.id, None)
+        # Verify restore was called with target_path=None and private_key=None
+        mock_engine.restore_backup.assert_called_once_with(backup.id, None, None)
 
     async def test_restore_backup_path_traversal_prevention(
         self, async_client: AsyncClient, db_session
