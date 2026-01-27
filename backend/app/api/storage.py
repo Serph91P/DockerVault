@@ -1,5 +1,6 @@
 """Remote Storage API endpoints"""
 
+import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,6 +13,7 @@ from ..database import get_db
 from ..remote_storage import StorageConfig, StorageType, storage_manager
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class StorageCreate(BaseModel):
@@ -261,8 +263,15 @@ async def test_storage(storage_id: int, db: AsyncSession = Depends(get_db)):
         config = _db_to_config(storage)
         backend = storage_manager.add_storage(config)
 
-    result = await backend.test_connection()
-    return StorageTestResult(**result)
+    try:
+        result = await backend.test_connection()
+    except Exception as exc:
+        logger.exception("Remote storage test failed for %s", storage_id)
+        message = str(exc).strip() or exc.__class__.__name__
+        return StorageTestResult(success=False, message=message)
+
+    message = result.get("message") or "Connection test failed"
+    return StorageTestResult(success=bool(result.get("success")), message=message)
 
 
 @router.get("/{storage_id}/files")

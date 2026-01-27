@@ -28,6 +28,12 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 
+def _format_exception_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    name = exc.__class__.__name__
+    return f"{name}: {message}" if message else name
+
+
 class StorageType(str, Enum):
     LOCAL = "local"
     SSH = "ssh"
@@ -190,7 +196,9 @@ class LocalStorage(StorageBackend):
             test_file.unlink()
             return {"success": True, "message": f"Path {path} is writable"}
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            message = _format_exception_message(e)
+            logger.warning("Local storage test failed: %s", message)
+            return {"success": False, "message": message}
 
 
 class SSHStorage(StorageBackend):
@@ -348,9 +356,16 @@ class SSHStorage(StorageBackend):
             if process.returncode == 0:
                 return {"success": True, "message": "SSH connection successful"}
             else:
-                return {"success": False, "message": stderr.decode()}
+                details = stderr.decode().strip() or stdout.decode().strip()
+                message = details or (
+                    f"SSH connection failed (exit code {process.returncode})"
+                )
+                logger.warning("SSH storage test failed: %s", message)
+                return {"success": False, "message": message}
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            message = _format_exception_message(e)
+            logger.warning("SSH storage test failed: %s", message)
+            return {"success": False, "message": message}
 
 
 class WebDAVStorage(StorageBackend):
@@ -469,9 +484,20 @@ class WebDAVStorage(StorageBackend):
                             "message": "WebDAV connection successful",
                         }
                     else:
-                        return {"success": False, "message": f"HTTP {resp.status}"}
+                        details = (await resp.text()).strip()
+                        if len(details) > 200:
+                            details = f"{details[:200]}…"
+                        message = (
+                            f"HTTP {resp.status}: {details}"
+                            if details
+                            else f"HTTP {resp.status}"
+                        )
+                        logger.warning("WebDAV storage test failed: %s", message)
+                        return {"success": False, "message": message}
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            message = _format_exception_message(e)
+            logger.warning("WebDAV storage test failed: %s", message)
+            return {"success": False, "message": message}
 
 
 class S3Storage(StorageBackend):
@@ -579,7 +605,9 @@ class S3Storage(StorageBackend):
                 "message": f"S3 bucket '{self.config.s3_bucket}' accessible",
             }
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            message = _format_exception_message(e)
+            logger.warning("S3 storage test failed: %s", message)
+            return {"success": False, "message": message}
 
 
 class RcloneStorage(StorageBackend):
@@ -681,9 +709,14 @@ class RcloneStorage(StorageBackend):
                     ),
                 }
             else:
-                return {"success": False, "message": stderr}
+                details = stderr.strip() or stdout.strip()
+                message = details or f"Rclone connection failed (exit code {code})"
+                logger.warning("Rclone storage test failed: %s", message)
+                return {"success": False, "message": message}
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            message = _format_exception_message(e)
+            logger.warning("Rclone storage test failed: %s", message)
+            return {"success": False, "message": message}
 
 
 class FTPStorage(StorageBackend):
@@ -781,7 +814,9 @@ class FTPStorage(StorageBackend):
             await client.quit()
             return {"success": True, "message": "FTP connection successful"}
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            message = _format_exception_message(e)
+            logger.warning("FTP storage test failed: %s", message)
+            return {"success": False, "message": message}
 
 
 class RemoteStorageManager:

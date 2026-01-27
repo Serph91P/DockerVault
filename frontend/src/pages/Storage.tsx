@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import axios from 'axios';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Cloud,
@@ -138,7 +139,12 @@ export default function Storage() {
       setTestingId(null);
     },
     onError: (error: Error, id) => {
-      setTestResult({ id, success: false, message: error.message });
+      let message = error.message;
+      if (axios.isAxiosError(error)) {
+        const data = error.response?.data as { message?: string; detail?: string } | undefined;
+        message = data?.message || data?.detail || error.message;
+      }
+      setTestResult({ id, success: false, message });
       setTestingId(null);
     },
   });
@@ -652,51 +658,63 @@ export default function Storage() {
                       </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    {testResult?.id === storage.id && (
-                      <span
-                        className={`flex items-center gap-1 text-sm ${
+                  <div className="flex flex-col items-end gap-1">
+                    <div className="flex items-center gap-2">
+                      {testResult?.id === storage.id && (
+                        <span
+                          className={`flex items-center gap-1 text-sm ${
+                            testResult.success ? 'text-green-600' : 'text-red-600'
+                          }`}
+                          title={testResult.message}
+                        >
+                          {testResult.success ? (
+                            <CheckCircle className="w-4 h-4" />
+                          ) : (
+                            <XCircle className="w-4 h-4" />
+                          )}
+                          {testResult.success ? 'Connected' : 'Error'}
+                        </span>
+                      )}
+                      <button
+                        onClick={() => testMutation.mutate(storage.id)}
+                        disabled={testingId === storage.id}
+                        className="p-2 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
+                        title="Test Connection"
+                      >
+                        {testingId === storage.id ? (
+                          <Loader2 className="w-5 h-5 animate-spin" />
+                        ) : (
+                          <TestTube className="w-5 h-5" />
+                        )}
+                      </button>
+                      <button
+                        onClick={() => handleEdit(storage)}
+                        className="p-2 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
+                        title="Edit"
+                      >
+                        <Edit className="w-5 h-5" />
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (confirm(`Really delete storage "${storage.name}"?`)) {
+                            deleteMutation.mutate(storage.id);
+                          }
+                        }}
+                        className="p-2 text-slate-600 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                        title="Delete"
+                      >
+                        <Trash2 className="w-5 h-5" />
+                      </button>
+                    </div>
+                    {testResult?.id === storage.id && testResult.message && (
+                      <p
+                        className={`max-w-xs text-right text-xs ${
                           testResult.success ? 'text-green-600' : 'text-red-600'
                         }`}
                       >
-                        {testResult.success ? (
-                          <CheckCircle className="w-4 h-4" />
-                        ) : (
-                          <XCircle className="w-4 h-4" />
-                        )}
-                        {testResult.success ? 'Connected' : 'Error'}
-                      </span>
+                        {testResult.message}
+                      </p>
                     )}
-                    <button
-                      onClick={() => testMutation.mutate(storage.id)}
-                      disabled={testingId === storage.id}
-                      className="p-2 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
-                      title="Test Connection"
-                    >
-                      {testingId === storage.id ? (
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                      ) : (
-                        <TestTube className="w-5 h-5" />
-                      )}
-                    </button>
-                    <button
-                      onClick={() => handleEdit(storage)}
-                      className="p-2 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
-                      title="Edit"
-                    >
-                      <Edit className="w-5 h-5" />
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (confirm(`Really delete storage "${storage.name}"?`)) {
-                          deleteMutation.mutate(storage.id);
-                        }
-                      }}
-                      className="p-2 text-slate-600 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
-                      title="Delete"
-                    >
-                      <Trash2 className="w-5 h-5" />
-                    </button>
                   </div>
                 </div>
               );
