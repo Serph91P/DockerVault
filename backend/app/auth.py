@@ -9,18 +9,16 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Optional
 
+import bcrypt as bcrypt_lib
+
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from passlib.context import CryptContext
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import Session, User, async_session
 
 logger = logging.getLogger(__name__)
-
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Session configuration
 SESSION_EXPIRE_HOURS = 24 * 7  # 7 days
@@ -36,9 +34,10 @@ def hash_password(password: str) -> str:
     Bcrypt has a 72-byte password limit. Passwords are truncated
     to 72 bytes to prevent errors during hashing.
     """
-    # Bcrypt has a 72-byte limit, truncate and pass as bytes
+    # Bcrypt has a 72-byte limit, truncate password
     password_bytes = password.encode("utf-8")[:72]
-    return pwd_context.hash(password_bytes)
+    salt = bcrypt_lib.gensalt()
+    return bcrypt_lib.hashpw(password_bytes, salt).decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -48,7 +47,8 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
     # Truncate to 72 bytes to match hash_password behavior
     password_bytes = plain_password.encode("utf-8")[:72]
-    return pwd_context.verify(password_bytes, hashed_password)
+    hash_bytes = hashed_password.encode("utf-8")
+    return bcrypt_lib.checkpw(password_bytes, hash_bytes)
 
 
 def generate_session_token() -> str:
