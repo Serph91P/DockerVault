@@ -33,6 +33,7 @@ class BackupResponse(BaseModel):
     completed_at: Optional[str] = None
     duration_seconds: Optional[int] = None
     error_message: Optional[str] = None
+    encrypted: bool = False
     created_at: str
 
     class Config:
@@ -50,6 +51,7 @@ class RestoreBackupRequest(BaseModel):
     """Restore backup request."""
 
     target_path: Optional[str] = None
+    private_key: Optional[str] = None  # Required for encrypted backups
 
 
 def format_size(size_bytes: Optional[int]) -> Optional[str]:
@@ -116,6 +118,7 @@ async def list_backups(
                 completed_at=b.completed_at.isoformat() if b.completed_at else None,
                 duration_seconds=b.duration_seconds,
                 error_message=b.error_message,
+                encrypted=b.encrypted or False,
                 created_at=b.created_at.isoformat(),
             )
             for b in backups
@@ -154,6 +157,7 @@ async def get_backup(backup_id: int):
             ),
             duration_seconds=backup.duration_seconds,
             error_message=backup.error_message,
+            encrypted=backup.encrypted or False,
             created_at=backup.created_at.isoformat(),
         )
 
@@ -194,6 +198,7 @@ async def create_backup(request: CreateBackupRequest):
         completed_at=backup.completed_at.isoformat() if backup.completed_at else None,
         duration_seconds=backup.duration_seconds,
         error_message=backup.error_message,
+        encrypted=backup.encrypted or False,
         created_at=backup.created_at.isoformat(),
     )
 
@@ -231,7 +236,11 @@ async def restore_backup(backup_id: int, request: RestoreBackupRequest):
                 detail="Invalid restore path: must be within allowed directories",
             )
 
-    success = await backup_engine.restore_backup(backup_id, request.target_path)
+    success = await backup_engine.restore_backup(
+        backup_id, 
+        request.target_path,
+        request.private_key
+    )
 
     if not success:
         raise HTTPException(status_code=500, detail="Restore failed")

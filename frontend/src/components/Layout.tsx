@@ -13,8 +13,12 @@ import {
   Settings,
   Wifi,
   WifiOff,
+  LogOut,
+  User,
 } from 'lucide-react'
 import { useWebSocketStore } from '../store/websocket'
+import { useAuthStore } from '../store/auth'
+import toast from 'react-hot-toast'
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
@@ -32,6 +36,12 @@ const navigation = [
 export default function Layout() {
   const location = useLocation()
   const connected = useWebSocketStore((state) => state.connected)
+  const { user, logout } = useAuthStore()
+  
+  const handleLogout = async () => {
+    await logout()
+    toast.success('Logged out successfully')
+  }
 
   return (
     <div className="flex h-screen bg-dark-950">
@@ -71,8 +81,26 @@ export default function Layout() {
           })}
         </nav>
 
-        {/* Connection Status */}
-        <div className="px-4 py-3 border-t border-dark-700">
+        {/* Connection Status & User */}
+        <div className="px-4 py-3 border-t border-dark-700 space-y-3">
+          {/* User Info */}
+          {user && (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm">
+                <User className="w-4 h-4 text-dark-400" />
+                <span className="text-dark-300">{user.username}</span>
+              </div>
+              <button
+                onClick={handleLogout}
+                className="p-1.5 text-dark-400 hover:text-red-400 hover:bg-dark-800 rounded-lg transition-colors"
+                title="Logout"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+          
+          {/* Connection Status */}
           <div className="flex items-center gap-2 text-sm">
             {connected ? (
               <>

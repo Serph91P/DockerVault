@@ -19,8 +19,16 @@ from typing import Any, Callable, Dict, List, Optional
 from sqlalchemy import select, update
 
 from app.config import settings
-from app.database import Backup, BackupStatus, BackupTarget, BackupType, async_session
+from app.database import (
+    Backup,
+    BackupStatus,
+    BackupTarget,
+    BackupType,
+    EncryptionConfig,
+    async_session,
+)
 from app.docker_client import docker_client
+from app.encryption import encrypt_backup, decrypt_backup, EncryptionError, DecryptionError
 
 logger = logging.getLogger(__name__)
 
@@ -390,6 +398,31 @@ class BackupEngine:
             file_size = os.path.getsize(backup_path)
             checksum = await self._calculate_checksum(backup_path)
 
+            # Encrypt backup if enabled
+            encrypted = False
+            encryption_key_path = None
+            
+            encryption_config = await self._get_encryption_config()
+            if encryption_config and encryption_config.encryption_enabled:
+                await self._notify_progress(backup_id, 82, "Encrypting backup...")
+                try:
+                    result = await encrypt_backup(
+                        Path(backup_path),
+                        encryption_config.public_key,
+                    )
+                    backup_path = str(result.encrypted_path)
+                    encryption_key_path = str(result.key_path)
+                    encrypted = True
+                    # Recalculate size for encrypted file
+                    file_size = os.path.getsize(backup_path)
+                    logger.info(f"Backup encrypted: {backup_path}")
+                except EncryptionError as e:
+                    logger.error(f"Encryption failed: {e}")
+                    # Continue with unencrypted backup
+                    await self._notify_progress(
+                        backup_id, 83, f"Encryption failed, backup unencrypted: {e}"
+                    )
+
             # Run post-backup hook
             if target.post_backup_command:
                 await self._notify_progress(
@@ -419,6 +452,8 @@ class BackupEngine:
                         checksum=checksum,
                         completed_at=datetime.utcnow(),
                         duration_seconds=duration_seconds,
+                        encrypted=encrypted,
+                        encryption_key_path=encryption_key_path,
                     )
                 )
                 await session.commit()
@@ -623,9 +658,19 @@ class BackupEngine:
         logger.info(f"Hook output: {stdout.decode()}")
 
     async def restore_backup(
-        self, backup_id: int, target_path: Optional[str] = None
+        self, backup_id: int, target_path: Optional[str] = None,
+        private_key: Optional[str] = None
     ) -> bool:
-        """Restore a backup."""
+        """Restore a backup.
+        
+        Args:
+            backup_id: ID of the backup to restore
+            target_path: Optional custom restore path
+            private_key: Required for encrypted backups
+        """
+        is_encrypted = False
+        encryption_key_path = None
+        
         async with async_session() as session:
             result = await session.execute(select(Backup).where(Backup.id == backup_id))
             backup = result.scalar_one_or_none()
@@ -636,6 +681,14 @@ class BackupEngine:
 
             if backup.status != BackupStatus.COMPLETED:
                 logger.error(f"Backup {backup_id} is not completed")
+                return False
+            
+            # Check if backup is encrypted
+            is_encrypted = backup.encrypted and backup.encryption_key_path
+            encryption_key_path = backup.encryption_key_path
+
+            if is_encrypted and not private_key:
+                logger.error("Private key required for encrypted backup")
                 return False
 
             # Get target
@@ -680,16 +733,42 @@ class BackupEngine:
                 if state == "running":
                     await docker_client.stop_container(container_name)
 
+            # Handle encrypted backups
+            backup_file_to_extract = backup.file_path
+            temp_decrypted_file = None
+            
+            if is_encrypted:
+                try:
+                    encrypted_path = Path(backup.file_path)
+                    key_path = Path(encryption_key_path)
+                    
+                    # Decrypt to temp file
+                    decrypted_path = await decrypt_backup(
+                        encrypted_path,
+                        key_path,
+                        private_key
+                    )
+                    backup_file_to_extract = str(decrypted_path)
+                    temp_decrypted_file = decrypted_path
+                    logger.info(f"Decrypted backup to {decrypted_path}")
+                except DecryptionError as e:
+                    logger.error(f"Decryption failed: {e}")
+                    raise ValueError(f"Failed to decrypt backup: {e}")
+
             # Extract backup
             loop = asyncio.get_event_loop()
 
-            is_compressed = backup.file_path.endswith(".gz")
+            is_compressed = backup_file_to_extract.endswith(".gz")
             mode = "r:gz" if is_compressed else "r"
 
             await loop.run_in_executor(
                 None,
-                lambda: self._extract_tar(backup.file_path, restore_path, mode),
+                lambda: self._extract_tar(backup_file_to_extract, restore_path, mode),
             )
+            
+            # Clean up temp decrypted file
+            if temp_decrypted_file and temp_decrypted_file.exists():
+                temp_decrypted_file.unlink()
 
             # Restart containers
             for container_name in reversed(containers_to_stop):
@@ -701,6 +780,13 @@ class BackupEngine:
 
         except Exception as e:
             logger.error(f"Restore failed: {e}")
+            
+            # Clean up temp decrypted file on error
+            if temp_decrypted_file and temp_decrypted_file.exists():
+                try:
+                    temp_decrypted_file.unlink()
+                except Exception:
+                    pass
 
             # Try to restart containers
             for container_name in reversed(containers_to_stop):
@@ -755,6 +841,15 @@ class BackupEngine:
 
             # Safe to extract after validation
             tar.extractall(dest)
+
+    async def _get_encryption_config(self) -> Optional[EncryptionConfig]:
+        """Get encryption configuration if set up."""
+        async with async_session() as session:
+            result = await session.execute(select(EncryptionConfig).limit(1))
+            config = result.scalar_one_or_none()
+            if config and config.setup_completed:
+                return config
+            return None
 
     async def estimate_backup_duration(self, target: BackupTarget) -> int:
         """Estimate backup duration in seconds based on historical data."""

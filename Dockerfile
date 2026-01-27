@@ -82,9 +82,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rsync \
     openssh-client \
     tini \
+    openssl \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean \
     && rm -f /etc/nginx/sites-enabled/default
+
+# Install age for encryption (not available in standard repos)
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "amd64" ]; then AGE_ARCH="amd64"; \
+    elif [ "$ARCH" = "arm64" ]; then AGE_ARCH="arm64"; \
+    else echo "Unsupported architecture: $ARCH" && exit 1; fi && \
+    curl -fsSL "https://github.com/FiloSottile/age/releases/download/v1.2.1/age-v1.2.1-linux-${AGE_ARCH}.tar.gz" | \
+    tar -xz -C /usr/local/bin --strip-components=1 age/age age/age-keygen && \
+    chmod +x /usr/local/bin/age /usr/local/bin/age-keygen
 
 # Copy Python virtual environment from builder
 COPY --from=python-deps /opt/venv /opt/venv

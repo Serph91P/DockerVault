@@ -29,6 +29,7 @@ interface RemoteStorage {
   port?: number;
   username?: string;
   base_path: string;
+  ssh_key_path?: string;
   s3_bucket?: string;
   s3_region?: string;
   s3_endpoint_url?: string;
@@ -183,7 +184,7 @@ export default function Storage() {
       username: storage.username || '',
       password: '',
       base_path: storage.base_path || '/backups',
-      ssh_key_path: '',
+      ssh_key_path: storage.ssh_key_path || '',
       s3_bucket: storage.s3_bucket || '',
       s3_region: storage.s3_region || 'eu-central-1',
       s3_access_key: '',

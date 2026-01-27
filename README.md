@@ -144,6 +144,62 @@ DockerVault follows security best practices:
 - **Docker volumes** — Mounted read-only (`/var/lib/docker/volumes:ro`)
 - **Non-root user** — Container runs as unprivileged user with Docker group access
 
+### Backup Encryption
+
+DockerVault supports end-to-end encryption for your backups using **AES-256-CBC** with envelope encryption:
+
+- **Per-backup keys** — Each backup gets a unique Data Encryption Key (DEK)
+- **Asymmetric wrapping** — DEKs are encrypted with your public key using [age](https://github.com/FiloSottile/age)
+- **Disaster recovery** — Backups can be restored without DockerVault using standard command-line tools
+
+#### Setting Up Encryption
+
+1. Navigate to **Settings → Backup Encryption**
+2. Click **Set Up Encryption** to generate a new key pair
+3. **Download your private key** and store it securely (password manager, encrypted drive)
+4. Confirm that you have saved the private key
+
+> [!CAUTION]
+> Your private key is only shown **once** during setup. If lost, encrypted backups **cannot be recovered**.
+
+#### Restoring Encrypted Backups
+
+**With DockerVault:**
+1. Navigate to **Backups** and select the backup
+2. Click **Restore** — DockerVault handles decryption automatically
+
+**Without DockerVault (Disaster Recovery):**
+
+If you lose access to DockerVault, you can still recover encrypted backups using standard command-line tools:
+
+```bash
+# Prerequisites: age (https://github.com/FiloSottile/age) and openssl
+
+# 1. Save your private key to a file
+cat > private_key.txt << 'EOF'
+AGE-SECRET-KEY-1XXXXXX...
+EOF
+chmod 600 private_key.txt
+
+# 2. Decrypt the DEK (Data Encryption Key)
+age -d -i private_key.txt backup.tar.gz.key > dek.txt
+
+# 3. Decrypt the backup
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
+    -in backup.tar.gz.enc \
+    -out backup.tar.gz \
+    -pass file:dek.txt
+
+# 4. Extract the backup
+tar xzf backup.tar.gz
+
+# 5. Clean up (don't leave keys lying around)
+rm dek.txt private_key.txt
+```
+
+> [!TIP]
+> The downloaded private key file includes these recovery instructions.
+
 ## Development
 
 ### Backend

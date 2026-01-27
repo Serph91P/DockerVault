@@ -113,6 +113,10 @@ class Backup(Base):
     file_size = Column(Integer, nullable=True)  # Size in bytes
     checksum = Column(String(64), nullable=True)  # SHA256
 
+    # Encryption
+    encrypted = Column(Boolean, default=False)
+    encryption_key_path = Column(String(1024), nullable=True)  # Path to .key file
+
     # Timing
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
@@ -204,6 +208,51 @@ class BackupStorageSync(Base):
 
     backup = relationship("Backup")
     storage = relationship("RemoteStorage")
+
+
+class EncryptionConfig(Base):
+    """Encryption configuration - stores public key, private key is exported to user."""
+
+    __tablename__ = "encryption_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+    public_key = Column(Text, nullable=False)  # age public key (age1...)
+    # Private key is NOT stored - user must export and save it
+    key_created_at = Column(DateTime, default=datetime.utcnow)
+    encryption_enabled = Column(Boolean, default=True)
+    setup_completed = Column(Boolean, default=False)  # User confirmed key export
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class User(Base):
+    """User account for authentication."""
+
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(255), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    is_admin = Column(Boolean, default=True)  # First user is always admin
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_login = Column(DateTime, nullable=True)
+
+
+class Session(Base):
+    """User session for authentication."""
+
+    __tablename__ = "sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    token = Column(String(255), unique=True, nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    user = relationship("User")
 
 
 # Database engine and session

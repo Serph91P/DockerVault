@@ -2,6 +2,7 @@ import { useQuery, useMutation } from '@tanstack/react-query'
 import { Settings as SettingsIcon, Link2, Check, X, RefreshCw } from 'lucide-react'
 import { komodoApi, dockerApi } from '../api'
 import toast from 'react-hot-toast'
+import EncryptionSetup from '../components/EncryptionSetup'
 
 export default function Settings() {
   const { data: dockerHealth, refetch: refetchDocker } = useQuery({
@@ -66,6 +67,9 @@ export default function Settings() {
           <p>Docker Socket: /var/run/docker.sock</p>
         </div>
       </div>
+
+      {/* Encryption Settings */}
+      <EncryptionSetup />
 
       {/* Komodo Integration */}
       <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
@@ -143,6 +147,9 @@ KOMODO_API_KEY=your-api-key`}
           )}
         </div>
       </div>
+
+      {/* Encryption Settings */}
+      <EncryptionSetup />
 
       {/* Backup Settings */}
       <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">

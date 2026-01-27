@@ -487,10 +487,15 @@ class WebDAVStorage(StorageBackend):
                         details = (await resp.text()).strip()
                         if len(details) > 200:
                             details = f"{details[:200]}…"
+                        hint = (
+                            " Check WebDAV URL and base_path."
+                            if resp.status == 404
+                            else ""
+                        )
                         message = (
-                            f"HTTP {resp.status}: {details}"
+                            f"HTTP {resp.status}: {details}{hint}"
                             if details
-                            else f"HTTP {resp.status}"
+                            else f"HTTP {resp.status}.{hint}"
                         )
                         logger.warning("WebDAV storage test failed: %s", message)
                         return {"success": False, "message": message}

@@ -59,6 +59,14 @@ class StorageUpdate(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
     base_path: Optional[str] = None
+    ssh_key_path: Optional[str] = None
+    s3_bucket: Optional[str] = None
+    s3_region: Optional[str] = None
+    s3_access_key: Optional[str] = None
+    s3_secret_key: Optional[str] = None
+    s3_endpoint_url: Optional[str] = None
+    webdav_url: Optional[str] = None
+    rclone_remote: Optional[str] = None
 
 
 class StorageResponse(BaseModel):
@@ -69,8 +77,17 @@ class StorageResponse(BaseModel):
     storage_type: str
     enabled: bool
     host: Optional[str]
+    port: Optional[int]
+    username: Optional[str]
     base_path: str
+    ssh_key_path: Optional[str]
+    s3_bucket: Optional[str]
+    s3_region: Optional[str]
+    s3_endpoint_url: Optional[str]
+    webdav_url: Optional[str]
+    rclone_remote: Optional[str]
     created_at: str
+    updated_at: str
 
     class Config:
         from_attributes = True
@@ -95,8 +112,17 @@ async def list_storage(db: AsyncSession = Depends(get_db)):
             storage_type=s.storage_type,
             enabled=s.enabled,
             host=s.host,
+            port=s.port,
+            username=s.username,
             base_path=s.base_path,
+            ssh_key_path=s.ssh_key_path,
+            s3_bucket=s.s3_bucket,
+            s3_region=s.s3_region,
+            s3_endpoint_url=s.s3_endpoint_url,
+            webdav_url=s.webdav_url,
+            rclone_remote=s.rclone_remote,
             created_at=s.created_at.isoformat(),
+            updated_at=s.updated_at.isoformat(),
         )
         for s in storages
     ]
@@ -181,8 +207,17 @@ async def create_storage(data: StorageCreate, db: AsyncSession = Depends(get_db)
         storage_type=storage.storage_type,
         enabled=storage.enabled,
         host=storage.host,
+        port=storage.port,
+        username=storage.username,
         base_path=storage.base_path,
+        ssh_key_path=storage.ssh_key_path,
+        s3_bucket=storage.s3_bucket,
+        s3_region=storage.s3_region,
+        s3_endpoint_url=storage.s3_endpoint_url,
+        webdav_url=storage.webdav_url,
+        rclone_remote=storage.rclone_remote,
         created_at=storage.created_at.isoformat(),
+        updated_at=storage.updated_at.isoformat(),
     )
 
 
@@ -199,8 +234,17 @@ async def get_storage(storage_id: int, db: AsyncSession = Depends(get_db)):
         storage_type=storage.storage_type,
         enabled=storage.enabled,
         host=storage.host,
+        port=storage.port,
+        username=storage.username,
         base_path=storage.base_path,
+        ssh_key_path=storage.ssh_key_path,
+        s3_bucket=storage.s3_bucket,
+        s3_region=storage.s3_region,
+        s3_endpoint_url=storage.s3_endpoint_url,
+        webdav_url=storage.webdav_url,
+        rclone_remote=storage.rclone_remote,
         created_at=storage.created_at.isoformat(),
+        updated_at=storage.updated_at.isoformat(),
     )
 
 
@@ -214,6 +258,8 @@ async def update_storage(
         raise HTTPException(status_code=404, detail="Storage not found")
 
     for field, value in data.model_dump(exclude_unset=True).items():
+        if isinstance(value, str) and value == "":
+            continue
         setattr(storage, field, value)
 
     await db.commit()
@@ -230,8 +276,17 @@ async def update_storage(
         storage_type=storage.storage_type,
         enabled=storage.enabled,
         host=storage.host,
+        port=storage.port,
+        username=storage.username,
         base_path=storage.base_path,
+        ssh_key_path=storage.ssh_key_path,
+        s3_bucket=storage.s3_bucket,
+        s3_region=storage.s3_region,
+        s3_endpoint_url=storage.s3_endpoint_url,
+        webdav_url=storage.webdav_url,
+        rclone_remote=storage.rclone_remote,
         created_at=storage.created_at.isoformat(),
+        updated_at=storage.updated_at.isoformat(),
     )
 
 
