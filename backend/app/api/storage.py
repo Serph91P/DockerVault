@@ -11,7 +11,7 @@ from ..database import RemoteStorage as RemoteStorageModel
 from ..database import get_db
 from ..remote_storage import StorageConfig, StorageType, storage_manager
 
-router = APIRouter(prefix="/storage", tags=["Remote Storage"])
+router = APIRouter()
 
 
 class StorageCreate(BaseModel):
