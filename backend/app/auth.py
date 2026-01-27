@@ -36,9 +36,9 @@ def hash_password(password: str) -> str:
     Bcrypt has a 72-byte password limit. Passwords are truncated
     to 72 bytes to prevent errors during hashing.
     """
-    # Bcrypt has a 72-byte limit, truncate if necessary
+    # Bcrypt has a 72-byte limit, truncate and pass as bytes
     password_bytes = password.encode("utf-8")[:72]
-    return pwd_context.hash(password_bytes.decode("utf-8", errors="ignore"))
+    return pwd_context.hash(password_bytes)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -48,9 +48,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
     # Truncate to 72 bytes to match hash_password behavior
     password_bytes = plain_password.encode("utf-8")[:72]
-    return pwd_context.verify(
-        password_bytes.decode("utf-8", errors="ignore"), hashed_password
-    )
+    return pwd_context.verify(password_bytes, hashed_password)
 
 
 def generate_session_token() -> str:
