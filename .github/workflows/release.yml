@@ -6,6 +6,7 @@ on:
     branches: [main, develop]
     types: [completed]
   push:
+    branches: [main, develop]
     tags:
       - 'v*'
 
@@ -14,9 +15,65 @@ env:
   IMAGE_NAME: ${{ github.repository_owner }}/dockervault
 
 jobs:
+  # Wait for tests to complete when triggered by push
+  wait-for-tests:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+    outputs:
+      tests_passed: ${{ steps.check.outputs.passed }}
+    steps:
+      - name: Wait for Tests workflow
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Wait up to 10 minutes for Tests workflow to complete
+            const maxWait = 600000; // 10 minutes
+            const checkInterval = 15000; // 15 seconds
+            let waited = 0;
+            
+            while (waited < maxWait) {
+              const runs = await github.rest.actions.listWorkflowRuns({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'test.yml',
+                head_sha: context.sha,
+                per_page: 1
+              });
+              
+              if (runs.data.workflow_runs.length > 0) {
+                const run = runs.data.workflow_runs[0];
+                console.log(`Tests workflow status: ${run.status}, conclusion: ${run.conclusion}`);
+                
+                if (run.status === 'completed') {
+                  if (run.conclusion === 'success') {
+                    core.setOutput('passed', 'true');
+                    return;
+                  } else {
+                    core.setOutput('passed', 'false');
+                    core.setFailed(`Tests failed with conclusion: ${run.conclusion}`);
+                    return;
+                  }
+                }
+              }
+              
+              console.log(`Waiting for Tests workflow... (${waited/1000}s)`);
+              await new Promise(r => setTimeout(r, checkInterval));
+              waited += checkInterval;
+            }
+            
+            core.setFailed('Timed out waiting for Tests workflow');
+            core.setOutput('passed', 'false');
+
   prepare:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
+    needs: [wait-for-tests]
+    if: |
+      always() && (
+        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+        (github.event_name == 'push' && needs.wait-for-tests.outputs.tests_passed == 'true') ||
+        (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      )
     outputs:
       version: ${{ steps.version.outputs.version }}
       is_prerelease: ${{ steps.version.outputs.is_prerelease }}
