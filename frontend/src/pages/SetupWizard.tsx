@@ -8,6 +8,8 @@ export default function SetupWizard() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [encryptionPassword, setEncryptionPassword] = useState('');
+  const [confirmEncryptionPassword, setConfirmEncryptionPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   
@@ -35,16 +37,31 @@ export default function SetupWizard() {
     return true;
   };
   
+  const validateStep3 = () => {
+    if (encryptionPassword.length < 8) {
+      setError('Encryption password must be at least 8 characters');
+      return false;
+    }
+    if (encryptionPassword !== confirmEncryptionPassword) {
+      setError('Encryption passwords do not match');
+      return false;
+    }
+    setError('');
+    return true;
+  };
+  
   const handleNext = () => {
     if (step === 1 && validateStep1()) {
       setStep(2);
+    } else if (step === 2 && validateStep2()) {
+      setStep(3);
     }
   };
   
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!validateStep2()) {
+    if (!validateStep3()) {
       return;
     }
     
@@ -52,11 +69,26 @@ export default function SetupWizard() {
     setError('');
     
     try {
+      // Complete user setup
       await setup(username, password);
+      
+      // Initialize encryption
+      const response = await fetch('/api/v1/encryption/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ password: encryptionPassword }),
+      });
+      
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.detail || 'Encryption setup failed');
+      }
+      
       toast.success('Setup completed! Welcome to DockerVault');
     } catch (err: unknown) {
-      const error = err as { response?: { data?: { detail?: string } } };
-      setError(error.response?.data?.detail || 'Setup failed');
+      const error = err as { response?: { data?: { detail?: string } }; message?: string };
+      setError(error.response?.data?.detail || error.message || 'Setup failed');
     } finally {
       setIsLoading(false);
     }
@@ -91,16 +123,29 @@ export default function SetupWizard() {
           
           <div className={`flex items-center gap-2 ${step >= 2 ? 'text-indigo-400' : 'text-dark-500'}`}>
             <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
-              step === 2 ? 'bg-indigo-500/20 text-indigo-400' : 'bg-dark-700'
+              step > 2 ? 'bg-indigo-500 text-white' : step === 2 ? 'bg-indigo-500/20 text-indigo-400' : 'bg-dark-700'
             }`}>
-              2
+              {step > 2 ? <Check className="w-4 h-4" /> : '2'}
             </div>
             <span className="text-sm font-medium">Password</span>
+          </div>
+          
+          <div className="w-12 h-0.5 bg-dark-700">
+            <div className={`h-full bg-indigo-500 transition-all ${step > 2 ? 'w-full' : 'w-0'}`} />
+          </div>
+          
+          <div className={`flex items-center gap-2 ${step >= 3 ? 'text-indigo-400' : 'text-dark-500'}`}>
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
+              step === 3 ? 'bg-indigo-500/20 text-indigo-400' : 'bg-dark-700'
+            }`}>
+              3
+            </div>
+            <span className="text-sm font-medium">Encryption</span>
           </div>
         </div>
         
         {/* Form */}
-        <form onSubmit={step === 2 ? handleSubmit : (e) => { e.preventDefault(); handleNext(); }} 
+        <form onSubmit={step === 3 ? handleSubmit : (e) => { e.preventDefault(); handleNext(); }} 
               className="bg-dark-800 rounded-xl border border-dark-700 p-6 space-y-6">
           
           {error && (
@@ -198,6 +243,77 @@ export default function SetupWizard() {
                 <button
                   type="button"
                   onClick={() => setStep(1)}
+                  className="flex-1 py-3 bg-dark-700 hover:bg-dark-600 text-dark-200 rounded-lg font-medium transition-colors"
+                >
+                  Back
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 flex items-center justify-center gap-2 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-colors"
+                >
+                  Continue
+                  <ArrowRight className="w-5 h-5" />
+                </button>
+              </div>
+            </>
+          )}
+          
+          {step === 3 && (
+            <>
+              <div className="text-center mb-4">
+                <h2 className="text-lg font-semibold text-dark-100">Setup Encryption</h2>
+                <p className="text-dark-400 text-sm mt-1">
+                  Create a master password to encrypt your backups
+                </p>
+              </div>
+              
+              <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                <p className="text-amber-400 text-sm">
+                  <strong>Important:</strong> Store this password securely! It cannot be recovered if lost.
+                </p>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-dark-300 mb-2">
+                  Encryption Password
+                </label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-dark-500" />
+                  <input
+                    type="password"
+                    value={encryptionPassword}
+                    onChange={(e) => setEncryptionPassword(e.target.value)}
+                    className="w-full pl-10 pr-4 py-3 bg-dark-900 border border-dark-600 rounded-lg text-dark-100 placeholder-dark-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    placeholder="Enter encryption password (min. 8 characters)"
+                    required
+                    autoComplete="new-password"
+                    autoFocus
+                  />
+                </div>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-dark-300 mb-2">
+                  Confirm Encryption Password
+                </label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-dark-500" />
+                  <input
+                    type="password"
+                    value={confirmEncryptionPassword}
+                    onChange={(e) => setConfirmEncryptionPassword(e.target.value)}
+                    className="w-full pl-10 pr-4 py-3 bg-dark-900 border border-dark-600 rounded-lg text-dark-100 placeholder-dark-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    placeholder="Confirm your encryption password"
+                    required
+                    autoComplete="new-password"
+                  />
+                </div>
+              </div>
+              
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setStep(2)}
                   className="flex-1 py-3 bg-dark-700 hover:bg-dark-600 text-dark-200 rounded-lg font-medium transition-colors"
                 >
                   Back
