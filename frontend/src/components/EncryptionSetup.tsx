@@ -354,10 +354,10 @@ ${setupData.recovery_instructions}
       {/* Recovery Instructions Modal */}
       {showInstructions && status?.public_key && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-dark-800 border border-dark-700 rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+          <div className="bg-dark-800 border border-dark-700 rounded-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
             <div className="px-6 py-4 border-b border-dark-700 flex items-center justify-between">
               <h2 className="text-lg font-semibold text-dark-100">
-                Recovery Instructions
+                Backup Recovery Instructions
               </h2>
               <button
                 onClick={() => setShowInstructions(false)}
@@ -366,47 +366,98 @@ ${setupData.recovery_instructions}
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="p-6">
-              <pre className="bg-dark-900 rounded-lg p-4 text-xs font-mono text-dark-300 overflow-x-auto whitespace-pre-wrap">
-{`# DockerVault Backup Recovery Instructions
+            <div className="p-6 space-y-6">
+              {/* Public Key */}
+              <div>
+                <h3 className="text-sm font-semibold text-dark-200 mb-2">Your Public Key</h3>
+                <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
+{status.public_key}
+                </pre>
+              </div>
 
-## Your Public Key
-${status.public_key}
+              {/* Recovery Info */}
+              <div className="p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                <p className="text-blue-400 text-sm">
+                  If you lose access to DockerVault, you can still recover your backups using standard command-line tools.
+                </p>
+              </div>
 
-## Recovery WITHOUT the DockerVault App
+              {/* Prerequisites */}
+              <div>
+                <h3 className="text-sm font-semibold text-dark-200 mb-3">Prerequisites</h3>
+                <ul className="space-y-2 text-sm text-dark-300">
+                  <li className="flex items-start gap-2">
+                    <span className="text-indigo-400 mt-1">•</span>
+                    <span>Your private key file (exported during setup)</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-indigo-400 mt-1">•</span>
+                    <span><code className="text-xs bg-dark-900 px-1.5 py-0.5 rounded">age</code> tool: <a href="https://github.com/FiloSottile/age" target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:underline">github.com/FiloSottile/age</a></span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-indigo-400 mt-1">•</span>
+                    <span><code className="text-xs bg-dark-900 px-1.5 py-0.5 rounded">openssl</code> (usually pre-installed)</span>
+                  </li>
+                </ul>
+              </div>
 
-If you lose access to DockerVault, you can still recover your backups
-using standard command-line tools.
+              {/* Steps */}
+              <div>
+                <h3 className="text-sm font-semibold text-dark-200 mb-3">Recovery Steps</h3>
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">1.</span> Save your private key to a file:</p>
+                    <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
+{`cat > private_key.txt << 'EOF'
+AGE-SECRET-KEY-1XXXXXX...
+EOF
+chmod 600 private_key.txt`}
+                    </pre>
+                  </div>
 
-### Prerequisites
-- Your private key file (the one you exported during setup)
-- age tool installed: https://github.com/FiloSottile/age
-- openssl (usually pre-installed)
+                  <div>
+                    <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">2.</span> Decrypt the DEK (Data Encryption Key):</p>
+                    <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
+{`age -d -i private_key.txt backup.tar.gz.key > dek.txt`}
+                    </pre>
+                  </div>
 
-### Steps
+                  <div>
+                    <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">3.</span> Decrypt the backup:</p>
+                    <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
+{`openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \\
+    -in backup.tar.gz.enc \\
+    -out backup.tar.gz \\
+    -pass file:dek.txt`}
+                    </pre>
+                  </div>
 
-1. Save your private key to a file (if not already):
-   cat > private_key.txt << 'EOF'
-   AGE-SECRET-KEY-1XXXXXX...
-   EOF
-   chmod 600 private_key.txt
+                  <div>
+                    <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">4.</span> Extract the backup:</p>
+                    <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
+{`tar xzf backup.tar.gz`}
+                    </pre>
+                  </div>
 
-2. Decrypt the DEK (Data Encryption Key):
-   age -d -i private_key.txt backup.tar.gz.key > dek.txt
+                  <div>
+                    <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">5.</span> Clean up:</p>
+                    <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
+{`rm dek.txt  # Don't leave the DEK lying around`}
+                    </pre>
+                  </div>
+                </div>
+              </div>
 
-3. Decrypt the backup:
-   openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \\
-       -in backup.tar.gz.enc \\
-       -out backup.tar.gz \\
-       -pass file:dek.txt
-
-4. Extract the backup:
-   tar xzf backup.tar.gz
-
-5. Clean up:
-   rm dek.txt  # Don't leave the DEK lying around
-`}
-              </pre>
+              {/* Security Notes */}
+              <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                <h4 className="text-sm font-semibold text-amber-400 mb-2">Security Notes</h4>
+                <ul className="space-y-1 text-sm text-amber-400/80">
+                  <li>• Keep your private key secure and backed up separately</li>
+                  <li>• Never share your private key</li>
+                  <li>• The encrypted backups are safe to store anywhere</li>
+                  <li>• Each backup has a unique encryption key</li>
+                </ul>
+              </div>
             </div>
           </div>
         </div>

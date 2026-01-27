@@ -148,9 +148,6 @@ KOMODO_API_KEY=your-api-key`}
         </div>
       </div>
 
-      {/* Encryption Settings */}
-      <EncryptionSetup />
-
       {/* Backup Settings */}
       <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
         <div className="flex items-center gap-3 mb-4">
