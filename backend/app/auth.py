@@ -10,7 +10,6 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import bcrypt as bcrypt_lib
-
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import delete, select
