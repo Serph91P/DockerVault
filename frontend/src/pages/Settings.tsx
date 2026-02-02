@@ -1,34 +1,37 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link2, Check, X, RefreshCw, Save, Eye, EyeOff, TestTube, HardDrive, Shield } from 'lucide-react'
-import { dockerApi, settingsApi, KomodoSettings } from '../api'
+import { dockerApi, settingsApi } from '../api'
 import toast from 'react-hot-toast'
 import EncryptionSetup from '../components/EncryptionSetup'
-import { useState, useEffect } from 'react'
+import { useState, useMemo } from 'react'
 
 function KomodoSettingsCard() {
   const queryClient = useQueryClient()
   const [isEditing, setIsEditing] = useState(false)
   const [showApiKey, setShowApiKey] = useState(false)
+  const { data: komodoSettings, isLoading, refetch } = useQuery({
+    queryKey: ['komodo-settings'],
+    queryFn: () => settingsApi.getKomodo().then((r) => r.data),
+  })
+
+  // Initialize form data from query result
+  const initialFormData = useMemo(() => ({
+    enabled: komodoSettings?.enabled ?? false,
+    api_url: komodoSettings?.api_url || '',
+    api_key: '',
+  }), [komodoSettings])
+
   const [formData, setFormData] = useState({
     enabled: false,
     api_url: '',
     api_key: '',
   })
 
-  const { data: komodoSettings, isLoading, refetch } = useQuery({
-    queryKey: ['komodo-settings'],
-    queryFn: () => settingsApi.getKomodo().then((r) => r.data),
-  })
-
-  useEffect(() => {
-    if (komodoSettings) {
-      setFormData({
-        enabled: komodoSettings.enabled,
-        api_url: komodoSettings.api_url || '',
-        api_key: '', // Don't populate - only set when user enters new key
-      })
-    }
-  }, [komodoSettings])
+  // Reset form data when entering edit mode
+  const handleStartEdit = () => {
+    setFormData(initialFormData)
+    setIsEditing(true)
+  }
 
   const updateMutation = useMutation({
     mutationFn: (data: { enabled: boolean; api_url?: string; api_key?: string }) =>
@@ -70,13 +73,7 @@ function KomodoSettingsCard() {
   }
 
   const handleCancel = () => {
-    if (komodoSettings) {
-      setFormData({
-        enabled: komodoSettings.enabled,
-        api_url: komodoSettings.api_url || '',
-        api_key: '',
-      })
-    }
+    setFormData(initialFormData)
     setIsEditing(false)
   }
 
@@ -231,7 +228,7 @@ function KomodoSettingsCard() {
           {/* Actions */}
           <div className="flex gap-2 pt-2">
             <button
-              onClick={() => setIsEditing(true)}
+              onClick={handleStartEdit}
               className="px-4 py-2 bg-dark-700 text-dark-200 rounded-lg hover:bg-dark-600 transition-colors text-sm"
             >
               Edit Settings
@@ -258,17 +255,6 @@ export default function Settings() {
     queryKey: ['docker-health'],
     queryFn: () => dockerApi.getHealth().then(() => true).catch(() => false),
     refetchInterval: 30000,
-  })
-
-  const { data: komodoStatus, refetch: refetchKomodo } = useQuery({
-    queryKey: ['komodo-status'],
-    queryFn: () => komodoApi.getStatus().then((r) => r.data),
-  })
-
-  const testKomodoMutation = useMutation({
-    mutationFn: () => komodoApi.test(),
-    onSuccess: () => toast.success('Komodo connection successful'),
-    onError: () => toast.error('Komodo connection failed'),
   })
 
   return (

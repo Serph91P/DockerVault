@@ -6,7 +6,7 @@ import logging
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -151,7 +151,8 @@ async def test_komodo_connection():
                 )
             elif response.status_code == 403:
                 return KomodoTestResponse(
-                    success=False, message="Access forbidden - check API key permissions"
+                    success=False,
+                    message="Access forbidden - check API key permissions",
                 )
             else:
                 return KomodoTestResponse(

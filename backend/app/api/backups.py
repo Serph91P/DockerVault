@@ -171,7 +171,7 @@ async def create_backup(request: CreateBackupRequest):
     logger.info(
         f"Creating backup for target {request.target_id}, type: {request.backup_type}"
     )
-    
+
     async with async_session() as session:
         # Get target
         result = await session.execute(
@@ -182,17 +182,15 @@ async def create_backup(request: CreateBackupRequest):
         if not target:
             logger.error(f"Target {request.target_id} not found")
             raise HTTPException(status_code=404, detail="Target not found")
-        
-        logger.info(
-            f"Found target: {target.name} (type: {target.target_type})"
-        )
+
+        logger.info(f"Found target: {target.name} (type: {target.target_type})")
 
     # Create backup
     backup_type = (
         BackupType.FULL if request.backup_type == "full" else BackupType.INCREMENTAL
     )
     backup = await backup_engine.create_backup(target, backup_type)
-    
+
     logger.info(f"Created backup {backup.id}, starting backup task...")
 
     # Run backup in background
