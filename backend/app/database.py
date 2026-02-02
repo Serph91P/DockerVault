@@ -255,6 +255,17 @@ class Session(Base):
     user = relationship("User")
 
 
+class AppSettings(Base):
+    """Application settings stored in database."""
+
+    __tablename__ = "app_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String(100), unique=True, nullable=False, index=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 # Database engine and session
 engine = create_async_engine(
     settings.DATABASE_URL,

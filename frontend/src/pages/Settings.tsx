@@ -1,8 +1,257 @@
-import { useQuery, useMutation } from '@tanstack/react-query'
-import { Settings as SettingsIcon, Link2, Check, X, RefreshCw } from 'lucide-react'
-import { komodoApi, dockerApi } from '../api'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Link2, Check, X, RefreshCw, Save, Eye, EyeOff, TestTube, HardDrive, Shield } from 'lucide-react'
+import { dockerApi, settingsApi, KomodoSettings } from '../api'
 import toast from 'react-hot-toast'
 import EncryptionSetup from '../components/EncryptionSetup'
+import { useState, useEffect } from 'react'
+
+function KomodoSettingsCard() {
+  const queryClient = useQueryClient()
+  const [isEditing, setIsEditing] = useState(false)
+  const [showApiKey, setShowApiKey] = useState(false)
+  const [formData, setFormData] = useState({
+    enabled: false,
+    api_url: '',
+    api_key: '',
+  })
+
+  const { data: komodoSettings, isLoading, refetch } = useQuery({
+    queryKey: ['komodo-settings'],
+    queryFn: () => settingsApi.getKomodo().then((r) => r.data),
+  })
+
+  useEffect(() => {
+    if (komodoSettings) {
+      setFormData({
+        enabled: komodoSettings.enabled,
+        api_url: komodoSettings.api_url || '',
+        api_key: '', // Don't populate - only set when user enters new key
+      })
+    }
+  }, [komodoSettings])
+
+  const updateMutation = useMutation({
+    mutationFn: (data: { enabled: boolean; api_url?: string; api_key?: string }) =>
+      settingsApi.updateKomodo(data),
+    onSuccess: () => {
+      toast.success('Komodo settings saved')
+      queryClient.invalidateQueries({ queryKey: ['komodo-settings'] })
+      setIsEditing(false)
+      setFormData((prev) => ({ ...prev, api_key: '' }))
+    },
+    onError: () => toast.error('Failed to save settings'),
+  })
+
+  const testMutation = useMutation({
+    mutationFn: () => settingsApi.testKomodo(),
+    onSuccess: (response) => {
+      const result = response.data
+      if (result.success) {
+        toast.success(`Connection successful! Version: ${result.version || 'unknown'}`)
+      } else {
+        toast.error(result.message)
+      }
+      refetch()
+    },
+    onError: () => toast.error('Connection test failed'),
+  })
+
+  const handleSave = () => {
+    const data: { enabled: boolean; api_url?: string; api_key?: string } = {
+      enabled: formData.enabled,
+    }
+    if (formData.api_url) {
+      data.api_url = formData.api_url
+    }
+    if (formData.api_key) {
+      data.api_key = formData.api_key
+    }
+    updateMutation.mutate(data)
+  }
+
+  const handleCancel = () => {
+    if (komodoSettings) {
+      setFormData({
+        enabled: komodoSettings.enabled,
+        api_url: komodoSettings.api_url || '',
+        api_key: '',
+      })
+    }
+    setIsEditing(false)
+  }
+
+  if (isLoading) {
+    return (
+      <div className="bg-dark-800 rounded-xl border border-dark-700 p-6 animate-pulse">
+        <div className="h-6 bg-dark-700 rounded w-1/3 mb-4" />
+        <div className="h-4 bg-dark-700 rounded w-2/3" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-purple-500/10 rounded-lg flex items-center justify-center">
+            <Link2 className="w-5 h-5 text-purple-400" />
+          </div>
+          <div>
+            <h2 className="text-lg font-semibold text-dark-100">Komodo Integration</h2>
+            <p className="text-sm text-dark-400">Container orchestration integration</p>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          {!isEditing && (
+            <button
+              onClick={() => refetch()}
+              className="p-2 text-dark-400 hover:bg-dark-700 rounded-lg"
+            >
+              <RefreshCw className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {isEditing ? (
+        <div className="space-y-4">
+          {/* Enable/Disable */}
+          <div className="flex items-center justify-between">
+            <label className="text-sm text-dark-300">Enable Integration</label>
+            <button
+              onClick={() => setFormData((prev) => ({ ...prev, enabled: !prev.enabled }))}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                formData.enabled ? 'bg-primary-500' : 'bg-dark-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  formData.enabled ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
+          {/* API URL */}
+          <div>
+            <label className="block text-sm text-dark-400 mb-1">API URL</label>
+            <input
+              type="text"
+              value={formData.api_url}
+              onChange={(e) => setFormData((prev) => ({ ...prev, api_url: e.target.value }))}
+              placeholder="https://komodo.example.com"
+              className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
+            />
+          </div>
+
+          {/* API Key */}
+          <div>
+            <label className="block text-sm text-dark-400 mb-1">
+              API Key {komodoSettings?.has_api_key && '(leave empty to keep current)'}
+            </label>
+            <div className="relative">
+              <input
+                type={showApiKey ? 'text' : 'password'}
+                value={formData.api_key}
+                onChange={(e) => setFormData((prev) => ({ ...prev, api_key: e.target.value }))}
+                placeholder={komodoSettings?.has_api_key ? '••••••••' : 'Enter API key'}
+                className="w-full px-3 py-2 pr-10 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
+              />
+              <button
+                type="button"
+                onClick={() => setShowApiKey(!showApiKey)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-dark-400 hover:text-dark-200"
+              >
+                {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="flex gap-2 pt-2">
+            <button
+              onClick={handleSave}
+              disabled={updateMutation.isPending}
+              className="flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors text-sm"
+            >
+              <Save className="w-4 h-4" />
+              Save
+            </button>
+            <button
+              onClick={handleCancel}
+              className="px-4 py-2 bg-dark-600 text-dark-300 rounded-lg hover:bg-dark-500 transition-colors text-sm"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {/* Status */}
+          <div className="flex items-center gap-2">
+            <span className="text-dark-400">Status:</span>
+            {komodoSettings?.enabled ? (
+              komodoSettings?.connected ? (
+                <>
+                  <Check className="w-4 h-4 text-green-500" />
+                  <span className="text-green-400">Connected</span>
+                </>
+              ) : (
+                <>
+                  <X className="w-4 h-4 text-yellow-500" />
+                  <span className="text-yellow-400">Enabled, not connected</span>
+                </>
+              )
+            ) : (
+              <>
+                <X className="w-4 h-4 text-dark-500" />
+                <span className="text-dark-400">Disabled</span>
+              </>
+            )}
+          </div>
+
+          {/* API URL */}
+          {komodoSettings?.api_url && (
+            <div className="text-sm">
+              <span className="text-dark-400">API URL: </span>
+              <span className="text-dark-200 font-mono">{komodoSettings.api_url}</span>
+            </div>
+          )}
+
+          {/* API Key Status */}
+          <div className="text-sm">
+            <span className="text-dark-400">API Key: </span>
+            {komodoSettings?.has_api_key ? (
+              <span className="text-green-400">Configured</span>
+            ) : (
+              <span className="text-dark-500">Not set</span>
+            )}
+          </div>
+
+          {/* Actions */}
+          <div className="flex gap-2 pt-2">
+            <button
+              onClick={() => setIsEditing(true)}
+              className="px-4 py-2 bg-dark-700 text-dark-200 rounded-lg hover:bg-dark-600 transition-colors text-sm"
+            >
+              Edit Settings
+            </button>
+            {komodoSettings?.enabled && (
+              <button
+                onClick={() => testMutation.mutate()}
+                disabled={testMutation.isPending}
+                className="flex items-center gap-2 px-4 py-2 bg-purple-500/10 text-purple-400 rounded-lg hover:bg-purple-500/20 transition-colors text-sm"
+              >
+                <TestTube className="w-4 h-4" />
+                Test Connection
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function Settings() {
   const { data: dockerHealth, refetch: refetchDocker } = useQuery({
@@ -72,126 +321,47 @@ export default function Settings() {
       <EncryptionSetup />
 
       {/* Komodo Integration */}
-      <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-purple-500/10 rounded-lg flex items-center justify-center">
-              <Link2 className="w-5 h-5 text-purple-400" />
-            </div>
-            <div>
-              <h2 className="text-lg font-semibold text-dark-100">Komodo Integration</h2>
-              <p className="text-sm text-dark-400">
-                Connection to Komodo for container orchestration
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={() => refetchKomodo()}
-            className="p-2 text-dark-400 hover:bg-dark-700 rounded-lg"
-          >
-            <RefreshCw className="w-4 h-4" />
-          </button>
-        </div>
+      <KomodoSettingsCard />
 
-        <div className="space-y-4">
-          <div className="flex items-center gap-2">
-            <span className="text-dark-400">Status:</span>
-            {komodoStatus?.enabled ? (
-              komodoStatus?.connected ? (
-                <>
-                  <Check className="w-4 h-4 text-green-500" />
-                  <span className="text-green-400">Connected</span>
-                </>
-              ) : (
-                <>
-                  <X className="w-4 h-4 text-yellow-500" />
-                  <span className="text-yellow-400">Enabled, not connected</span>
-                </>
-              )
-            ) : (
-              <>
-                <X className="w-4 h-4 text-dark-500" />
-                <span className="text-dark-400">Disabled</span>
-              </>
-            )}
-          </div>
-
-          {komodoStatus?.api_url && (
-            <div className="text-sm">
-              <span className="text-dark-400">API URL: </span>
-              <span className="text-dark-200 font-mono">{komodoStatus.api_url}</span>
-            </div>
-          )}
-
-          {komodoStatus?.enabled && (
-            <button
-              onClick={() => testKomodoMutation.mutate()}
-              disabled={testKomodoMutation.isPending}
-              className="px-4 py-2 bg-purple-500/10 text-purple-400 rounded-lg hover:bg-purple-500/20 transition-colors text-sm"
-            >
-              Test Connection
-            </button>
-          )}
-
-          {!komodoStatus?.enabled && (
-            <div className="p-4 bg-dark-700 rounded-lg">
-              <p className="text-sm text-dark-300">
-                To enable Komodo, set the following environment variables:
-              </p>
-              <pre className="mt-2 text-xs text-dark-400 font-mono">
-{`KOMODO_ENABLED=true
-KOMODO_API_URL=http://komodo:8080
-KOMODO_API_KEY=your-api-key`}
-              </pre>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Backup Settings */}
+      {/* System Info */}
       <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
         <div className="flex items-center gap-3 mb-4">
           <div className="w-10 h-10 bg-green-500/10 rounded-lg flex items-center justify-center">
-            <SettingsIcon className="w-5 h-5 text-green-400" />
+            <HardDrive className="w-5 h-5 text-green-400" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-dark-100">Backup Settings</h2>
-            <p className="text-sm text-dark-400">General backup configuration</p>
+            <h2 className="text-lg font-semibold text-dark-100">System Information</h2>
+            <p className="text-sm text-dark-400">Fixed configuration (via environment)</p>
           </div>
         </div>
 
-        <div className="space-y-4 text-sm">
+        <div className="space-y-3 text-sm">
           <div className="flex justify-between py-2 border-b border-dark-700">
             <span className="text-dark-400">Backup Directory</span>
             <span className="text-dark-200 font-mono">/backups</span>
           </div>
           <div className="flex justify-between py-2 border-b border-dark-700">
-            <span className="text-dark-400">Default Retention (Days)</span>
-            <span className="text-dark-200">30</span>
-          </div>
-          <div className="flex justify-between py-2 border-b border-dark-700">
-            <span className="text-dark-400">Default Retention (Count)</span>
-            <span className="text-dark-200">10</span>
-          </div>
-          <div className="flex justify-between py-2 border-b border-dark-700">
-            <span className="text-dark-400">Max Parallel Backups</span>
-            <span className="text-dark-200">2</span>
-          </div>
-          <div className="flex justify-between py-2 border-b border-dark-700">
-            <span className="text-dark-400">Compression Level</span>
-            <span className="text-dark-200">6 (1-9)</span>
+            <span className="text-dark-400">Timezone</span>
+            <span className="text-dark-200">Configured via TZ environment variable</span>
           </div>
           <div className="flex justify-between py-2">
-            <span className="text-dark-400">Timezone</span>
-            <span className="text-dark-200">Europe/Berlin</span>
+            <span className="text-dark-400">Database</span>
+            <span className="text-dark-200 font-mono">/data/backups.db</span>
           </div>
         </div>
 
-        <div className="mt-4 p-4 bg-dark-700 rounded-lg">
-          <p className="text-sm text-dark-300">
-            These settings can be customized via environment variables.
-            See the .env.example file for all available options.
-          </p>
+        <div className="mt-4 p-4 bg-dark-700/50 rounded-lg flex items-start gap-3">
+          <Shield className="w-5 h-5 text-primary-400 flex-shrink-0 mt-0.5" />
+          <div className="text-sm text-dark-300">
+            <p className="font-medium text-dark-200 mb-1">Retention Policies</p>
+            <p>
+              Configure backup retention (how many backups to keep) on the{' '}
+              <a href="/retention" className="text-primary-400 hover:underline">
+                Retention
+              </a>{' '}
+              page. You can create multiple policies and assign them to targets.
+            </p>
+          </div>
         </div>
       </div>
     </div>

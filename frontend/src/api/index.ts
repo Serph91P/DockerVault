@@ -178,4 +178,25 @@ export const komodoApi = {
     api.get(`/komodo/container/${container_name}`),
 }
 
+// Settings API
+export interface KomodoSettings {
+  enabled: boolean
+  api_url: string | null
+  has_api_key: boolean
+  connected: boolean
+}
+
+export interface KomodoTestResult {
+  success: boolean
+  message: string
+  version?: string
+}
+
+export const settingsApi = {
+  getKomodo: () => api.get<KomodoSettings>('/settings/komodo'),
+  updateKomodo: (data: { enabled: boolean; api_url?: string; api_key?: string }) =>
+    api.put<KomodoSettings>('/settings/komodo', data),
+  testKomodo: () => api.post<KomodoTestResult>('/settings/komodo/test'),
+}
+
 export default api
