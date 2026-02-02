@@ -3,16 +3,18 @@ Docker API endpoints.
 """
 
 from typing import List, Optional
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.docker_client import docker_client, ContainerInfo, VolumeInfo, StackInfo
+from app.docker_client import docker_client
 
 router = APIRouter()
 
 
 class ContainerResponse(BaseModel):
     """Container response model."""
+
     id: str
     name: str
     image: str
@@ -32,6 +34,7 @@ class ContainerResponse(BaseModel):
 
 class VolumeResponse(BaseModel):
     """Volume response model."""
+
     name: str
     driver: str
     mountpoint: str
@@ -45,6 +48,7 @@ class VolumeResponse(BaseModel):
 
 class StackResponse(BaseModel):
     """Stack response model."""
+
     name: str
     containers: List[ContainerResponse]
     volumes: List[str]
@@ -88,8 +92,7 @@ async def get_container(container_id: str):
     """Get a specific container."""
     containers = await docker_client.list_containers()
     container = next(
-        (c for c in containers if c.id == container_id or c.name == container_id),
-        None
+        (c for c in containers if c.id == container_id or c.name == container_id), None
     )
     if not container:
         raise HTTPException(status_code=404, detail="Container not found")

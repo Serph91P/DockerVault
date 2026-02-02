@@ -1,8 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Clock, Play, HelpCircle } from 'lucide-react'
 import { schedulesApi, Schedule } from '../api'
-import { formatDistanceToNow, format } from 'date-fns'
-import { de } from 'date-fns/locale'
+import { formatDistanceToNow } from 'date-fns'
 import toast from 'react-hot-toast'
 import { useState } from 'react'
 
@@ -14,21 +13,21 @@ function ScheduleCard({ schedule }: { schedule: Schedule }) {
   const triggerMutation = useMutation({
     mutationFn: () => schedulesApi.trigger(schedule.target_id),
     onSuccess: () => {
-      toast.success('Backup gestartet')
+      toast.success('Backup started')
       queryClient.invalidateQueries({ queryKey: ['backups'] })
     },
-    onError: () => toast.error('Fehler beim Starten'),
+    onError: () => toast.error('Failed to start backup'),
   })
 
   const updateMutation = useMutation({
     mutationFn: (data: { cron_expression?: string; enabled?: boolean }) =>
       schedulesApi.update(schedule.target_id, data),
     onSuccess: () => {
-      toast.success('Schedule aktualisiert')
+      toast.success('Schedule updated')
       queryClient.invalidateQueries({ queryKey: ['schedules'] })
       setEditCron(false)
     },
-    onError: () => toast.error('Fehler beim Aktualisieren'),
+    onError: () => toast.error('Failed to update schedule'),
   })
 
   return (
@@ -51,7 +50,7 @@ function ScheduleCard({ schedule }: { schedule: Schedule }) {
               : 'bg-dark-600 text-dark-400'
           }`}
         >
-          {schedule.enabled ? 'Aktiv' : 'Inaktiv'}
+          {schedule.enabled ? 'Active' : 'Inactive'}
         </button>
       </div>
 
@@ -71,7 +70,7 @@ function ScheduleCard({ schedule }: { schedule: Schedule }) {
               onClick={() => updateMutation.mutate({ cron_expression: cronValue })}
               className="px-3 py-2 bg-primary-500 text-white rounded-lg text-sm"
             >
-              Speichern
+              Save
             </button>
             <button
               onClick={() => {
@@ -80,7 +79,7 @@ function ScheduleCard({ schedule }: { schedule: Schedule }) {
               }}
               className="px-3 py-2 bg-dark-600 text-dark-300 rounded-lg text-sm"
             >
-              Abbrechen
+              Cancel
             </button>
           </div>
         ) : (
@@ -96,25 +95,23 @@ function ScheduleCard({ schedule }: { schedule: Schedule }) {
       {/* Next/Last Run */}
       <div className="grid grid-cols-2 gap-4 mb-4 text-sm">
         <div>
-          <p className="text-dark-400">Nächste Ausführung:</p>
+          <p className="text-dark-400">Next run:</p>
           <p className="text-dark-200">
             {schedule.next_run
               ? formatDistanceToNow(new Date(schedule.next_run), {
                   addSuffix: true,
-                  locale: de,
                 })
               : '-'}
           </p>
         </div>
         <div>
-          <p className="text-dark-400">Letzte Ausführung:</p>
+          <p className="text-dark-400">Last run:</p>
           <p className="text-dark-200">
             {schedule.last_run
               ? formatDistanceToNow(new Date(schedule.last_run), {
                   addSuffix: true,
-                  locale: de,
                 })
-              : 'Noch nie'}
+              : 'Never'}
           </p>
         </div>
       </div>
@@ -126,7 +123,7 @@ function ScheduleCard({ schedule }: { schedule: Schedule }) {
         className="flex items-center justify-center gap-2 w-full px-3 py-2 bg-primary-500/10 text-primary-400 rounded-lg hover:bg-primary-500/20 transition-colors text-sm"
       >
         <Play className="w-4 h-4" />
-        Jetzt ausführen
+        Run Now
       </button>
     </div>
   )
@@ -144,13 +141,13 @@ function CronHelp() {
     <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
       <div className="flex items-center gap-2 mb-4">
         <HelpCircle className="w-5 h-5 text-primary-400" />
-        <h2 className="text-lg font-semibold text-dark-100">Cron Hilfe</h2>
+        <h2 className="text-lg font-semibold text-dark-100">Cron Help</h2>
       </div>
 
       <p className="text-sm text-dark-400 mb-4">Format: {help.format}</p>
 
       <div className="mb-4">
-        <p className="text-xs text-dark-400 mb-2">Beispiele:</p>
+        <p className="text-xs text-dark-400 mb-2">Examples:</p>
         <div className="space-y-2">
           {help.examples.map((ex: { expression: string; description: string }, i: number) => (
             <div key={i} className="flex items-center gap-4 text-sm">
@@ -164,7 +161,7 @@ function CronHelp() {
       </div>
 
       <div>
-        <p className="text-xs text-dark-400 mb-2">Spezielle Zeichen:</p>
+        <p className="text-xs text-dark-400 mb-2">Special characters:</p>
         <div className="grid grid-cols-2 gap-2 text-sm">
           {Object.entries(help.special).map(([symbol, desc]) => (
             <div key={symbol} className="flex items-center gap-2">
@@ -189,8 +186,8 @@ export default function Schedules() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-dark-100">Zeitpläne</h1>
-        <p className="text-dark-400 mt-1">Automatische Backup-Zeitpläne</p>
+        <h1 className="text-2xl font-bold text-dark-100">Schedules</h1>
+        <p className="text-dark-400 mt-1">Automatic backup schedules</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -218,9 +215,9 @@ export default function Schedules() {
           {!isLoading && schedules?.length === 0 && (
             <div className="bg-dark-800 rounded-xl border border-dark-700 p-12 text-center">
               <Clock className="w-12 h-12 text-dark-500 mx-auto mb-4" />
-              <p className="text-dark-400">Keine Zeitpläne konfiguriert</p>
+              <p className="text-dark-400">No schedules configured</p>
               <p className="text-sm text-dark-500 mt-2">
-                Füge bei Backup Targets einen Cron-Schedule hinzu
+                Add a cron schedule to backup targets
               </p>
             </div>
           )}

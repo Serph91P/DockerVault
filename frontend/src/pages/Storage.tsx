@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import axios from 'axios';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Cloud,
@@ -17,7 +18,7 @@ import {
   Globe,
   Database,
 } from 'lucide-react';
-import { api } from '../api';
+import api from '../api';
 
 interface RemoteStorage {
   id: number;
@@ -28,6 +29,7 @@ interface RemoteStorage {
   port?: number;
   username?: string;
   base_path: string;
+  ssh_key_path?: string;
   s3_bucket?: string;
   s3_region?: string;
   s3_endpoint_url?: string;
@@ -57,12 +59,12 @@ interface StorageFormData {
 }
 
 const STORAGE_TYPES = [
-  { value: 'local', label: 'Lokal / NFS', icon: HardDrive, description: 'Lokales Verzeichnis oder NFS-Mount' },
-  { value: 'ssh', label: 'SSH / SFTP', icon: Key, description: 'SSH-Server mit rsync oder SFTP' },
-  { value: 's3', label: 'S3 Kompatibel', icon: Cloud, description: 'AWS S3, MinIO, Backblaze B2' },
+  { value: 'local', label: 'Local / NFS', icon: HardDrive, description: 'Local directory or NFS mount' },
+  { value: 'ssh', label: 'SSH / SFTP', icon: Key, description: 'SSH server with rsync or SFTP' },
+  { value: 's3', label: 'S3 Compatible', icon: Cloud, description: 'AWS S3, MinIO, Backblaze B2' },
   { value: 'webdav', label: 'WebDAV', icon: Globe, description: 'Nextcloud, ownCloud, etc.' },
-  { value: 'ftp', label: 'FTP / FTPS', icon: Server, description: 'FTP oder FTPS Server' },
-  { value: 'rclone', label: 'Rclone', icon: FolderSync, description: '40+ Cloud-Provider (GDrive, Dropbox, ...)' },
+  { value: 'ftp', label: 'FTP / FTPS', icon: Server, description: 'FTP or FTPS server' },
+  { value: 'rclone', label: 'Rclone', icon: FolderSync, description: '40+ cloud providers (GDrive, Dropbox, ...)' },
 ];
 
 const getStorageIcon = (type: string) => {
@@ -138,7 +140,12 @@ export default function Storage() {
       setTestingId(null);
     },
     onError: (error: Error, id) => {
-      setTestResult({ id, success: false, message: error.message });
+      let message = error.message;
+      if (axios.isAxiosError(error)) {
+        const data = error.response?.data as { message?: string; detail?: string } | undefined;
+        message = data?.message || data?.detail || error.message;
+      }
+      setTestResult({ id, success: false, message });
       setTestingId(null);
     },
   });
@@ -177,7 +184,7 @@ export default function Storage() {
       username: storage.username || '',
       password: '',
       base_path: storage.base_path || '/backups',
-      ssh_key_path: '',
+      ssh_key_path: storage.ssh_key_path || '',
       s3_bucket: storage.s3_bucket || '',
       s3_region: storage.s3_region || 'eu-central-1',
       s3_access_key: '',
@@ -209,7 +216,7 @@ export default function Storage() {
         return (
           <div>
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-              Lokaler Pfad
+              Local Path
             </label>
             <input
               type="text"
@@ -253,7 +260,7 @@ export default function Storage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Benutzername
+                  Username
                 </label>
                 <input
                   type="text"
@@ -265,7 +272,7 @@ export default function Storage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Passwort / SSH-Key Pfad
+                  Password / SSH-Key Path
                 </label>
                 <input
                   type="password"
@@ -278,7 +285,7 @@ export default function Storage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                SSH-Key Pfad (optional)
+                SSH-Key Path (optional)
               </label>
               <input
                 type="text"
@@ -290,7 +297,7 @@ export default function Storage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Remote-Pfad
+                Remote Path
               </label>
               <input
                 type="text"
@@ -360,7 +367,7 @@ export default function Storage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Endpoint URL (für MinIO/Backblaze, optional)
+                Endpoint URL (for MinIO/Backblaze, optional)
               </label>
               <input
                 type="text"
@@ -372,7 +379,7 @@ export default function Storage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Pfad-Präfix
+                Path Prefix
               </label>
               <input
                 type="text"
@@ -403,7 +410,7 @@ export default function Storage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Benutzername
+                  Username
                 </label>
                 <input
                   type="text"
@@ -415,7 +422,7 @@ export default function Storage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Passwort / App-Passwort
+                  Password / App Password
                 </label>
                 <input
                   type="password"
@@ -428,7 +435,7 @@ export default function Storage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Backup-Ordner
+                Backup Folder
               </label>
               <input
                 type="text"
@@ -473,7 +480,7 @@ export default function Storage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Benutzername
+                  Username
                 </label>
                 <input
                   type="text"
@@ -485,7 +492,7 @@ export default function Storage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Passwort
+                  Password
                 </label>
                 <input
                   type="password"
@@ -498,7 +505,7 @@ export default function Storage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Pfad
+                Path
               </label>
               <input
                 type="text"
@@ -516,7 +523,7 @@ export default function Storage() {
           <>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Rclone Remote-Name
+                Rclone Remote Name
               </label>
               <input
                 type="text"
@@ -526,12 +533,12 @@ export default function Storage() {
                 className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
               />
               <p className="text-xs text-slate-500 mt-1">
-                Der Remote muss vorher mit `rclone config` erstellt werden
+                The remote must be created first with `rclone config`
               </p>
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Pfad
+                Path
               </label>
               <input
                 type="text"
@@ -556,7 +563,7 @@ export default function Storage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Remote Storage</h1>
           <p className="text-slate-600 dark:text-slate-400">
-            Konfiguriere externe Speicherorte für Off-Site Backups
+            Configure external storage locations for off-site backups
           </p>
         </div>
         <button
@@ -564,7 +571,7 @@ export default function Storage() {
           className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
         >
           <Plus className="w-5 h-5" />
-          Storage hinzufügen
+          Add Storage
         </button>
       </div>
 
@@ -591,7 +598,7 @@ export default function Storage() {
       {/* Storage List */}
       <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700">
-          <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Konfigurierte Speicherorte</h2>
+          <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Configured Storage Locations</h2>
         </div>
 
         {isLoading ? (
@@ -626,7 +633,7 @@ export default function Storage() {
                         <h3 className="font-medium text-slate-900 dark:text-white">{storage.name}</h3>
                         {!storage.enabled && (
                           <span className="px-2 py-0.5 text-xs rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-400">
-                            Deaktiviert
+                            Disabled
                           </span>
                         )}
                       </div>
@@ -652,51 +659,63 @@ export default function Storage() {
                       </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    {testResult?.id === storage.id && (
-                      <span
-                        className={`flex items-center gap-1 text-sm ${
+                  <div className="flex flex-col items-end gap-1">
+                    <div className="flex items-center gap-2">
+                      {testResult?.id === storage.id && (
+                        <span
+                          className={`flex items-center gap-1 text-sm ${
+                            testResult.success ? 'text-green-600' : 'text-red-600'
+                          }`}
+                          title={testResult.message}
+                        >
+                          {testResult.success ? (
+                            <CheckCircle className="w-4 h-4" />
+                          ) : (
+                            <XCircle className="w-4 h-4" />
+                          )}
+                          {testResult.success ? 'Connected' : 'Error'}
+                        </span>
+                      )}
+                      <button
+                        onClick={() => testMutation.mutate(storage.id)}
+                        disabled={testingId === storage.id}
+                        className="p-2 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
+                        title="Test Connection"
+                      >
+                        {testingId === storage.id ? (
+                          <Loader2 className="w-5 h-5 animate-spin" />
+                        ) : (
+                          <TestTube className="w-5 h-5" />
+                        )}
+                      </button>
+                      <button
+                        onClick={() => handleEdit(storage)}
+                        className="p-2 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
+                        title="Edit"
+                      >
+                        <Edit className="w-5 h-5" />
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (confirm(`Really delete storage "${storage.name}"?`)) {
+                            deleteMutation.mutate(storage.id);
+                          }
+                        }}
+                        className="p-2 text-slate-600 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                        title="Delete"
+                      >
+                        <Trash2 className="w-5 h-5" />
+                      </button>
+                    </div>
+                    {testResult?.id === storage.id && testResult.message && (
+                      <p
+                        className={`max-w-xs text-right text-xs ${
                           testResult.success ? 'text-green-600' : 'text-red-600'
                         }`}
                       >
-                        {testResult.success ? (
-                          <CheckCircle className="w-4 h-4" />
-                        ) : (
-                          <XCircle className="w-4 h-4" />
-                        )}
-                        {testResult.success ? 'Verbunden' : 'Fehler'}
-                      </span>
+                        {testResult.message}
+                      </p>
                     )}
-                    <button
-                      onClick={() => testMutation.mutate(storage.id)}
-                      disabled={testingId === storage.id}
-                      className="p-2 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
-                      title="Verbindung testen"
-                    >
-                      {testingId === storage.id ? (
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                      ) : (
-                        <TestTube className="w-5 h-5" />
-                      )}
-                    </button>
-                    <button
-                      onClick={() => handleEdit(storage)}
-                      className="p-2 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
-                      title="Bearbeiten"
-                    >
-                      <Edit className="w-5 h-5" />
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (confirm(`Storage "${storage.name}" wirklich löschen?`)) {
-                          deleteMutation.mutate(storage.id);
-                        }
-                      }}
-                      className="p-2 text-slate-600 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
-                      title="Löschen"
-                    >
-                      <Trash2 className="w-5 h-5" />
-                    </button>
                   </div>
                 </div>
               );
@@ -705,8 +724,8 @@ export default function Storage() {
         ) : (
           <div className="p-8 text-center text-slate-500 dark:text-slate-400">
             <Wifi className="w-12 h-12 mx-auto mb-4 opacity-50" />
-            <p className="text-lg font-medium">Keine Remote Storages konfiguriert</p>
-            <p className="text-sm">Füge einen Speicherort hinzu, um Backups off-site zu sichern</p>
+            <p className="text-lg font-medium">No remote storages configured</p>
+            <p className="text-sm">Add a storage location to backup off-site</p>
           </div>
         )}
       </div>
@@ -717,7 +736,7 @@ export default function Storage() {
           <div className="bg-white dark:bg-slate-800 rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
             <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700">
               <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
-                {editingStorage ? 'Storage bearbeiten' : 'Neuen Storage hinzufügen'}
+                {editingStorage ? 'Edit Storage' : 'Add New Storage'}
               </h2>
             </div>
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
@@ -730,7 +749,7 @@ export default function Storage() {
                   type="text"
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  placeholder="Mein Backup Storage"
+                  placeholder="My Backup Storage"
                   className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
                   required
                 />
@@ -739,7 +758,7 @@ export default function Storage() {
               {/* Storage Type */}
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                  Storage-Typ
+                  Storage Type
                 </label>
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
                   {STORAGE_TYPES.map(({ value, label, icon: Icon }) => (
@@ -773,7 +792,7 @@ export default function Storage() {
                   className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                 />
                 <label htmlFor="enabled" className="text-sm text-slate-700 dark:text-slate-300">
-                  Storage aktiviert
+                  Storage enabled
                 </label>
               </div>
 
@@ -784,7 +803,7 @@ export default function Storage() {
                   onClick={resetForm}
                   className="px-4 py-2 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
                 >
-                  Abbrechen
+                  Cancel
                 </button>
                 <button
                   type="submit"
@@ -794,9 +813,9 @@ export default function Storage() {
                   {createMutation.isPending || updateMutation.isPending ? (
                     <Loader2 className="w-5 h-5 animate-spin" />
                   ) : editingStorage ? (
-                    'Speichern'
+                    'Save'
                   ) : (
-                    'Hinzufügen'
+                    'Add'
                   )}
                 </button>
               </div>

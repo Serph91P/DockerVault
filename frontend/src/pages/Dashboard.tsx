@@ -2,7 +2,6 @@ import { useQuery } from '@tanstack/react-query'
 import { Archive, Container, HardDrive, Clock, AlertCircle, CheckCircle } from 'lucide-react'
 import { dockerApi, backupsApi, targetsApi, schedulesApi } from '../api'
 import { formatDistanceToNow } from 'date-fns'
-import { de } from 'date-fns/locale'
 
 function StatCard({
   title,
@@ -65,7 +64,7 @@ export default function Dashboard() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-dark-100">Dashboard</h1>
-        <p className="text-dark-400 mt-1">Überblick über deine Docker Backups</p>
+        <p className="text-dark-400 mt-1">Overview of your Docker backups</p>
       </div>
 
       {/* Stats Grid */}
@@ -89,7 +88,7 @@ export default function Dashboard() {
           color="bg-green-500"
         />
         <StatCard
-          title="Geplante Backups"
+          title="Scheduled Backups"
           value={schedules?.filter((s) => s.enabled).length ?? 0}
           icon={Clock}
           color="bg-orange-500"
@@ -101,7 +100,7 @@ export default function Dashboard() {
         {/* Recent Backups */}
         <div className="bg-dark-800 rounded-xl border border-dark-700">
           <div className="px-6 py-4 border-b border-dark-700">
-            <h2 className="text-lg font-semibold text-dark-100">Letzte Backups</h2>
+            <h2 className="text-lg font-semibold text-dark-100">Recent Backups</h2>
           </div>
           <div className="divide-y divide-dark-700">
             {backups?.slice(0, 5).map((backup) => (
@@ -121,7 +120,6 @@ export default function Dashboard() {
                     <p className="text-xs text-dark-400">
                       {formatDistanceToNow(new Date(backup.created_at), {
                         addSuffix: true,
-                        locale: de,
                       })}
                     </p>
                   </div>
@@ -136,7 +134,7 @@ export default function Dashboard() {
             ))}
             {(!backups || backups.length === 0) && (
               <div className="px-6 py-8 text-center text-dark-400">
-                Noch keine Backups vorhanden
+                No backups yet
               </div>
             )}
           </div>
@@ -145,7 +143,7 @@ export default function Dashboard() {
         {/* Next Scheduled Backups */}
         <div className="bg-dark-800 rounded-xl border border-dark-700">
           <div className="px-6 py-4 border-b border-dark-700">
-            <h2 className="text-lg font-semibold text-dark-100">Nächste geplante Backups</h2>
+            <h2 className="text-lg font-semibold text-dark-100">Upcoming Scheduled Backups</h2>
           </div>
           <div className="divide-y divide-dark-700">
             {schedules
@@ -165,7 +163,6 @@ export default function Dashboard() {
                       {schedule.next_run &&
                         formatDistanceToNow(new Date(schedule.next_run), {
                           addSuffix: true,
-                          locale: de,
                         })}
                     </p>
                   </div>
@@ -173,7 +170,7 @@ export default function Dashboard() {
               ))}
             {(!schedules || schedules.filter((s) => s.enabled).length === 0) && (
               <div className="px-6 py-8 text-center text-dark-400">
-                Keine geplanten Backups
+                No scheduled backups
               </div>
             )}
           </div>
@@ -182,19 +179,19 @@ export default function Dashboard() {
 
       {/* Status Summary */}
       <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
-        <h2 className="text-lg font-semibold text-dark-100 mb-4">Status Zusammenfassung</h2>
+        <h2 className="text-lg font-semibold text-dark-100 mb-4">Status Summary</h2>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="text-center">
             <p className="text-3xl font-bold text-green-500">{completedBackups}</p>
-            <p className="text-sm text-dark-400">Erfolgreich</p>
+            <p className="text-sm text-dark-400">Successful</p>
           </div>
           <div className="text-center">
             <p className="text-3xl font-bold text-red-500">{failedBackups}</p>
-            <p className="text-sm text-dark-400">Fehlgeschlagen</p>
+            <p className="text-sm text-dark-400">Failed</p>
           </div>
           <div className="text-center">
             <p className="text-3xl font-bold text-blue-500">{runningContainers}</p>
-            <p className="text-sm text-dark-400">Container aktiv</p>
+            <p className="text-sm text-dark-400">Active Containers</p>
           </div>
           <div className="text-center">
             <p className="text-3xl font-bold text-purple-500">{volumes?.length ?? 0}</p>

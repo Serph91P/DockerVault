@@ -6,24 +6,24 @@ import { useState } from 'react'
 
 function ContainerCard({ container }: { container: Container }) {
   const queryClient = useQueryClient()
-  const [showAddTarget, setShowAddTarget] = useState(false)
+  const [, setShowAddTarget] = useState(false)
 
   const stopMutation = useMutation({
     mutationFn: () => dockerApi.stopContainer(container.id),
     onSuccess: () => {
-      toast.success(`Container ${container.name} gestoppt`)
+      toast.success(`Container ${container.name} stopped`)
       queryClient.invalidateQueries({ queryKey: ['containers'] })
     },
-    onError: () => toast.error('Fehler beim Stoppen'),
+    onError: () => toast.error('Failed to stop container'),
   })
 
   const startMutation = useMutation({
     mutationFn: () => dockerApi.startContainer(container.id),
     onSuccess: () => {
-      toast.success(`Container ${container.name} gestartet`)
+      toast.success(`Container ${container.name} started`)
       queryClient.invalidateQueries({ queryKey: ['containers'] })
     },
-    onError: () => toast.error('Fehler beim Starten'),
+    onError: () => toast.error('Failed to start container'),
   })
 
   const addTargetMutation = useMutation({
@@ -37,11 +37,11 @@ function ContainerCard({ container }: { container: Container }) {
         compression_enabled: true,
       }),
     onSuccess: () => {
-      toast.success('Backup Target erstellt')
+      toast.success('Backup target created')
       setShowAddTarget(false)
       queryClient.invalidateQueries({ queryKey: ['targets'] })
     },
-    onError: () => toast.error('Fehler beim Erstellen'),
+    onError: () => toast.error('Failed to create target'),
   })
 
   const isRunning = container.status === 'running'
@@ -128,8 +128,6 @@ function ContainerCard({ container }: { container: Container }) {
 }
 
 export default function Containers() {
-  const queryClient = useQueryClient()
-
   const { data: containers, isLoading, refetch } = useQuery({
     queryKey: ['containers'],
     queryFn: () => dockerApi.listContainers().then((r) => r.data),
@@ -139,15 +137,15 @@ export default function Containers() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-dark-100">Container</h1>
-          <p className="text-dark-400 mt-1">Alle Docker Container auf diesem Host</p>
+          <h1 className="text-2xl font-bold text-dark-100">Containers</h1>
+          <p className="text-dark-400 mt-1">All Docker containers on this host</p>
         </div>
         <button
           onClick={() => refetch()}
           className="flex items-center gap-2 px-4 py-2 bg-dark-700 text-dark-200 rounded-lg hover:bg-dark-600 transition-colors"
         >
           <RefreshCw className="w-4 h-4" />
-          Aktualisieren
+          Refresh
         </button>
       </div>
 

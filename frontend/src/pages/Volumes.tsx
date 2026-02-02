@@ -18,10 +18,10 @@ function VolumeCard({ volume }: { volume: Volume }) {
         dependencies: volume.used_by,
       }),
     onSuccess: () => {
-      toast.success('Backup Target erstellt')
+      toast.success('Backup target created')
       queryClient.invalidateQueries({ queryKey: ['targets'] })
     },
-    onError: () => toast.error('Fehler beim Erstellen'),
+    onError: () => toast.error('Failed to create target'),
   })
 
   return (
@@ -49,7 +49,7 @@ function VolumeCard({ volume }: { volume: Volume }) {
       {/* Used By */}
       {volume.used_by.length > 0 && (
         <div className="mb-4">
-          <p className="text-xs text-dark-400 mb-2">Verwendet von:</p>
+          <p className="text-xs text-dark-400 mb-2">Used by:</p>
           <div className="flex flex-wrap gap-2">
             {volume.used_by.map((containerName) => (
               <span
@@ -86,7 +86,7 @@ function VolumeCard({ volume }: { volume: Volume }) {
         className="flex items-center gap-2 px-3 py-2 bg-primary-500/10 text-primary-400 rounded-lg hover:bg-primary-500/20 transition-colors text-sm w-full justify-center"
       >
         <Plus className="w-4 h-4" />
-        Als Backup Target hinzufügen
+        Add as Backup Target
       </button>
     </div>
   )
@@ -102,7 +102,7 @@ export default function Volumes() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-dark-100">Volumes</h1>
-        <p className="text-dark-400 mt-1">Alle Docker Volumes auf diesem Host</p>
+        <p className="text-dark-400 mt-1">All Docker volumes on this host</p>
       </div>
 
       {isLoading ? (
@@ -125,7 +125,7 @@ export default function Volumes() {
       {!isLoading && volumes?.length === 0 && (
         <div className="bg-dark-800 rounded-xl border border-dark-700 p-12 text-center">
           <HardDrive className="w-12 h-12 text-dark-500 mx-auto mb-4" />
-          <p className="text-dark-400">Keine Volumes gefunden</p>
+          <p className="text-dark-400">No volumes found</p>
         </div>
       )}
     </div>

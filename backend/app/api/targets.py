@@ -3,18 +3,37 @@ Backup targets API endpoints.
 """
 
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import BackupTarget, RetentionPolicy, get_session, async_session
+from croniter import croniter
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, field_validator
+from sqlalchemy import select
+
+from app.database import BackupTarget, async_session
 
 router = APIRouter()
 
 
+def validate_cron_expression(cron_expr: Optional[str]) -> Optional[str]:
+    """Validate a cron expression."""
+    if cron_expr is None:
+        return None
+
+    # Trim whitespace
+    cron_expr = cron_expr.strip()
+    if not cron_expr:
+        return None
+
+    # Validate using croniter
+    if not croniter.is_valid(cron_expr):
+        raise ValueError(f"Invalid cron expression: {cron_expr}")
+
+    return cron_expr
+
+
 class TargetCreate(BaseModel):
     """Create backup target request."""
+
     name: str
     target_type: str  # container, volume, path, stack
     container_name: Optional[str] = None
@@ -30,9 +49,15 @@ class TargetCreate(BaseModel):
     stop_container: bool = True
     compression_enabled: bool = True
 
+    @field_validator("schedule_cron")
+    @classmethod
+    def validate_schedule_cron(cls, v: Optional[str]) -> Optional[str]:
+        return validate_cron_expression(v)
+
 
 class TargetUpdate(BaseModel):
     """Update backup target request."""
+
     name: Optional[str] = None
     schedule_cron: Optional[str] = None
     enabled: Optional[bool] = None
@@ -43,9 +68,15 @@ class TargetUpdate(BaseModel):
     stop_container: Optional[bool] = None
     compression_enabled: Optional[bool] = None
 
+    @field_validator("schedule_cron")
+    @classmethod
+    def validate_schedule_cron(cls, v: Optional[str]) -> Optional[str]:
+        return validate_cron_expression(v)
+
 
 class TargetResponse(BaseModel):
     """Backup target response."""
+
     id: int
     name: str
     target_type: str
@@ -75,7 +106,7 @@ async def list_targets():
     async with async_session() as session:
         result = await session.execute(select(BackupTarget))
         targets = result.scalars().all()
-        
+
         return [
             TargetResponse(
                 id=t.id,
@@ -122,7 +153,7 @@ async def create_target(target: TargetCreate):
             raise HTTPException(
                 status_code=400, detail="stack_name required for stack type"
             )
-        
+
         db_target = BackupTarget(
             name=target.name,
             target_type=target.target_type,
@@ -139,11 +170,11 @@ async def create_target(target: TargetCreate):
             stop_container=target.stop_container,
             compression_enabled=target.compression_enabled,
         )
-        
+
         session.add(db_target)
         await session.commit()
         await session.refresh(db_target)
-        
+
         return TargetResponse(
             id=db_target.id,
             name=db_target.name,
@@ -174,10 +205,10 @@ async def get_target(target_id: int):
             select(BackupTarget).where(BackupTarget.id == target_id)
         )
         target = result.scalar_one_or_none()
-        
+
         if not target:
             raise HTTPException(status_code=404, detail="Target not found")
-        
+
         return TargetResponse(
             id=target.id,
             name=target.name,
@@ -208,10 +239,10 @@ async def update_target(target_id: int, update: TargetUpdate):
             select(BackupTarget).where(BackupTarget.id == target_id)
         )
         target = result.scalar_one_or_none()
-        
+
         if not target:
             raise HTTPException(status_code=404, detail="Target not found")
-        
+
         # Update fields
         if update.name is not None:
             target.name = update.name
@@ -231,10 +262,10 @@ async def update_target(target_id: int, update: TargetUpdate):
             target.stop_container = update.stop_container
         if update.compression_enabled is not None:
             target.compression_enabled = update.compression_enabled
-        
+
         await session.commit()
         await session.refresh(target)
-        
+
         return TargetResponse(
             id=target.id,
             name=target.name,
@@ -265,11 +296,11 @@ async def delete_target(target_id: int):
             select(BackupTarget).where(BackupTarget.id == target_id)
         )
         target = result.scalar_one_or_none()
-        
+
         if not target:
             raise HTTPException(status_code=404, detail="Target not found")
-        
+
         await session.delete(target)
         await session.commit()
-        
+
         return {"status": "deleted"}

@@ -4,11 +4,12 @@ Provides API client and webhook support for Komodo.
 """
 
 import asyncio
-import aiohttp
-from typing import Optional, Dict, Any, List
-from datetime import datetime
-import logging
 import json
+import logging
+from datetime import datetime
+from typing import Dict, List, Optional
+
+import aiohttp
 
 from app.config import settings
 
@@ -17,14 +18,14 @@ logger = logging.getLogger(__name__)
 
 class KomodoClient:
     """Client for Komodo API integration."""
-    
+
     def __init__(self):
         self.api_url = settings.KOMODO_API_URL.rstrip("/")
         self.api_key = settings.KOMODO_API_KEY
         self.enabled = settings.KOMODO_ENABLED
         self._session: Optional[aiohttp.ClientSession] = None
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
-    
+
     @property
     def session(self) -> aiohttp.ClientSession:
         """Get or create aiohttp session."""
@@ -34,26 +35,26 @@ class KomodoClient:
                 headers["Authorization"] = f"Bearer {self.api_key}"
             self._session = aiohttp.ClientSession(headers=headers)
         return self._session
-    
+
     async def close(self):
         """Close the client session."""
         if self._ws and not self._ws.closed:
             await self._ws.close()
         if self._session and not self._session.closed:
             await self._session.close()
-    
+
     async def is_available(self) -> bool:
         """Check if Komodo is available."""
         if not self.enabled or not self.api_url:
             return False
-        
+
         try:
             async with self.session.get(f"{self.api_url}/health", timeout=5) as resp:
                 return resp.status == 200
         except Exception as e:
             logger.warning(f"Komodo health check failed: {e}")
             return False
-    
+
     async def notify_backup_started(
         self,
         backup_id: int,
@@ -63,7 +64,7 @@ class KomodoClient:
         """Notify Komodo that a backup is starting."""
         if not self.enabled:
             return True
-        
+
         try:
             payload = {
                 "event": "backup.started",
@@ -72,7 +73,7 @@ class KomodoClient:
                 "containers": containers,
                 "timestamp": datetime.utcnow().isoformat(),
             }
-            
+
             async with self.session.post(
                 f"{self.api_url}/webhooks/backup",
                 json=payload,
@@ -84,11 +85,11 @@ class KomodoClient:
                 else:
                     logger.warning(f"Komodo notification failed: {resp.status}")
                     return False
-                    
+
         except Exception as e:
             logger.error(f"Failed to notify Komodo: {e}")
             return False
-    
+
     async def notify_backup_completed(
         self,
         backup_id: int,
@@ -101,7 +102,7 @@ class KomodoClient:
         """Notify Komodo that a backup is completed."""
         if not self.enabled:
             return True
-        
+
         try:
             payload = {
                 "event": "backup.completed",
@@ -113,7 +114,7 @@ class KomodoClient:
                 "error_message": error_message,
                 "timestamp": datetime.utcnow().isoformat(),
             }
-            
+
             async with self.session.post(
                 f"{self.api_url}/webhooks/backup",
                 json=payload,
@@ -125,11 +126,11 @@ class KomodoClient:
                 else:
                     logger.warning(f"Komodo notification failed: {resp.status}")
                     return False
-                    
+
         except Exception as e:
             logger.error(f"Failed to notify Komodo: {e}")
             return False
-    
+
     async def request_container_stop(
         self,
         container_name: str,
@@ -138,7 +139,7 @@ class KomodoClient:
         """Request Komodo to stop a container."""
         if not self.enabled:
             return True
-        
+
         try:
             payload = {
                 "action": "stop",
@@ -146,7 +147,7 @@ class KomodoClient:
                 "reason": reason,
                 "requester": "backup-manager",
             }
-            
+
             async with self.session.post(
                 f"{self.api_url}/containers/{container_name}/actions",
                 json=payload,
@@ -158,11 +159,11 @@ class KomodoClient:
                 else:
                     logger.warning(f"Komodo stop request failed: {resp.status}")
                     return False
-                    
+
         except Exception as e:
             logger.error(f"Failed to request Komodo container stop: {e}")
             return False
-    
+
     async def request_container_start(
         self,
         container_name: str,
@@ -171,7 +172,7 @@ class KomodoClient:
         """Request Komodo to start a container."""
         if not self.enabled:
             return True
-        
+
         try:
             payload = {
                 "action": "start",
@@ -179,7 +180,7 @@ class KomodoClient:
                 "reason": reason,
                 "requester": "backup-manager",
             }
-            
+
             async with self.session.post(
                 f"{self.api_url}/containers/{container_name}/actions",
                 json=payload,
@@ -191,16 +192,16 @@ class KomodoClient:
                 else:
                     logger.warning(f"Komodo start request failed: {resp.status}")
                     return False
-                    
+
         except Exception as e:
             logger.error(f"Failed to request Komodo container start: {e}")
             return False
-    
+
     async def get_container_status(self, container_name: str) -> Optional[Dict]:
         """Get container status from Komodo."""
         if not self.enabled:
             return None
-        
+
         try:
             async with self.session.get(
                 f"{self.api_url}/containers/{container_name}",
@@ -209,37 +210,39 @@ class KomodoClient:
                 if resp.status == 200:
                     return await resp.json()
                 return None
-                    
+
         except Exception as e:
             logger.error(f"Failed to get container status from Komodo: {e}")
             return None
-    
+
     async def connect_websocket(self, on_message: callable) -> bool:
         """Connect to Komodo WebSocket for real-time updates."""
         if not self.enabled:
             return False
-        
+
         try:
             ws_url = self.api_url.replace("http", "ws") + "/ws"
             self._ws = await self.session.ws_connect(ws_url)
-            
+
             # Send authentication
-            await self._ws.send_json({
-                "type": "auth",
-                "token": self.api_key,
-                "client": "backup-manager",
-            })
-            
+            await self._ws.send_json(
+                {
+                    "type": "auth",
+                    "token": self.api_key,
+                    "client": "backup-manager",
+                }
+            )
+
             # Start listening
             asyncio.create_task(self._websocket_listener(on_message))
-            
+
             logger.info("Connected to Komodo WebSocket")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to connect to Komodo WebSocket: {e}")
             return False
-    
+
     async def _websocket_listener(self, on_message: callable):
         """Listen for WebSocket messages."""
         try:
@@ -252,12 +255,12 @@ class KomodoClient:
                     break
         except Exception as e:
             logger.error(f"WebSocket listener error: {e}")
-    
+
     async def send_websocket_message(self, message: Dict) -> bool:
         """Send a message through WebSocket."""
         if not self._ws or self._ws.closed:
             return False
-        
+
         try:
             await self._ws.send_json(message)
             return True

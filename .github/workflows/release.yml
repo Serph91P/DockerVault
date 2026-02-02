@@ -1,10 +1,12 @@
 name: Release & Docker Build
 
 on:
+  workflow_run:
+    workflows: ["Tests"]
+    branches: [main, develop]
+    types: [completed]
   push:
-    branches:
-      - main
-      - develop
+    branches: [main, develop]
     tags:
       - 'v*'
 
@@ -13,11 +15,70 @@ env:
   IMAGE_NAME: ${{ github.repository_owner }}/dockervault
 
 jobs:
+  # Wait for tests to complete when triggered by push
+  wait-for-tests:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+    outputs:
+      tests_passed: ${{ steps.check.outputs.passed }}
+    steps:
+      - name: Wait for Tests workflow
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Wait up to 10 minutes for Tests workflow to complete
+            const maxWait = 600000; // 10 minutes
+            const checkInterval = 15000; // 15 seconds
+            let waited = 0;
+            
+            while (waited < maxWait) {
+              const runs = await github.rest.actions.listWorkflowRuns({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'test.yml',
+                head_sha: context.sha,
+                per_page: 1
+              });
+              
+              if (runs.data.workflow_runs.length > 0) {
+                const run = runs.data.workflow_runs[0];
+                console.log(`Tests workflow status: ${run.status}, conclusion: ${run.conclusion}`);
+                
+                if (run.status === 'completed') {
+                  if (run.conclusion === 'success') {
+                    core.setOutput('passed', 'true');
+                    return;
+                  } else {
+                    core.setOutput('passed', 'false');
+                    core.setFailed(`Tests failed with conclusion: ${run.conclusion}`);
+                    return;
+                  }
+                }
+              }
+              
+              console.log(`Waiting for Tests workflow... (${waited/1000}s)`);
+              await new Promise(r => setTimeout(r, checkInterval));
+              waited += checkInterval;
+            }
+            
+            core.setFailed('Timed out waiting for Tests workflow');
+            core.setOutput('passed', 'false');
+
   prepare:
     runs-on: ubuntu-latest
+    needs: [wait-for-tests]
+    if: |
+      always() && (
+        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+        (github.event_name == 'push' && needs.wait-for-tests.outputs.tests_passed == 'true') ||
+        (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      )
     outputs:
       version: ${{ steps.version.outputs.version }}
       is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+      build_env: ${{ steps.version.outputs.build_env }}
+      branch_name: ${{ steps.version.outputs.branch_name }}
       docker_tags: ${{ steps.docker_meta.outputs.tags }}
       docker_labels: ${{ steps.docker_meta.outputs.labels }}
     steps:
@@ -25,33 +86,43 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Determine version
         id: version
         run: |
           # Get commit count for consistent versioning across branches
           COMMIT_COUNT=$(git rev-list --count HEAD)
+
+          REF="${{ github.event_name == 'workflow_run' && format('refs/heads/{0}', github.event.workflow_run.head_branch) || github.ref }}"
+          BRANCH="${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref_name }}"
           
-          if [[ "${{ github.ref }}" == refs/tags/vdev.* ]]; then
+          if [[ "$REF" == refs/tags/vdev.* ]]; then
             # Dev tag (e.g., vdev.0.0.103 -> dev.0.0.103)
             VERSION=${GITHUB_REF#refs/tags/v}
             IS_PRERELEASE=true
-          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            BUILD_ENV=development
+          elif [[ "$REF" == refs/tags/v* ]]; then
             # Stable tag (e.g., v1.2.3 -> 1.2.3)
             VERSION=${GITHUB_REF#refs/tags/v}
             IS_PRERELEASE=false
-          elif [[ "${{ github.ref }}" == refs/heads/main ]]; then
+            BUILD_ENV=production
+          elif [[ "$REF" == refs/heads/main ]]; then
             # Main branch - stable release with same count as dev
             VERSION="0.0.${COMMIT_COUNT}"
             IS_PRERELEASE=false
+            BUILD_ENV=production
           else
             # Develop branch - prerelease with dev prefix
             VERSION="dev.0.0.${COMMIT_COUNT}"
             IS_PRERELEASE=true
+            BUILD_ENV=development
           fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
-          echo "Version: ${VERSION}, Prerelease: ${IS_PRERELEASE}"
+          echo "build_env=${BUILD_ENV}" >> $GITHUB_OUTPUT
+          echo "branch_name=${BRANCH}" >> $GITHUB_OUTPUT
+          echo "Version: ${VERSION}, Prerelease: ${IS_PRERELEASE}, Build Env: ${BUILD_ENV}, Branch: ${BRANCH}"
 
       - name: Docker metadata
         id: docker_meta
@@ -76,12 +147,15 @@ jobs:
   build-and-push:
     needs: prepare
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
     permissions:
       contents: read
       packages: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -110,6 +184,7 @@ jobs:
             VERSION=${{ needs.prepare.outputs.version }}
             COMMIT_SHA=${{ github.sha }}
             BRANCH=${{ github.ref_name }}
+            BUILD_ENV=${{ needs.prepare.outputs.build_env }}
 
   create-release:
     needs: [prepare, build-and-push]
@@ -117,12 +192,13 @@ jobs:
     permissions:
       contents: write
     # Create releases for tags, develop and main branch pushes
-    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main'
+    if: ${{ github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Generate Changelog
         id: changelog
@@ -162,11 +238,14 @@ jobs:
         env:
           CHANGELOG_CONTENT: ${{ steps.changelog.outputs.content }}
           VERSION: ${{ needs.prepare.outputs.version }}
+          BUILD_ENV: ${{ needs.prepare.outputs.build_env }}
           REPO_OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.repository }}
         run: |
           cat > release_notes.md << EOF
           ## What's Changed in ${VERSION}
+          
+          **Build Environment:** \`${BUILD_ENV}\`
           
           EOF
           
@@ -212,6 +291,7 @@ jobs:
           | Registry | GitHub Container Registry (ghcr.io) |
           | Image | \`ghcr.io/${REPO_OWNER}/dockervault\` |
           | Version | \`${VERSION}\` |
+          | Environment | \`${BUILD_ENV}\` |
           | Architectures | linux/amd64, linux/arm64 |
           
           ## Documentation
@@ -227,10 +307,10 @@ jobs:
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', needs.prepare.outputs.version) }}
           target_commitish: ${{ github.sha }}
-          name: ${{ github.ref_name == 'develop' && format('Development Build {0}', needs.prepare.outputs.version) || format('Release {0}', needs.prepare.outputs.version) }}
+          name: ${{ needs.prepare.outputs.branch_name == 'develop' && format('Development Build {0}', needs.prepare.outputs.version) || format('Release {0}', needs.prepare.outputs.version) }}
           body_path: release_notes.md
           draft: false
           prerelease: ${{ needs.prepare.outputs.is_prerelease }}
-          make_latest: ${{ github.ref == 'refs/heads/main' }}
+          make_latest: ${{ needs.prepare.outputs.branch_name == 'main' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

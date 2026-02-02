@@ -2,43 +2,40 @@
 Configuration settings for the backup manager.
 """
 
+import logging
+
 from pydantic_settings import BaseSettings
-from typing import List
-import os
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
     """Application settings."""
-    
-    # Database
+
+    # Database - fixed path inside container
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/backups.db"
-    
-    # Docker
+
+    # Docker - fixed socket path
     DOCKER_SOCKET: str = "/var/run/docker.sock"
-    
-    # Backup settings
+
+    # Backup settings - fixed path inside container
     BACKUP_BASE_PATH: str = "/backups"
-    DEFAULT_RETENTION_DAYS: int = 30
-    DEFAULT_RETENTION_COUNT: int = 10
-    MAX_CONCURRENT_BACKUPS: int = 2
-    
-    # Compression
-    COMPRESSION_LEVEL: int = 6  # 1-9, higher = more compression
-    
-    # CORS
-    CORS_ORIGINS: List[str] = ["http://localhost:5173", "http://localhost:3000"]
-    
+
+    # Default GFS retention policy (configurable per target in UI)
+    DEFAULT_KEEP_LAST: int = 3
+    DEFAULT_KEEP_DAILY: int = 7
+    DEFAULT_KEEP_WEEKLY: int = 4
+    DEFAULT_KEEP_MONTHLY: int = 6
+    DEFAULT_KEEP_YEARLY: int = 2
+
     # Komodo Integration
     KOMODO_API_URL: str = ""
     KOMODO_API_KEY: str = ""
     KOMODO_ENABLED: bool = False
-    
-    # Security
-    SECRET_KEY: str = "change-me-in-production"
-    
-    # Scheduling
-    SCHEDULER_TIMEZONE: str = "Europe/Berlin"
-    
+
+    # Timezone
+    TZ: str = "Europe/Berlin"
+
     class Config:
         env_file = ".env"
         case_sensitive = True

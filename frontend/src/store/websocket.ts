@@ -18,7 +18,7 @@ interface WebSocketStore {
 }
 
 let ws: WebSocket | null = null
-let reconnectTimeout: NodeJS.Timeout | null = null
+let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
 
 export const useWebSocketStore = create<WebSocketStore>((set, get) => ({
   connected: false,
@@ -108,11 +108,12 @@ function handleMessage(
     case 'backup_completed':
     case 'backup_failed':
       // Remove from progress tracking
-      set((state) => {
-        const newProgress = new Map(state.backupProgress)
+      {
+        const currentState = get()
+        const newProgress = new Map(currentState.backupProgress)
         newProgress.delete(data.backup_id as number)
-        return { backupProgress: newProgress }
-      })
+        set({ backupProgress: newProgress })
+      }
       break
 
     default:

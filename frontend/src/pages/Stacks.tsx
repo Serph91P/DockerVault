@@ -18,10 +18,10 @@ function StackCard({ stack }: { stack: Stack }) {
         dependencies: stack.containers.map((c) => c.name),
       }),
     onSuccess: () => {
-      toast.success('Stack Backup Target erstellt')
+      toast.success('Stack backup target created')
       queryClient.invalidateQueries({ queryKey: ['targets'] })
     },
-    onError: () => toast.error('Fehler beim Erstellen'),
+    onError: () => toast.error('Failed to create target'),
   })
 
   const runningContainers = stack.containers.filter((c) => c.status === 'running').length
@@ -36,7 +36,7 @@ function StackCard({ stack }: { stack: Stack }) {
           <div>
             <h3 className="text-lg font-semibold text-dark-100">{stack.name}</h3>
             <p className="text-sm text-dark-400">
-              {runningContainers}/{stack.containers.length} Container aktiv
+              {runningContainers}/{stack.containers.length} containers active
             </p>
           </div>
         </div>
@@ -92,7 +92,7 @@ function StackCard({ stack }: { stack: Stack }) {
         <div className="mb-4">
           <p className="text-xs text-dark-400 mb-2 flex items-center gap-1">
             <Network className="w-3 h-3" />
-            Netzwerke:
+            Networks:
           </p>
           <div className="flex flex-wrap gap-1">
             {stack.networks.map((network) => (
@@ -114,7 +114,7 @@ function StackCard({ stack }: { stack: Stack }) {
         className="flex items-center gap-2 px-3 py-2 bg-primary-500/10 text-primary-400 rounded-lg hover:bg-primary-500/20 transition-colors text-sm w-full justify-center"
       >
         <Plus className="w-4 h-4" />
-        Gesamten Stack als Backup Target
+        Add Entire Stack as Backup Target
       </button>
     </div>
   )
@@ -130,7 +130,7 @@ export default function Stacks() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-dark-100">Stacks</h1>
-        <p className="text-dark-400 mt-1">Docker Compose Stacks auf diesem Host</p>
+        <p className="text-dark-400 mt-1">Docker Compose stacks on this host</p>
       </div>
 
       {isLoading ? (
@@ -153,9 +153,9 @@ export default function Stacks() {
       {!isLoading && stacks?.length === 0 && (
         <div className="bg-dark-800 rounded-xl border border-dark-700 p-12 text-center">
           <Layers className="w-12 h-12 text-dark-500 mx-auto mb-4" />
-          <p className="text-dark-400">Keine Docker Compose Stacks gefunden</p>
+          <p className="text-dark-400">No Docker Compose stacks found</p>
           <p className="text-sm text-dark-500 mt-2">
-            Stacks werden anhand von com.docker.compose.project Labels erkannt
+            Stacks are detected by com.docker.compose.project labels
           </p>
         </div>
       )}
