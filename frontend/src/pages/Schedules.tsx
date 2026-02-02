@@ -1,9 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Clock, Play, HelpCircle } from 'lucide-react'
+import { Clock, Play, HelpCircle, ArrowRight } from 'lucide-react'
 import { schedulesApi, Schedule } from '../api'
 import { formatDistanceToNow } from 'date-fns'
 import toast from 'react-hot-toast'
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 
 function ScheduleCard({ schedule }: { schedule: Schedule }) {
   const queryClient = useQueryClient()
@@ -217,8 +218,15 @@ export default function Schedules() {
               <Clock className="w-12 h-12 text-dark-500 mx-auto mb-4" />
               <p className="text-dark-400">No schedules configured</p>
               <p className="text-sm text-dark-500 mt-2">
-                Add a cron schedule to backup targets
+                Add a cron schedule to backup targets on the Targets page
               </p>
+              <Link
+                to="/targets"
+                className="inline-flex items-center gap-2 mt-4 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors"
+              >
+                Go to Targets
+                <ArrowRight className="w-4 h-4" />
+              </Link>
             </div>
           )}
         </div>
