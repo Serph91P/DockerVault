@@ -32,7 +32,7 @@ function TargetCard({ target }: { target: BackupTarget }) {
   })
 
   const updateScheduleMutation = useMutation({
-    mutationFn: (schedule_cron: string | null) => 
+    mutationFn: (schedule_cron: string | undefined) => 
       targetsApi.update(target.id, { schedule_cron }),
     onSuccess: () => {
       toast.success('Schedule updated')
@@ -55,7 +55,7 @@ function TargetCard({ target }: { target: BackupTarget }) {
 
   const handleSaveSchedule = () => {
     const value = scheduleValue.trim()
-    updateScheduleMutation.mutate(value || null)
+    updateScheduleMutation.mutate(value || undefined)
   }
 
   const handleCancelSchedule = () => {
