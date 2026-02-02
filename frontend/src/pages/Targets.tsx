@@ -1,10 +1,13 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Target, Trash2, Play, Clock } from 'lucide-react'
+import { Target, Trash2, Play, Clock, Edit2, X, Check } from 'lucide-react'
 import { targetsApi, backupsApi, BackupTarget } from '../api'
 import toast from 'react-hot-toast'
+import { useState } from 'react'
 
 function TargetCard({ target }: { target: BackupTarget }) {
   const queryClient = useQueryClient()
+  const [editingSchedule, setEditingSchedule] = useState(false)
+  const [scheduleValue, setScheduleValue] = useState(target.schedule_cron || '')
 
   const triggerBackupMutation = useMutation({
     mutationFn: () => backupsApi.create(target.id),
@@ -12,7 +15,10 @@ function TargetCard({ target }: { target: BackupTarget }) {
       toast.success('Backup started')
       queryClient.invalidateQueries({ queryKey: ['backups'] })
     },
-    onError: () => toast.error('Failed to start backup'),
+    onError: (error: Error & { response?: { data?: { detail?: string } } }) => {
+      const message = error.response?.data?.detail || 'Failed to start backup'
+      toast.error(message)
+    },
   })
 
   const toggleMutation = useMutation({
@@ -20,8 +26,21 @@ function TargetCard({ target }: { target: BackupTarget }) {
     onSuccess: () => {
       toast.success(target.enabled ? 'Target disabled' : 'Target enabled')
       queryClient.invalidateQueries({ queryKey: ['targets'] })
+      queryClient.invalidateQueries({ queryKey: ['schedules'] })
     },
     onError: () => toast.error('Failed to update target'),
+  })
+
+  const updateScheduleMutation = useMutation({
+    mutationFn: (schedule_cron: string | null) => 
+      targetsApi.update(target.id, { schedule_cron }),
+    onSuccess: () => {
+      toast.success('Schedule updated')
+      queryClient.invalidateQueries({ queryKey: ['targets'] })
+      queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      setEditingSchedule(false)
+    },
+    onError: () => toast.error('Failed to update schedule'),
   })
 
   const deleteMutation = useMutation({
@@ -29,9 +48,20 @@ function TargetCard({ target }: { target: BackupTarget }) {
     onSuccess: () => {
       toast.success('Target deleted')
       queryClient.invalidateQueries({ queryKey: ['targets'] })
+      queryClient.invalidateQueries({ queryKey: ['schedules'] })
     },
     onError: () => toast.error('Failed to delete target'),
   })
+
+  const handleSaveSchedule = () => {
+    const value = scheduleValue.trim()
+    updateScheduleMutation.mutate(value || null)
+  }
+
+  const handleCancelSchedule = () => {
+    setScheduleValue(target.schedule_cron || '')
+    setEditingSchedule(false)
+  }
 
   const getTargetTypeIcon = () => {
     switch (target.target_type) {
@@ -98,13 +128,50 @@ function TargetCard({ target }: { target: BackupTarget }) {
             <span className="text-dark-200">{target.stack_name}</span>
           </div>
         )}
-        {target.schedule_cron && (
-          <div className="flex items-center gap-1">
+        
+        {/* Schedule Editor */}
+        <div className="pt-2 border-t border-dark-700">
+          <div className="flex items-center gap-1 mb-2">
             <Clock className="w-3 h-3 text-dark-400" />
             <span className="text-dark-400">Schedule: </span>
-            <span className="text-dark-200 font-mono">{target.schedule_cron}</span>
           </div>
-        )}
+          {editingSchedule ? (
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={scheduleValue}
+                onChange={(e) => setScheduleValue(e.target.value)}
+                placeholder="0 2 * * * (daily at 2am)"
+                className="flex-1 px-2 py-1 bg-dark-700 border border-dark-600 rounded text-sm text-dark-100 font-mono"
+              />
+              <button
+                onClick={handleSaveSchedule}
+                disabled={updateScheduleMutation.isPending}
+                className="p-1 bg-green-500/20 text-green-400 rounded hover:bg-green-500/30"
+              >
+                <Check className="w-4 h-4" />
+              </button>
+              <button
+                onClick={handleCancelSchedule}
+                className="p-1 bg-dark-600 text-dark-300 rounded hover:bg-dark-500"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setEditingSchedule(true)}
+              className="flex items-center gap-2 px-2 py-1 bg-dark-700 rounded text-sm hover:bg-dark-600 transition-colors"
+            >
+              {target.schedule_cron ? (
+                <span className="text-primary-400 font-mono">{target.schedule_cron}</span>
+              ) : (
+                <span className="text-dark-500 italic">No schedule (click to add)</span>
+              )}
+              <Edit2 className="w-3 h-3 text-dark-400" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Settings */}

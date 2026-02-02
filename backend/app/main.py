@@ -3,6 +3,8 @@ Docker Volume Backup Manager - Main Application
 FastAPI backend with Docker integration, scheduling, and WebSocket support.
 """
 
+import logging
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
@@ -14,6 +16,14 @@ from app.auth import get_session_user, is_setup_complete
 from app.database import async_session, init_db
 from app.scheduler import BackupScheduler
 from app.websocket import router as ws_router
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger(__name__)
 
 # Paths that don't require authentication
 PUBLIC_PATHS = {
@@ -29,14 +39,18 @@ PUBLIC_PATHS = {
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     # Startup
+    logger.info("Starting DockerVault backend...")
     await init_db()
+    logger.info("Database initialized")
     scheduler = BackupScheduler()
     await scheduler.start()
+    logger.info("Scheduler started")
     app.state.scheduler = scheduler
 
     yield
 
     # Shutdown
+    logger.info("Shutting down DockerVault backend...")
     await scheduler.stop()
 
 
