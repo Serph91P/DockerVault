@@ -21,6 +21,7 @@
 - [x] Backend: Scheduler für neues Modell angepasst
 - [x] Frontend: Schedules-Seite zum Erstellen/Bearbeiten
 - [x] Frontend: Target-Formular mit Schedule-Dropdown
+- [x] **Retention Policy pro Target** - Target-spezifische Retention (04.02.2026)
 
 ### 🚧 In Arbeit / Geplant
 
@@ -61,18 +62,16 @@
 
 ---
 
-#### 3. Retention Policy pro Target (Mittlere Priorität)
-**Aktuell:** Nur globale Retention Policies
-
-**Neu:**
+#### 3. ~~Retention Policy pro Target~~ ✅ ERLEDIGT (04.02.2026)
+**Implementiert:**
 - Retention Policy kann pro Target überschrieben werden
 - `BackupTarget.retention_policy_id` referenziert spezifische Policy
 - Wenn NULL → globale Policy verwenden
-
-**TODO:**
-- [ ] Backend: Logik für Target-spezifische Retention
-- [ ] Frontend: Retention-Auswahl im Wizard/Target-Editor
-- [ ] Backend: Retention-Cleanup berücksichtigt Target-spezifische Policies
+- `keep_last` zu allen Retention-Modellen hinzugefügt
+- `RetentionPolicyInfo` Embedded Model für Target-Responses
+- Target API liefert jetzt Retention-Policy-Details mit
+- Frontend: Retention-Badge auf Target-Cards
+- Wizard: Retention-Policy Auswahl mit keep_last Anzeige
 
 ---
 
