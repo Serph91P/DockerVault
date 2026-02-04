@@ -155,8 +155,11 @@ export default function Dashboard() {
               .map((schedule) => (
                 <div key={schedule.id} className="px-6 py-4 flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-medium text-dark-100">{schedule.target_name}</p>
+                    <p className="text-sm font-medium text-dark-100">{schedule.name}</p>
                     <p className="text-xs text-dark-400 font-mono">{schedule.cron_expression}</p>
+                    {schedule.target_count > 0 && (
+                      <p className="text-xs text-dark-500">{schedule.target_count} target(s)</p>
+                    )}
                   </div>
                   <div className="text-right">
                     <p className="text-sm text-dark-300">
