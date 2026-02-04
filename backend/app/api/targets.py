@@ -85,6 +85,17 @@ class ScheduleInfo(BaseModel):
     cron_expression: str
 
 
+class RetentionPolicyInfo(BaseModel):
+    """Embedded retention policy information."""
+
+    id: int
+    name: str
+    keep_last: int
+    keep_daily: int
+    keep_weekly: int
+    keep_monthly: int
+
+
 class TargetResponse(BaseModel):
     """Backup target response."""
 
@@ -101,6 +112,7 @@ class TargetResponse(BaseModel):
     schedule_cron: Optional[str] = None  # DEPRECATED: Keep for backwards compatibility
     enabled: bool
     retention_policy_id: Optional[int] = None
+    retention_policy: Optional[RetentionPolicyInfo] = None  # Embedded retention policy info
     dependencies: List[str]
     pre_backup_command: Optional[str] = None
     post_backup_command: Optional[str] = None
@@ -123,6 +135,17 @@ def _build_target_response(t: BackupTarget) -> TargetResponse:
             cron_expression=t.schedule.cron_expression,
         )
 
+    retention_policy_info = None
+    if t.retention_policy:
+        retention_policy_info = RetentionPolicyInfo(
+            id=t.retention_policy.id,
+            name=t.retention_policy.name,
+            keep_last=t.retention_policy.keep_last,
+            keep_daily=t.retention_policy.keep_daily,
+            keep_weekly=t.retention_policy.keep_weekly,
+            keep_monthly=t.retention_policy.keep_monthly,
+        )
+
     return TargetResponse(
         id=t.id,
         name=t.name,
@@ -137,6 +160,7 @@ def _build_target_response(t: BackupTarget) -> TargetResponse:
         schedule_cron=t.schedule_cron,
         enabled=t.enabled,
         retention_policy_id=t.retention_policy_id,
+        retention_policy=retention_policy_info,
         dependencies=t.dependencies or [],
         pre_backup_command=t.pre_backup_command,
         post_backup_command=t.post_backup_command,
@@ -152,7 +176,10 @@ async def list_targets():
     """List all backup targets."""
     async with async_session() as session:
         result = await session.execute(
-            select(BackupTarget).options(selectinload(BackupTarget.schedule))
+            select(BackupTarget).options(
+                selectinload(BackupTarget.schedule),
+                selectinload(BackupTarget.retention_policy),
+            )
         )
         targets = result.scalars().all()
 
@@ -212,11 +239,14 @@ async def create_target(target: TargetCreate):
         session.add(db_target)
         await session.commit()
 
-        # Reload with schedule relationship
+        # Reload with schedule and retention_policy relationships
         result = await session.execute(
             select(BackupTarget)
             .where(BackupTarget.id == db_target.id)
-            .options(selectinload(BackupTarget.schedule))
+            .options(
+                selectinload(BackupTarget.schedule),
+                selectinload(BackupTarget.retention_policy),
+            )
         )
         db_target = result.scalar_one()
 
@@ -230,7 +260,10 @@ async def get_target(target_id: int):
         result = await session.execute(
             select(BackupTarget)
             .where(BackupTarget.id == target_id)
-            .options(selectinload(BackupTarget.schedule))
+            .options(
+                selectinload(BackupTarget.schedule),
+                selectinload(BackupTarget.retention_policy),
+            )
         )
         target = result.scalar_one_or_none()
 
@@ -247,7 +280,10 @@ async def update_target(target_id: int, update: TargetUpdate):
         result = await session.execute(
             select(BackupTarget)
             .where(BackupTarget.id == target_id)
-            .options(selectinload(BackupTarget.schedule))
+            .options(
+                selectinload(BackupTarget.schedule),
+                selectinload(BackupTarget.retention_policy),
+            )
         )
         target = result.scalar_one_or_none()
 
@@ -287,11 +323,14 @@ async def update_target(target_id: int, update: TargetUpdate):
 
         await session.commit()
 
-        # Reload with schedule relationship
+        # Reload with schedule and retention_policy relationships
         result = await session.execute(
             select(BackupTarget)
             .where(BackupTarget.id == target_id)
-            .options(selectinload(BackupTarget.schedule))
+            .options(
+                selectinload(BackupTarget.schedule),
+                selectinload(BackupTarget.retention_policy),
+            )
         )
         target = result.scalar_one()
 

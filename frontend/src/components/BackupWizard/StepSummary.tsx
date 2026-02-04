@@ -178,6 +178,7 @@ export default function StepSummary({ data, schedules, storages, policies, isCre
           <div className="text-dark-300">
             <p className="text-dark-100">{selectedPolicy.name}</p>
             <div className="flex gap-4 mt-1 text-dark-400">
+              {selectedPolicy.keep_last > 0 && <span>Last: {selectedPolicy.keep_last}</span>}
               {selectedPolicy.keep_daily > 0 && <span>Daily: {selectedPolicy.keep_daily}</span>}
               {selectedPolicy.keep_weekly > 0 && <span>Weekly: {selectedPolicy.keep_weekly}</span>}
               {selectedPolicy.keep_monthly > 0 && <span>Monthly: {selectedPolicy.keep_monthly}</span>}

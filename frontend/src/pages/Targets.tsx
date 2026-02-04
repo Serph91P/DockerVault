@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Target, Trash2, Play, Clock, Calendar, X, Check, Plus } from 'lucide-react'
+import { Target, Trash2, Play, Clock, Calendar, X, Check, Plus, Archive } from 'lucide-react'
 import { targetsApi, backupsApi, schedulesApi, BackupTarget, ScheduleEntity } from '../api'
 import toast from 'react-hot-toast'
 import { useState } from 'react'
@@ -192,6 +192,12 @@ function TargetCard({ target, schedules }: { target: BackupTarget; schedules: Sc
 
       {/* Settings */}
       <div className="flex flex-wrap gap-2 mb-4">
+        {target.retention_policy && (
+          <span className="text-xs bg-green-500/10 text-green-400 rounded px-2 py-1 flex items-center gap-1">
+            <Archive className="w-3 h-3" />
+            {target.retention_policy.name}
+          </span>
+        )}
         {target.stop_container && (
           <span className="text-xs bg-orange-500/10 text-orange-400 rounded px-2 py-1">
             Stops Container

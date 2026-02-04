@@ -68,6 +68,7 @@ export interface BackupTarget {
   schedule_cron?: string  // DEPRECATED: Keep for backwards compatibility
   enabled: boolean
   retention_policy_id?: number
+  retention_policy?: RetentionPolicyInfo  // Embedded retention policy info
   dependencies: string[]
   pre_backup_command?: string
   post_backup_command?: string
@@ -97,6 +98,7 @@ export interface Backup {
 export interface RetentionPolicy {
   id: number
   name: string
+  keep_last: number
   keep_daily: number
   keep_weekly: number
   keep_monthly: number
@@ -104,6 +106,16 @@ export interface RetentionPolicy {
   max_age_days: number
   created_at: string
   updated_at: string
+}
+
+// Embedded retention policy info for targets
+export interface RetentionPolicyInfo {
+  id: number
+  name: string
+  keep_last: number
+  keep_daily: number
+  keep_weekly: number
+  keep_monthly: number
 }
 
 export interface Schedule {

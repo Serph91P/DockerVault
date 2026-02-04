@@ -103,6 +103,9 @@ export default function StepRetention({ data, updateData, policies, isLoadingPol
                 <div>
                   <h4 className="text-primary-400 font-medium">{selected.name}</h4>
                   <div className="text-sm text-dark-300 mt-2 grid grid-cols-2 gap-2">
+                    {selected.keep_last > 0 && (
+                      <div>Keep Last: <span className="text-dark-100">{selected.keep_last}</span></div>
+                    )}
                     {selected.keep_daily > 0 && (
                       <div>Daily: <span className="text-dark-100">{selected.keep_daily}</span></div>
                     )}

@@ -19,6 +19,7 @@ class RetentionPolicyResponse(BaseModel):
 
     id: int
     name: str
+    keep_last: int
     keep_daily: int
     keep_weekly: int
     keep_monthly: int
@@ -35,6 +36,7 @@ class CreateRetentionPolicyRequest(BaseModel):
     """Create retention policy request."""
 
     name: str
+    keep_last: int = 3
     keep_daily: int = 7
     keep_weekly: int = 4
     keep_monthly: int = 6
@@ -46,6 +48,7 @@ class UpdateRetentionPolicyRequest(BaseModel):
     """Update retention policy request."""
 
     name: Optional[str] = None
+    keep_last: Optional[int] = None
     keep_daily: Optional[int] = None
     keep_weekly: Optional[int] = None
     keep_monthly: Optional[int] = None
@@ -64,6 +67,7 @@ async def list_retention_policies():
             RetentionPolicyResponse(
                 id=p.id,
                 name=p.name,
+                keep_last=p.keep_last,
                 keep_daily=p.keep_daily,
                 keep_weekly=p.keep_weekly,
                 keep_monthly=p.keep_monthly,
@@ -91,6 +95,7 @@ async def create_retention_policy(request: CreateRetentionPolicyRequest):
 
         policy = RetentionPolicy(
             name=request.name,
+            keep_last=request.keep_last,
             keep_daily=request.keep_daily,
             keep_weekly=request.keep_weekly,
             keep_monthly=request.keep_monthly,
@@ -105,6 +110,7 @@ async def create_retention_policy(request: CreateRetentionPolicyRequest):
         return RetentionPolicyResponse(
             id=policy.id,
             name=policy.name,
+            keep_last=policy.keep_last,
             keep_daily=policy.keep_daily,
             keep_weekly=policy.keep_weekly,
             keep_monthly=policy.keep_monthly,
@@ -130,6 +136,7 @@ async def get_retention_policy(policy_id: int):
         return RetentionPolicyResponse(
             id=policy.id,
             name=policy.name,
+            keep_last=policy.keep_last,
             keep_daily=policy.keep_daily,
             keep_weekly=policy.keep_weekly,
             keep_monthly=policy.keep_monthly,
@@ -156,6 +163,8 @@ async def update_retention_policy(
 
         if request.name is not None:
             policy.name = request.name
+        if request.keep_last is not None:
+            policy.keep_last = request.keep_last
         if request.keep_daily is not None:
             policy.keep_daily = request.keep_daily
         if request.keep_weekly is not None:
@@ -173,6 +182,7 @@ async def update_retention_policy(
         return RetentionPolicyResponse(
             id=policy.id,
             name=policy.name,
+            keep_last=policy.keep_last,
             keep_daily=policy.keep_daily,
             keep_weekly=policy.keep_weekly,
             keep_monthly=policy.keep_monthly,
