@@ -330,7 +330,7 @@ async def init_db():
 
 async def run_migrations():
     """Run database migrations for existing databases.
-    
+
     This handles adding new columns to existing tables that
     create_all doesn't update.
     """
@@ -338,12 +338,12 @@ async def run_migrations():
         # Check and add missing columns to backups table
         result = await conn.execute(text("PRAGMA table_info(backups)"))
         existing_columns = {row[1] for row in result.fetchall()}
-        
+
         if "encrypted" not in existing_columns:
             await conn.execute(
                 text("ALTER TABLE backups ADD COLUMN encrypted BOOLEAN DEFAULT 0")
             )
-        
+
         if "encryption_key_path" not in existing_columns:
             await conn.execute(
                 text("ALTER TABLE backups ADD COLUMN encryption_key_path VARCHAR(1024)")
