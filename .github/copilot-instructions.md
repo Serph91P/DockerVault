@@ -76,6 +76,28 @@ DockerVault is an automated Docker backup solution with a modern web interface, 
 - Implement responsive design for various screen sizes
 - Use consistent icons and terminology throughout
 
+## Pre-Commit Checklist (MANDATORY)
+
+**ALWAYS run these checks before EVERY commit:**
+
+### Backend (Python)
+```bash
+cd backend
+python -m ruff check app/
+python -m ruff format --check app/
+# If format check fails, run:
+python -m ruff format app/
+```
+
+### Frontend (TypeScript/React)
+```bash
+cd frontend
+npx tsc --noEmit
+npx eslint src/
+```
+
+**Do NOT commit without passing all linting checks!**
+
 When implementing new features, consider:
 1. Impact on existing backup processes
 2. Resource usage and performance implications
