@@ -8,9 +8,9 @@ from croniter import croniter
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.database import BackupTarget, Schedule, async_session
-from sqlalchemy.orm import selectinload
 
 router = APIRouter()
 
