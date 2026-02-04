@@ -16,7 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from app.backup_engine import BackupType, backup_engine
 from app.config import settings
-from app.database import BackupSchedule, BackupTarget, Schedule, async_session
+from app.database import BackupSchedule, BackupTarget, async_session
 from app.retention import retention_manager
 
 logger = logging.getLogger(__name__)
@@ -118,9 +118,7 @@ class BackupScheduler:
                 )
                 await session.commit()
 
-            logger.info(
-                f"Scheduled backup for target {target.id}: {cron_expr}"
-            )
+            logger.info(f"Scheduled backup for target {target.id}: {cron_expr}")
             return True
 
         except Exception as e:
@@ -161,7 +159,7 @@ class BackupScheduler:
 
             # Check if schedule is enabled (if using schedule relationship)
             if target.schedule and not target.schedule.enabled:
-                logger.info(f"Schedule for target {target_id} is disabled, skipping backup")
+                logger.info(f"Schedule for target {target_id} is disabled, skipping")
                 return
 
         cron_expr = self._get_target_cron(target)

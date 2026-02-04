@@ -132,7 +132,8 @@ async def create_schedule(data: ScheduleCreate, request: Request):
         )
         if existing.scalar_one_or_none():
             raise HTTPException(
-                status_code=400, detail=f"Schedule with name '{data.name}' already exists"
+                status_code=400,
+                detail=f"Schedule with name '{data.name}' already exists",
             )
 
         # Validate cron expression
@@ -140,9 +141,7 @@ async def create_schedule(data: ScheduleCreate, request: Request):
         try:
             scheduler.get_next_run(data.cron_expression)
         except Exception as e:
-            raise HTTPException(
-                status_code=400, detail=f"Invalid cron expression: {e}"
-            )
+            raise HTTPException(status_code=400, detail=f"Invalid cron expression: {e}")
 
         schedule = Schedule(
             name=data.name,

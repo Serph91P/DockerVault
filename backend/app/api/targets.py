@@ -108,11 +108,11 @@ class TargetResponse(BaseModel):
     host_path: Optional[str] = None
     stack_name: Optional[str] = None
     schedule_id: Optional[int] = None  # NEW: Reference to Schedule entity
-    schedule: Optional[ScheduleInfo] = None  # NEW: Embedded schedule info
-    schedule_cron: Optional[str] = None  # DEPRECATED: Keep for backwards compatibility
+    schedule: Optional[ScheduleInfo] = None  # Embedded schedule info
+    schedule_cron: Optional[str] = None  # DEPRECATED: backwards compat
     enabled: bool
     retention_policy_id: Optional[int] = None
-    retention_policy: Optional[RetentionPolicyInfo] = None  # Embedded retention policy info
+    retention_policy: Optional[RetentionPolicyInfo] = None  # Embedded info
     dependencies: List[str]
     pre_backup_command: Optional[str] = None
     post_backup_command: Optional[str] = None
@@ -197,7 +197,8 @@ async def create_target(target: TargetCreate):
             )
             if not schedule_result.scalar_one_or_none():
                 raise HTTPException(
-                    status_code=400, detail=f"Schedule with id {target.schedule_id} not found"
+                    status_code=400,
+                    detail=f"Schedule with id {target.schedule_id} not found",
                 )
 
         # Validate target type and required fields
@@ -297,7 +298,8 @@ async def update_target(target_id: int, update: TargetUpdate):
             )
             if not schedule_result.scalar_one_or_none():
                 raise HTTPException(
-                    status_code=400, detail=f"Schedule with id {update.schedule_id} not found"
+                    status_code=400,
+                    detail=f"Schedule with id {update.schedule_id} not found",
                 )
             target.schedule_id = update.schedule_id
 
