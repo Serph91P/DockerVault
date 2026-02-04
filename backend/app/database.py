@@ -65,8 +65,11 @@ class BackupTarget(Base):
     host_path = Column(String(1024), nullable=True)
     stack_name = Column(String(255), nullable=True)
 
-    # Scheduling
-    schedule_cron = Column(String(100), nullable=True)  # Cron expression
+    # Scheduling - NEW: Reference to Schedule entity
+    schedule_id = Column(Integer, ForeignKey("schedules.id"), nullable=True)
+    schedule = relationship("Schedule", back_populates="targets")
+    # DEPRECATED: Keep for migration, will be removed later
+    schedule_cron = Column(String(100), nullable=True)
     enabled = Column(Boolean, default=True)
 
     # Retention
@@ -132,8 +135,26 @@ class Backup(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class Schedule(Base):
+    """Reusable schedule that can be assigned to multiple targets."""
+
+    __tablename__ = "schedules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), unique=True, nullable=False)
+    cron_expression = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    enabled = Column(Boolean, default=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationship to targets using this schedule
+    targets = relationship("BackupTarget", back_populates="schedule")
+
+
 class BackupSchedule(Base):
-    """Scheduled backup jobs."""
+    """Scheduled backup jobs (legacy - kept for compatibility)."""
 
     __tablename__ = "backup_schedules"
 

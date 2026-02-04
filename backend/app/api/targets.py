@@ -9,7 +9,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 
-from app.database import BackupTarget, async_session
+from app.database import BackupTarget, Schedule, async_session
+from sqlalchemy.orm import selectinload
 
 router = APIRouter()
 
@@ -40,7 +41,8 @@ class TargetCreate(BaseModel):
     volume_name: Optional[str] = None
     host_path: Optional[str] = None
     stack_name: Optional[str] = None
-    schedule_cron: Optional[str] = None
+    schedule_id: Optional[int] = None  # NEW: Reference to Schedule entity
+    schedule_cron: Optional[str] = None  # DEPRECATED: Keep for backwards compatibility
     enabled: bool = True
     retention_policy_id: Optional[int] = None
     dependencies: List[str] = []
@@ -59,7 +61,8 @@ class TargetUpdate(BaseModel):
     """Update backup target request."""
 
     name: Optional[str] = None
-    schedule_cron: Optional[str] = None
+    schedule_id: Optional[int] = None  # NEW: Reference to Schedule entity
+    schedule_cron: Optional[str] = None  # DEPRECATED: Keep for backwards compatibility
     enabled: Optional[bool] = None
     retention_policy_id: Optional[int] = None
     dependencies: Optional[List[str]] = None
@@ -74,6 +77,14 @@ class TargetUpdate(BaseModel):
         return validate_cron_expression(v)
 
 
+class ScheduleInfo(BaseModel):
+    """Embedded schedule information."""
+
+    id: int
+    name: str
+    cron_expression: str
+
+
 class TargetResponse(BaseModel):
     """Backup target response."""
 
@@ -85,7 +96,9 @@ class TargetResponse(BaseModel):
     volume_name: Optional[str] = None
     host_path: Optional[str] = None
     stack_name: Optional[str] = None
-    schedule_cron: Optional[str] = None
+    schedule_id: Optional[int] = None  # NEW: Reference to Schedule entity
+    schedule: Optional[ScheduleInfo] = None  # NEW: Embedded schedule info
+    schedule_cron: Optional[str] = None  # DEPRECATED: Keep for backwards compatibility
     enabled: bool
     retention_policy_id: Optional[int] = None
     dependencies: List[str]
@@ -100,42 +113,66 @@ class TargetResponse(BaseModel):
         from_attributes = True
 
 
+def _build_target_response(t: BackupTarget) -> TargetResponse:
+    """Helper function to build TargetResponse from BackupTarget."""
+    schedule_info = None
+    if t.schedule:
+        schedule_info = ScheduleInfo(
+            id=t.schedule.id,
+            name=t.schedule.name,
+            cron_expression=t.schedule.cron_expression,
+        )
+
+    return TargetResponse(
+        id=t.id,
+        name=t.name,
+        target_type=t.target_type,
+        container_id=t.container_id,
+        container_name=t.container_name,
+        volume_name=t.volume_name,
+        host_path=t.host_path,
+        stack_name=t.stack_name,
+        schedule_id=t.schedule_id,
+        schedule=schedule_info,
+        schedule_cron=t.schedule_cron,
+        enabled=t.enabled,
+        retention_policy_id=t.retention_policy_id,
+        dependencies=t.dependencies or [],
+        pre_backup_command=t.pre_backup_command,
+        post_backup_command=t.post_backup_command,
+        stop_container=t.stop_container,
+        compression_enabled=t.compression_enabled,
+        created_at=t.created_at.isoformat(),
+        updated_at=t.updated_at.isoformat(),
+    )
+
+
 @router.get("", response_model=List[TargetResponse])
 async def list_targets():
     """List all backup targets."""
     async with async_session() as session:
-        result = await session.execute(select(BackupTarget))
+        result = await session.execute(
+            select(BackupTarget).options(selectinload(BackupTarget.schedule))
+        )
         targets = result.scalars().all()
 
-        return [
-            TargetResponse(
-                id=t.id,
-                name=t.name,
-                target_type=t.target_type,
-                container_id=t.container_id,
-                container_name=t.container_name,
-                volume_name=t.volume_name,
-                host_path=t.host_path,
-                stack_name=t.stack_name,
-                schedule_cron=t.schedule_cron,
-                enabled=t.enabled,
-                retention_policy_id=t.retention_policy_id,
-                dependencies=t.dependencies or [],
-                pre_backup_command=t.pre_backup_command,
-                post_backup_command=t.post_backup_command,
-                stop_container=t.stop_container,
-                compression_enabled=t.compression_enabled,
-                created_at=t.created_at.isoformat(),
-                updated_at=t.updated_at.isoformat(),
-            )
-            for t in targets
-        ]
+        return [_build_target_response(t) for t in targets]
 
 
 @router.post("", response_model=TargetResponse)
 async def create_target(target: TargetCreate):
     """Create a new backup target."""
     async with async_session() as session:
+        # Validate schedule_id if provided
+        if target.schedule_id is not None:
+            schedule_result = await session.execute(
+                select(Schedule).where(Schedule.id == target.schedule_id)
+            )
+            if not schedule_result.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=400, detail=f"Schedule with id {target.schedule_id} not found"
+                )
+
         # Validate target type and required fields
         if target.target_type == "container" and not target.container_name:
             raise HTTPException(
@@ -161,6 +198,7 @@ async def create_target(target: TargetCreate):
             volume_name=target.volume_name,
             host_path=target.host_path,
             stack_name=target.stack_name,
+            schedule_id=target.schedule_id,
             schedule_cron=target.schedule_cron,
             enabled=target.enabled,
             retention_policy_id=target.retention_policy_id,
@@ -173,28 +211,16 @@ async def create_target(target: TargetCreate):
 
         session.add(db_target)
         await session.commit()
-        await session.refresh(db_target)
 
-        return TargetResponse(
-            id=db_target.id,
-            name=db_target.name,
-            target_type=db_target.target_type,
-            container_id=db_target.container_id,
-            container_name=db_target.container_name,
-            volume_name=db_target.volume_name,
-            host_path=db_target.host_path,
-            stack_name=db_target.stack_name,
-            schedule_cron=db_target.schedule_cron,
-            enabled=db_target.enabled,
-            retention_policy_id=db_target.retention_policy_id,
-            dependencies=db_target.dependencies or [],
-            pre_backup_command=db_target.pre_backup_command,
-            post_backup_command=db_target.post_backup_command,
-            stop_container=db_target.stop_container,
-            compression_enabled=db_target.compression_enabled,
-            created_at=db_target.created_at.isoformat(),
-            updated_at=db_target.updated_at.isoformat(),
+        # Reload with schedule relationship
+        result = await session.execute(
+            select(BackupTarget)
+            .where(BackupTarget.id == db_target.id)
+            .options(selectinload(BackupTarget.schedule))
         )
+        db_target = result.scalar_one()
+
+        return _build_target_response(db_target)
 
 
 @router.get("/{target_id}", response_model=TargetResponse)
@@ -202,33 +228,16 @@ async def get_target(target_id: int):
     """Get a specific backup target."""
     async with async_session() as session:
         result = await session.execute(
-            select(BackupTarget).where(BackupTarget.id == target_id)
+            select(BackupTarget)
+            .where(BackupTarget.id == target_id)
+            .options(selectinload(BackupTarget.schedule))
         )
         target = result.scalar_one_or_none()
 
         if not target:
             raise HTTPException(status_code=404, detail="Target not found")
 
-        return TargetResponse(
-            id=target.id,
-            name=target.name,
-            target_type=target.target_type,
-            container_id=target.container_id,
-            container_name=target.container_name,
-            volume_name=target.volume_name,
-            host_path=target.host_path,
-            stack_name=target.stack_name,
-            schedule_cron=target.schedule_cron,
-            enabled=target.enabled,
-            retention_policy_id=target.retention_policy_id,
-            dependencies=target.dependencies or [],
-            pre_backup_command=target.pre_backup_command,
-            post_backup_command=target.post_backup_command,
-            stop_container=target.stop_container,
-            compression_enabled=target.compression_enabled,
-            created_at=target.created_at.isoformat(),
-            updated_at=target.updated_at.isoformat(),
-        )
+        return _build_target_response(target)
 
 
 @router.put("/{target_id}", response_model=TargetResponse)
@@ -236,12 +245,25 @@ async def update_target(target_id: int, update: TargetUpdate):
     """Update a backup target."""
     async with async_session() as session:
         result = await session.execute(
-            select(BackupTarget).where(BackupTarget.id == target_id)
+            select(BackupTarget)
+            .where(BackupTarget.id == target_id)
+            .options(selectinload(BackupTarget.schedule))
         )
         target = result.scalar_one_or_none()
 
         if not target:
             raise HTTPException(status_code=404, detail="Target not found")
+
+        # Validate schedule_id if provided
+        if update.schedule_id is not None:
+            schedule_result = await session.execute(
+                select(Schedule).where(Schedule.id == update.schedule_id)
+            )
+            if not schedule_result.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=400, detail=f"Schedule with id {update.schedule_id} not found"
+                )
+            target.schedule_id = update.schedule_id
 
         # Update fields
         if update.name is not None:
@@ -264,28 +286,16 @@ async def update_target(target_id: int, update: TargetUpdate):
             target.compression_enabled = update.compression_enabled
 
         await session.commit()
-        await session.refresh(target)
 
-        return TargetResponse(
-            id=target.id,
-            name=target.name,
-            target_type=target.target_type,
-            container_id=target.container_id,
-            container_name=target.container_name,
-            volume_name=target.volume_name,
-            host_path=target.host_path,
-            stack_name=target.stack_name,
-            schedule_cron=target.schedule_cron,
-            enabled=target.enabled,
-            retention_policy_id=target.retention_policy_id,
-            dependencies=target.dependencies or [],
-            pre_backup_command=target.pre_backup_command,
-            post_backup_command=target.post_backup_command,
-            stop_container=target.stop_container,
-            compression_enabled=target.compression_enabled,
-            created_at=target.created_at.isoformat(),
-            updated_at=target.updated_at.isoformat(),
+        # Reload with schedule relationship
+        result = await session.execute(
+            select(BackupTarget)
+            .where(BackupTarget.id == target_id)
+            .options(selectinload(BackupTarget.schedule))
         )
+        target = result.scalar_one()
+
+        return _build_target_response(target)
 
 
 @router.delete("/{target_id}")

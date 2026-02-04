@@ -1,13 +1,14 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Target, Trash2, Play, Clock, Edit2, X, Check } from 'lucide-react'
-import { targetsApi, backupsApi, BackupTarget } from '../api'
+import { Target, Trash2, Play, Clock, Calendar, X, Check, Plus } from 'lucide-react'
+import { targetsApi, backupsApi, schedulesApi, BackupTarget, ScheduleEntity } from '../api'
 import toast from 'react-hot-toast'
 import { useState } from 'react'
+import BackupWizard from '../components/BackupWizard'
 
-function TargetCard({ target }: { target: BackupTarget }) {
+function TargetCard({ target, schedules }: { target: BackupTarget; schedules: ScheduleEntity[] }) {
   const queryClient = useQueryClient()
   const [editingSchedule, setEditingSchedule] = useState(false)
-  const [scheduleValue, setScheduleValue] = useState(target.schedule_cron || '')
+  const [selectedScheduleId, setSelectedScheduleId] = useState<number | undefined>(target.schedule_id)
 
   const triggerBackupMutation = useMutation({
     mutationFn: () => backupsApi.create(target.id),
@@ -32,8 +33,8 @@ function TargetCard({ target }: { target: BackupTarget }) {
   })
 
   const updateScheduleMutation = useMutation({
-    mutationFn: (schedule_cron: string | undefined) => 
-      targetsApi.update(target.id, { schedule_cron }),
+    mutationFn: (schedule_id: number | undefined) => 
+      targetsApi.update(target.id, { schedule_id: schedule_id ?? null } as Partial<BackupTarget>),
     onSuccess: () => {
       toast.success('Schedule updated')
       queryClient.invalidateQueries({ queryKey: ['targets'] })
@@ -54,14 +55,15 @@ function TargetCard({ target }: { target: BackupTarget }) {
   })
 
   const handleSaveSchedule = () => {
-    const value = scheduleValue.trim()
-    updateScheduleMutation.mutate(value || undefined)
+    updateScheduleMutation.mutate(selectedScheduleId)
   }
 
   const handleCancelSchedule = () => {
-    setScheduleValue(target.schedule_cron || '')
+    setSelectedScheduleId(target.schedule_id)
     setEditingSchedule(false)
   }
+
+  const currentSchedule = target.schedule || schedules.find(s => s.id === target.schedule_id)
 
   const getTargetTypeIcon = () => {
     switch (target.target_type) {
@@ -132,18 +134,23 @@ function TargetCard({ target }: { target: BackupTarget }) {
         {/* Schedule Editor */}
         <div className="pt-2 border-t border-dark-700">
           <div className="flex items-center gap-1 mb-2">
-            <Clock className="w-3 h-3 text-dark-400" />
+            <Calendar className="w-3 h-3 text-dark-400" />
             <span className="text-dark-400">Schedule: </span>
           </div>
           {editingSchedule ? (
             <div className="flex gap-2">
-              <input
-                type="text"
-                value={scheduleValue}
-                onChange={(e) => setScheduleValue(e.target.value)}
-                placeholder="0 2 * * * (daily at 2am)"
-                className="flex-1 px-2 py-1 bg-dark-700 border border-dark-600 rounded text-sm text-dark-100 font-mono"
-              />
+              <select
+                value={selectedScheduleId || ''}
+                onChange={(e) => setSelectedScheduleId(e.target.value ? Number(e.target.value) : undefined)}
+                className="flex-1 px-2 py-1 bg-dark-700 border border-dark-600 rounded text-sm text-dark-100"
+              >
+                <option value="">No schedule</option>
+                {schedules.map((schedule) => (
+                  <option key={schedule.id} value={schedule.id}>
+                    {schedule.name} ({schedule.cron_expression})
+                  </option>
+                ))}
+              </select>
               <button
                 onClick={handleSaveSchedule}
                 disabled={updateScheduleMutation.isPending}
@@ -161,14 +168,23 @@ function TargetCard({ target }: { target: BackupTarget }) {
           ) : (
             <button
               onClick={() => setEditingSchedule(true)}
-              className="flex items-center gap-2 px-2 py-1 bg-dark-700 rounded text-sm hover:bg-dark-600 transition-colors"
+              className="flex items-center gap-2 px-2 py-1 bg-dark-700 rounded text-sm hover:bg-dark-600 transition-colors w-full text-left"
             >
-              {target.schedule_cron ? (
-                <span className="text-primary-400 font-mono">{target.schedule_cron}</span>
+              {currentSchedule ? (
+                <div className="flex-1">
+                  <span className="text-primary-400">{currentSchedule.name}</span>
+                  <span className="text-dark-500 ml-2 font-mono text-xs">
+                    {currentSchedule.cron_expression}
+                  </span>
+                </div>
+              ) : target.schedule_cron ? (
+                <span className="text-orange-400 font-mono text-xs flex-1">
+                  Legacy: {target.schedule_cron}
+                </span>
               ) : (
-                <span className="text-dark-500 italic">No schedule (click to add)</span>
+                <span className="text-dark-500 italic flex-1">No schedule</span>
               )}
-              <Edit2 className="w-3 h-3 text-dark-400" />
+              <Clock className="w-3 h-3 text-dark-400" />
             </button>
           )}
         </div>
@@ -216,9 +232,16 @@ function TargetCard({ target }: { target: BackupTarget }) {
 }
 
 export default function Targets() {
+  const [wizardOpen, setWizardOpen] = useState(false)
+  
   const { data: targets, isLoading } = useQuery({
     queryKey: ['targets'],
     queryFn: () => targetsApi.list().then((r) => r.data),
+  })
+
+  const { data: schedules = [] } = useQuery({
+    queryKey: ['schedules'],
+    queryFn: () => schedulesApi.list().then((r) => r.data),
   })
 
   return (
@@ -228,6 +251,13 @@ export default function Targets() {
           <h1 className="text-2xl font-bold text-dark-100">Backup Targets</h1>
           <p className="text-dark-400 mt-1">Configured backup targets</p>
         </div>
+        <button
+          onClick={() => setWizardOpen(true)}
+          className="flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors"
+        >
+          <Plus className="w-4 h-4" />
+          New Target
+        </button>
       </div>
 
       {isLoading ? (
@@ -242,7 +272,7 @@ export default function Targets() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {targets?.map((target) => (
-            <TargetCard key={target.id} target={target} />
+            <TargetCard key={target.id} target={target} schedules={schedules} />
           ))}
         </div>
       )}
@@ -252,10 +282,20 @@ export default function Targets() {
           <Target className="w-12 h-12 text-dark-500 mx-auto mb-4" />
           <p className="text-dark-400">No backup targets configured</p>
           <p className="text-sm text-dark-500 mt-2">
-            Go to Containers, Volumes or Stacks to add backup targets
+            Click "New Target" to create your first backup target
           </p>
+          <button
+            onClick={() => setWizardOpen(true)}
+            className="mt-4 flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors mx-auto"
+          >
+            <Plus className="w-4 h-4" />
+            Create Backup Target
+          </button>
         </div>
       )}
+
+      {/* Backup Wizard Modal */}
+      <BackupWizard isOpen={wizardOpen} onClose={() => setWizardOpen(false)} />
     </div>
   )
 }

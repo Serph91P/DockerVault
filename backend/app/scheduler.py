@@ -12,10 +12,11 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from croniter import croniter
 from sqlalchemy import select, update
+from sqlalchemy.orm import selectinload
 
 from app.backup_engine import BackupType, backup_engine
 from app.config import settings
-from app.database import BackupSchedule, BackupTarget, async_session
+from app.database import BackupSchedule, BackupTarget, Schedule, async_session
 from app.retention import retention_manager
 
 logger = logging.getLogger(__name__)
@@ -62,27 +63,40 @@ class BackupScheduler:
     async def _load_schedules(self):
         """Load all enabled schedules from database."""
         async with async_session() as session:
+            # Load targets with schedule relationship
             result = await session.execute(
-                select(BackupTarget).where(
-                    BackupTarget.enabled.is_(True),
-                    BackupTarget.schedule_cron.isnot(None),
+                select(BackupTarget)
+                .where(BackupTarget.enabled.is_(True))
+                .where(
+                    (BackupTarget.schedule_id.isnot(None))
+                    | (BackupTarget.schedule_cron.isnot(None))
                 )
+                .options(selectinload(BackupTarget.schedule))
             )
             targets = result.scalars().all()
 
             for target in targets:
                 await self.add_schedule(target)
 
+    def _get_target_cron(self, target: BackupTarget) -> Optional[str]:
+        """Get the cron expression for a target (from schedule or legacy field)."""
+        # Prefer schedule relationship
+        if target.schedule and target.schedule.enabled:
+            return target.schedule.cron_expression
+        # Fall back to legacy schedule_cron
+        return target.schedule_cron
+
     async def add_schedule(self, target: BackupTarget) -> bool:
         """Add or update a backup schedule."""
-        if not target.schedule_cron:
+        cron_expr = self._get_target_cron(target)
+        if not cron_expr:
             return False
 
         job_id = f"backup_target_{target.id}"
 
         try:
             # Parse cron expression
-            trigger = CronTrigger.from_crontab(target.schedule_cron)
+            trigger = CronTrigger.from_crontab(cron_expr)
 
             # Add job
             self.scheduler.add_job(
@@ -95,7 +109,7 @@ class BackupScheduler:
             )
 
             # Update next run time in database
-            next_run = self.get_next_run(target.schedule_cron)
+            next_run = self.get_next_run(cron_expr)
             async with async_session() as session:
                 await session.execute(
                     update(BackupSchedule)
@@ -105,7 +119,7 @@ class BackupScheduler:
                 await session.commit()
 
             logger.info(
-                f"Scheduled backup for target {target.id}: {target.schedule_cron}"
+                f"Scheduled backup for target {target.id}: {cron_expr}"
             )
             return True
 
@@ -131,7 +145,9 @@ class BackupScheduler:
 
         async with async_session() as session:
             result = await session.execute(
-                select(BackupTarget).where(BackupTarget.id == target_id)
+                select(BackupTarget)
+                .where(BackupTarget.id == target_id)
+                .options(selectinload(BackupTarget.schedule))
             )
             target = result.scalar_one_or_none()
 
@@ -142,6 +158,13 @@ class BackupScheduler:
             if not target.enabled:
                 logger.info(f"Target {target_id} is disabled, skipping backup")
                 return
+
+            # Check if schedule is enabled (if using schedule relationship)
+            if target.schedule and not target.schedule.enabled:
+                logger.info(f"Schedule for target {target_id} is disabled, skipping backup")
+                return
+
+        cron_expr = self._get_target_cron(target)
 
         try:
             # Create and run backup
@@ -162,7 +185,7 @@ class BackupScheduler:
                     .where(BackupSchedule.target_id == target_id)
                     .values(
                         last_run=datetime.utcnow(),
-                        next_run=self.get_next_run(target.schedule_cron),
+                        next_run=self.get_next_run(cron_expr) if cron_expr else None,
                     )
                 )
                 await session.commit()

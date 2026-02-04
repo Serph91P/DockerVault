@@ -59,7 +59,13 @@ export interface BackupTarget {
   volume_name?: string
   host_path?: string
   stack_name?: string
-  schedule_cron?: string
+  schedule_id?: number  // NEW: Reference to Schedule entity
+  schedule?: {  // NEW: Embedded schedule info
+    id: number
+    name: string
+    cron_expression: string
+  }
+  schedule_cron?: string  // DEPRECATED: Keep for backwards compatibility
   enabled: boolean
   retention_policy_id?: number
   dependencies: string[]
@@ -110,6 +116,42 @@ export interface Schedule {
   enabled: boolean
 }
 
+// NEW: Schedule entity (standalone, reusable)
+export interface ScheduleEntity {
+  id: number
+  name: string
+  cron_expression: string
+  description?: string
+  enabled: boolean
+  target_count: number
+  next_run?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ScheduleWithTargets extends ScheduleEntity {
+  targets: Array<{
+    id: number
+    name: string
+    target_type: string
+    enabled: boolean
+  }>
+}
+
+export interface ScheduleCreate {
+  name: string
+  cron_expression: string
+  description?: string
+  enabled?: boolean
+}
+
+export interface ScheduleUpdate {
+  name?: string
+  cron_expression?: string
+  description?: string
+  enabled?: boolean
+}
+
 // Docker API
 export const dockerApi = {
   getHealth: () => api.get('/docker/health'),
@@ -143,16 +185,24 @@ export const backupsApi = {
   getStats: (id: number) => api.get(`/backups/${id}/stats`),
 }
 
-// Schedules API
+// Schedules API (NEW: CRUD for Schedule entities)
 export const schedulesApi = {
-  list: () => api.get<Schedule[]>('/schedules'),
+  // New Schedule entity CRUD
+  list: () => api.get<ScheduleEntity[]>('/schedules'),
+  get: (id: number) => api.get<ScheduleWithTargets>(`/schedules/${id}`),
+  create: (data: ScheduleCreate) => api.post<ScheduleEntity>('/schedules', data),
+  update: (id: number, data: ScheduleUpdate) => api.put<ScheduleEntity>(`/schedules/${id}`, data),
+  delete: (id: number) => api.delete(`/schedules/${id}`),
+  
+  // Scheduler management
   getJobs: () => api.get('/schedules/jobs'),
-  trigger: (targetId: number) => api.post(`/schedules/${targetId}/trigger`),
-  update: (targetId: number, data: { cron_expression?: string; enabled?: boolean }) =>
-    api.put(`/schedules/${targetId}`, data),
+  trigger: (targetId: number) => api.post(`/schedules/target/${targetId}/trigger`),
   estimate: (target_id: number, cron_expression: string) =>
     api.post('/schedules/estimate', { target_id, cron_expression }),
   getCronHelp: () => api.get('/schedules/cron-help'),
+  
+  // Legacy endpoint for backwards compatibility
+  listLegacy: () => api.get<Schedule[]>('/schedules/legacy/by-target'),
 }
 
 // Retention API
@@ -166,6 +216,37 @@ export const retentionApi = {
   applyRetention: (targetId: number) => api.post(`/retention/${targetId}/apply`),
   getStats: (targetId: number) => api.get(`/retention/${targetId}/stats`),
   cleanupOrphaned: () => api.post('/retention/cleanup-orphaned'),
+}
+
+// Remote Storage Types
+export interface RemoteStorage {
+  id: number
+  name: string
+  storage_type: 'local' | 'ssh' | 'webdav' | 's3' | 'ftp' | 'rclone'
+  enabled: boolean
+  host?: string
+  port?: number
+  username?: string
+  base_path: string
+  ssh_key_path?: string
+  s3_bucket?: string
+  s3_region?: string
+  s3_endpoint_url?: string
+  webdav_url?: string
+  rclone_remote?: string
+  created_at: string
+  updated_at: string
+}
+
+// Storage API
+export const storageApi = {
+  list: () => api.get<RemoteStorage[]>('/storage'),
+  get: (id: number) => api.get<RemoteStorage>(`/storage/${id}`),
+  create: (data: Partial<RemoteStorage>) => api.post<RemoteStorage>('/storage', data),
+  update: (id: number, data: Partial<RemoteStorage>) => api.put<RemoteStorage>(`/storage/${id}`, data),
+  delete: (id: number) => api.delete(`/storage/${id}`),
+  test: (id: number) => api.post(`/storage/${id}/test`),
+  getTypes: () => api.get('/storage/types'),
 }
 
 // Komodo API
