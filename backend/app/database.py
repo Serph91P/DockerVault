@@ -7,7 +7,7 @@ from datetime import datetime
 
 from sqlalchemy import JSON, Boolean, Column, DateTime
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy import ForeignKey, Integer, String, Text, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -305,6 +305,9 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    # Run migrations for existing databases
+    await run_migrations()
+
     # Create default retention policy
     async with async_session() as session:
         from sqlalchemy import select
@@ -323,6 +326,28 @@ async def init_db():
             )
             session.add(default_policy)
             await session.commit()
+
+
+async def run_migrations():
+    """Run database migrations for existing databases.
+    
+    This handles adding new columns to existing tables that
+    create_all doesn't update.
+    """
+    async with engine.begin() as conn:
+        # Check and add missing columns to backups table
+        result = await conn.execute(text("PRAGMA table_info(backups)"))
+        existing_columns = {row[1] for row in result.fetchall()}
+        
+        if "encrypted" not in existing_columns:
+            await conn.execute(
+                text("ALTER TABLE backups ADD COLUMN encrypted BOOLEAN DEFAULT 0")
+            )
+        
+        if "encryption_key_path" not in existing_columns:
+            await conn.execute(
+                text("ALTER TABLE backups ADD COLUMN encryption_key_path VARCHAR(1024)")
+            )
 
 
 async def get_session() -> AsyncSession:
