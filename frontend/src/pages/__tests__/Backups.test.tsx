@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter } from 'react-router-dom'
 import Backups from '../Backups'
 import { server } from '../../test/mocks/server'
-import { http, HttpResponse } from 'msw'
+import { http } from 'msw'
 
 const createWrapper = () => {
   const queryClient = new QueryClient({
