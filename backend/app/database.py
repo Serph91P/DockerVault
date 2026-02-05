@@ -337,16 +337,44 @@ async def run_migrations():
     async with engine.begin() as conn:
         # Check and add missing columns to backups table
         result = await conn.execute(text("PRAGMA table_info(backups)"))
-        existing_columns = {row[1] for row in result.fetchall()}
+        backups_columns = {row[1] for row in result.fetchall()}
 
-        if "encrypted" not in existing_columns:
+        if "encrypted" not in backups_columns:
             await conn.execute(
                 text("ALTER TABLE backups ADD COLUMN encrypted BOOLEAN DEFAULT 0")
             )
 
-        if "encryption_key_path" not in existing_columns:
+        if "encryption_key_path" not in backups_columns:
             await conn.execute(
                 text("ALTER TABLE backups ADD COLUMN encryption_key_path VARCHAR(1024)")
+            )
+
+        # Check and add missing columns to backup_targets table
+        result = await conn.execute(text("PRAGMA table_info(backup_targets)"))
+        targets_columns = {row[1] for row in result.fetchall()}
+
+        if "schedule_id" not in targets_columns:
+            await conn.execute(
+                text("ALTER TABLE backup_targets ADD COLUMN schedule_id INTEGER")
+            )
+
+        if "retention_policy_id" not in targets_columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE backup_targets ADD COLUMN retention_policy_id INTEGER"
+                )
+            )
+
+        # Check and add missing columns to retention_policies table
+        result = await conn.execute(text("PRAGMA table_info(retention_policies)"))
+        retention_columns = {row[1] for row in result.fetchall()}
+
+        if "keep_last" not in retention_columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE retention_policies ADD COLUMN keep_last INTEGER "
+                    "DEFAULT 0"
+                )
             )
 
 
