@@ -371,20 +371,35 @@ class BackupEngine:
             # Determine containers to stop
             containers_to_stop = []
             original_states = {}
+            start_order = []  # Order for restarting containers
 
-            if target.stop_container and target.container_name:
+            if target.target_type == "stack" and target.stack_name:
+                # For stack backups, stop all stack containers in dependency order
+                stacks = await docker_client.get_stacks()
+                stack = next((s for s in stacks if s.name == target.stack_name), None)
+                if stack and stack.stop_order:
+                    containers_to_stop = stack.stop_order
+                    start_order = stack.start_order
+                    logger.info(
+                        f"Stack backup will stop containers in order: {containers_to_stop}"
+                    )
+            elif target.stop_container and target.container_name:
                 containers_to_stop.append(target.container_name)
 
-            # Add dependencies
+            # Add manual dependencies
             if target.dependencies:
-                containers_to_stop.extend(target.dependencies)
+                for dep in target.dependencies:
+                    if dep not in containers_to_stop:
+                        containers_to_stop.append(dep)
 
-            # Get dependency order for safe stopping
-            if containers_to_stop:
+            # Get dependency order for safe stopping (if not already ordered from stack)
+            if containers_to_stop and not start_order:
                 containers_to_stop = await docker_client.get_dependency_order(
                     containers_to_stop
                 )
+                start_order = list(reversed(containers_to_stop))
 
+            if containers_to_stop:
                 # Store original states
                 for container_name in containers_to_stop:
                     state = await docker_client.get_container_state(container_name)
@@ -448,10 +463,13 @@ class BackupEngine:
                 )
                 await self._run_hook(target.post_backup_command)
 
-            # Restart containers in reverse order
+            # Restart containers in start order (respecting dependencies)
             if containers_to_stop:
                 await self._notify_progress(backup_id, 90, "Starting containers...")
-                for container_name in reversed(containers_to_stop):
+                restart_order = (
+                    start_order if start_order else reversed(containers_to_stop)
+                )
+                for container_name in restart_order:
                     if original_states.get(container_name) == "running":
                         await docker_client.start_container(container_name)
 
@@ -506,8 +524,11 @@ class BackupEngine:
                 },
             )
 
-            # Try to restart containers on failure
-            for container_name in reversed(containers_to_stop):
+            # Try to restart containers on failure (use start_order if available)
+            restart_order = (
+                start_order if start_order else list(reversed(containers_to_stop))
+            )
+            for container_name in restart_order:
                 if original_states.get(container_name) == "running":
                     try:
                         await docker_client.start_container(container_name)

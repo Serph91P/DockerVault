@@ -30,10 +30,13 @@ class ContainerInfo:
     compose_project: Optional[str] = None
     compose_service: Optional[str] = None
     depends_on: List[str] = None
+    compose_depends_on: List[str] = None  # Dependencies from compose config
 
     def __post_init__(self):
         if self.depends_on is None:
             self.depends_on = []
+        if self.compose_depends_on is None:
+            self.compose_depends_on = []
 
 
 @dataclass
@@ -56,6 +59,14 @@ class StackInfo:
     containers: List[ContainerInfo]
     volumes: List[str]
     networks: List[str]
+    stop_order: List[str] = None  # Container names in order to stop
+    start_order: List[str] = None  # Container names in order to start
+
+    def __post_init__(self):
+        if self.stop_order is None:
+            self.stop_order = []
+        if self.start_order is None:
+            self.start_order = []
 
 
 class DockerClientWrapper:
@@ -120,6 +131,19 @@ class DockerClientWrapper:
             depends_on = labels.get("backup.depends_on", "").split(",")
             depends_on = [d.strip() for d in depends_on if d.strip()]
 
+            # Try to extract depends_on from compose config (Docker stores this)
+            compose_depends_on = []
+            config_labels = labels.get("com.docker.compose.depends_on", "")
+            if config_labels:
+                # Format: "service1:condition,service2:condition"
+                for dep in config_labels.split(","):
+                    if ":" in dep:
+                        service_name = dep.split(":")[0].strip()
+                        if service_name:
+                            compose_depends_on.append(service_name)
+                    elif dep.strip():
+                        compose_depends_on.append(dep.strip())
+
             result.append(
                 ContainerInfo(
                     id=container.id,
@@ -134,6 +158,7 @@ class DockerClientWrapper:
                     compose_project=compose_project,
                     compose_service=compose_service,
                     depends_on=depends_on,
+                    compose_depends_on=compose_depends_on,
                 )
             )
 
@@ -173,7 +198,7 @@ class DockerClientWrapper:
         return result
 
     async def get_stacks(self) -> List[StackInfo]:
-        """Get Docker Compose stacks."""
+        """Get Docker Compose stacks with dependency order."""
         containers = await self.list_containers()
 
         # Group by compose project
@@ -196,12 +221,19 @@ class DockerClientWrapper:
                         volumes.add(mount["name"])
                 networks.update(container.networks)
 
+            # Calculate dependency order
+            stop_order, start_order = self._calculate_stack_dependency_order(
+                stack_containers
+            )
+
             result.append(
                 StackInfo(
                     name=stack_name,
                     containers=stack_containers,
                     volumes=list(volumes),
                     networks=list(networks),
+                    stop_order=stop_order,
+                    start_order=start_order,
                 )
             )
 
@@ -303,6 +335,76 @@ class DockerClientWrapper:
 
         # For stopping, we want dependent containers first
         return result
+
+    def _calculate_stack_dependency_order(
+        self, containers: List[ContainerInfo]
+    ) -> tuple[List[str], List[str]]:
+        """
+        Calculate stop and start order for stack containers based on dependencies.
+
+        Uses topological sort (Kahn's algorithm) to determine correct order.
+        Dependencies come from compose_depends_on (from docker-compose.yml)
+        and depends_on (from custom labels).
+
+        Returns:
+            tuple: (stop_order, start_order) - container names in order
+        """
+        # Build service name -> container name mapping
+        service_to_container: Dict[str, str] = {}
+        container_to_service: Dict[str, str] = {}
+        for c in containers:
+            if c.compose_service:
+                service_to_container[c.compose_service] = c.name
+                container_to_service[c.name] = c.compose_service
+
+        # Build dependency graph: container_name -> [dependent_container_names]
+        # i.e., which containers depend on this one
+        dependents: Dict[str, List[str]] = {c.name: [] for c in containers}
+        dependencies: Dict[str, List[str]] = {c.name: [] for c in containers}
+
+        for container in containers:
+            # Combine compose_depends_on and custom depends_on
+            all_deps = set(container.compose_depends_on + container.depends_on)
+
+            for dep_service in all_deps:
+                # dep_service could be a service name or container name
+                dep_container = service_to_container.get(dep_service, dep_service)
+
+                if dep_container in dependents:
+                    # This container depends on dep_container
+                    dependents[dep_container].append(container.name)
+                    dependencies[container.name].append(dep_container)
+
+        # Calculate start order (dependencies first) using Kahn's algorithm
+        in_degree = {name: len(deps) for name, deps in dependencies.items()}
+        queue = [name for name, degree in in_degree.items() if degree == 0]
+        start_order = []
+
+        while queue:
+            name = queue.pop(0)
+            start_order.append(name)
+            for dependent in dependents.get(name, []):
+                in_degree[dependent] -= 1
+                if in_degree[dependent] == 0:
+                    queue.append(dependent)
+
+        # Handle any remaining containers (cycle or unresolved)
+        remaining = [c.name for c in containers if c.name not in start_order]
+        start_order.extend(remaining)
+
+        # Stop order is reverse of start order
+        stop_order = list(reversed(start_order))
+
+        logger.debug(
+            "Calculated dependency order for stack",
+            extra={
+                "container_count": len(containers),
+                "stop_order": stop_order,
+                "start_order": start_order,
+            },
+        )
+
+        return stop_order, start_order
 
     def close(self):
         """Close Docker client."""

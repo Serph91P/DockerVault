@@ -53,6 +53,18 @@ class StackResponse(BaseModel):
     containers: List[ContainerResponse]
     volumes: List[str]
     networks: List[str]
+    stop_order: List[str] = []
+    start_order: List[str] = []
+
+
+class StackDependencyResponse(BaseModel):
+    """Stack dependency analysis response."""
+
+    stack_name: str
+    containers: List[str]
+    stop_order: List[str]
+    start_order: List[str]
+    dependencies: dict  # service -> [depends_on services]
 
 
 @router.get("/health")
@@ -173,6 +185,33 @@ async def list_stacks():
             ],
             volumes=s.volumes,
             networks=s.networks,
+            stop_order=s.stop_order,
+            start_order=s.start_order,
         )
         for s in stacks
     ]
+
+
+@router.get("/stacks/{stack_name}/dependencies", response_model=StackDependencyResponse)
+async def get_stack_dependencies(stack_name: str):
+    """Get dependency analysis for a specific stack."""
+    stacks = await docker_client.get_stacks()
+    stack = next((s for s in stacks if s.name == stack_name), None)
+
+    if not stack:
+        raise HTTPException(status_code=404, detail=f"Stack '{stack_name}' not found")
+
+    # Build dependencies dict: container_name -> [depends_on]
+    dependencies = {}
+    for container in stack.containers:
+        deps = list(set(container.compose_depends_on + container.depends_on))
+        if deps:
+            dependencies[container.name] = deps
+
+    return StackDependencyResponse(
+        stack_name=stack_name,
+        containers=[c.name for c in stack.containers],
+        stop_order=stack.stop_order,
+        start_order=stack.start_order,
+        dependencies=dependencies,
+    )
