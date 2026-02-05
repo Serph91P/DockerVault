@@ -3,6 +3,9 @@ services:
     image: ghcr.io/serph91p/dockervault:latest
     container_name: dockervault
     restart: unless-stopped
+    # Run as root to access Docker volumes (required for backup functionality)
+    # This is necessary because Docker volumes are owned by root
+    user: root
     environment:
       - TZ=${TZ:-Europe/Berlin}
       # Komodo Integration (optional)
