@@ -75,6 +75,7 @@ class TestBackupScheduler:
         target.volume_name = "test-volume"
         target.enabled = True
         target.schedule_cron = "0 2 * * *"
+        target.schedule = None  # No Schedule entity, use legacy schedule_cron
 
         mock_result = MagicMock()
         mock_result.scalars.return_value.all.return_value = [target]
@@ -108,6 +109,7 @@ class TestBackupScheduler:
         target.id = 1
         target.name = "test-volume"
         target.schedule_cron = "0 2 * * *"
+        target.schedule = None  # No Schedule entity, use legacy schedule_cron
 
         success = await scheduler.add_schedule(target)
         assert success is True
@@ -135,6 +137,7 @@ class TestBackupScheduler:
         target.id = 1
         target.name = "test-volume"
         target.schedule_cron = None
+        target.schedule = None  # No Schedule entity
 
         success = await scheduler.add_schedule(target)
         assert success is False
@@ -158,6 +161,7 @@ class TestBackupScheduler:
         target.id = 1
         target.name = "test-volume"
         target.schedule_cron = "0 2 * * *"
+        target.schedule = None  # No Schedule entity, use legacy schedule_cron
 
         # Add schedule
         await scheduler.add_schedule(target)
@@ -231,11 +235,13 @@ class TestBackupScheduler:
         target1.id = 1
         target1.name = "volume-1"
         target1.schedule_cron = "0 2 * * *"
+        target1.schedule = None  # No Schedule entity
 
         target2 = MagicMock(spec=BackupTarget)
         target2.id = 2
         target2.name = "volume-2"
         target2.schedule_cron = "0 6 * * *"
+        target2.schedule = None  # No Schedule entity
 
         await scheduler.add_schedule(target1)
         await scheduler.add_schedule(target2)
@@ -434,6 +440,7 @@ class TestSchedulerEdgeCases:
         target.id = 1
         target.name = "test-volume"
         target.schedule_cron = "invalid cron expression"
+        target.schedule = None  # No Schedule entity
 
         # Should return False due to invalid cron
         success = await scheduler.add_schedule(target)
