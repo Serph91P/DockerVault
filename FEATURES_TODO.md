@@ -75,7 +75,51 @@
 
 ---
 
-#### 4. Automatische Dependency-Erkennung bei Stacks (Mittlere Priorität)
+#### 4. 🔴 Stack-Backup funktioniert nicht (KRITISCH)
+**Problem:** `Unknown target type: stack` - Backup-Engine kennt Stack-Typ nicht
+
+**TODO:**
+- [ ] Backend: Stack-Backup in backup_engine.py implementieren
+- [ ] Stack-Volumes identifizieren und sichern
+- [ ] Container-Stop/Start-Reihenfolge beachten
+
+---
+
+#### 5. UI-Umstrukturierung: Backup-zentrierte Navigation (Hohe Priorität)
+**Anforderung:** Die Anwendung soll Backup-fokussiert sein, nicht Container-Verwaltung.
+
+**Änderungen:**
+- [ ] Container-Seite entfernen (keine Container-Verwaltung im Frontend)
+- [ ] Volumes-Seite entfernen
+- [ ] Stacks-Seite entfernen
+- [ ] Neue **Backups-Seite** mit 3 Tabs:
+  - Tab "Container" - Container mit Backup-Status
+  - Tab "Volumes" - Volumes mit Backup-Status
+  - Tab "Stacks" - Stacks mit Backup-Status
+- [ ] Jeder Tab zeigt:
+  - Liste der Items (sortierbar, filterbar, suchbar)
+  - Backup-Status Badge (eingerichtet/nicht eingerichtet)
+  - Klick auf Item → Details + Backup-Historie
+  - "Backup einrichten" Button → Setup-Wizard
+- [ ] Container-Stop-Funktion aus Frontend entfernen
+- [ ] Navigation anpassen (weniger Menüpunkte)
+
+**UI-Konzept:**
+```
+Backups
+├── [Tab: Container] [Tab: Volumes] [Tab: Stacks]
+│
+├── 🔍 Suche | Sortierung | Filter
+│
+├── Liste:
+│   ├── nginx-container ✅ Backup aktiv | Letztes: vor 2h | [Details]
+│   ├── redis-container ❌ Kein Backup | [Einrichten]
+│   └── ...
+```
+
+---
+
+#### 6. Automatische Dependency-Erkennung bei Stacks (Mittlere Priorität)
 **Anforderung:** Bei Stacks sollen Abhängigkeiten automatisch erkannt werden.
 
 **Logik:**
@@ -107,14 +151,14 @@ services:
 
 ---
 
-#### 5. Verbessertes Backup-Logging (Niedrige Priorität)
+#### 7. Verbessertes Backup-Logging (Niedrige Priorität)
 - [ ] Detaillierte Logs pro Backup-Job
 - [ ] Logs im Frontend anzeigbar
 - [ ] Fehler-Details bei fehlgeschlagenen Backups
 
 ---
 
-#### 6. Backup-Restore Funktion (Zukünftig)
+#### 8. Backup-Restore Funktion (Zukünftig)
 - [ ] Restore-Wizard
 - [ ] Backup auswählen
 - [ ] Ziel wählen (Original oder neuer Container/Volume)

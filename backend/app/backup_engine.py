@@ -207,6 +207,19 @@ class BackupEngine:
                     },
                 )
 
+        elif target.target_type == "stack" and target.stack_name:
+            stacks = await docker_client.get_stacks()
+            if not any(s.name == target.stack_name for s in stacks):
+                issues.append(f"Stack '{target.stack_name}' not found")
+                logger.warning(
+                    "Validation failed: stack not found",
+                    extra={
+                        "target_id": target.id,
+                        "target_name": target.name,
+                        "stack_name": target.stack_name,
+                    },
+                )
+
         # Check available disk space in backup directory
         backup_dir = Path(settings.BACKUP_BASE_PATH)
         try:
@@ -565,6 +578,23 @@ class BackupEngine:
                         source_paths.append(
                             (mount.get("destination"), volume.mountpoint)
                         )
+        elif target.target_type == "stack":
+            # Stack backup - collect all volumes from all containers in the stack
+            stacks = await docker_client.get_stacks()
+            stack = next((s for s in stacks if s.name == target.stack_name), None)
+            if not stack:
+                raise ValueError(f"Stack {target.stack_name} not found")
+
+            # Collect all volumes from the stack
+            source_paths = []
+            volumes = await docker_client.list_volumes()
+            for volume_name in stack.volumes:
+                volume = next((v for v in volumes if v.name == volume_name), None)
+                if volume:
+                    source_paths.append((f"volumes/{volume_name}", volume.mountpoint))
+
+            if not source_paths:
+                raise ValueError(f"Stack {target.stack_name} has no volumes to backup")
         else:
             raise ValueError(f"Unknown target type: {target.target_type}")
 
@@ -582,7 +612,7 @@ class BackupEngine:
         # Create tarball
         loop = asyncio.get_event_loop()
 
-        if target.target_type == "container" and source_paths:
+        if target.target_type in ("container", "stack") and source_paths:
             await loop.run_in_executor(
                 None,
                 lambda: self._create_multi_source_tar(
