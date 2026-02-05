@@ -35,13 +35,21 @@ describe('Backups Page', () => {
     render(<Backups />, { wrapper: createWrapper() })
     
     expect(screen.getByText('Backups')).toBeInTheDocument()
-    expect(screen.getByText('All created backups')).toBeInTheDocument()
+    expect(screen.getByText('Manage backups for your Docker resources')).toBeInTheDocument()
+  })
+
+  it('should display three tabs for containers, volumes, and stacks', async () => {
+    render(<Backups />, { wrapper: createWrapper() })
+    
+    expect(screen.getByRole('button', { name: /Containers/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Volumes/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Stacks/i })).toBeInTheDocument()
   })
 
   it('should display loading skeleton initially', () => {
     // Override with a pending promise
     server.use(
-      http.get('/api/v1/backups', () => {
+      http.get('/api/v1/docker/containers', () => {
         return new Promise(() => {}) // Never resolves
       })
     )
@@ -53,152 +61,107 @@ describe('Backups Page', () => {
     expect(skeletonRows.length).toBeGreaterThan(0)
   })
 
-  it('should display backups when loaded', async () => {
+  it('should display containers when loaded on containers tab', async () => {
     render(<Backups />, { wrapper: createWrapper() })
 
     await waitFor(() => {
-      expect(screen.getByText('test-volume')).toBeInTheDocument()
-    })
-
-    expect(screen.getByText('db-volume')).toBeInTheDocument()
-  })
-
-  it('should display backup status in English', async () => {
-    render(<Backups />, { wrapper: createWrapper() })
-
-    await waitFor(() => {
-      expect(screen.getByText('test-volume')).toBeInTheDocument()
-    })
-
-    // Check for English status labels
-    expect(screen.getByText('Completed')).toBeInTheDocument() // completed
-    expect(screen.getByText('Running')).toBeInTheDocument() // running
-  })
-
-  it('should display empty state when no backups exist', async () => {
-    server.use(
-      http.get('/api/v1/backups', () => {
-        return HttpResponse.json([])
-      })
-    )
-
-    render(<Backups />, { wrapper: createWrapper() })
-
-    await waitFor(() => {
-      expect(screen.getByText('No backups yet')).toBeInTheDocument()
+      expect(screen.getByText('nginx-container')).toBeInTheDocument()
     })
   })
 
-  it('should display backup file sizes', async () => {
+  it('should switch to volumes tab and display volumes', async () => {
     render(<Backups />, { wrapper: createWrapper() })
 
+    // Wait for initial load
     await waitFor(() => {
-      expect(screen.getByText('test-volume')).toBeInTheDocument()
+      expect(screen.getByText('nginx-container')).toBeInTheDocument()
     })
 
-    // Check for human-readable file size
-    expect(screen.getByText('1 KB')).toBeInTheDocument()
-  })
+    // Click on Volumes tab
+    const volumesTab = screen.getByRole('button', { name: /Volumes/i })
+    await user.click(volumesTab)
 
-  it('should display backup duration', async () => {
-    render(<Backups />, { wrapper: createWrapper() })
-
-    await waitFor(() => {
-      expect(screen.getByText('test-volume')).toBeInTheDocument()
-    })
-
-    // Check for duration in seconds
-    expect(screen.getByText('300s')).toBeInTheDocument()
-  })
-
-  it('should display table headers', async () => {
-    render(<Backups />, { wrapper: createWrapper() })
-
-    await waitFor(() => {
-      expect(screen.getByText('Target')).toBeInTheDocument()
-      expect(screen.getByText('Status')).toBeInTheDocument()
-      expect(screen.getByText('Size')).toBeInTheDocument()
-      expect(screen.getByText('Duration')).toBeInTheDocument()
-      expect(screen.getByText('Created')).toBeInTheDocument()
-      expect(screen.getByText('Actions')).toBeInTheDocument()
-    })
-  })
-
-  it('should allow backup deletion', async () => {
-    render(<Backups />, { wrapper: createWrapper() })
-
-    await waitFor(() => {
-      expect(screen.getByText('test-volume')).toBeInTheDocument()
-    })
-
-    // Find delete button by title attribute
-    const deleteButtons = screen.getAllByTitle('Delete')
-    expect(deleteButtons.length).toBeGreaterThan(0)
-
-    await user.click(deleteButtons[0])
-
-    // Wait for the mutation to complete
-    await waitFor(() => {
-      // The button should still be in the document (component re-rendered)
-      expect(screen.getAllByTitle('Delete').length).toBeGreaterThan(0)
-    })
-  })
-
-  it('should allow backup restoration for completed backups', async () => {
-    render(<Backups />, { wrapper: createWrapper() })
-
-    await waitFor(() => {
-      expect(screen.getByText('test-volume')).toBeInTheDocument()
-    })
-
-    // Find restore button by title attribute
-    const restoreButtons = screen.getAllByTitle('Restore')
-    expect(restoreButtons.length).toBeGreaterThan(0)
-
-    await user.click(restoreButtons[0])
-
-    // Wait for the mutation
     await waitFor(() => {
       expect(screen.getByText('test-volume')).toBeInTheDocument()
     })
   })
 
-  it('should display backup creation date formatted', async () => {
+  it('should switch to stacks tab and display stacks', async () => {
     render(<Backups />, { wrapper: createWrapper() })
 
+    // Wait for initial load
     await waitFor(() => {
-      expect(screen.getByText('test-volume')).toBeInTheDocument()
+      expect(screen.getByText('nginx-container')).toBeInTheDocument()
     })
 
-    // Date should be formatted as YYYY-MM-DD HH:mm (international format)
-    const dateElements = screen.getAllByText(/\d{4}-\d{2}-\d{2}/)
-    expect(dateElements.length).toBeGreaterThan(0)
+    // Click on Stacks tab
+    const stacksTab = screen.getByRole('button', { name: /Stacks/i })
+    await user.click(stacksTab)
+
+    await waitFor(() => {
+      expect(screen.getByText('myapp')).toBeInTheDocument()
+    })
   })
 
-  it('should be accessible with proper table structure', async () => {
+  it('should display search input', async () => {
     render(<Backups />, { wrapper: createWrapper() })
 
-    await waitFor(() => {
-      expect(screen.getByText('test-volume')).toBeInTheDocument()
-    })
-
-    // Check for proper table structure
-    const table = screen.getByRole('table')
-    expect(table).toBeInTheDocument()
-
-    // Check for column headers
-    const columnHeaders = screen.getAllByRole('columnheader')
-    expect(columnHeaders.length).toBe(6)
+    const searchInput = screen.getByPlaceholderText('Search...')
+    expect(searchInput).toBeInTheDocument()
   })
 
-  it('should display backup ID', async () => {
+  it('should filter items when searching', async () => {
     render(<Backups />, { wrapper: createWrapper() })
 
     await waitFor(() => {
-      expect(screen.getByText('test-volume')).toBeInTheDocument()
+      expect(screen.getByText('nginx-container')).toBeInTheDocument()
     })
 
-    // Check for backup ID display
-    expect(screen.getByText('#1')).toBeInTheDocument()
+    const searchInput = screen.getByPlaceholderText('Search...')
+    await user.type(searchInput, 'nginx')
+
+    await waitFor(() => {
+      expect(screen.getByText('nginx-container')).toBeInTheDocument()
+    })
+  })
+
+  it('should display sort options', async () => {
+    render(<Backups />, { wrapper: createWrapper() })
+
+    const sortSelect = screen.getByRole('combobox')
+    expect(sortSelect).toBeInTheDocument()
+  })
+
+  it('should display only with backup filter checkbox', async () => {
+    render(<Backups />, { wrapper: createWrapper() })
+
+    const checkbox = screen.getByRole('checkbox')
+    expect(checkbox).toBeInTheDocument()
+    expect(screen.getByText('Only with backup')).toBeInTheDocument()
+  })
+
+  it('should display statistics cards at the bottom', async () => {
+    render(<Backups />, { wrapper: createWrapper() })
+
+    await waitFor(() => {
+      expect(screen.getByText('Active Backups')).toBeInTheDocument()
+      expect(screen.getByText('Completed')).toBeInTheDocument()
+      expect(screen.getByText('Failed')).toBeInTheDocument()
+    })
+  })
+
+  it('should display empty state when no items match search', async () => {
+    render(<Backups />, { wrapper: createWrapper() })
+
+    await waitFor(() => {
+      expect(screen.getByText('nginx-container')).toBeInTheDocument()
+    })
+
+    const searchInput = screen.getByPlaceholderText('Search...')
+    await user.type(searchInput, 'nonexistent-item-12345')
+
+    await waitFor(() => {
+      expect(screen.getByText('No items match your search')).toBeInTheDocument()
+    })
   })
 })

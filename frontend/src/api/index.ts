@@ -169,8 +169,6 @@ export const dockerApi = {
   getHealth: () => api.get('/docker/health'),
   listContainers: () => api.get<Container[]>('/docker/containers'),
   getContainer: (id: string) => api.get<Container>(`/docker/containers/${id}`),
-  stopContainer: (id: string) => api.post(`/docker/containers/${id}/stop`),
-  startContainer: (id: string) => api.post(`/docker/containers/${id}/start`),
   listVolumes: () => api.get<Volume[]>('/docker/volumes'),
   listStacks: () => api.get<Stack[]>('/docker/stacks'),
 }

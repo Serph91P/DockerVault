@@ -1,5 +1,5 @@
 import { http, HttpResponse } from 'msw'
-import type { Backup, Container, Volume, BackupTarget } from '../../api'
+import type { Backup, Container, Volume, Stack, BackupTarget } from '../../api'
 
 // Mock data
 const mockBackups: Backup[] = [
@@ -32,13 +32,13 @@ const mockBackups: Backup[] = [
 const mockContainers: Container[] = [
   {
     id: 'container123',
-    name: 'test-container',
+    name: 'nginx-container',
     image: 'nginx:latest',
     status: 'running',
     state: 'running',
     created: '2024-01-01T09:00:00Z',
     labels: {
-      'com.docker.compose.project': 'myproject',
+      'com.docker.compose.project': 'myapp',
       'com.docker.compose.service': 'web',
     },
     mounts: [
@@ -52,8 +52,34 @@ const mockContainers: Container[] = [
       },
     ],
     networks: ['bridge'],
-    compose_project: 'myproject',
+    compose_project: 'myapp',
     compose_service: 'web',
+    depends_on: [],
+  },
+  {
+    id: 'container456',
+    name: 'postgres-container',
+    image: 'postgres:15',
+    status: 'running',
+    state: 'running',
+    created: '2024-01-01T09:00:00Z',
+    labels: {
+      'com.docker.compose.project': 'myapp',
+      'com.docker.compose.service': 'db',
+    },
+    mounts: [
+      {
+        type: 'volume',
+        source: 'db-volume',
+        destination: '/var/lib/postgresql/data',
+        name: 'db-volume',
+        mode: 'rw',
+        rw: true,
+      },
+    ],
+    networks: ['bridge'],
+    compose_project: 'myapp',
+    compose_service: 'db',
     depends_on: [],
   },
 ]
@@ -65,7 +91,24 @@ const mockVolumes: Volume[] = [
     mountpoint: '/var/lib/docker/volumes/test-volume/_data',
     labels: {},
     created_at: '2024-01-01T08:00:00Z',
-    used_by: ['test-container'],
+    used_by: ['nginx-container'],
+  },
+  {
+    name: 'db-volume',
+    driver: 'local',
+    mountpoint: '/var/lib/docker/volumes/db-volume/_data',
+    labels: {},
+    created_at: '2024-01-01T08:00:00Z',
+    used_by: ['postgres-container'],
+  },
+]
+
+const mockStacks: Stack[] = [
+  {
+    name: 'myapp',
+    containers: mockContainers,
+    volumes: ['test-volume', 'db-volume'],
+    networks: ['bridge'],
   },
 ]
 
@@ -160,6 +203,11 @@ export const handlers = [
   // Volumes API
   http.get('/api/v1/docker/volumes', () => {
     return HttpResponse.json(mockVolumes)
+  }),
+
+  // Stacks API
+  http.get('/api/v1/docker/stacks', () => {
+    return HttpResponse.json(mockStacks)
   }),
 
   // Targets API

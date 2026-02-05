@@ -85,10 +85,10 @@ describe('API Layer', () => {
     it('should list containers', async () => {
       const response = await dockerApi.listContainers()
       
-      expect(response.data).toHaveLength(1)
+      expect(response.data).toHaveLength(2)
       expect(response.data[0]).toMatchObject({
         id: 'container123',
-        name: 'test-container',
+        name: 'nginx-container',
         image: 'nginx:latest',
         status: 'running',
       })
@@ -97,11 +97,11 @@ describe('API Layer', () => {
     it('should list volumes', async () => {
       const response = await dockerApi.listVolumes()
       
-      expect(response.data).toHaveLength(1)
+      expect(response.data).toHaveLength(2)
       expect(response.data[0]).toMatchObject({
         name: 'test-volume',
         driver: 'local',
-        used_by: ['test-container'],
+        used_by: ['nginx-container'],
       })
     })
 
@@ -116,30 +116,6 @@ describe('API Layer', () => {
       )
       
       await expect(dockerApi.listContainers()).rejects.toThrow()
-    })
-
-    it('should stop container', async () => {
-      server.use(
-        http.post('/api/v1/docker/containers/:id/stop', ({ params }) => {
-          expect(params.id).toBe('container123')
-          return HttpResponse.json({ message: 'Container stopped' })
-        })
-      )
-      
-      const response = await dockerApi.stopContainer('container123')
-      expect(response.data.message).toBe('Container stopped')
-    })
-
-    it('should start container', async () => {
-      server.use(
-        http.post('/api/v1/docker/containers/:id/start', ({ params }) => {
-          expect(params.id).toBe('container123')
-          return HttpResponse.json({ message: 'Container started' })
-        })
-      )
-      
-      const response = await dockerApi.startContainer('container123')
-      expect(response.data.message).toBe('Container started')
     })
   })
 
