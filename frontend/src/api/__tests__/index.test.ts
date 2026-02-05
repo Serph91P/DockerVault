@@ -245,7 +245,7 @@ describe('API Layer', () => {
 
     it('should trigger manual backup', async () => {
       server.use(
-        http.post('/api/v1/schedules/:targetId/trigger', ({ params }) => {
+        http.post('/api/v1/schedules/target/:targetId/trigger', ({ params }) => {
           expect(params.targetId).toBe('1')
           return HttpResponse.json({ message: 'Backup triggered' })
         })

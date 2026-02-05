@@ -221,16 +221,18 @@ export const handlers = [
     return HttpResponse.json([
       {
         id: 1,
-        target_id: 1,
-        target_name: 'test-volume',
+        name: 'Daily Backup',
         cron_expression: '0 2 * * *',
         enabled: true,
+        target_count: 1,
         next_run: '2024-01-02T02:00:00Z',
+        created_at: '2024-01-01T00:00:00Z',
+        updated_at: '2024-01-01T00:00:00Z',
       },
     ])
   }),
 
-  http.post('/api/v1/schedules/:targetId/trigger', ({ params }) => {
+  http.post('/api/v1/schedules/target/:targetId/trigger', ({ params }) => {
     return HttpResponse.json({ message: `Backup triggered for target ${params.targetId}` })
   }),
 

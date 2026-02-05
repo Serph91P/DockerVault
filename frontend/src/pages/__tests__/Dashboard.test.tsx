@@ -258,11 +258,13 @@ describe('Dashboard Page', () => {
         return HttpResponse.json([
           {
             id: 1,
-            target_id: 1,
-            target_name: 'scheduled-backup-target',
+            name: 'Daily Backup Schedule',
             cron_expression: '0 3 * * *',
             enabled: true,
+            target_count: 2,
             next_run: '2024-01-02T03:00:00Z',
+            created_at: '2024-01-01T00:00:00Z',
+            updated_at: '2024-01-01T00:00:00Z',
           },
         ])
       })
@@ -271,7 +273,7 @@ describe('Dashboard Page', () => {
     render(<Dashboard />, { wrapper: createWrapper() })
     
     await waitFor(() => {
-      expect(screen.getByText('scheduled-backup-target')).toBeInTheDocument()
+      expect(screen.getByText('Daily Backup Schedule')).toBeInTheDocument()
       expect(screen.getByText('0 3 * * *')).toBeInTheDocument()
     })
   })
