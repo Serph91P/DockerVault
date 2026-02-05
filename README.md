@@ -142,7 +142,7 @@ DockerVault follows security best practices:
 
 - **Docker socket** — Mounted read-only (`/var/run/docker.sock:ro`)
 - **Docker volumes** — Mounted read-only (`/var/lib/docker/volumes:ro`)
-- **Non-root user** — Container runs as unprivileged user with Docker group access
+- **Root user required** — Container runs as root to access Docker volumes (Docker's volume directory permissions require root access)
 
 ### Backup Encryption
 

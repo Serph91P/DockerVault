@@ -75,29 +75,47 @@
 
 ---
 
-#### 4. ~~Stack-Backup funktioniert nicht~~ ✅ ERLEDIGT (04.02.2026)
-**Implementiert:**
-- Stack-Backup in backup_engine.py implementiert
-- Stack-Volumes werden identifiziert und gesichert (alle Volumes von allen Stack-Containern)
-- Container-Stop/Start-Reihenfolge basierend auf Abhängigkeiten
+#### 4. 🔴 Stack-Backup funktioniert nicht (KRITISCH)
+**Problem:** `Unknown target type: stack` - Backup-Engine kennt Stack-Typ nicht
+
+**TODO:**
+- [ ] Backend: Stack-Backup in backup_engine.py implementieren
+- [ ] Stack-Volumes identifizieren und sichern
+- [ ] Container-Stop/Start-Reihenfolge beachten
 
 ---
 
-#### 5. ~~UI-Umstrukturierung~~ ✅ ERLEDIGT (04.02.2026)
-**Implementiert:**
-- Container-Seite entfernt
-- Volumes-Seite entfernt
-- Stacks-Seite entfernt
-- Neue **Backups-Seite** mit 3 Tabs:
+#### 5. UI-Umstrukturierung: Backup-zentrierte Navigation (Hohe Priorität)
+**Anforderung:** Die Anwendung soll Backup-fokussiert sein, nicht Container-Verwaltung.
+
+**Änderungen:**
+- [ ] Container-Seite entfernen (keine Container-Verwaltung im Frontend)
+- [ ] Volumes-Seite entfernen
+- [ ] Stacks-Seite entfernen
+- [ ] Neue **Backups-Seite** mit 3 Tabs:
   - Tab "Container" - Container mit Backup-Status
   - Tab "Volumes" - Volumes mit Backup-Status
   - Tab "Stacks" - Stacks mit Backup-Status
-- Jeder Tab zeigt:
+- [ ] Jeder Tab zeigt:
   - Liste der Items (sortierbar, filterbar, suchbar)
-  - Backup-Status Badge (✅ Backup eingerichtet / ⚪ Kein Backup)
-  - "Set Up Backup" Button → Setup-Wizard
-- Container-Stop-Funktion aus Frontend entfernt
-- Navigation vereinfacht (Dashboard, Backups, Targets, Schedules, Storage, Retention, Settings)
+  - Backup-Status Badge (eingerichtet/nicht eingerichtet)
+  - Klick auf Item → Details + Backup-Historie
+  - "Backup einrichten" Button → Setup-Wizard
+- [ ] Container-Stop-Funktion aus Frontend entfernen
+- [ ] Navigation anpassen (weniger Menüpunkte)
+
+**UI-Konzept:**
+```
+Backups
+├── [Tab: Container] [Tab: Volumes] [Tab: Stacks]
+│
+├── 🔍 Suche | Sortierung | Filter
+│
+├── Liste:
+│   ├── nginx-container ✅ Backup aktiv | Letztes: vor 2h | [Details]
+│   ├── redis-container ❌ Kein Backup | [Einrichten]
+│   └── ...
+```
 
 ---
 
