@@ -81,6 +81,13 @@ class BackupTarget(Base):
     # Dependencies (other targets that must be stopped before backup)
     dependencies = Column(JSON, default=list)  # List of container names
 
+    # Volume selection (for container/stack backups - which volumes to include)
+    selected_volumes = Column(JSON, default=list)  # Empty = all volumes
+
+    # Path filtering within volumes
+    include_paths = Column(JSON, default=list)  # Include only these paths (empty = all)
+    exclude_paths = Column(JSON, default=list)  # Exclude these paths/patterns
+
     # Pre/Post hooks
     pre_backup_command = Column(Text, nullable=True)
     post_backup_command = Column(Text, nullable=True)

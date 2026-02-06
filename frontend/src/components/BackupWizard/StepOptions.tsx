@@ -136,40 +136,6 @@ export default function StepOptions({ data, updateData }: Props) {
               Command to run after the backup completes
             </p>
           </div>
-
-          {/* Custom Backup Path */}
-          <div>
-            <label className="block text-sm font-medium text-dark-300 mb-2">
-              Custom Backup Path
-            </label>
-            <input
-              type="text"
-              value={data.customPath}
-              onChange={(e) => updateData({ customPath: e.target.value })}
-              placeholder="Leave empty for default path"
-              className="w-full px-4 py-2 bg-dark-900 border border-dark-600 rounded-lg text-dark-100 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-            />
-            <p className="text-xs text-dark-500 mt-1">
-              Override the default backup storage path
-            </p>
-          </div>
-
-          {/* Exclude Patterns */}
-          <div>
-            <label className="block text-sm font-medium text-dark-300 mb-2">
-              Exclude Patterns
-            </label>
-            <textarea
-              value={data.excludePatterns}
-              onChange={(e) => updateData({ excludePatterns: e.target.value })}
-              placeholder="*.tmp&#10;*.log&#10;node_modules/"
-              rows={3}
-              className="w-full px-4 py-2 bg-dark-900 border border-dark-600 rounded-lg text-dark-100 font-mono text-sm focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
-            />
-            <p className="text-xs text-dark-500 mt-1">
-              One pattern per line. Files matching these patterns will be excluded.
-            </p>
-          </div>
         </div>
       )}
     </div>

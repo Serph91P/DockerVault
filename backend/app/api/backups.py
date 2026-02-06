@@ -5,9 +5,12 @@ Backups API endpoints.
 import asyncio
 import logging
 import os
+import tarfile
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -366,3 +369,178 @@ async def validate_backup_target(backup_id: int):
         "valid": len(issues) == 0,
         "issues": issues,
     }
+
+
+class BackupFileInfo(BaseModel):
+    """Information about a file in a backup archive."""
+
+    name: str
+    path: str
+    size: int
+    size_human: str
+    is_dir: bool
+    mode: str
+    mtime: str
+
+
+def _format_file_size(size_bytes: int) -> str:
+    """Format size in human readable format."""
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if size_bytes < 1024:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.1f} PB"
+
+
+@router.get("/{backup_id}/files", response_model=List[BackupFileInfo])
+async def list_backup_files(backup_id: int):
+    """List all files in a backup archive.
+
+    Returns a flat list of all files and directories in the backup
+    with their sizes and metadata.
+    """
+    async with async_session() as session:
+        result = await session.execute(select(Backup).where(Backup.id == backup_id))
+        backup = result.scalar_one_or_none()
+
+        if not backup:
+            raise HTTPException(status_code=404, detail="Backup not found")
+
+        if backup.status != BackupStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Backup is not completed")
+
+        if not backup.file_path or not os.path.exists(backup.file_path):
+            raise HTTPException(status_code=404, detail="Backup file not found")
+
+    files: List[BackupFileInfo] = []
+
+    try:
+        # Handle encrypted backups
+        archive_path = backup.file_path
+        if backup.encrypted and archive_path.endswith(".enc"):
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot browse encrypted backups. Decrypt first.",
+            )
+
+        # Determine compression mode
+        if archive_path.endswith(".tar.gz") or archive_path.endswith(".tgz"):
+            mode = "r:gz"
+        elif archive_path.endswith(".tar.bz2"):
+            mode = "r:bz2"
+        elif archive_path.endswith(".tar.xz"):
+            mode = "r:xz"
+        elif archive_path.endswith(".tar"):
+            mode = "r:"
+        else:
+            raise HTTPException(
+                status_code=400, detail="Unsupported archive format"
+            )
+
+        with tarfile.open(archive_path, mode) as tar:
+            for member in tar.getmembers():
+                files.append(
+                    BackupFileInfo(
+                        name=os.path.basename(member.name) or member.name,
+                        path=member.name,
+                        size=member.size,
+                        size_human=_format_file_size(member.size),
+                        is_dir=member.isdir(),
+                        mode=oct(member.mode)[2:] if member.mode else "0",
+                        mtime=datetime.fromtimestamp(member.mtime).isoformat()
+                        if member.mtime
+                        else "",
+                    )
+                )
+
+    except tarfile.TarError as e:
+        logger.error(f"Failed to read archive {backup.file_path}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to read backup archive")
+
+    return files
+
+
+@router.get("/{backup_id}/files/{file_path:path}")
+async def download_backup_file(backup_id: int, file_path: str):
+    """Download a specific file from a backup archive.
+
+    The file is extracted and streamed to the client.
+    """
+    async with async_session() as session:
+        result = await session.execute(select(Backup).where(Backup.id == backup_id))
+        backup = result.scalar_one_or_none()
+
+        if not backup:
+            raise HTTPException(status_code=404, detail="Backup not found")
+
+        if backup.status != BackupStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Backup is not completed")
+
+        if not backup.file_path or not os.path.exists(backup.file_path):
+            raise HTTPException(status_code=404, detail="Backup file not found")
+
+    # Handle encrypted backups
+    archive_path = backup.file_path
+    if backup.encrypted and archive_path.endswith(".enc"):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot download from encrypted backups. Decrypt first.",
+        )
+
+    # Determine compression mode
+    if archive_path.endswith(".tar.gz") or archive_path.endswith(".tgz"):
+        mode = "r:gz"
+    elif archive_path.endswith(".tar.bz2"):
+        mode = "r:bz2"
+    elif archive_path.endswith(".tar.xz"):
+        mode = "r:xz"
+    elif archive_path.endswith(".tar"):
+        mode = "r:"
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported archive format")
+
+    try:
+        with tarfile.open(archive_path, mode) as tar:
+            # Validate the file path to prevent path traversal
+            # Normalize path and ensure it doesn't escape
+            normalized_path = os.path.normpath(file_path).lstrip("/\\")
+            if ".." in normalized_path:
+                raise HTTPException(
+                    status_code=400, detail="Invalid file path"
+                )
+
+            member = tar.getmember(file_path)
+
+            if member.isdir():
+                raise HTTPException(
+                    status_code=400, detail="Cannot download directories"
+                )
+
+            # Extract and stream the file
+            file_obj = tar.extractfile(member)
+            if file_obj is None:
+                raise HTTPException(
+                    status_code=500, detail="Failed to extract file"
+                )
+
+            # Read content into memory (for small files)
+            # For very large files, consider streaming
+            content = file_obj.read()
+
+            filename = os.path.basename(file_path)
+
+            return StreamingResponse(
+                iter([content]),
+                media_type="application/octet-stream",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Content-Length": str(len(content)),
+                },
+            )
+
+    except KeyError:
+        raise HTTPException(status_code=404, detail="File not found in archive")
+    except tarfile.TarError as e:
+        logger.error(f"Failed to extract file from {archive_path}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to read backup archive")
+

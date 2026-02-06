@@ -46,6 +46,11 @@ class TargetCreate(BaseModel):
     enabled: bool = True
     retention_policy_id: Optional[int] = None
     dependencies: List[str] = []
+    # Volume selection for container/stack backups
+    selected_volumes: List[str] = []  # Empty = all volumes
+    # Path filtering
+    include_paths: List[str] = []  # Include only these paths (empty = all)
+    exclude_paths: List[str] = []  # Exclude these paths/patterns
     pre_backup_command: Optional[str] = None
     post_backup_command: Optional[str] = None
     stop_container: bool = True
@@ -66,6 +71,11 @@ class TargetUpdate(BaseModel):
     enabled: Optional[bool] = None
     retention_policy_id: Optional[int] = None
     dependencies: Optional[List[str]] = None
+    # Volume selection for container/stack backups
+    selected_volumes: Optional[List[str]] = None
+    # Path filtering
+    include_paths: Optional[List[str]] = None
+    exclude_paths: Optional[List[str]] = None
     pre_backup_command: Optional[str] = None
     post_backup_command: Optional[str] = None
     stop_container: Optional[bool] = None
@@ -114,6 +124,11 @@ class TargetResponse(BaseModel):
     retention_policy_id: Optional[int] = None
     retention_policy: Optional[RetentionPolicyInfo] = None  # Embedded info
     dependencies: List[str]
+    # Volume selection for container/stack backups
+    selected_volumes: List[str]
+    # Path filtering
+    include_paths: List[str]
+    exclude_paths: List[str]
     pre_backup_command: Optional[str] = None
     post_backup_command: Optional[str] = None
     stop_container: bool
@@ -162,6 +177,9 @@ def _build_target_response(t: BackupTarget) -> TargetResponse:
         retention_policy_id=t.retention_policy_id,
         retention_policy=retention_policy_info,
         dependencies=t.dependencies or [],
+        selected_volumes=t.selected_volumes or [],
+        include_paths=t.include_paths or [],
+        exclude_paths=t.exclude_paths or [],
         pre_backup_command=t.pre_backup_command,
         post_backup_command=t.post_backup_command,
         stop_container=t.stop_container,
@@ -231,6 +249,9 @@ async def create_target(target: TargetCreate):
             enabled=target.enabled,
             retention_policy_id=target.retention_policy_id,
             dependencies=target.dependencies,
+            selected_volumes=target.selected_volumes,
+            include_paths=target.include_paths,
+            exclude_paths=target.exclude_paths,
             pre_backup_command=target.pre_backup_command,
             post_backup_command=target.post_backup_command,
             stop_container=target.stop_container,
@@ -314,6 +335,12 @@ async def update_target(target_id: int, update: TargetUpdate):
             target.retention_policy_id = update.retention_policy_id
         if update.dependencies is not None:
             target.dependencies = update.dependencies
+        if update.selected_volumes is not None:
+            target.selected_volumes = update.selected_volumes
+        if update.include_paths is not None:
+            target.include_paths = update.include_paths
+        if update.exclude_paths is not None:
+            target.exclude_paths = update.exclude_paths
         if update.pre_backup_command is not None:
             target.pre_backup_command = update.pre_backup_command
         if update.post_backup_command is not None:

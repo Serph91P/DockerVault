@@ -70,6 +70,11 @@ export interface BackupTarget {
   retention_policy_id?: number
   retention_policy?: RetentionPolicyInfo  // Embedded retention policy info
   dependencies: string[]
+  // Volume selection for container/stack backups
+  selected_volumes: string[]  // Empty = all volumes
+  // Path filtering
+  include_paths: string[]  // Include only these paths (empty = all)
+  exclude_paths: string[]  // Exclude these paths/patterns
   pre_backup_command?: string
   post_backup_command?: string
   stop_container: boolean
@@ -193,6 +198,7 @@ export const backupsApi = {
     api.post(`/backups/${id}/restore`, { target_path }),
   delete: (id: number) => api.delete(`/backups/${id}`),
   getStats: (id: number) => api.get(`/backups/${id}/stats`),
+  listFiles: (id: number) => api.get(`/backups/${id}/files`),
 }
 
 // Schedules API (NEW: CRUD for Schedule entities)

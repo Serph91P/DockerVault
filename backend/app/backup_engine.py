@@ -587,14 +587,19 @@ class BackupEngine:
             if not container:
                 raise ValueError(f"Container {target.container_name} not found")
 
+            # Get selected volumes (empty list = all volumes)
+            selected_volumes = target.selected_volumes or []
+
             # Create combined backup of all volumes
             source_paths = []
             for mount in container.mounts:
                 if mount.get("type") == "volume":
+                    volume_name = mount.get("name")
+                    # Filter by selected_volumes if specified
+                    if selected_volumes and volume_name not in selected_volumes:
+                        continue
                     volumes = await docker_client.list_volumes()
-                    volume = next(
-                        (v for v in volumes if v.name == mount.get("name")), None
-                    )
+                    volume = next((v for v in volumes if v.name == volume_name), None)
                     if volume:
                         source_paths.append(
                             (mount.get("destination"), volume.mountpoint)
@@ -606,10 +611,16 @@ class BackupEngine:
             if not stack:
                 raise ValueError(f"Stack {target.stack_name} not found")
 
+            # Get selected volumes (empty list = all volumes)
+            selected_volumes = target.selected_volumes or []
+
             # Collect all volumes from the stack
             source_paths = []
             volumes = await docker_client.list_volumes()
             for volume_name in stack.volumes:
+                # Filter by selected_volumes if specified
+                if selected_volumes and volume_name not in selected_volumes:
+                    continue
                 volume = next((v for v in volumes if v.name == volume_name), None)
                 if volume:
                     source_paths.append((f"volumes/{volume_name}", volume.mountpoint))
@@ -630,6 +641,10 @@ class BackupEngine:
 
         backup_path = backup_dir / filename
 
+        # Get path filters
+        include_paths = target.include_paths or []
+        exclude_paths = target.exclude_paths or []
+
         # Create tarball
         loop = asyncio.get_event_loop()
 
@@ -640,6 +655,8 @@ class BackupEngine:
                     source_paths,
                     str(backup_path),
                     target.compression_enabled,
+                    include_paths,
+                    exclude_paths,
                 ),
             )
         else:
@@ -649,29 +666,111 @@ class BackupEngine:
                     source_path,
                     str(backup_path),
                     target.compression_enabled,
+                    include_paths,
+                    exclude_paths,
                 ),
             )
 
         return str(backup_path)
 
-    def _create_tar(self, source: str, dest: str, compress: bool = True):
-        """Create tar archive."""
+    def _should_include_path(
+        self,
+        path: str,
+        include_paths: List[str],
+        exclude_paths: List[str],
+    ) -> bool:
+        """Check if a path should be included in the backup.
+
+        Args:
+            path: The path to check (relative to archive root)
+            include_paths: List of paths/patterns to include (empty = all)
+            exclude_paths: List of paths/patterns to exclude
+
+        Returns:
+            True if the path should be included, False otherwise
+        """
+        import fnmatch
+
+        # Normalize path
+        path = path.lstrip("/")
+
+        # Check excludes first
+        for pattern in exclude_paths:
+            pattern = pattern.lstrip("/")
+            if fnmatch.fnmatch(path, pattern) or path.startswith(pattern.rstrip("*")):
+                return False
+
+        # If include_paths is specified, path must match at least one
+        if include_paths:
+            for pattern in include_paths:
+                pattern = pattern.lstrip("/")
+                if fnmatch.fnmatch(path, pattern) or path.startswith(
+                    pattern.rstrip("*")
+                ):
+                    return True
+            return False
+
+        return True
+
+    def _create_tar(
+        self,
+        source: str,
+        dest: str,
+        compress: bool = True,
+        include_paths: Optional[List[str]] = None,
+        exclude_paths: Optional[List[str]] = None,
+    ):
+        """Create tar archive with optional path filtering."""
+        include_paths = include_paths or []
+        exclude_paths = exclude_paths or []
+
+        def filter_func(tarinfo: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
+            if not self._should_include_path(
+                tarinfo.name, include_paths, exclude_paths
+            ):
+                return None
+            return tarinfo
+
         mode = "w:gz" if compress else "w"
         with tarfile.open(dest, mode, compresslevel=6 if compress else None) as tar:
-            tar.add(source, arcname=os.path.basename(source))
+            # Only use filter if we have path restrictions
+            if include_paths or exclude_paths:
+                tar.add(source, arcname=os.path.basename(source), filter=filter_func)
+            else:
+                tar.add(source, arcname=os.path.basename(source))
 
     def _create_multi_source_tar(
         self,
         sources: List[tuple],  # [(archive_name, source_path), ...]
         dest: str,
         compress: bool = True,
+        include_paths: Optional[List[str]] = None,
+        exclude_paths: Optional[List[str]] = None,
     ):
-        """Create tar archive from multiple sources."""
+        """Create tar archive from multiple sources with optional path filtering."""
+        include_paths = include_paths or []
+        exclude_paths = exclude_paths or []
+
+        def filter_func(tarinfo: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
+            if not self._should_include_path(
+                tarinfo.name, include_paths, exclude_paths
+            ):
+                return None
+            return tarinfo
+
         mode = "w:gz" if compress else "w"
         with tarfile.open(dest, mode, compresslevel=6 if compress else None) as tar:
             for archive_name, source_path in sources:
                 if os.path.exists(source_path):
-                    tar.add(source_path, arcname=archive_name.lstrip("/"))
+                    # Only use filter if we have path restrictions
+                    if include_paths or exclude_paths:
+                        tar.add(
+                            source_path,
+                            arcname=archive_name.lstrip("/"),
+                            filter=filter_func,
+                        )
+                    else:
+                        tar.add(source_path, arcname=archive_name.lstrip("/"))
 
     async def _calculate_checksum(self, file_path: str) -> str:
         """Calculate SHA256 checksum of file."""

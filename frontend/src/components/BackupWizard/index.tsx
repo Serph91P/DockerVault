@@ -17,6 +17,7 @@ import StepStorage from './StepStorage'
 import StepRetention from './StepRetention'
 import StepOptions from './StepOptions'
 import StepSummary from './StepSummary'
+import StepVolumeConfig from './StepVolumeConfig'
 
 export interface WizardData {
   // Step 1: Target
@@ -27,11 +28,16 @@ export interface WizardData {
   hostPath: string
   stackName: string
 
-  // Step 2: Dependencies
+  // Step 2: Volume Configuration (for container/stack)
+  selectedVolumes: string[]  // Empty = all volumes
+  includePaths: string[]     // Include only these paths (empty = all)
+  excludePaths: string[]     // Exclude these paths/patterns
+
+  // Step 3: Dependencies
   dependencies: string[]
   stopContainer: boolean
 
-  // Step 3: Schedule
+  // Step 4: Schedule
   scheduleId: number | null
   newSchedule: {
     name: string
@@ -39,10 +45,10 @@ export interface WizardData {
     description: string
   } | null
 
-  // Step 4: Storage
+  // Step 5: Storage
   remoteStorageIds: number[]
 
-  // Step 5: Retention
+  // Step 6: Retention
   retentionPolicyId: number | null
   newRetentionPolicy: {
     name: string
@@ -52,12 +58,10 @@ export interface WizardData {
     keepMonthly: number
   } | null
 
-  // Step 6: Options
+  // Step 7: Options
   compression: 'none' | 'gzip' | 'zstd'
   preCommand: string
   postCommand: string
-  customPath: string
-  excludePatterns: string
   enabled: boolean
 }
 
@@ -68,6 +72,9 @@ const initialData: WizardData = {
   volumeName: '',
   hostPath: '',
   stackName: '',
+  selectedVolumes: [],
+  includePaths: [],
+  excludePaths: [],
   dependencies: [],
   stopContainer: true,
   scheduleId: null,
@@ -78,19 +85,18 @@ const initialData: WizardData = {
   compression: 'gzip',
   preCommand: '',
   postCommand: '',
-  customPath: '',
-  excludePatterns: '',
   enabled: true,
 }
 
 const STEPS = [
   { id: 1, name: 'Target', description: 'What to backup' },
-  { id: 2, name: 'Dependencies', description: 'Container dependencies' },
-  { id: 3, name: 'Schedule', description: 'When to backup' },
-  { id: 4, name: 'Storage', description: 'Where to store' },
-  { id: 5, name: 'Retention', description: 'How long to keep' },
-  { id: 6, name: 'Options', description: 'Advanced settings' },
-  { id: 7, name: 'Summary', description: 'Review & create' },
+  { id: 2, name: 'Volumes', description: 'Which volumes/paths' },
+  { id: 3, name: 'Dependencies', description: 'Container dependencies' },
+  { id: 4, name: 'Schedule', description: 'When to backup' },
+  { id: 5, name: 'Storage', description: 'Where to store' },
+  { id: 6, name: 'Retention', description: 'How long to keep' },
+  { id: 7, name: 'Options', description: 'Advanced settings' },
+  { id: 8, name: 'Summary', description: 'Review & create' },
 ]
 
 interface BackupWizardProps {
@@ -181,17 +187,19 @@ export default function BackupWizard({ isOpen, onClose }: BackupWizardProps) {
         if (data.targetType === 'stack' && !data.stackName) return false
         if (!data.targetName) return false
         return true
-      case 2: // Dependencies
+      case 2: // Volumes - Optional for container/stack, auto-skip for volume/path
+        return true
+      case 3: // Dependencies
         return true // Optional step
-      case 3: // Schedule
+      case 4: // Schedule
         return data.scheduleId !== null || data.newSchedule !== null || true // Schedule is optional
-      case 4: // Storage
+      case 5: // Storage
         return true // Optional step
-      case 5: // Retention
+      case 6: // Retention
         return true // Optional step
-      case 6: // Options
+      case 7: // Options
         return true // Optional step
-      case 7: // Summary
+      case 8: // Summary
         return true
       default:
         return false
@@ -242,6 +250,10 @@ export default function BackupWizard({ isOpen, onClose }: BackupWizardProps) {
         schedule_id: scheduleId || undefined,
         enabled: data.enabled,
         dependencies: data.dependencies,
+        // Volume selection and path filtering
+        selected_volumes: data.selectedVolumes,
+        include_paths: data.includePaths,
+        exclude_paths: data.excludePaths,
         stop_container: data.stopContainer,
         compression_enabled: data.compression !== 'none',
         pre_backup_command: data.preCommand || undefined,
@@ -324,7 +336,7 @@ export default function BackupWizard({ isOpen, onClose }: BackupWizardProps) {
             />
           )}
           {currentStep === 2 && (
-            <StepDependencies
+            <StepVolumeConfig
               data={data}
               updateData={updateData}
               containers={containers}
@@ -332,6 +344,14 @@ export default function BackupWizard({ isOpen, onClose }: BackupWizardProps) {
             />
           )}
           {currentStep === 3 && (
+            <StepDependencies
+              data={data}
+              updateData={updateData}
+              containers={containers}
+              stacks={stacks}
+            />
+          )}
+          {currentStep === 4 && (
             <StepSchedule
               data={data}
               updateData={updateData}
@@ -339,7 +359,7 @@ export default function BackupWizard({ isOpen, onClose }: BackupWizardProps) {
               isLoadingSchedules={false}
             />
           )}
-          {currentStep === 4 && (
+          {currentStep === 5 && (
             <StepStorage
               data={data}
               updateData={updateData}
@@ -347,7 +367,7 @@ export default function BackupWizard({ isOpen, onClose }: BackupWizardProps) {
               isLoadingStorages={false}
             />
           )}
-          {currentStep === 5 && (
+          {currentStep === 6 && (
             <StepRetention
               data={data}
               updateData={updateData}
@@ -355,10 +375,10 @@ export default function BackupWizard({ isOpen, onClose }: BackupWizardProps) {
               isLoadingPolicies={false}
             />
           )}
-          {currentStep === 6 && (
+          {currentStep === 7 && (
             <StepOptions data={data} updateData={updateData} />
           )}
-          {currentStep === 7 && (
+          {currentStep === 8 && (
             <StepSummary
               data={data}
               schedules={schedules}
