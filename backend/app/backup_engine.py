@@ -381,7 +381,7 @@ class BackupEngine:
                     containers_to_stop = stack.stop_order
                     start_order = stack.start_order
                     logger.info(
-                        f"Stack backup will stop containers in order: {containers_to_stop}"
+                        f"Stack backup will stop containers: {containers_to_stop}"
                     )
             elif target.stop_container and target.container_name:
                 containers_to_stop.append(target.container_name)

@@ -543,4 +543,3 @@ async def download_backup_file(backup_id: int, file_path: str):
     except tarfile.TarError as e:
         logger.error(f"Failed to extract file from {archive_path}: {e}")
         raise HTTPException(status_code=500, detail="Failed to read backup archive")
-
