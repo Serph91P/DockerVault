@@ -433,9 +433,7 @@ async def list_backup_files(backup_id: int):
         elif archive_path.endswith(".tar"):
             mode = "r:"
         else:
-            raise HTTPException(
-                status_code=400, detail="Unsupported archive format"
-            )
+            raise HTTPException(status_code=400, detail="Unsupported archive format")
 
         with tarfile.open(archive_path, mode) as tar:
             for member in tar.getmembers():
@@ -447,9 +445,11 @@ async def list_backup_files(backup_id: int):
                         size_human=_format_file_size(member.size),
                         is_dir=member.isdir(),
                         mode=oct(member.mode)[2:] if member.mode else "0",
-                        mtime=datetime.fromtimestamp(member.mtime).isoformat()
-                        if member.mtime
-                        else "",
+                        mtime=(
+                            datetime.fromtimestamp(member.mtime).isoformat()
+                            if member.mtime
+                            else ""
+                        ),
                     )
                 )
 
@@ -505,9 +505,7 @@ async def download_backup_file(backup_id: int, file_path: str):
             # Normalize path and ensure it doesn't escape
             normalized_path = os.path.normpath(file_path).lstrip("/\\")
             if ".." in normalized_path:
-                raise HTTPException(
-                    status_code=400, detail="Invalid file path"
-                )
+                raise HTTPException(status_code=400, detail="Invalid file path")
 
             member = tar.getmember(file_path)
 
@@ -519,9 +517,7 @@ async def download_backup_file(backup_id: int, file_path: str):
             # Extract and stream the file
             file_obj = tar.extractfile(member)
             if file_obj is None:
-                raise HTTPException(
-                    status_code=500, detail="Failed to extract file"
-                )
+                raise HTTPException(status_code=500, detail="Failed to extract file")
 
             # Read content into memory (for small files)
             # For very large files, consider streaming
