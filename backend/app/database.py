@@ -372,6 +372,31 @@ async def run_migrations():
                 )
             )
 
+        # Add volume selection and path filtering columns
+        if "selected_volumes" not in targets_columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE backup_targets ADD COLUMN selected_volumes JSON "
+                    "DEFAULT '[]'"
+                )
+            )
+
+        if "include_paths" not in targets_columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE backup_targets ADD COLUMN include_paths JSON "
+                    "DEFAULT '[]'"
+                )
+            )
+
+        if "exclude_paths" not in targets_columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE backup_targets ADD COLUMN exclude_paths JSON "
+                    "DEFAULT '[]'"
+                )
+            )
+
         # Check and add missing columns to retention_policies table
         result = await conn.execute(text("PRAGMA table_info(retention_policies)"))
         retention_columns = {row[1] for row in result.fetchall()}
