@@ -290,10 +290,21 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
             </div>
           ) : error ? (
             <div className="text-center py-12">
-              <p className="text-red-400">Failed to load backup contents</p>
-              <p className="text-sm text-dark-500 mt-2">
-                The backup file may be corrupted or inaccessible
-              </p>
+              {backup.encrypted || backup.file_path?.endsWith('.enc') ? (
+                <>
+                  <p className="text-yellow-400">Encrypted Backup</p>
+                  <p className="text-sm text-dark-500 mt-2">
+                    Encrypted backups cannot be browsed. Download and decrypt the backup file to view its contents.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-red-400">Failed to load backup contents</p>
+                  <p className="text-sm text-dark-500 mt-2">
+                    The backup file may be corrupted or inaccessible
+                  </p>
+                </>
+              )}
             </div>
           ) : files && files.length > 0 ? (
             <div className="space-y-0.5">

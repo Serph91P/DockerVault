@@ -97,6 +97,7 @@ export interface Backup {
   completed_at?: string
   duration_seconds?: number
   error_message?: string
+  encrypted?: boolean
   created_at: string
 }
 

@@ -2,7 +2,6 @@ import { useEffect } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
-import Targets from './pages/Targets'
 import Backups from './pages/Backups'
 import Schedules from './pages/Schedules'
 import Retention from './pages/Retention'
@@ -47,7 +46,6 @@ function App() {
       <Route path="/" element={<Layout />}>
         <Route index element={<Dashboard />} />
         <Route path="backups" element={<Backups />} />
-        <Route path="targets" element={<Targets />} />
         <Route path="schedules" element={<Schedules />} />
         <Route path="retention" element={<Retention />} />
         <Route path="storage" element={<Storage />} />

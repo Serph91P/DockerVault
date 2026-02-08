@@ -2,7 +2,6 @@ import { Link, Outlet, useLocation } from 'react-router-dom'
 import { clsx } from 'clsx'
 import {
   LayoutDashboard,
-  Target,
   Archive,
   Clock,
   Trash2,
@@ -20,7 +19,6 @@ import toast from 'react-hot-toast'
 const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Backups', href: '/backups', icon: Archive },
-  { name: 'Targets', href: '/targets', icon: Target },
   { name: 'Schedules', href: '/schedules', icon: Clock },
   { name: 'Retention', href: '/retention', icon: Trash2 },
   { name: 'Remote Storage', href: '/storage', icon: Cloud },
