@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Archive, Plus, Clock, Trash2 } from 'lucide-react'
+import { Archive, Plus, Clock, Trash2, Ban } from 'lucide-react'
 import { WizardData } from './index'
 import { RetentionPolicy } from '../../api'
 
@@ -71,60 +71,82 @@ export default function StepRetention({ data, updateData, policies, isLoadingPol
       </div>
 
       {/* Policy Selection */}
-      <div>
-        <label className="block text-sm font-medium text-dark-300 mb-2">Select Policy</label>
-        <div className="relative">
-          <Archive className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
-          <select
-            value={createNew ? 'new' : data.retentionPolicyId?.toString() || 'none'}
-            onChange={(e) => handlePolicySelect(e.target.value)}
-            disabled={isLoadingPolicies}
-            className="w-full pl-10 pr-4 py-3 bg-dark-800 border border-dark-700 rounded-xl text-dark-100 focus:border-primary-500 focus:ring-1 focus:ring-primary-500 appearance-none cursor-pointer"
-          >
-            <option value="none">No retention policy (keep all)</option>
-            <option value="new">➕ Create new policy...</option>
-            {policies.map((policy) => (
-              <option key={policy.id} value={policy.id}>
-                {policy.name}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
+      <div className="space-y-3">
+        <label className="block text-sm font-medium text-dark-300">Select Policy</label>
 
-      {/* Existing Policy Info */}
-      {data.retentionPolicyId && !createNew && (
-        <div className="bg-primary-500/10 border border-primary-500/30 rounded-xl p-4">
-          {(() => {
-            const selected = policies.find((p) => p.id === data.retentionPolicyId)
-            return selected ? (
-              <div className="flex items-start gap-3">
-                <Archive className="w-5 h-5 text-primary-400 mt-0.5" />
-                <div>
-                  <h4 className="text-primary-400 font-medium">{selected.name}</h4>
-                  <div className="text-sm text-dark-300 mt-2 grid grid-cols-2 gap-2">
-                    {selected.keep_last > 0 && (
-                      <div>Keep Last: <span className="text-dark-100">{selected.keep_last}</span></div>
-                    )}
-                    {selected.keep_daily > 0 && (
-                      <div>Daily: <span className="text-dark-100">{selected.keep_daily}</span></div>
-                    )}
-                    {selected.keep_weekly > 0 && (
-                      <div>Weekly: <span className="text-dark-100">{selected.keep_weekly}</span></div>
-                    )}
-                    {selected.keep_monthly > 0 && (
-                      <div>Monthly: <span className="text-dark-100">{selected.keep_monthly}</span></div>
-                    )}
-                    {selected.keep_yearly > 0 && (
-                      <div>Yearly: <span className="text-dark-100">{selected.keep_yearly}</span></div>
+        {/* Existing Policies */}
+        {policies.length > 0 && (
+          <div className="rounded-xl border border-dark-700 divide-y divide-dark-700 overflow-hidden">
+            {policies.map((policy) => {
+              const isSelected = !createNew && data.retentionPolicyId === policy.id
+              const details = [
+                policy.keep_last > 0 && `Last ${policy.keep_last}`,
+                policy.keep_daily > 0 && `${policy.keep_daily} daily`,
+                policy.keep_weekly > 0 && `${policy.keep_weekly} weekly`,
+                policy.keep_monthly > 0 && `${policy.keep_monthly} monthly`,
+                policy.keep_yearly > 0 && `${policy.keep_yearly} yearly`,
+              ].filter(Boolean).join(' · ')
+              return (
+                <button
+                  key={policy.id}
+                  onClick={() => handlePolicySelect(policy.id.toString())}
+                  className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors ${
+                    isSelected
+                      ? 'bg-primary-500/15'
+                      : 'bg-dark-800 hover:bg-dark-750'
+                  }`}
+                >
+                  <Archive className={`w-4 h-4 flex-shrink-0 ${isSelected ? 'text-primary-400' : 'text-dark-500'}`} />
+                  <div className="min-w-0 flex-1">
+                    <span className={`block text-sm font-medium truncate ${isSelected ? 'text-primary-300' : 'text-dark-200'}`}>
+                      {policy.name}
+                    </span>
+                    {details && (
+                      <span className="block text-xs text-dark-500 truncate">{details}</span>
                     )}
                   </div>
-                </div>
-              </div>
-            ) : null
-          })()}
+                  {isSelected && (
+                    <span className="flex-shrink-0 w-2 h-2 rounded-full bg-primary-400" />
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        {isLoadingPolicies && (
+          <p className="text-sm text-dark-500 py-2">Loading policies...</p>
+        )}
+
+        {/* Action Buttons */}
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={() => handlePolicySelect('new')}
+            className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed transition-all ${
+              createNew
+                ? 'border-primary-500 bg-primary-500/10 text-primary-300'
+                : 'border-dark-600 text-dark-400 hover:border-dark-500 hover:text-dark-300'
+            }`}
+          >
+            <Plus className="w-4 h-4" />
+            <span className="text-sm font-medium">Create new policy</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handlePolicySelect('none')}
+            className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 transition-all ${
+              !createNew && !data.retentionPolicyId
+                ? 'border-yellow-500/50 bg-yellow-500/10 text-yellow-400'
+                : 'border-dark-700 text-dark-500 hover:border-dark-600 hover:text-dark-400'
+            }`}
+          >
+            <Ban className="w-4 h-4" />
+            <span className="text-sm font-medium">None</span>
+          </button>
         </div>
-      )}
+      </div>
 
       {/* Create New Policy Form */}
       {createNew && data.newRetentionPolicy && (
