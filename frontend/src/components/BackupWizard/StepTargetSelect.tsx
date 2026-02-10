@@ -1,4 +1,5 @@
-import { Container, Database, FolderOpen, Layers } from 'lucide-react'
+import { useState, useMemo } from 'react'
+import { Container, Database, FolderOpen, Layers, Search, X } from 'lucide-react'
 import { WizardData } from './index'
 import { Container as ContainerType, Volume, Stack } from '../../api'
 
@@ -36,6 +37,106 @@ const TARGET_TYPES = [
     icon: FolderOpen,
   },
 ]
+
+interface SearchableListProps {
+  items: { id: string; label: string; sublabel?: string; status?: string }[]
+  selectedId: string
+  onSelect: (id: string) => void
+  placeholder: string
+  emptyMessage: string
+  icon: React.ComponentType<{ className?: string }>
+}
+
+function SearchableList({ items, selectedId, onSelect, placeholder, emptyMessage, icon: Icon }: SearchableListProps) {
+  const [search, setSearch] = useState('')
+
+  const filtered = useMemo(() => {
+    const sorted = [...items].sort((a, b) => a.label.localeCompare(b.label))
+    if (!search.trim()) return sorted
+    const q = search.toLowerCase()
+    return sorted.filter(
+      (item) =>
+        item.label.toLowerCase().includes(q) ||
+        (item.sublabel && item.sublabel.toLowerCase().includes(q))
+    )
+  }, [items, search])
+
+  if (items.length === 0) {
+    return <p className="text-sm text-orange-400 mt-2">{emptyMessage}</p>
+  }
+
+  return (
+    <div className="space-y-2">
+      {/* Search */}
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-500" />
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={placeholder}
+          className="w-full pl-9 pr-8 py-2 bg-dark-700 border border-dark-600 rounded-lg text-dark-100 text-sm placeholder:text-dark-500 focus:outline-none focus:border-primary-500"
+        />
+        {search && (
+          <button
+            onClick={() => setSearch('')}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-dark-500 hover:text-dark-300"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+
+      {/* List */}
+      <div className="max-h-64 overflow-y-auto rounded-lg border border-dark-700 divide-y divide-dark-700">
+        {filtered.length === 0 ? (
+          <div className="px-4 py-6 text-center text-sm text-dark-500">
+            No results for &quot;{search}&quot;
+          </div>
+        ) : (
+          filtered.map((item) => {
+            const isSelected = selectedId === item.id
+            return (
+              <button
+                key={item.id}
+                onClick={() => onSelect(item.id)}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors ${
+                  isSelected
+                    ? 'bg-primary-500/15 text-primary-300'
+                    : 'bg-dark-800 text-dark-200 hover:bg-dark-750'
+                }`}
+              >
+                <Icon className={`w-4 h-4 flex-shrink-0 ${isSelected ? 'text-primary-400' : 'text-dark-500'}`} />
+                <div className="min-w-0 flex-1">
+                  <span className="block text-sm font-medium truncate">{item.label}</span>
+                  {item.sublabel && (
+                    <span className="block text-xs text-dark-500 truncate">{item.sublabel}</span>
+                  )}
+                </div>
+                {item.status && (
+                  <span className={`flex-shrink-0 text-xs px-1.5 py-0.5 rounded ${
+                    item.status === 'running'
+                      ? 'bg-green-500/20 text-green-400'
+                      : 'bg-dark-600 text-dark-400'
+                  }`}>
+                    {item.status}
+                  </span>
+                )}
+                {isSelected && (
+                  <span className="flex-shrink-0 w-2 h-2 rounded-full bg-primary-400" />
+                )}
+              </button>
+            )
+          })
+        )}
+      </div>
+      <p className="text-xs text-dark-500">
+        {filtered.length} of {items.length} items
+        {selectedId && <> &middot; 1 selected</>}
+      </p>
+    </div>
+  )
+}
 
 export default function StepTargetSelect({
   data,
@@ -133,63 +234,55 @@ export default function StepTargetSelect({
               <label className="block text-sm font-medium text-dark-300 mb-2">
                 Container
               </label>
-              <select
-                value={data.containerName}
-                onChange={(e) => handleTargetChange(e.target.value)}
-                className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-dark-100"
-              >
-                <option value="">Select a container...</option>
-                {containers.map((c) => (
-                  <option key={c.id} value={c.name}>
-                    {c.name} ({c.image})
-                  </option>
-                ))}
-              </select>
-              {containers.length === 0 && (
-                <p className="text-sm text-orange-400 mt-2">No containers found</p>
-              )}
+              <SearchableList
+                items={containers.map((c) => ({
+                  id: c.name,
+                  label: c.name,
+                  sublabel: c.image,
+                  status: c.status,
+                }))}
+                selectedId={data.containerName}
+                onSelect={handleTargetChange}
+                placeholder="Search containers..."
+                emptyMessage="No containers found"
+                icon={Container}
+              />
             </div>
           )}
 
           {data.targetType === 'volume' && (
             <div>
               <label className="block text-sm font-medium text-dark-300 mb-2">Volume</label>
-              <select
-                value={data.volumeName}
-                onChange={(e) => handleTargetChange(e.target.value)}
-                className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-dark-100"
-              >
-                <option value="">Select a volume...</option>
-                {volumes.map((v) => (
-                  <option key={v.name} value={v.name}>
-                    {v.name}
-                  </option>
-                ))}
-              </select>
-              {volumes.length === 0 && (
-                <p className="text-sm text-orange-400 mt-2">No volumes found</p>
-              )}
+              <SearchableList
+                items={volumes.map((v) => ({
+                  id: v.name,
+                  label: v.name,
+                  sublabel: v.used_by?.length ? `Used by: ${v.used_by.join(', ')}` : 'Unused',
+                }))}
+                selectedId={data.volumeName}
+                onSelect={handleTargetChange}
+                placeholder="Search volumes..."
+                emptyMessage="No volumes found"
+                icon={Database}
+              />
             </div>
           )}
 
           {data.targetType === 'stack' && (
             <div>
               <label className="block text-sm font-medium text-dark-300 mb-2">Stack</label>
-              <select
-                value={data.stackName}
-                onChange={(e) => handleTargetChange(e.target.value)}
-                className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-dark-100"
-              >
-                <option value="">Select a stack...</option>
-                {stacks.map((s) => (
-                  <option key={s.name} value={s.name}>
-                    {s.name} ({s.containers.length} containers)
-                  </option>
-                ))}
-              </select>
-              {stacks.length === 0 && (
-                <p className="text-sm text-orange-400 mt-2">No stacks found</p>
-              )}
+              <SearchableList
+                items={stacks.map((s) => ({
+                  id: s.name,
+                  label: s.name,
+                  sublabel: `${s.containers.length} container${s.containers.length !== 1 ? 's' : ''} · ${s.volumes.length} volume${s.volumes.length !== 1 ? 's' : ''}`,
+                }))}
+                selectedId={data.stackName}
+                onSelect={handleTargetChange}
+                placeholder="Search stacks..."
+                emptyMessage="No stacks found"
+                icon={Layers}
+              />
             </div>
           )}
 
