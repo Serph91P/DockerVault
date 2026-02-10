@@ -13,6 +13,11 @@ import {
   FileCode,
   FileImage,
   FileArchive,
+  Lock,
+  KeyRound,
+  Eye,
+  EyeOff,
+  AlertTriangle,
 } from 'lucide-react'
 import { Backup, backupsApi } from '../api'
 import { clsx } from 'clsx'
@@ -69,6 +74,7 @@ function FileRow({
   backupId,
   expanded,
   onToggle,
+  encryptedDownload,
   children,
 }: {
   file: BackupFile
@@ -76,6 +82,7 @@ function FileRow({
   backupId: number
   expanded: boolean
   onToggle: () => void
+  encryptedDownload?: (filePath: string, fileName: string) => Promise<void>
   children?: React.ReactNode
 }) {
   const [downloading, setDownloading] = useState(false)
@@ -86,19 +93,22 @@ function FileRow({
     
     setDownloading(true)
     try {
-      // Create download link
-      const response = await fetch(`/api/backups/${backupId}/files/${encodeURIComponent(file.path)}`)
-      if (!response.ok) throw new Error('Download failed')
-      
-      const blob = await response.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = file.name
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
+      if (encryptedDownload) {
+        await encryptedDownload(file.path, file.name)
+      } else {
+        const response = await fetch(`/api/v1/backups/${backupId}/files/${encodeURIComponent(file.path)}`)
+        if (!response.ok) throw new Error('Download failed')
+        
+        const blob = await response.blob()
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = file.name
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+      }
     } catch {
       console.error('Failed to download file')
     } finally {
@@ -172,10 +182,12 @@ function FileTree({
   files,
   depth,
   backupId,
+  encryptedDownload,
 }: {
   files: BackupFile[]
   depth: number
   backupId: number
+  encryptedDownload?: (filePath: string, fileName: string) => Promise<void>
 }) {
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
 
@@ -239,9 +251,10 @@ function FileTree({
           backupId={backupId}
           expanded={expandedDirs.has(file.path)}
           onToggle={() => toggleDir(file.path)}
+          encryptedDownload={encryptedDownload}
         >
           {file.children.length > 0 && (
-            <FileTree files={file.children} depth={depth + 1} backupId={backupId} />
+            <FileTree files={file.children} depth={depth + 1} backupId={backupId} encryptedDownload={encryptedDownload} />
           )}
         </FileRow>
       ))}
@@ -250,13 +263,62 @@ function FileTree({
 }
 
 export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
+  const isEncrypted = backup.encrypted || backup.file_path?.endsWith('.enc')
+  const [privateKey, setPrivateKey] = useState('')
+  const [keySubmitted, setKeySubmitted] = useState(false)
+  const [showKey, setShowKey] = useState(false)
+
+  const shouldFetch = isEncrypted ? keySubmitted : true
+
   const { data: files, isLoading, error } = useQuery({
-    queryKey: ['backup-files', backup.id],
+    queryKey: ['backup-files', backup.id, isEncrypted ? 'encrypted' : 'plain', keySubmitted ? privateKey : ''],
     queryFn: async () => {
+      if (isEncrypted) {
+        const response = await backupsApi.listFilesEncrypted(backup.id, privateKey)
+        return response.data as BackupFile[]
+      }
       const response = await backupsApi.listFiles(backup.id)
       return response.data as BackupFile[]
     },
+    enabled: shouldFetch,
+    retry: false,
   })
+
+  const handleKeySubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (privateKey.trim()) {
+      setKeySubmitted(true)
+    }
+  }
+
+  const handleRetryKey = () => {
+    setKeySubmitted(false)
+    setPrivateKey('')
+  }
+
+  // For encrypted backups, use POST for file downloads
+  const handleEncryptedDownload = async (filePath: string, fileName: string) => {
+    try {
+      const response = await fetch(`/api/v1/backups/${backup.id}/files/${encodeURIComponent(filePath)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ private_key: privateKey }),
+      })
+      if (!response.ok) throw new Error('Download failed')
+
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = fileName
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch {
+      console.error('Failed to download file')
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -264,11 +326,20 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-dark-700">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-primary-500/10 rounded-lg flex items-center justify-center">
-              <Archive className="w-5 h-5 text-primary-500" />
+            <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+              isEncrypted ? 'bg-yellow-500/10' : 'bg-primary-500/10'
+            }`}>
+              {isEncrypted ? (
+                <Lock className="w-5 h-5 text-yellow-500" />
+              ) : (
+                <Archive className="w-5 h-5 text-primary-500" />
+              )}
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-dark-100">Browse Backup</h2>
+              <h2 className="text-lg font-semibold text-dark-100">
+                Browse Backup
+                {isEncrypted && <span className="text-xs font-normal text-yellow-400 ml-2">Encrypted</span>}
+              </h2>
               <p className="text-sm text-dark-400">
                 {backup.file_path?.split('/').pop() || `Backup #${backup.id}`}
               </p>
@@ -284,18 +355,87 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-4">
-          {isLoading ? (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="w-8 h-8 text-primary-500 animate-spin" />
+          {/* Encrypted backup: Key input */}
+          {isEncrypted && !keySubmitted ? (
+            <div className="flex flex-col items-center justify-center py-8">
+              <div className="w-16 h-16 bg-yellow-500/10 rounded-2xl flex items-center justify-center mb-4">
+                <KeyRound className="w-8 h-8 text-yellow-500" />
+              </div>
+              <h3 className="text-lg font-semibold text-dark-100 mb-2">Private Key Required</h3>
+              <p className="text-sm text-dark-400 text-center max-w-md mb-6">
+                This backup is encrypted. Enter your age private key to decrypt and browse the contents.
+                The key is only used for this session and is never stored.
+              </p>
+
+              <form onSubmit={handleKeySubmit} className="w-full max-w-md space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-dark-300 mb-2">
+                    Age Private Key
+                  </label>
+                  <div className="relative">
+                    <textarea
+                      value={privateKey}
+                      onChange={(e) => setPrivateKey(e.target.value)}
+                      placeholder="AGE-SECRET-KEY-1..."
+                      rows={3}
+                      className={clsx(
+                        'w-full px-4 py-3 bg-dark-900 border rounded-lg text-dark-100 font-mono text-sm focus:outline-none focus:ring-1 resize-none',
+                        showKey ? '' : 'text-security-disc',
+                        'border-dark-600 focus:border-primary-500 focus:ring-primary-500'
+                      )}
+                      style={!showKey ? { WebkitTextSecurity: 'disc' } as React.CSSProperties : undefined}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowKey(!showKey)}
+                      className="absolute right-2 top-2 p-1.5 text-dark-500 hover:text-dark-300 rounded transition-colors"
+                    >
+                      {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-start gap-2 text-xs text-dark-500 bg-dark-900 rounded-lg p-3">
+                  <AlertTriangle className="w-4 h-4 text-yellow-500 flex-shrink-0 mt-0.5" />
+                  <span>
+                    Your private key is sent to the server only for decryption and is immediately discarded.
+                    It is never stored or logged.
+                  </span>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={!privateKey.trim()}
+                  className="w-full py-3 bg-primary-500 hover:bg-primary-600 disabled:bg-dark-700 disabled:text-dark-500 text-white rounded-lg font-medium transition-colors"
+                >
+                  Decrypt &amp; Browse
+                </button>
+              </form>
+            </div>
+          ) : isLoading ? (
+            <div className="flex flex-col items-center justify-center py-12">
+              <Loader2 className="w-8 h-8 text-primary-500 animate-spin mb-3" />
+              {isEncrypted && (
+                <p className="text-sm text-dark-400">Decrypting backup...</p>
+              )}
             </div>
           ) : error ? (
             <div className="text-center py-12">
-              {backup.encrypted || backup.file_path?.endsWith('.enc') ? (
+              {isEncrypted && keySubmitted ? (
                 <>
-                  <p className="text-yellow-400">Encrypted Backup</p>
-                  <p className="text-sm text-dark-500 mt-2">
-                    Encrypted backups cannot be browsed. Download and decrypt the backup file to view its contents.
+                  <div className="w-16 h-16 bg-red-500/10 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                    <KeyRound className="w-8 h-8 text-red-400" />
+                  </div>
+                  <p className="text-red-400 font-medium">Decryption Failed</p>
+                  <p className="text-sm text-dark-500 mt-2 max-w-sm mx-auto">
+                    The private key may be incorrect or the backup file may be corrupted.
                   </p>
+                  <button
+                    onClick={handleRetryKey}
+                    className="mt-4 px-4 py-2 bg-dark-700 hover:bg-dark-600 text-dark-200 rounded-lg transition-colors"
+                  >
+                    Try a different key
+                  </button>
                 </>
               ) : (
                 <>
@@ -308,7 +448,12 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
             </div>
           ) : files && files.length > 0 ? (
             <div className="space-y-0.5">
-              <FileTree files={files} depth={0} backupId={backup.id} />
+              <FileTree
+                files={files}
+                depth={0}
+                backupId={backup.id}
+                encryptedDownload={isEncrypted ? handleEncryptedDownload : undefined}
+              />
             </div>
           ) : (
             <div className="text-center py-12">

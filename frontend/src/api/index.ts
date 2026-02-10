@@ -200,6 +200,8 @@ export const backupsApi = {
   delete: (id: number) => api.delete(`/backups/${id}`),
   getStats: (id: number) => api.get(`/backups/${id}/stats`),
   listFiles: (id: number) => api.get(`/backups/${id}/files`),
+  listFilesEncrypted: (id: number, privateKey: string) =>
+    api.post(`/backups/${id}/files`, { private_key: privateKey }),
 }
 
 // Schedules API (NEW: CRUD for Schedule entities)

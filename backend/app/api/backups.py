@@ -6,7 +6,9 @@ import asyncio
 import logging
 import os
 import tarfile
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -17,6 +19,7 @@ from sqlalchemy import select
 from app.backup_engine import backup_engine
 from app.config import settings
 from app.database import Backup, BackupStatus, BackupTarget, BackupType, async_session
+from app.encryption import DecryptionError, decrypt_backup
 
 logger = logging.getLogger(__name__)
 
@@ -392,6 +395,202 @@ def _format_file_size(size_bytes: int) -> str:
     return f"{size_bytes:.1f} PB"
 
 
+async def _get_decrypted_archive_path(
+    backup: Backup, private_key: str
+) -> tuple[str, str, Path | None]:
+    """Decrypt an encrypted backup to a temp file and return (archive_path, mode, temp_path).
+
+    The caller is responsible for cleaning up temp_path if not None.
+    """
+    archive_path = backup.file_path
+    key_path = backup.encryption_key_path
+
+    if not key_path:
+        # Try to find key file next to the backup
+        potential_key = archive_path.replace(".enc", ".key")
+        if os.path.exists(potential_key):
+            key_path = potential_key
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Encryption key file (.key) not found for this backup.",
+            )
+
+    if not os.path.exists(key_path):
+        raise HTTPException(
+            status_code=404,
+            detail="Encryption key file not found on disk.",
+        )
+
+    # Decrypt to temp file
+    temp_fd, temp_name = tempfile.mkstemp(suffix=".tar.gz")
+    os.close(temp_fd)
+    temp_path = Path(temp_name)
+
+    try:
+        await decrypt_backup(
+            encrypted_path=Path(archive_path),
+            key_path=Path(key_path),
+            private_key=private_key,
+            output_path=temp_path,
+        )
+    except DecryptionError as e:
+        temp_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Decryption failed. Is the private key correct? ({e})",
+        )
+
+    decrypted_path = str(temp_path)
+    mode = _get_tar_mode(decrypted_path)
+    return decrypted_path, mode, temp_path
+
+
+def _get_tar_mode(archive_path: str) -> str:
+    """Determine tarfile open mode from file extension."""
+    if archive_path.endswith(".tar.gz") or archive_path.endswith(".tgz"):
+        return "r:gz"
+    elif archive_path.endswith(".tar.bz2"):
+        return "r:bz2"
+    elif archive_path.endswith(".tar.xz"):
+        return "r:xz"
+    elif archive_path.endswith(".tar"):
+        return "r:"
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported archive format")
+
+
+class BrowseEncryptedRequest(BaseModel):
+    """Request body for browsing encrypted backups."""
+
+    private_key: str
+
+
+@router.post("/{backup_id}/files", response_model=List[BackupFileInfo])
+async def list_encrypted_backup_files(backup_id: int, body: BrowseEncryptedRequest):
+    """List files in an encrypted backup archive using the provided private key."""
+    async with async_session() as session:
+        result = await session.execute(select(Backup).where(Backup.id == backup_id))
+        backup = result.scalar_one_or_none()
+
+        if not backup:
+            raise HTTPException(status_code=404, detail="Backup not found")
+
+        if backup.status != BackupStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Backup is not completed")
+
+        if not backup.file_path or not os.path.exists(backup.file_path):
+            raise HTTPException(status_code=404, detail="Backup file not found")
+
+        if not backup.encrypted:
+            raise HTTPException(
+                status_code=400,
+                detail="Backup is not encrypted. Use GET endpoint instead.",
+            )
+
+    temp_path: Path | None = None
+    try:
+        archive_path, mode, temp_path = await _get_decrypted_archive_path(
+            backup, body.private_key
+        )
+
+        files: List[BackupFileInfo] = []
+        with tarfile.open(archive_path, mode) as tar:
+            for member in tar.getmembers():
+                files.append(
+                    BackupFileInfo(
+                        name=os.path.basename(member.name) or member.name,
+                        path=member.name,
+                        size=member.size,
+                        size_human=_format_file_size(member.size),
+                        is_dir=member.isdir(),
+                        mode=oct(member.mode)[2:] if member.mode else "0",
+                        mtime=(
+                            datetime.fromtimestamp(member.mtime).isoformat()
+                            if member.mtime
+                            else ""
+                        ),
+                    )
+                )
+
+        return files
+
+    except tarfile.TarError as e:
+        logger.error(f"Failed to read decrypted archive: {e}")
+        raise HTTPException(status_code=500, detail="Failed to read backup archive")
+    finally:
+        if temp_path and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+
+
+@router.post("/{backup_id}/files/{file_path:path}")
+async def download_encrypted_backup_file(
+    backup_id: int, file_path: str, body: BrowseEncryptedRequest
+):
+    """Download a specific file from an encrypted backup archive."""
+    async with async_session() as session:
+        result = await session.execute(select(Backup).where(Backup.id == backup_id))
+        backup = result.scalar_one_or_none()
+
+        if not backup:
+            raise HTTPException(status_code=404, detail="Backup not found")
+
+        if backup.status != BackupStatus.COMPLETED:
+            raise HTTPException(status_code=400, detail="Backup is not completed")
+
+        if not backup.file_path or not os.path.exists(backup.file_path):
+            raise HTTPException(status_code=404, detail="Backup file not found")
+
+        if not backup.encrypted:
+            raise HTTPException(
+                status_code=400,
+                detail="Backup is not encrypted. Use GET endpoint instead.",
+            )
+
+    temp_path: Path | None = None
+    try:
+        archive_path, mode, temp_path = await _get_decrypted_archive_path(
+            backup, body.private_key
+        )
+
+        with tarfile.open(archive_path, mode) as tar:
+            normalized_path = os.path.normpath(file_path).lstrip("/\\")
+            if ".." in normalized_path:
+                raise HTTPException(status_code=400, detail="Invalid file path")
+
+            member = tar.getmember(file_path)
+
+            if member.isdir():
+                raise HTTPException(
+                    status_code=400, detail="Cannot download directories"
+                )
+
+            file_obj = tar.extractfile(member)
+            if file_obj is None:
+                raise HTTPException(status_code=500, detail="Failed to extract file")
+
+            content = file_obj.read()
+            filename = os.path.basename(file_path)
+
+            return StreamingResponse(
+                iter([content]),
+                media_type="application/octet-stream",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Content-Length": str(len(content)),
+                },
+            )
+
+    except KeyError:
+        raise HTTPException(status_code=404, detail="File not found in archive")
+    except tarfile.TarError as e:
+        logger.error(f"Failed to extract file from decrypted archive: {e}")
+        raise HTTPException(status_code=500, detail="Failed to read backup archive")
+    finally:
+        if temp_path and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+
+
 @router.get("/{backup_id}/files", response_model=List[BackupFileInfo])
 async def list_backup_files(backup_id: int):
     """List all files in a backup archive.
@@ -420,20 +619,10 @@ async def list_backup_files(backup_id: int):
         if backup.encrypted and archive_path.endswith(".enc"):
             raise HTTPException(
                 status_code=400,
-                detail="Cannot browse encrypted backups. Decrypt first.",
+                detail="Cannot browse encrypted backups without private key. Use POST endpoint with your private key.",
             )
 
-        # Determine compression mode
-        if archive_path.endswith(".tar.gz") or archive_path.endswith(".tgz"):
-            mode = "r:gz"
-        elif archive_path.endswith(".tar.bz2"):
-            mode = "r:bz2"
-        elif archive_path.endswith(".tar.xz"):
-            mode = "r:xz"
-        elif archive_path.endswith(".tar"):
-            mode = "r:"
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported archive format")
+        mode = _get_tar_mode(archive_path)
 
         with tarfile.open(archive_path, mode) as tar:
             for member in tar.getmembers():
@@ -484,20 +673,10 @@ async def download_backup_file(backup_id: int, file_path: str):
     if backup.encrypted and archive_path.endswith(".enc"):
         raise HTTPException(
             status_code=400,
-            detail="Cannot download from encrypted backups. Decrypt first.",
+            detail="Cannot download from encrypted backups without private key. Use POST endpoint with your private key.",
         )
 
-    # Determine compression mode
-    if archive_path.endswith(".tar.gz") or archive_path.endswith(".tgz"):
-        mode = "r:gz"
-    elif archive_path.endswith(".tar.bz2"):
-        mode = "r:bz2"
-    elif archive_path.endswith(".tar.xz"):
-        mode = "r:xz"
-    elif archive_path.endswith(".tar"):
-        mode = "r:"
-    else:
-        raise HTTPException(status_code=400, detail="Unsupported archive format")
+    mode = _get_tar_mode(archive_path)
 
     try:
         with tarfile.open(archive_path, mode) as tar:
