@@ -103,7 +103,9 @@ class BackupTarget(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    backups = relationship("Backup", back_populates="target")
+    backups = relationship(
+        "Backup", back_populates="target", cascade="all, delete-orphan"
+    )
 
 
 class Backup(Base):
