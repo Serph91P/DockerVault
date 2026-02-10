@@ -2,6 +2,8 @@
 Backup targets API endpoints.
 """
 
+import logging
+import os
 from typing import List, Optional
 
 from croniter import croniter
@@ -11,6 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.database import BackupTarget, Schedule, async_session
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -368,15 +372,27 @@ async def update_target(target_id: int, update: TargetUpdate):
 
 @router.delete("/{target_id}")
 async def delete_target(target_id: int):
-    """Delete a backup target."""
+    """Delete a backup target and all associated backups."""
     async with async_session() as session:
         result = await session.execute(
-            select(BackupTarget).where(BackupTarget.id == target_id)
+            select(BackupTarget)
+            .where(BackupTarget.id == target_id)
+            .options(selectinload(BackupTarget.backups))
         )
         target = result.scalar_one_or_none()
 
         if not target:
             raise HTTPException(status_code=404, detail="Target not found")
+
+        # Delete backup files from disk before removing DB records
+        for backup in target.backups:
+            if backup.file_path and os.path.exists(backup.file_path):
+                try:
+                    os.remove(backup.file_path)
+                except OSError as e:
+                    logger.warning(
+                        f"Failed to delete backup file {backup.file_path}: {e}"
+                    )
 
         await session.delete(target)
         await session.commit()
