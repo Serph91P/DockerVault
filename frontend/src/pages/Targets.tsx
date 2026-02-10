@@ -1,11 +1,11 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Target, Trash2, Play, Clock, Calendar, X, Check, Plus, Archive } from 'lucide-react'
+import { Target, Trash2, Play, Clock, Calendar, X, Check, Plus, Archive, Pencil } from 'lucide-react'
 import { targetsApi, backupsApi, schedulesApi, BackupTarget, ScheduleEntity } from '../api'
 import toast from 'react-hot-toast'
 import { useState } from 'react'
 import BackupWizard from '../components/BackupWizard'
 
-function TargetCard({ target, schedules }: { target: BackupTarget; schedules: ScheduleEntity[] }) {
+function TargetCard({ target, schedules, onEdit }: { target: BackupTarget; schedules: ScheduleEntity[]; onEdit: (target: BackupTarget) => void }) {
   const queryClient = useQueryClient()
   const [editingSchedule, setEditingSchedule] = useState(false)
   const [selectedScheduleId, setSelectedScheduleId] = useState<number | undefined>(target.schedule_id)
@@ -226,6 +226,13 @@ function TargetCard({ target, schedules }: { target: BackupTarget; schedules: Sc
           Start Backup
         </button>
         <button
+          onClick={() => onEdit(target)}
+          className="px-3 py-2 bg-dark-700 text-dark-300 rounded-lg hover:bg-dark-600 hover:text-dark-100 transition-colors"
+          title="Edit target"
+        >
+          <Pencil className="w-4 h-4" />
+        </button>
+        <button
           onClick={() => deleteMutation.mutate()}
           disabled={deleteMutation.isPending}
           className="px-3 py-2 bg-red-500/10 text-red-400 rounded-lg hover:bg-red-500/20 transition-colors"
@@ -239,6 +246,7 @@ function TargetCard({ target, schedules }: { target: BackupTarget; schedules: Sc
 
 export default function Targets() {
   const [wizardOpen, setWizardOpen] = useState(false)
+  const [editingTarget, setEditingTarget] = useState<BackupTarget | null>(null)
   
   const { data: targets, isLoading } = useQuery({
     queryKey: ['targets'],
@@ -250,6 +258,16 @@ export default function Targets() {
     queryFn: () => schedulesApi.list().then((r) => r.data),
   })
 
+  const handleEdit = (target: BackupTarget) => {
+    setEditingTarget(target)
+    setWizardOpen(true)
+  }
+
+  const handleWizardClose = () => {
+    setWizardOpen(false)
+    setEditingTarget(null)
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -258,7 +276,7 @@ export default function Targets() {
           <p className="text-dark-400 mt-1">Configured backup targets</p>
         </div>
         <button
-          onClick={() => setWizardOpen(true)}
+          onClick={() => { setEditingTarget(null); setWizardOpen(true) }}
           className="flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors"
         >
           <Plus className="w-4 h-4" />
@@ -278,7 +296,7 @@ export default function Targets() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {targets?.map((target) => (
-            <TargetCard key={target.id} target={target} schedules={schedules} />
+            <TargetCard key={target.id} target={target} schedules={schedules} onEdit={handleEdit} />
           ))}
         </div>
       )}
@@ -291,7 +309,7 @@ export default function Targets() {
             Click "New Target" to create your first backup target
           </p>
           <button
-            onClick={() => setWizardOpen(true)}
+            onClick={() => { setEditingTarget(null); setWizardOpen(true) }}
             className="mt-4 flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors mx-auto"
           >
             <Plus className="w-4 h-4" />
@@ -301,7 +319,7 @@ export default function Targets() {
       )}
 
       {/* Backup Wizard Modal */}
-      <BackupWizard isOpen={wizardOpen} onClose={() => setWizardOpen(false)} />
+      <BackupWizard isOpen={wizardOpen} onClose={handleWizardClose} editTarget={editingTarget} />
     </div>
   )
 }

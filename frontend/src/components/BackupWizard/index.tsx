@@ -102,12 +102,46 @@ const STEPS = [
 interface BackupWizardProps {
   isOpen: boolean
   onClose: () => void
+  editTarget?: import('../../api').BackupTarget | null
 }
 
-export default function BackupWizard({ isOpen, onClose }: BackupWizardProps) {
+function targetToWizardData(target: import('../../api').BackupTarget): WizardData {
+  return {
+    targetType: target.target_type,
+    targetName: target.name,
+    containerName: target.container_name || '',
+    volumeName: target.volume_name || '',
+    hostPath: target.host_path || '',
+    stackName: target.stack_name || '',
+    selectedVolumes: target.selected_volumes || [],
+    includePaths: target.include_paths || [],
+    excludePaths: target.exclude_paths || [],
+    dependencies: target.dependencies || [],
+    stopContainer: target.stop_container,
+    scheduleId: target.schedule_id || null,
+    newSchedule: null,
+    remoteStorageIds: [],
+    retentionPolicyId: target.retention_policy_id || null,
+    newRetentionPolicy: null,
+    compression: target.compression_enabled ? 'gzip' : 'none',
+    preCommand: target.pre_backup_command || '',
+    postCommand: target.post_backup_command || '',
+    enabled: target.enabled,
+  }
+}
+
+export default function BackupWizard({ isOpen, onClose, editTarget }: BackupWizardProps) {
   const queryClient = useQueryClient()
+  const isEditing = !!editTarget
   const [currentStep, setCurrentStep] = useState(1)
   const [data, setData] = useState<WizardData>(initialData)
+
+  // Pre-populate data when editing
+  const [lastEditId, setLastEditId] = useState<number | null>(null)
+  if (editTarget && editTarget.id !== lastEditId) {
+    setData(targetToWizardData(editTarget))
+    setLastEditId(editTarget.id)
+  }
 
   // Fetch data for all steps
   const { data: containers = [] } = useQuery({
@@ -167,9 +201,25 @@ export default function BackupWizard({ isOpen, onClose }: BackupWizardProps) {
     },
   })
 
+  // Update target mutation
+  const updateTargetMutation = useMutation({
+    mutationFn: (targetData: Parameters<typeof targetsApi.update>[1]) =>
+      targetsApi.update(editTarget!.id, targetData),
+    onSuccess: () => {
+      toast.success('Backup target updated successfully!')
+      queryClient.invalidateQueries({ queryKey: ['targets'] })
+      queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      handleClose()
+    },
+    onError: (err: Error & { response?: { data?: { detail?: string } } }) => {
+      toast.error(err.response?.data?.detail || 'Failed to update backup target')
+    },
+  })
+
   const handleClose = () => {
     setCurrentStep(1)
     setData(initialData)
+    setLastEditId(null)
     onClose()
   }
 
@@ -261,7 +311,11 @@ export default function BackupWizard({ isOpen, onClose }: BackupWizardProps) {
         retention_policy_id: retentionPolicyId || undefined,
       }
 
-      await createTargetMutation.mutateAsync(targetData)
+      if (isEditing) {
+        await updateTargetMutation.mutateAsync(targetData)
+      } else {
+        await createTargetMutation.mutateAsync(targetData)
+      }
     } catch {
       // Error handled in mutation
     }
@@ -269,7 +323,7 @@ export default function BackupWizard({ isOpen, onClose }: BackupWizardProps) {
 
   if (!isOpen) return null
 
-  const isLoading = createScheduleMutation.isPending || createTargetMutation.isPending
+  const isLoading = createScheduleMutation.isPending || createTargetMutation.isPending || updateTargetMutation.isPending
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -281,7 +335,7 @@ export default function BackupWizard({ isOpen, onClose }: BackupWizardProps) {
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-dark-700">
           <div>
-            <h2 className="text-xl font-bold text-dark-100">Create Backup Target</h2>
+            <h2 className="text-xl font-bold text-dark-100">{isEditing ? 'Edit Backup Target' : 'Create Backup Target'}</h2>
             <p className="text-sm text-dark-400">
               Step {currentStep} of {STEPS.length}: {STEPS[currentStep - 1].name}
             </p>
@@ -416,12 +470,12 @@ export default function BackupWizard({ isOpen, onClose }: BackupWizardProps) {
                 {isLoading ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    Creating...
+                    {isEditing ? 'Saving...' : 'Creating...'}
                   </>
                 ) : (
                   <>
                     <Check className="w-4 h-4" />
-                    Create Target
+                    {isEditing ? 'Save Changes' : 'Create Target'}
                   </>
                 )}
               </button>

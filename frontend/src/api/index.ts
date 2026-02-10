@@ -266,6 +266,8 @@ export const storageApi = {
   delete: (id: number) => api.delete(`/storage/${id}`),
   test: (id: number) => api.post(`/storage/${id}/test`),
   getTypes: () => api.get('/storage/types'),
+  listFiles: (id: number, path?: string) => api.get(`/storage/${id}/files`, { params: { path: path || '' } }),
+  deleteFile: (id: number, path: string) => api.delete(`/storage/${id}/files`, { params: { path } }),
 }
 
 // Komodo API

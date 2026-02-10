@@ -17,27 +17,10 @@ import {
   FolderSync,
   Globe,
   Database,
+  FolderOpen,
 } from 'lucide-react';
-import api from '../api';
-
-interface RemoteStorage {
-  id: number;
-  name: string;
-  storage_type: string;
-  enabled: boolean;
-  host?: string;
-  port?: number;
-  username?: string;
-  base_path: string;
-  ssh_key_path?: string;
-  s3_bucket?: string;
-  s3_region?: string;
-  s3_endpoint_url?: string;
-  webdav_url?: string;
-  rclone_remote?: string;
-  created_at: string;
-  updated_at: string;
-}
+import api, { RemoteStorage } from '../api';
+import StorageBrowser from '../components/StorageBrowser';
 
 interface StorageFormData {
   name: string;
@@ -78,6 +61,7 @@ export default function Storage() {
   const [editingStorage, setEditingStorage] = useState<RemoteStorage | null>(null);
   const [testingId, setTestingId] = useState<number | null>(null);
   const [testResult, setTestResult] = useState<{ id: number; success: boolean; message: string } | null>(null);
+  const [browsingStorage, setBrowsingStorage] = useState<RemoteStorage | null>(null);
 
   const [formData, setFormData] = useState<StorageFormData>({
     name: '',
@@ -677,6 +661,13 @@ export default function Storage() {
                         </span>
                       )}
                       <button
+                        onClick={() => setBrowsingStorage(storage)}
+                        className="p-2 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
+                        title="Browse Files"
+                      >
+                        <FolderOpen className="w-5 h-5" />
+                      </button>
+                      <button
                         onClick={() => testMutation.mutate(storage.id)}
                         disabled={testingId === storage.id}
                         className="p-2 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
@@ -729,6 +720,14 @@ export default function Storage() {
           </div>
         )}
       </div>
+
+      {/* Storage Browser Modal */}
+      {browsingStorage && (
+        <StorageBrowser
+          storage={browsingStorage}
+          onClose={() => setBrowsingStorage(null)}
+        />
+      )}
 
       {/* Add/Edit Form Modal */}
       {showForm && (

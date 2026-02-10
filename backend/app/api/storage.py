@@ -1,9 +1,13 @@
 """Remote Storage API endpoints"""
 
 import logging
+import os
+import tempfile
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -345,6 +349,88 @@ async def list_files(
 
     files = await backend.list_files(path)
     return {"files": files, "path": path}
+
+
+def _validate_remote_path(path: str) -> str:
+    """Validate and normalize a remote file path to prevent traversal."""
+    normalized = os.path.normpath(path).lstrip("/\\")
+    if ".." in normalized.split(os.sep):
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    return normalized
+
+
+@router.get("/{storage_id}/files/download")
+async def download_file(
+    storage_id: int, path: str, db: AsyncSession = Depends(get_db)
+):
+    """Download a file from remote storage"""
+    storage = await db.get(RemoteStorageModel, storage_id)
+    if not storage:
+        raise HTTPException(status_code=404, detail="Storage not found")
+
+    backend = storage_manager.get_backend(storage_id)
+    if not backend:
+        config = _db_to_config(storage)
+        backend = storage_manager.add_storage(config)
+
+    safe_path = _validate_remote_path(path)
+    filename = os.path.basename(safe_path)
+
+    # Download to a temp file
+    temp_dir = tempfile.mkdtemp()
+    local_path = Path(temp_dir) / filename
+
+    try:
+        success = await backend.download(safe_path, local_path)
+        if not success or not local_path.exists():
+            raise HTTPException(status_code=500, detail="Download failed")
+
+        return FileResponse(
+            path=str(local_path),
+            filename=filename,
+            media_type="application/octet-stream",
+            background=None,
+        )
+    except HTTPException:
+        # Clean up on known errors
+        if local_path.exists():
+            local_path.unlink()
+        Path(temp_dir).rmdir()
+        raise
+    except Exception as e:
+        if local_path.exists():
+            local_path.unlink()
+        Path(temp_dir).rmdir()
+        logger.error(f"Remote storage download failed: {e}")
+        raise HTTPException(status_code=500, detail="Download failed")
+
+
+@router.delete("/{storage_id}/files")
+async def delete_file(
+    storage_id: int, path: str, db: AsyncSession = Depends(get_db)
+):
+    """Delete a file from remote storage"""
+    storage = await db.get(RemoteStorageModel, storage_id)
+    if not storage:
+        raise HTTPException(status_code=404, detail="Storage not found")
+
+    backend = storage_manager.get_backend(storage_id)
+    if not backend:
+        config = _db_to_config(storage)
+        backend = storage_manager.add_storage(config)
+
+    safe_path = _validate_remote_path(path)
+
+    try:
+        success = await backend.delete(safe_path)
+        if not success:
+            raise HTTPException(status_code=500, detail="Delete failed")
+        return {"message": f"Deleted {safe_path}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Remote storage delete failed: {e}")
+        raise HTTPException(status_code=500, detail="Delete failed")
 
 
 @router.post("/{storage_id}/sync/{backup_id}")
