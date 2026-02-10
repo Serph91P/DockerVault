@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Calendar, Clock, HelpCircle, Plus, ChevronDown, ChevronUp } from 'lucide-react'
+import { Calendar, Clock, HelpCircle, Plus, ChevronDown, ChevronUp, Ban } from 'lucide-react'
 import { WizardData } from './index'
 import { ScheduleEntity } from '../../api'
 
@@ -62,49 +62,76 @@ export default function StepSchedule({ data, updateData, schedules, isLoadingSch
       </div>
 
       {/* Schedule Selection */}
-      <div>
-        <label className="block text-sm font-medium text-dark-300 mb-2">Select Schedule</label>
-        <div className="relative">
-          <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-400" />
-          <select
-            value={createNew ? 'new' : data.scheduleId?.toString() || 'none'}
-            onChange={(e) => handleScheduleSelect(e.target.value)}
-            disabled={isLoadingSchedules}
-            className="w-full pl-10 pr-4 py-3 bg-dark-800 border border-dark-700 rounded-xl text-dark-100 focus:border-primary-500 focus:ring-1 focus:ring-primary-500 appearance-none cursor-pointer"
+      <div className="space-y-3">
+        <label className="block text-sm font-medium text-dark-300">Select Schedule</label>
+
+        {/* Existing Schedules */}
+        {schedules.length > 0 && (
+          <div className="rounded-xl border border-dark-700 divide-y divide-dark-700 overflow-hidden">
+            {schedules.map((schedule) => {
+              const isSelected = !createNew && data.scheduleId === schedule.id
+              return (
+                <button
+                  key={schedule.id}
+                  onClick={() => handleScheduleSelect(schedule.id.toString())}
+                  className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors ${
+                    isSelected
+                      ? 'bg-primary-500/15'
+                      : 'bg-dark-800 hover:bg-dark-750'
+                  }`}
+                >
+                  <Calendar className={`w-4 h-4 flex-shrink-0 ${isSelected ? 'text-primary-400' : 'text-dark-500'}`} />
+                  <div className="min-w-0 flex-1">
+                    <span className={`block text-sm font-medium truncate ${isSelected ? 'text-primary-300' : 'text-dark-200'}`}>
+                      {schedule.name}
+                    </span>
+                    <span className="block text-xs text-dark-500 font-mono truncate">
+                      {schedule.cron_expression}
+                      {schedule.description && ` — ${schedule.description}`}
+                    </span>
+                  </div>
+                  {isSelected && (
+                    <span className="flex-shrink-0 w-2 h-2 rounded-full bg-primary-400" />
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        {isLoadingSchedules && (
+          <p className="text-sm text-dark-500 py-2">Loading schedules...</p>
+        )}
+
+        {/* Action Buttons */}
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={() => handleScheduleSelect('new')}
+            className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed transition-all ${
+              createNew
+                ? 'border-primary-500 bg-primary-500/10 text-primary-300'
+                : 'border-dark-600 text-dark-400 hover:border-dark-500 hover:text-dark-300'
+            }`}
           >
-            <option value="none">No automatic schedule</option>
-            <option value="new">➕ Create new schedule...</option>
-            {schedules.map((schedule) => (
-              <option key={schedule.id} value={schedule.id}>
-                {schedule.name} ({schedule.cron_expression})
-              </option>
-            ))}
-          </select>
+            <Plus className="w-4 h-4" />
+            <span className="text-sm font-medium">Create new schedule</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleScheduleSelect('none')}
+            className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 transition-all ${
+              !createNew && !data.scheduleId
+                ? 'border-yellow-500/50 bg-yellow-500/10 text-yellow-400'
+                : 'border-dark-700 text-dark-500 hover:border-dark-600 hover:text-dark-400'
+            }`}
+          >
+            <Ban className="w-4 h-4" />
+            <span className="text-sm font-medium">None</span>
+          </button>
         </div>
       </div>
-
-      {/* Existing Schedule Info */}
-      {data.scheduleId && !createNew && (
-        <div className="bg-primary-500/10 border border-primary-500/30 rounded-xl p-4">
-          {(() => {
-            const selected = schedules.find((s) => s.id === data.scheduleId)
-            return selected ? (
-              <div className="flex items-start gap-3">
-                <Clock className="w-5 h-5 text-primary-400 mt-0.5" />
-                <div>
-                  <h4 className="text-primary-400 font-medium">{selected.name}</h4>
-                  <p className="text-sm text-dark-300 mt-1">
-                    Cron: <code className="bg-dark-700 px-2 py-0.5 rounded">{selected.cron_expression}</code>
-                  </p>
-                  {selected.description && (
-                    <p className="text-sm text-dark-400 mt-1">{selected.description}</p>
-                  )}
-                </div>
-              </div>
-            ) : null
-          })()}
-        </div>
-      )}
 
       {/* Create New Schedule Form */}
       {createNew && data.newSchedule && (
