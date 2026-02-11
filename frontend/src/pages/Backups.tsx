@@ -14,6 +14,7 @@ import {
   ChevronUp,
   Calendar,
   FolderOpen,
+  Pencil,
 } from 'lucide-react'
 import {
   backupsApi,
@@ -29,6 +30,7 @@ import { useWebSocketStore } from '../store/websocket'
 import { clsx } from 'clsx'
 import BackupWizard from '../components/BackupWizard'
 import BackupBrowser from '../components/BackupBrowser'
+import BackupEditDialog from '../components/BackupEditDialog'
 
 // Backup Row Component with browser option
 function BackupRow({
@@ -144,11 +146,13 @@ function TargetBackupCard({
   backups,
   schedules,
   onBrowseBackup,
+  onEdit,
 }: {
   target: BackupTarget
   backups: Backup[]
   schedules: ScheduleEntity[]
   onBrowseBackup: (backup: Backup) => void
+  onEdit: (target: BackupTarget) => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const queryClient = useQueryClient()
@@ -296,6 +300,17 @@ function TargetBackupCard({
               <button
                 onClick={(e) => {
                   e.stopPropagation()
+                  onEdit(target)
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-dark-700 hover:bg-dark-600 text-dark-200 rounded-lg text-sm transition-colors"
+                title="Edit backup settings"
+              >
+                <Pencil className="w-4 h-4" />
+                Edit
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
                   toggleMutation.mutate()
                 }}
                 disabled={toggleMutation.isPending}
@@ -361,6 +376,7 @@ function TargetBackupCard({
 export default function Backups() {
   const [wizardOpen, setWizardOpen] = useState(false)
   const [browsingBackup, setBrowsingBackup] = useState<Backup | null>(null)
+  const [editingTarget, setEditingTarget] = useState<BackupTarget | null>(null)
 
   const { data: targets, isLoading: targetsLoading } = useQuery({
     queryKey: ['targets'],
@@ -449,6 +465,7 @@ export default function Backups() {
               backups={getBackupsForTarget(target.id)}
               schedules={schedules}
               onBrowseBackup={setBrowsingBackup}
+              onEdit={setEditingTarget}
             />
           ))}
         </div>
@@ -475,6 +492,15 @@ export default function Backups() {
       {/* Backup Browser Modal */}
       {browsingBackup && (
         <BackupBrowser backup={browsingBackup} onClose={() => setBrowsingBackup(null)} />
+      )}
+
+      {/* Backup Edit Dialog */}
+      {editingTarget && (
+        <BackupEditDialog
+          target={editingTarget}
+          isOpen={true}
+          onClose={() => setEditingTarget(null)}
+        />
       )}
     </div>
   )
