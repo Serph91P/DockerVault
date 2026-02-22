@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Archive, Plus, Clock, Trash2, Ban } from 'lucide-react'
 import { WizardData } from './index'
 import { RetentionPolicy } from '../../api'
@@ -19,7 +19,37 @@ const RETENTION_PRESETS = [
 ]
 
 export default function StepRetention({ data, updateData, policies, isLoadingPolicies }: Props) {
-  const [createNew, setCreateNew] = useState(!data.retentionPolicyId)
+  const [createNew, setCreateNew] = useState(false)
+  const [hasAutoSelected, setHasAutoSelected] = useState(false)
+
+  // Smart defaults: auto-select policy based on available options
+  useEffect(() => {
+    if (hasAutoSelected || data.retentionPolicyId || data.newRetentionPolicy) return
+    if (isLoadingPolicies) return
+
+    if (policies.length === 0) {
+      // No policies exist: default to "create new"
+      setCreateNew(true)
+      updateData({
+        retentionPolicyId: null,
+        newRetentionPolicy: {
+          name: '',
+          keepLast: 7,
+          keepDaily: 0,
+          keepWeekly: 0,
+          keepMonthly: 0,
+        },
+      })
+    } else if (policies.length === 1) {
+      // Exactly one policy: auto-select it
+      updateData({ retentionPolicyId: policies[0].id, newRetentionPolicy: null })
+      setCreateNew(false)
+    } else {
+      // Multiple policies: neutral state, user must choose
+      setCreateNew(false)
+    }
+    setHasAutoSelected(true)
+  }, [policies, isLoadingPolicies, hasAutoSelected])
 
   const handlePolicySelect = (policyId: string) => {
     if (policyId === 'none') {

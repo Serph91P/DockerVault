@@ -7,6 +7,8 @@ import {
   Archive,
   Settings,
   AlertCircle,
+  Database,
+  Pencil,
 } from 'lucide-react'
 import { WizardData } from './index'
 import { ScheduleEntity, RemoteStorage, RetentionPolicy } from '../../api'
@@ -17,6 +19,8 @@ interface Props {
   storages: RemoteStorage[]
   policies: RetentionPolicy[]
   isCreating: boolean
+  onGoToStep?: (step: number) => void
+  availableVolumes?: string[]
 }
 
 // Section component for summary display
@@ -25,11 +29,13 @@ function SummarySection({
   title,
   children,
   status = 'configured',
+  onEdit,
 }: {
   icon: React.ElementType
   title: string
   children: React.ReactNode
   status?: 'configured' | 'optional' | 'warning'
+  onEdit?: () => void
 }) {
   const statusColors = {
     configured: 'text-green-400',
@@ -47,14 +53,25 @@ function SummarySection({
           <h4 className="text-dark-100 font-medium">{title}</h4>
           <div className="mt-2 text-sm">{children}</div>
         </div>
-        {status === 'configured' && <Check className="w-5 h-5 text-green-400" />}
-        {status === 'warning' && <AlertCircle className="w-5 h-5 text-yellow-400" />}
+        <div className="flex items-center gap-2">
+          {onEdit && (
+            <button
+              onClick={onEdit}
+              className="p-1.5 text-dark-500 hover:text-primary-400 hover:bg-dark-700 rounded-lg transition-colors"
+              title={`Edit ${title}`}
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+          )}
+          {status === 'configured' && <Check className="w-5 h-5 text-green-400" />}
+          {status === 'warning' && <AlertCircle className="w-5 h-5 text-yellow-400" />}
+        </div>
       </div>
     </div>
   )
 }
 
-export default function StepSummary({ data, schedules, storages, policies, isCreating }: Props) {
+export default function StepSummary({ data, schedules, storages, policies, isCreating, onGoToStep, availableVolumes = [] }: Props) {
   // Get referenced entities
   const selectedSchedule = data.scheduleId
     ? schedules.find((s) => s.id === data.scheduleId)
@@ -100,18 +117,56 @@ export default function StepSummary({ data, schedules, storages, policies, isCre
       )}
 
       {/* Target Info */}
-      <SummarySection icon={Target} title="Backup Target" status="configured">
+      <SummarySection icon={Target} title="Backup Target" status="configured" onEdit={onGoToStep ? () => onGoToStep(1) : undefined}>
         <p className="text-dark-300">
           <span className="font-medium text-dark-100">{data.targetName || 'Unnamed'}</span>
         </p>
         <p className="text-dark-400 mt-1">{formatTargetType()}</p>
       </SummarySection>
 
+      {/* Volumes */}
+      {(data.targetType === 'container' || data.targetType === 'stack') && (
+        <SummarySection
+          icon={Database}
+          title="Volume Configuration"
+          status="configured"
+          onEdit={onGoToStep ? () => onGoToStep(2) : undefined}
+        >
+          {(() => {
+            const totalVolumes = availableVolumes.length
+            const selectedCount = data.selectedVolumes.length === 0 ? totalVolumes : data.selectedVolumes.length
+            const customRuleCount = Object.values(data.perVolumeRules).filter(
+              (r) => r.includePaths.length > 0 || r.excludePaths.length > 0
+            ).length
+            return (
+              <div className="text-dark-300">
+                <p>
+                  Volumes: <span className="text-dark-100">{selectedCount}/{totalVolumes}</span> selected
+                  {customRuleCount > 0 && (
+                    <span className="text-purple-400 ml-2">
+                      ({customRuleCount} with custom rules)
+                    </span>
+                  )}
+                </p>
+                {(data.includePaths.length > 0 || data.excludePaths.length > 0) && (
+                  <p className="text-dark-400 mt-1">
+                    {data.includePaths.length > 0 && `${data.includePaths.length} include filter(s)`}
+                    {data.includePaths.length > 0 && data.excludePaths.length > 0 && ', '}
+                    {data.excludePaths.length > 0 && `${data.excludePaths.length} exclude filter(s)`}
+                  </p>
+                )}
+              </div>
+            )
+          })()}
+        </SummarySection>
+      )}
+
       {/* Dependencies */}
       <SummarySection
         icon={Link2}
         title="Container Dependencies"
         status={data.dependencies.length > 0 ? 'configured' : 'optional'}
+        onEdit={onGoToStep ? () => onGoToStep(3) : undefined}
       >
         {data.stopContainer ? (
           <div className="text-dark-300">
@@ -132,6 +187,7 @@ export default function StepSummary({ data, schedules, storages, policies, isCre
         icon={Calendar}
         title="Schedule"
         status={selectedSchedule || data.newSchedule ? 'configured' : 'warning'}
+        onEdit={onGoToStep ? () => onGoToStep(4) : undefined}
       >
         {selectedSchedule ? (
           <div className="text-dark-300">
@@ -153,6 +209,7 @@ export default function StepSummary({ data, schedules, storages, policies, isCre
         icon={Cloud}
         title="Remote Storage"
         status={selectedStorages.length > 0 ? 'configured' : 'optional'}
+        onEdit={onGoToStep ? () => onGoToStep(5) : undefined}
       >
         {selectedStorages.length > 0 ? (
           <ul className="space-y-1">
@@ -173,6 +230,7 @@ export default function StepSummary({ data, schedules, storages, policies, isCre
         icon={Archive}
         title="Retention Policy"
         status={selectedPolicy || data.newRetentionPolicy ? 'configured' : 'warning'}
+        onEdit={onGoToStep ? () => onGoToStep(6) : undefined}
       >
         {selectedPolicy ? (
           <div className="text-dark-300">
@@ -209,7 +267,7 @@ export default function StepSummary({ data, schedules, storages, policies, isCre
       </SummarySection>
 
       {/* Options */}
-      <SummarySection icon={Settings} title="Options" status="configured">
+      <SummarySection icon={Settings} title="Options" status="configured" onEdit={onGoToStep ? () => onGoToStep(7) : undefined}>
         <div className="grid grid-cols-2 gap-2 text-dark-300">
           <div>
             Compression:{' '}

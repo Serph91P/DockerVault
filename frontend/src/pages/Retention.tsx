@@ -1,19 +1,25 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Trash2, Plus, Edit, Save, X } from 'lucide-react'
-import { retentionApi, RetentionPolicy } from '../api'
+import { Trash2, Plus, Edit, Save, X, Target } from 'lucide-react'
+import { retentionApi, targetsApi, RetentionPolicy, BackupTarget } from '../api'
 import toast from 'react-hot-toast'
 import { useState } from 'react'
+import ConfirmDialog from '../components/ConfirmDialog'
 
-function PolicyCard({ policy }: { policy: RetentionPolicy }) {
+function PolicyCard({ policy, targets }: { policy: RetentionPolicy; targets: BackupTarget[] }) {
   const queryClient = useQueryClient()
   const [isEditing, setIsEditing] = useState(false)
+  const [showConfirm, setShowConfirm] = useState(false)
   const [formData, setFormData] = useState({
+    keep_last: policy.keep_last,
     keep_daily: policy.keep_daily,
     keep_weekly: policy.keep_weekly,
     keep_monthly: policy.keep_monthly,
     keep_yearly: policy.keep_yearly,
     max_age_days: policy.max_age_days,
   })
+
+  // RE2: Count which targets use this policy
+  const usedByTargets = targets.filter((t) => t.retention_policy_id === policy.id)
 
   const updateMutation = useMutation({
     mutationFn: () => retentionApi.updatePolicy(policy.id, formData),
@@ -42,6 +48,17 @@ function PolicyCard({ policy }: { policy: RetentionPolicy }) {
           <p className="text-sm text-dark-400">
             Max. {policy.max_age_days} days retention
           </p>
+          {/* RE2: Used by badge */}
+          <div className="flex items-center gap-1 mt-1">
+            <Target className="w-3 h-3 text-dark-500" />
+            {usedByTargets.length > 0 ? (
+              <span className="text-xs text-dark-400" title={usedByTargets.map(t => t.name).join(', ')}>
+                Used by {usedByTargets.length} target{usedByTargets.length !== 1 ? 's' : ''}
+              </span>
+            ) : (
+              <span className="text-xs text-dark-500">Not in use</span>
+            )}
+          </div>
         </div>
         <div className="flex gap-2">
           {isEditing ? (
@@ -69,7 +86,7 @@ function PolicyCard({ policy }: { policy: RetentionPolicy }) {
               </button>
               {policy.name !== 'default' && (
                 <button
-                  onClick={() => deleteMutation.mutate()}
+                  onClick={() => setShowConfirm(true)}
                   className="p-2 text-red-400 hover:bg-dark-700 rounded-lg"
                 >
                   <Trash2 className="w-4 h-4" />
@@ -82,6 +99,24 @@ function PolicyCard({ policy }: { policy: RetentionPolicy }) {
 
       {/* Retention Settings */}
       <div className="grid grid-cols-2 gap-4">
+        {/* RE6: Keep Last field */}
+        <div className="col-span-2">
+          <label className="block text-xs text-dark-400 mb-1">Keep Last</label>
+          {isEditing ? (
+            <input
+              type="number"
+              min={0}
+              value={formData.keep_last}
+              onChange={(e) =>
+                setFormData({ ...formData, keep_last: parseInt(e.target.value) || 0 })
+              }
+              className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
+            />
+          ) : (
+            <p className="text-lg font-semibold text-dark-100">{policy.keep_last || 0}</p>
+          )}
+          <p className="text-xs text-dark-500 mt-0.5">Always keep the last N backups regardless of age</p>
+        </div>
         <div>
           <label className="block text-xs text-dark-400 mb-1">Keep Daily</label>
           {isEditing ? (
@@ -146,7 +181,7 @@ function PolicyCard({ policy }: { policy: RetentionPolicy }) {
 
       {isEditing && (
         <div className="mt-4">
-          <label className="block text-xs text-dark-400 mb-1">Max. Alter (Tage)</label>
+          <label className="block text-xs text-dark-400 mb-1">Max Age (Days)</label>
           <input
             type="number"
             value={formData.max_age_days}
@@ -157,6 +192,21 @@ function PolicyCard({ policy }: { policy: RetentionPolicy }) {
           />
         </div>
       )}
+
+      {/* RE1: ConfirmDialog for delete */}
+      <ConfirmDialog
+        isOpen={showConfirm}
+        onClose={() => setShowConfirm(false)}
+        onConfirm={() => {
+          deleteMutation.mutate()
+          setShowConfirm(false)
+        }}
+        title="Delete Retention Policy"
+        message={`Delete policy "${policy.name}"?${usedByTargets.length > 0 ? ` It is currently used by ${usedByTargets.length} target(s): ${usedByTargets.map(t => t.name).join(', ')}.` : ''}`}
+        confirmLabel="Delete"
+        confirmVariant="danger"
+        isLoading={deleteMutation.isPending}
+      />
     </div>
   )
 }
@@ -165,6 +215,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
   const queryClient = useQueryClient()
   const [formData, setFormData] = useState({
     name: '',
+    keep_last: 0,
     keep_daily: 7,
     keep_weekly: 4,
     keep_monthly: 6,
@@ -196,6 +247,19 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
             className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
             placeholder="e.g. aggressive, conservative"
           />
+        </div>
+
+        {/* RE6: Keep Last field */}
+        <div>
+          <label className="block text-xs text-dark-400 mb-1">Keep Last</label>
+          <input
+            type="number"
+            min={0}
+            value={formData.keep_last}
+            onChange={(e) => setFormData({ ...formData, keep_last: parseInt(e.target.value) || 0 })}
+            className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
+          />
+          <p className="text-xs text-dark-500 mt-0.5">Always keep the last N backups regardless of age (0 = disabled)</p>
         </div>
 
         <div className="grid grid-cols-2 gap-4">
@@ -285,6 +349,12 @@ export default function Retention() {
     queryFn: () => retentionApi.listPolicies().then((r) => r.data),
   })
 
+  // RE2: Fetch targets to show usage info
+  const { data: targets = [] } = useQuery({
+    queryKey: ['targets'],
+    queryFn: () => targetsApi.list().then((r) => r.data),
+  })
+
   const cleanupMutation = useMutation({
     mutationFn: () => retentionApi.cleanupOrphaned(),
     onSuccess: (data) => {
@@ -365,7 +435,7 @@ export default function Retention() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {policies?.map((policy) => (
-            <PolicyCard key={policy.id} policy={policy} />
+            <PolicyCard key={policy.id} policy={policy} targets={targets} />
           ))}
         </div>
       )}

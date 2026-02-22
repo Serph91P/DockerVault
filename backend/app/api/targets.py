@@ -4,7 +4,7 @@ Backup targets API endpoints.
 
 import logging
 import os
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from croniter import croniter
 from fastapi import APIRouter, HTTPException
@@ -55,10 +55,14 @@ class TargetCreate(BaseModel):
     # Path filtering
     include_paths: List[str] = []  # Include only these paths (empty = all)
     exclude_paths: List[str] = []  # Exclude these paths/patterns
+    # Per-volume path rules (overrides global for specific volumes)
+    per_volume_rules: Dict[str, Dict[str, List[str]]] = {}
     pre_backup_command: Optional[str] = None
     post_backup_command: Optional[str] = None
     stop_container: bool = True
     compression_enabled: bool = True
+    # Remote storage sync
+    remote_storage_ids: List[int] = []
 
     @field_validator("schedule_cron")
     @classmethod
@@ -80,10 +84,14 @@ class TargetUpdate(BaseModel):
     # Path filtering
     include_paths: Optional[List[str]] = None
     exclude_paths: Optional[List[str]] = None
+    # Per-volume path rules (overrides global for specific volumes)
+    per_volume_rules: Optional[Dict[str, Dict[str, List[str]]]] = None
     pre_backup_command: Optional[str] = None
     post_backup_command: Optional[str] = None
     stop_container: Optional[bool] = None
     compression_enabled: Optional[bool] = None
+    # Remote storage sync
+    remote_storage_ids: Optional[List[int]] = None
 
     @field_validator("schedule_cron")
     @classmethod
@@ -133,10 +141,14 @@ class TargetResponse(BaseModel):
     # Path filtering
     include_paths: List[str]
     exclude_paths: List[str]
+    # Per-volume path rules
+    per_volume_rules: Dict[str, Dict[str, List[str]]]
     pre_backup_command: Optional[str] = None
     post_backup_command: Optional[str] = None
     stop_container: bool
     compression_enabled: bool
+    # Remote storage sync
+    remote_storage_ids: List[int]
     created_at: str
     updated_at: str
 
@@ -184,10 +196,12 @@ def _build_target_response(t: BackupTarget) -> TargetResponse:
         selected_volumes=t.selected_volumes or [],
         include_paths=t.include_paths or [],
         exclude_paths=t.exclude_paths or [],
+        per_volume_rules=t.per_volume_rules or {},
         pre_backup_command=t.pre_backup_command,
         post_backup_command=t.post_backup_command,
         stop_container=t.stop_container,
         compression_enabled=t.compression_enabled,
+        remote_storage_ids=t.remote_storage_ids or [],
         created_at=t.created_at.isoformat(),
         updated_at=t.updated_at.isoformat(),
     )
@@ -256,10 +270,13 @@ async def create_target(target: TargetCreate):
             selected_volumes=target.selected_volumes,
             include_paths=target.include_paths,
             exclude_paths=target.exclude_paths,
+            per_volume_rules=target.per_volume_rules,
             pre_backup_command=target.pre_backup_command,
             post_backup_command=target.post_backup_command,
             stop_container=target.stop_container,
             compression_enabled=target.compression_enabled,
+            remote_storage_ids=target.remote_storage_ids,
+            sync_to_remote=len(target.remote_storage_ids) > 0,
         )
 
         session.add(db_target)
@@ -345,6 +362,8 @@ async def update_target(target_id: int, update: TargetUpdate):
             target.include_paths = update.include_paths
         if update.exclude_paths is not None:
             target.exclude_paths = update.exclude_paths
+        if update.per_volume_rules is not None:
+            target.per_volume_rules = update.per_volume_rules
         if update.pre_backup_command is not None:
             target.pre_backup_command = update.pre_backup_command
         if update.post_backup_command is not None:
@@ -353,6 +372,9 @@ async def update_target(target_id: int, update: TargetUpdate):
             target.stop_container = update.stop_container
         if update.compression_enabled is not None:
             target.compression_enabled = update.compression_enabled
+        if update.remote_storage_ids is not None:
+            target.remote_storage_ids = update.remote_storage_ids
+            target.sync_to_remote = len(update.remote_storage_ids) > 0
 
         await session.commit()
 

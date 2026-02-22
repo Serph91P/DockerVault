@@ -1,9 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Clock, Plus, Edit2, Trash2, HelpCircle, Calendar, Target } from 'lucide-react'
-import { schedulesApi, ScheduleEntity, ScheduleCreate, ScheduleUpdate } from '../api'
+import { schedulesApi, targetsApi, ScheduleEntity, ScheduleCreate, ScheduleUpdate, BackupTarget } from '../api'
 import { formatDistanceToNow } from 'date-fns'
 import toast from 'react-hot-toast'
 import { useState } from 'react'
+import ConfirmDialog from '../components/ConfirmDialog'
 
 interface ScheduleFormData {
   name: string
@@ -103,11 +104,17 @@ function ScheduleForm({
 function ScheduleCard({
   schedule,
   onEdit,
+  targets,
 }: {
   schedule: ScheduleEntity
   onEdit: () => void
+  targets: BackupTarget[]
 }) {
   const queryClient = useQueryClient()
+  const [showConfirm, setShowConfirm] = useState(false)
+
+  // SC1: Find targets that use this schedule
+  const usedByTargets = targets.filter((t) => t.schedule_id === schedule.id)
 
   const deleteMutation = useMutation({
     mutationFn: () => schedulesApi.delete(schedule.id),
@@ -177,6 +184,19 @@ function ScheduleCard({
             <Target className="w-3 h-3" />
             {schedule.target_count}
           </div>
+          {/* SC1: Show target names */}
+          {usedByTargets.length > 0 && (
+            <div className="mt-1 space-y-0.5">
+              {usedByTargets.slice(0, 3).map((t) => (
+                <p key={t.id} className="text-xs text-dark-500 truncate" title={t.name}>
+                  {t.name}
+                </p>
+              ))}
+              {usedByTargets.length > 3 && (
+                <p className="text-xs text-dark-600">+{usedByTargets.length - 3} more</p>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -190,17 +210,27 @@ function ScheduleCard({
           Edit
         </button>
         <button
-          onClick={() => {
-            if (confirm('Delete this schedule? Targets using it will be unlinked.')) {
-              deleteMutation.mutate()
-            }
-          }}
+          onClick={() => setShowConfirm(true)}
           disabled={deleteMutation.isPending}
           className="flex items-center justify-center gap-2 px-3 py-2 bg-red-500/10 text-red-400 rounded-lg hover:bg-red-500/20 transition-colors text-sm"
         >
           <Trash2 className="w-4 h-4" />
         </button>
       </div>
+
+      <ConfirmDialog
+        isOpen={showConfirm}
+        onClose={() => setShowConfirm(false)}
+        onConfirm={() => {
+          deleteMutation.mutate()
+          setShowConfirm(false)
+        }}
+        title="Delete Schedule"
+        message={`Delete schedule "${schedule.name}"? Targets using it will be unlinked.`}
+        confirmLabel="Delete"
+        confirmVariant="danger"
+        isLoading={deleteMutation.isPending}
+      />
     </div>
   )
 }
@@ -261,6 +291,12 @@ export default function Schedules() {
   const { data: schedules, isLoading } = useQuery({
     queryKey: ['schedules'],
     queryFn: () => schedulesApi.list().then((r) => r.data),
+  })
+
+  // SC1: Fetch targets to show which targets use each schedule
+  const { data: targets = [] } = useQuery({
+    queryKey: ['targets'],
+    queryFn: () => targetsApi.list().then((r) => r.data),
   })
 
   const createMutation = useMutation({
@@ -376,6 +412,7 @@ export default function Schedules() {
                 <ScheduleCard
                   key={schedule.id}
                   schedule={schedule}
+                  targets={targets}
                   onEdit={() => {
                     setShowForm(false)
                     setEditingSchedule(schedule)

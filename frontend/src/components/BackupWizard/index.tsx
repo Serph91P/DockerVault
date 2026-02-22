@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { X, ChevronLeft, ChevronRight, Check, Loader2 } from 'lucide-react'
 import {
@@ -32,6 +32,7 @@ export interface WizardData {
   selectedVolumes: string[]  // Empty = all volumes
   includePaths: string[]     // Include only these paths (empty = all)
   excludePaths: string[]     // Exclude these paths/patterns
+  perVolumeRules: Record<string, { includePaths: string[]; excludePaths: string[] }>
 
   // Step 3: Dependencies
   dependencies: string[]
@@ -75,6 +76,7 @@ const initialData: WizardData = {
   selectedVolumes: [],
   includePaths: [],
   excludePaths: [],
+  perVolumeRules: {},
   dependencies: [],
   stopContainer: true,
   scheduleId: null,
@@ -103,6 +105,8 @@ interface BackupWizardProps {
   isOpen: boolean
   onClose: () => void
   editTarget?: import('../../api').BackupTarget | null
+  preselectedType?: 'container' | 'volume' | 'path' | 'stack' | null
+  preselectedTarget?: string | null
 }
 
 function targetToWizardData(target: import('../../api').BackupTarget): WizardData {
@@ -116,11 +120,17 @@ function targetToWizardData(target: import('../../api').BackupTarget): WizardDat
     selectedVolumes: target.selected_volumes || [],
     includePaths: target.include_paths || [],
     excludePaths: target.exclude_paths || [],
+    perVolumeRules: Object.fromEntries(
+      Object.entries(target.per_volume_rules || {}).map(([k, v]) => [
+        k,
+        { includePaths: v.include_paths || [], excludePaths: v.exclude_paths || [] },
+      ])
+    ),
     dependencies: target.dependencies || [],
     stopContainer: target.stop_container,
     scheduleId: target.schedule_id || null,
     newSchedule: null,
-    remoteStorageIds: [],
+    remoteStorageIds: target.remote_storage_ids || [],
     retentionPolicyId: target.retention_policy_id || null,
     newRetentionPolicy: null,
     compression: target.compression_enabled ? 'gzip' : 'none',
@@ -130,7 +140,7 @@ function targetToWizardData(target: import('../../api').BackupTarget): WizardDat
   }
 }
 
-export default function BackupWizard({ isOpen, onClose, editTarget }: BackupWizardProps) {
+export default function BackupWizard({ isOpen, onClose, editTarget, preselectedType, preselectedTarget }: BackupWizardProps) {
   const queryClient = useQueryClient()
   const isEditing = !!editTarget
   const [currentStep, setCurrentStep] = useState(1)
@@ -141,6 +151,45 @@ export default function BackupWizard({ isOpen, onClose, editTarget }: BackupWiza
   if (editTarget && editTarget.id !== lastEditId) {
     setData(targetToWizardData(editTarget))
     setLastEditId(editTarget.id)
+  }
+
+  // T1: Handle preselection - auto-select type and target, advance to step 2
+  const [lastPreselection, setLastPreselection] = useState<string | null>(null)
+  const preselectionKey = preselectedType && preselectedTarget
+    ? `${preselectedType}:${preselectedTarget}`
+    : null
+  if (isOpen && !isEditing && preselectionKey && preselectionKey !== lastPreselection) {
+    setLastPreselection(preselectionKey)
+
+    const updates: Partial<WizardData> = {
+      targetType: preselectedType ?? null,
+    }
+    // Set the appropriate target field and auto-generate name
+    switch (preselectedType) {
+      case 'container':
+        updates.containerName = preselectedTarget ?? ''
+        updates.targetName = `${preselectedTarget} Backup`
+        break
+      case 'volume':
+        updates.volumeName = preselectedTarget ?? ''
+        updates.targetName = `Volume: ${preselectedTarget}`
+        break
+      case 'stack':
+        updates.stackName = preselectedTarget ?? ''
+        updates.targetName = `Stack: ${preselectedTarget}`
+        break
+      case 'path':
+        updates.hostPath = preselectedTarget ?? ''
+        updates.targetName = `Path: ${preselectedTarget}`
+        break
+    }
+    setData((prev) => ({ ...prev, ...updates }))
+    // Skip to step 2 (or 4 for volume/path which skip steps 2+3)
+    if (preselectedType === 'volume' || preselectedType === 'path') {
+      setCurrentStep(4)
+    } else {
+      setCurrentStep(2)
+    }
   }
 
   // Fetch data for all steps
@@ -186,6 +235,12 @@ export default function BackupWizard({ isOpen, onClose, editTarget }: BackupWiza
       schedulesApi.create(scheduleData),
   })
 
+  // Create retention policy mutation (if new policy needed)
+  const createRetentionPolicyMutation = useMutation({
+    mutationFn: (policyData: Partial<import('../../api').RetentionPolicy>) =>
+      retentionApi.createPolicy(policyData),
+  })
+
   // Create target mutation
   const createTargetMutation = useMutation({
     mutationFn: (targetData: Parameters<typeof targetsApi.create>[0]) =>
@@ -220,6 +275,7 @@ export default function BackupWizard({ isOpen, onClose, editTarget }: BackupWiza
     setCurrentStep(1)
     setData(initialData)
     setLastEditId(null)
+    setLastPreselection(null)
     onClose()
   }
 
@@ -237,18 +293,24 @@ export default function BackupWizard({ isOpen, onClose, editTarget }: BackupWiza
         if (data.targetType === 'stack' && !data.stackName) return false
         if (!data.targetName) return false
         return true
-      case 2: // Volumes - Optional for container/stack, auto-skip for volume/path
+      case 2: // Volumes
         return true
       case 3: // Dependencies
-        return true // Optional step
+        return true
       case 4: // Schedule
-        return data.scheduleId !== null || data.newSchedule !== null || true // Schedule is optional
+        if (data.newSchedule) {
+          return !!data.newSchedule.name && !!data.newSchedule.cronExpression
+        }
+        return true
       case 5: // Storage
-        return true // Optional step
+        return true
       case 6: // Retention
-        return true // Optional step
+        if (data.newRetentionPolicy) {
+          return !!data.newRetentionPolicy.name
+        }
+        return true
       case 7: // Options
-        return true // Optional step
+        return true
       case 8: // Summary
         return true
       default:
@@ -256,17 +318,39 @@ export default function BackupWizard({ isOpen, onClose, editTarget }: BackupWiza
     }
   }
 
+  // Steps 2 (Volumes) and 3 (Dependencies) are irrelevant for volume/path targets
+  const shouldSkipStep = useCallback((stepId: number): boolean => {
+    if (stepId === 2 || stepId === 3) {
+      return data.targetType === 'volume' || data.targetType === 'path'
+    }
+    return false
+  }, [data.targetType])
+
+  const getNextStep = useCallback((from: number): number => {
+    let next = from + 1
+    while (next <= STEPS.length && shouldSkipStep(next)) next++
+    return next
+  }, [shouldSkipStep])
+
+  const getPrevStep = useCallback((from: number): number => {
+    let prev = from - 1
+    while (prev >= 1 && shouldSkipStep(prev)) prev--
+    return prev
+  }, [shouldSkipStep])
+
   const handleNext = () => {
     if (currentStep < STEPS.length && canProceed()) {
-      setCurrentStep((prev) => prev + 1)
+      setCurrentStep(getNextStep(currentStep))
     }
   }
 
   const handlePrev = () => {
     if (currentStep > 1) {
-      setCurrentStep((prev) => prev - 1)
+      setCurrentStep(getPrevStep(currentStep))
     }
   }
+
+  const isLoading = createScheduleMutation.isPending || createRetentionPolicyMutation.isPending || createTargetMutation.isPending || updateTargetMutation.isPending
 
   const handleSubmit = async () => {
     try {
@@ -282,12 +366,18 @@ export default function BackupWizard({ isOpen, onClose, editTarget }: BackupWiza
         scheduleId = newSchedule.data.id
       }
 
-      // TODO: Create new retention policy if specified
-      const retentionPolicyId = data.retentionPolicyId
-      // if (data.newRetentionPolicy) {
-      //   const newPolicy = await createRetentionPolicyMutation.mutateAsync(...)
-      //   retentionPolicyId = newPolicy.data.id
-      // }
+      // Create new retention policy if specified
+      let retentionPolicyId = data.retentionPolicyId
+      if (data.newRetentionPolicy) {
+        const newPolicy = await createRetentionPolicyMutation.mutateAsync({
+          name: data.newRetentionPolicy.name,
+          keep_last: data.newRetentionPolicy.keepLast,
+          keep_daily: data.newRetentionPolicy.keepDaily,
+          keep_weekly: data.newRetentionPolicy.keepWeekly,
+          keep_monthly: data.newRetentionPolicy.keepMonthly,
+        })
+        retentionPolicyId = newPolicy.data.id
+      }
 
       // Build target data
       const targetData: Parameters<typeof targetsApi.create>[0] = {
@@ -304,11 +394,20 @@ export default function BackupWizard({ isOpen, onClose, editTarget }: BackupWiza
         selected_volumes: data.selectedVolumes,
         include_paths: data.includePaths,
         exclude_paths: data.excludePaths,
+        per_volume_rules: Object.fromEntries(
+          Object.entries(data.perVolumeRules)
+            .filter(([, v]) => v.includePaths.length > 0 || v.excludePaths.length > 0)
+            .map(([k, v]) => [
+              k,
+              { include_paths: v.includePaths, exclude_paths: v.excludePaths },
+            ])
+        ),
         stop_container: data.stopContainer,
         compression_enabled: data.compression !== 'none',
         pre_backup_command: data.preCommand || undefined,
         post_backup_command: data.postCommand || undefined,
         retention_policy_id: retentionPolicyId || undefined,
+        remote_storage_ids: data.remoteStorageIds,
       }
 
       if (isEditing) {
@@ -321,9 +420,30 @@ export default function BackupWizard({ isOpen, onClose, editTarget }: BackupWiza
     }
   }
 
-  if (!isOpen) return null
+  // Keyboard navigation
+  useEffect(() => {
+    if (!isOpen) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        handleClose()
+        return
+      }
+      if (e.key === 'Enter') {
+        const tag = (e.target as HTMLElement)?.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+        e.preventDefault()
+        if (currentStep === STEPS.length) {
+          if (canProceed() && !isLoading) handleSubmit()
+        } else {
+          handleNext()
+        }
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  })
 
-  const isLoading = createScheduleMutation.isPending || createTargetMutation.isPending || updateTargetMutation.isPending
+  if (!isOpen) return null
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -351,30 +471,45 @@ export default function BackupWizard({ isOpen, onClose, editTarget }: BackupWiza
         {/* Progress Steps */}
         <div className="px-6 py-4 border-b border-dark-700">
           <div className="flex items-center justify-between">
-            {STEPS.map((step, index) => (
-              <div key={step.id} className="flex items-center">
-                <button
-                  onClick={() => step.id < currentStep && setCurrentStep(step.id)}
-                  disabled={step.id > currentStep}
-                  className={`flex items-center justify-center w-8 h-8 rounded-full text-sm font-medium transition-colors ${
-                    step.id === currentStep
-                      ? 'bg-primary-500 text-white'
-                      : step.id < currentStep
-                      ? 'bg-green-500 text-white cursor-pointer'
-                      : 'bg-dark-700 text-dark-400'
-                  }`}
-                >
-                  {step.id < currentStep ? <Check className="w-4 h-4" /> : step.id}
-                </button>
-                {index < STEPS.length - 1 && (
-                  <div
-                    className={`w-12 h-0.5 mx-2 ${
-                      step.id < currentStep ? 'bg-green-500' : 'bg-dark-700'
-                    }`}
-                  />
-                )}
-              </div>
-            ))}
+            {STEPS.map((step, index) => {
+              const skipped = shouldSkipStep(step.id)
+              const isVisited = isEditing || step.id < currentStep
+              const canClick = isEditing ? !skipped : (step.id < currentStep && !skipped)
+              return (
+                <div key={step.id} className="flex items-center">
+                  <div className="flex flex-col items-center">
+                    <button
+                      onClick={() => canClick && setCurrentStep(step.id)}
+                      disabled={!canClick && step.id !== currentStep}
+                      title={skipped ? `${step.name} (skipped)` : step.name}
+                      className={`flex items-center justify-center w-8 h-8 rounded-full text-sm font-medium transition-colors ${
+                        skipped
+                          ? 'bg-dark-700/50 text-dark-500 cursor-default'
+                          : step.id === currentStep
+                          ? 'bg-primary-500 text-white'
+                          : isVisited
+                          ? 'bg-green-500 text-white cursor-pointer'
+                          : 'bg-dark-700 text-dark-400'
+                      }`}
+                    >
+                      {skipped ? '-' : isVisited && step.id !== currentStep ? <Check className="w-4 h-4" /> : step.id}
+                    </button>
+                    <span className={`text-[10px] mt-1 ${
+                      skipped ? 'text-dark-600' : step.id === currentStep ? 'text-primary-400' : 'text-dark-500'
+                    }`}>
+                      {step.name.length > 6 ? step.name.slice(0, 5) + '.' : step.name}
+                    </span>
+                  </div>
+                  {index < STEPS.length - 1 && (
+                    <div
+                      className={`w-8 h-0.5 mx-1 ${
+                        (isEditing || step.id < currentStep) ? 'bg-green-500' : 'bg-dark-700'
+                      }`}
+                    />
+                  )}
+                </div>
+              )
+            })}
           </div>
         </div>
 
@@ -439,6 +574,17 @@ export default function BackupWizard({ isOpen, onClose, editTarget }: BackupWiza
               policies={retentionPolicies}
               storages={remoteStorages}
               isCreating={isLoading}
+              onGoToStep={setCurrentStep}
+              availableVolumes={(() => {
+                if (data.targetType === 'container' && data.containerName) {
+                  const c = containers.find((ct) => ct.name === data.containerName)
+                  return c?.mounts?.filter((m) => m.type === 'volume').map((m) => m.name || '').filter(Boolean) || []
+                }
+                if (data.targetType === 'stack' && data.stackName) {
+                  return stacks.find((s) => s.name === data.stackName)?.volumes || []
+                }
+                return []
+              })()}
             />
           )}
         </div>

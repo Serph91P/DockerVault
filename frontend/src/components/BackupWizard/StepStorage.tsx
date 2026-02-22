@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react'
 import { Cloud, HardDrive, Plus, Check, ExternalLink } from 'lucide-react'
 import { WizardData } from './index'
 import { RemoteStorage } from '../../api'
@@ -39,14 +40,27 @@ const STORAGE_TYPES: Record<string, { icon: React.ReactNode; color: string; name
 }
 
 export default function StepStorage({ data, updateData, storages, isLoadingStorages }: Props) {
+  const [hasAutoSelected, setHasAutoSelected] = useState(false)
+
+  const enabledStorages = storages.filter((s) => s.enabled !== false)
+
+  // Smart default: auto-select the single enabled storage if only one exists
+  useEffect(() => {
+    if (hasAutoSelected || data.remoteStorageIds.length > 0) return
+    if (isLoadingStorages) return
+
+    if (enabledStorages.length === 1) {
+      updateData({ remoteStorageIds: [enabledStorages[0].id] })
+    }
+    setHasAutoSelected(true)
+  }, [enabledStorages, isLoadingStorages, hasAutoSelected])
+
   const toggleStorage = (storageId: number) => {
     const newIds = data.remoteStorageIds.includes(storageId)
       ? data.remoteStorageIds.filter((id) => id !== storageId)
       : [...data.remoteStorageIds, storageId]
     updateData({ remoteStorageIds: newIds })
   }
-
-  const enabledStorages = storages.filter((s) => s.enabled !== false)
 
   return (
     <div className="space-y-6">
@@ -87,6 +101,8 @@ export default function StepStorage({ data, updateData, storages, isLoadingStora
           </p>
           <a
             href="/storage"
+            target="_blank"
+            rel="noopener noreferrer"
             className="inline-flex items-center gap-2 px-4 py-2 bg-primary-500/20 text-primary-400 rounded-lg hover:bg-primary-500/30 transition-colors text-sm"
           >
             <Plus className="w-4 h-4" />

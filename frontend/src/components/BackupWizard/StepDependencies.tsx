@@ -1,4 +1,5 @@
-import { AlertCircle, Link2, Power } from 'lucide-react'
+import { useState, useMemo } from 'react'
+import { AlertCircle, Link2, Power, Search, X, Layers, ChevronDown, ChevronRight } from 'lucide-react'
 import { WizardData } from './index'
 import { Container, Stack } from '../../api'
 
@@ -10,6 +11,10 @@ interface Props {
 }
 
 export default function StepDependencies({ data, updateData, containers, stacks }: Props) {
+  const [search, setSearch] = useState('')
+  const [otherExpanded, setOtherExpanded] = useState(false)
+  const isStack = data.targetType === 'stack'
+
   // Get available containers for dependencies
   const availableContainers = containers.filter((c) => {
     // Don't show the selected container as a dependency
@@ -20,10 +25,44 @@ export default function StepDependencies({ data, updateData, containers, stacks 
   })
 
   // Get stack containers for auto-detection
-  const stackContainers =
-    data.targetType === 'stack'
+  const stackContainerInfo =
+    isStack
       ? stacks.find((s) => s.name === data.stackName)?.containers || []
       : []
+  const stackContainerNames = new Set(stackContainerInfo.map((c) => c.name))
+
+  // Split containers into stack-own and external
+  const stackOwnContainers = isStack
+    ? availableContainers.filter((c) => stackContainerNames.has(c.name))
+    : []
+  const externalContainers = isStack
+    ? availableContainers.filter((c) => !stackContainerNames.has(c.name))
+    : availableContainers
+
+  // Filter containers by search query
+  const filteredExternalContainers = useMemo(() => {
+    if (!search.trim()) return externalContainers
+    const q = search.toLowerCase()
+    return externalContainers.filter(
+      (c) => c.name.toLowerCase().includes(q) || c.image.toLowerCase().includes(q)
+    )
+  }, [externalContainers, search])
+
+  // Group filtered external containers by compose project
+  const groupedContainers = useMemo(() => {
+    const groups: Record<string, typeof filteredExternalContainers> = {}
+    filteredExternalContainers.forEach((c) => {
+      const project = c.compose_project || 'Other containers'
+      if (!groups[project]) groups[project] = []
+      groups[project].push(c)
+    })
+    const sortedKeys = Object.keys(groups).sort((a, b) => {
+      if (a === 'Other containers') return 1
+      if (b === 'Other containers') return -1
+      return a.localeCompare(b)
+    })
+    return sortedKeys.map((key) => ({ name: key, containers: groups[key] }))
+  }, [filteredExternalContainers])
 
   const toggleDependency = (containerName: string) => {
     const newDeps = data.dependencies.includes(containerName)
@@ -34,9 +73,9 @@ export default function StepDependencies({ data, updateData, containers, stacks 
 
   // Auto-detect dependencies from stack
   const autoDetectDependencies = () => {
-    if (data.targetType === 'stack' && stackContainers.length > 0) {
+    if (isStack && stackContainerInfo.length > 0) {
       const detected: string[] = []
-      stackContainers.forEach((container) => {
+      stackContainerInfo.forEach((container) => {
         if (container.depends_on && container.depends_on.length > 0) {
           container.depends_on.forEach((dep) => {
             if (!detected.includes(dep)) {
@@ -80,14 +119,14 @@ export default function StepDependencies({ data, updateData, containers, stacks 
       </div>
 
       {/* Auto-detect for stacks */}
-      {data.targetType === 'stack' && stackContainers.length > 0 && (
+      {isStack && stackContainerInfo.length > 0 && (
         <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4">
           <div className="flex items-start gap-3">
             <Link2 className="w-5 h-5 text-blue-400 mt-0.5" />
             <div className="flex-1">
               <h4 className="text-blue-400 font-medium">Stack Dependencies Detected</h4>
               <p className="text-sm text-dark-300 mt-1">
-                We found {stackContainers.length} containers in this stack. Dependencies can be
+                We found {stackContainerInfo.length} containers in this stack. Dependencies can be
                 auto-detected from docker-compose configuration.
               </p>
               <button
@@ -101,20 +140,35 @@ export default function StepDependencies({ data, updateData, containers, stacks 
         </div>
       )}
 
-      {/* Manual dependency selection */}
-      <div>
-        <h4 className="text-sm font-medium text-dark-300 mb-3">
-          Select containers to manage during backup:
-        </h4>
-
-        {availableContainers.length === 0 ? (
-          <div className="bg-dark-800 rounded-xl border border-dark-700 p-6 text-center">
-            <AlertCircle className="w-8 h-8 text-dark-500 mx-auto mb-2" />
-            <p className="text-dark-400">No other containers available</p>
+      {/* Stack-own containers — shown first for stacks */}
+      {isStack && stackOwnContainers.length > 0 && (
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-sm font-medium text-dark-300 flex items-center gap-2">
+              <Layers className="w-4 h-4 text-primary-400" />
+              Stack Containers
+              <span className="text-xs text-dark-500 font-normal">
+                ({stackOwnContainers.length})
+              </span>
+            </h4>
+            <div className="flex gap-2">
+              <button
+                onClick={() => updateData({ dependencies: [...new Set([...data.dependencies, ...stackOwnContainers.map(c => c.name)])] })}
+                className="text-xs px-2 py-1 bg-dark-700 hover:bg-dark-600 text-dark-300 rounded"
+              >
+                Select all
+              </button>
+              <button
+                onClick={() => updateData({ dependencies: data.dependencies.filter(d => !stackContainerNames.has(d)) })}
+                className="text-xs px-2 py-1 bg-dark-700 hover:bg-dark-600 text-dark-300 rounded"
+              >
+                Deselect all
+              </button>
+            </div>
           </div>
-        ) : (
-          <div className="space-y-2 max-h-64 overflow-y-auto">
-            {availableContainers.map((container) => {
+          <p className="text-xs text-dark-500 mb-2">These containers belong to this stack and will be managed during backup.</p>
+          <div className="space-y-1.5">
+            {stackOwnContainers.map((container) => {
               const isSelected = data.dependencies.includes(container.name)
               return (
                 <button
@@ -149,6 +203,147 @@ export default function StepDependencies({ data, updateData, containers, stacks 
               )
             })}
           </div>
+        </div>
+      )}
+
+      {/* Other containers — collapsible for stacks */}
+      <div>
+        {isStack ? (
+          <button
+            onClick={() => setOtherExpanded(!otherExpanded)}
+            className="flex items-center gap-2 mb-3 w-full text-left"
+          >
+            {otherExpanded ? (
+              <ChevronDown className="w-4 h-4 text-dark-400" />
+            ) : (
+              <ChevronRight className="w-4 h-4 text-dark-400" />
+            )}
+            <h4 className="text-sm font-medium text-dark-300">
+              Other Containers
+              <span className="text-xs text-dark-500 font-normal ml-2">
+                ({externalContainers.length} — external dependencies)
+              </span>
+            </h4>
+          </button>
+        ) : (
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-sm font-medium text-dark-300">
+              Select containers to manage during backup:
+            </h4>
+            {availableContainers.length > 0 && (
+              <div className="flex gap-2">
+                <button
+                  onClick={() => updateData({ dependencies: availableContainers.map(c => c.name) })}
+                  className="text-xs px-2 py-1 bg-dark-700 hover:bg-dark-600 text-dark-300 rounded"
+                >
+                  All
+                </button>
+                <button
+                  onClick={() => updateData({ dependencies: [] })}
+                  className="text-xs px-2 py-1 bg-dark-700 hover:bg-dark-600 text-dark-300 rounded"
+                >
+                  None
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {(!isStack || otherExpanded) && (
+          <>
+            {(isStack ? externalContainers : availableContainers).length === 0 ? (
+              <div className="bg-dark-800 rounded-xl border border-dark-700 p-6 text-center">
+                <AlertCircle className="w-8 h-8 text-dark-500 mx-auto mb-2" />
+                <p className="text-dark-400">No other containers available</p>
+              </div>
+            ) : (
+              <>
+                {/* Search */}
+                <div className="relative mb-3">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-500" />
+                  <input
+                    type="text"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Search containers..."
+                    className="w-full pl-9 pr-8 py-2 bg-dark-800 border border-dark-700 rounded-lg text-dark-100 text-sm placeholder:text-dark-500 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+                  />
+                  {search && (
+                    <button
+                      onClick={() => setSearch('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-dark-500 hover:text-dark-300"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Count */}
+                <p className="text-xs text-dark-500 mb-2">
+                  {data.dependencies.filter(d => isStack ? !stackContainerNames.has(d) : true).length} selected of {(isStack ? externalContainers : availableContainers).length} containers
+                  {search && ` (${filteredExternalContainers.length} matching)`}
+                </p>
+
+                {/* Grouped container list */}
+                <div className="space-y-3 max-h-80 overflow-y-auto">
+                  {groupedContainers.map((group) => (
+                <div key={group.name}>
+                  <div className="flex items-center gap-2 px-2 py-1.5 bg-dark-750 rounded-lg mb-1.5">
+                    <Layers className="w-3.5 h-3.5 text-dark-400" />
+                    <span className="text-xs font-medium text-dark-300 uppercase tracking-wider">
+                      {group.name}
+                    </span>
+                    <span className="text-xs text-dark-500">
+                      ({group.containers.length})
+                    </span>
+                  </div>
+                  <div className="space-y-1.5 ml-2">
+                    {group.containers.map((container) => {
+                      const isSelected = data.dependencies.includes(container.name)
+                      return (
+                        <button
+                          key={container.id}
+                          onClick={() => toggleDependency(container.name)}
+                          className={`w-full flex items-center gap-3 p-3 rounded-lg border transition-all text-left ${
+                            isSelected
+                              ? 'border-primary-500 bg-primary-500/10'
+                              : 'border-dark-700 hover:border-dark-600 bg-dark-800'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => {}}
+                            className="w-4 h-4 rounded border-dark-600 text-primary-500 focus:ring-primary-500 bg-dark-700"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-dark-100 font-medium truncate">{container.name}</p>
+                            <p className="text-sm text-dark-400 truncate">{container.image}</p>
+                          </div>
+                          <span
+                            className={`px-2 py-1 rounded text-xs ${
+                              container.state === 'running'
+                                ? 'bg-green-500/10 text-green-400'
+                                : 'bg-dark-600 text-dark-400'
+                            }`}
+                          >
+                            {container.state}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+              {filteredExternalContainers.length === 0 && search && (
+                <div className="text-center py-4">
+                  <p className="text-sm text-dark-400">No containers matching &quot;{search}&quot;</p>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+          </>
         )}
       </div>
 
@@ -161,11 +356,11 @@ export default function StepDependencies({ data, updateData, containers, stacks 
           <div className="text-sm text-dark-400">
             <p>
               <span className="text-orange-400">Stop:</span>{' '}
-              {data.dependencies.join(' → ')}
+              {data.dependencies.join(' \u2192 ')}
             </p>
             <p className="mt-1">
               <span className="text-green-400">Start:</span>{' '}
-              {[...data.dependencies].reverse().join(' → ')}
+              {[...data.dependencies].reverse().join(' \u2192 ')}
             </p>
           </div>
         </div>
