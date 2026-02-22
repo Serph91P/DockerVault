@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Archive, Plus, Clock, Trash2, Ban } from 'lucide-react'
+import { Archive, Plus, Clock, Trash2, Ban, BarChart3 } from 'lucide-react'
 import { WizardData } from './index'
 import { RetentionPolicy } from '../../api'
 
@@ -17,6 +17,47 @@ const RETENTION_PRESETS = [
   { name: '7 daily + 4 weekly', keepLast: 0, keepDaily: 7, keepWeekly: 4, keepMonthly: 0 },
   { name: 'Full rotation', keepLast: 7, keepDaily: 7, keepWeekly: 4, keepMonthly: 6 },
 ]
+
+// R1: Visual preview of retention policy effect
+function RetentionPreview({ keepLast, keepDaily, keepWeekly, keepMonthly }: {
+  keepLast: number; keepDaily: number; keepWeekly: number; keepMonthly: number
+}) {
+  const total = keepLast + keepDaily + keepWeekly + keepMonthly
+  if (total === 0) return null
+
+  const segments = [
+    { label: 'Last', value: keepLast, color: 'bg-blue-500' },
+    { label: 'Daily', value: keepDaily, color: 'bg-green-500' },
+    { label: 'Weekly', value: keepWeekly, color: 'bg-yellow-500' },
+    { label: 'Monthly', value: keepMonthly, color: 'bg-purple-500' },
+  ].filter(s => s.value > 0)
+
+  return (
+    <div className="bg-dark-900 rounded-lg p-3 space-y-2">
+      <div className="flex items-center gap-2 text-xs text-dark-400">
+        <BarChart3 className="w-3.5 h-3.5" />
+        <span>Approx. <strong className="text-dark-200">{total}</strong> backups kept max</span>
+      </div>
+      <div className="flex h-2 rounded-full overflow-hidden bg-dark-700">
+        {segments.map((seg) => (
+          <div
+            key={seg.label}
+            className={`${seg.color} transition-all`}
+            style={{ width: `${(seg.value / total) * 100}%` }}
+          />
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-3 text-xs">
+        {segments.map((seg) => (
+          <div key={seg.label} className="flex items-center gap-1.5">
+            <span className={`w-2 h-2 rounded-full ${seg.color}`} />
+            <span className="text-dark-400">{seg.label}: {seg.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 export default function StepRetention({ data, updateData, policies, isLoadingPolicies }: Props) {
   const [createNew, setCreateNew] = useState(false)
@@ -176,6 +217,20 @@ export default function StepRetention({ data, updateData, policies, isLoadingPol
             <span className="text-sm font-medium">None</span>
           </button>
         </div>
+
+        {/* R1: Preview for selected existing policy */}
+        {!createNew && data.retentionPolicyId && (() => {
+          const selected = policies.find(p => p.id === data.retentionPolicyId)
+          if (!selected) return null
+          return (
+            <RetentionPreview
+              keepLast={selected.keep_last}
+              keepDaily={selected.keep_daily}
+              keepWeekly={selected.keep_weekly}
+              keepMonthly={selected.keep_monthly}
+            />
+          )
+        })()}
       </div>
 
       {/* Create New Policy Form */}
@@ -271,6 +326,14 @@ export default function StepRetention({ data, updateData, policies, isLoadingPol
               <p className="text-xs text-dark-500 mt-1">One per month to keep</p>
             </div>
           </div>
+
+          {/* R1: Retention Visual Preview */}
+          <RetentionPreview
+            keepLast={data.newRetentionPolicy.keepLast}
+            keepDaily={data.newRetentionPolicy.keepDaily}
+            keepWeekly={data.newRetentionPolicy.keepWeekly}
+            keepMonthly={data.newRetentionPolicy.keepMonthly}
+          />
         </div>
       )}
 

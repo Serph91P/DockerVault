@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link2, Check, X, RefreshCw, Save, Eye, EyeOff, TestTube, HardDrive, Shield } from 'lucide-react'
+import { Link2, Check, X, RefreshCw, Save, Eye, EyeOff, TestTube, HardDrive, Shield, Clock, Database, Archive } from 'lucide-react'
 import { dockerApi, settingsApi } from '../api'
 import toast from 'react-hot-toast'
 import EncryptionSetup from '../components/EncryptionSetup'
@@ -250,6 +250,138 @@ function KomodoSettingsCard() {
   )
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(1024))
+  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`
+}
+
+function formatUptime(seconds: number): string {
+  const days = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`
+  if (hours > 0) return `${hours}h ${minutes}m`
+  return `${minutes}m`
+}
+
+function SystemInfoCard() {
+  const { data: systemInfo } = useQuery({
+    queryKey: ['system-info'],
+    queryFn: () => settingsApi.getSystemInfo().then((r) => r.data),
+    refetchInterval: 30000,
+  })
+
+  const diskPercent = systemInfo && systemInfo.disk_total > 0
+    ? Math.round((systemInfo.disk_used / systemInfo.disk_total) * 100)
+    : 0
+
+  return (
+    <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
+      <div className="flex items-center gap-3 mb-4">
+        <div className="w-10 h-10 bg-green-500/10 rounded-lg flex items-center justify-center">
+          <HardDrive className="w-5 h-5 text-green-400" />
+        </div>
+        <div className="flex-1">
+          <h2 className="text-lg font-semibold text-dark-100">System Information</h2>
+          <p className="text-sm text-dark-400">Runtime & storage details</p>
+        </div>
+        {systemInfo && (
+          <span className="text-xs text-dark-500 font-mono">v{systemInfo.app_version}</span>
+        )}
+      </div>
+
+      {systemInfo ? (
+        <>
+          {/* Disk Usage Bar */}
+          <div className="mb-4 p-3 bg-dark-900 rounded-lg">
+            <div className="flex items-center justify-between text-sm mb-2">
+              <span className="text-dark-400">Disk Usage</span>
+              <span className="text-dark-200">
+                {formatBytes(systemInfo.disk_used)} / {formatBytes(systemInfo.disk_total)}
+              </span>
+            </div>
+            <div className="h-2 bg-dark-700 rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all ${
+                  diskPercent > 90 ? 'bg-red-500' : diskPercent > 70 ? 'bg-yellow-500' : 'bg-green-500'
+                }`}
+                style={{ width: `${diskPercent}%` }}
+              />
+            </div>
+            <div className="flex justify-between text-xs text-dark-500 mt-1">
+              <span>{diskPercent}% used</span>
+              <span>{formatBytes(systemInfo.disk_free)} free</span>
+            </div>
+          </div>
+
+          {/* Stats Grid */}
+          <div className="grid grid-cols-3 gap-3 mb-4">
+            <div className="bg-dark-900 rounded-lg p-3 text-center">
+              <Archive className="w-4 h-4 text-primary-400 mx-auto mb-1" />
+              <p className="text-lg font-semibold text-dark-100">{systemInfo.backup_count}</p>
+              <p className="text-xs text-dark-500">Backups</p>
+            </div>
+            <div className="bg-dark-900 rounded-lg p-3 text-center">
+              <Database className="w-4 h-4 text-blue-400 mx-auto mb-1" />
+              <p className="text-lg font-semibold text-dark-100">{systemInfo.target_count}</p>
+              <p className="text-xs text-dark-500">Targets</p>
+            </div>
+            <div className="bg-dark-900 rounded-lg p-3 text-center">
+              <Clock className="w-4 h-4 text-green-400 mx-auto mb-1" />
+              <p className="text-lg font-semibold text-dark-100">{formatUptime(systemInfo.uptime_seconds)}</p>
+              <p className="text-xs text-dark-500">Uptime</p>
+            </div>
+          </div>
+
+          {/* Details */}
+          <div className="space-y-3 text-sm">
+            <div className="flex justify-between py-2 border-b border-dark-700">
+              <span className="text-dark-400">Backup Directory</span>
+              <span className="text-dark-200 font-mono">{systemInfo.backup_dir}</span>
+            </div>
+            <div className="flex justify-between py-2 border-b border-dark-700">
+              <span className="text-dark-400">Database</span>
+              <span className="text-dark-200">
+                <span className="font-mono">{systemInfo.database_path}</span>
+                <span className="text-dark-500 ml-2">({formatBytes(systemInfo.db_size)})</span>
+              </span>
+            </div>
+            <div className="flex justify-between py-2">
+              <span className="text-dark-400">Timezone</span>
+              <span className="text-dark-200">{systemInfo.timezone}</span>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="space-y-3 animate-pulse">
+          <div className="h-16 bg-dark-700 rounded-lg" />
+          <div className="grid grid-cols-3 gap-3">
+            <div className="h-20 bg-dark-700 rounded-lg" />
+            <div className="h-20 bg-dark-700 rounded-lg" />
+            <div className="h-20 bg-dark-700 rounded-lg" />
+          </div>
+        </div>
+      )}
+
+      <div className="mt-4 p-4 bg-dark-700/50 rounded-lg flex items-start gap-3">
+        <Shield className="w-5 h-5 text-primary-400 flex-shrink-0 mt-0.5" />
+        <div className="text-sm text-dark-300">
+          <p className="font-medium text-dark-200 mb-1">Retention Policies</p>
+          <p>
+            Configure backup retention (how many backups to keep) on the{' '}
+            <a href="/retention" className="text-primary-400 hover:underline">
+              Retention
+            </a>{' '}
+            page. You can create multiple policies and assign them to targets.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function Settings() {
   const { data: dockerHealth, refetch: refetchDocker } = useQuery({
     queryKey: ['docker-health'],
@@ -310,46 +442,7 @@ export default function Settings() {
       <KomodoSettingsCard />
 
       {/* System Info */}
-      <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="w-10 h-10 bg-green-500/10 rounded-lg flex items-center justify-center">
-            <HardDrive className="w-5 h-5 text-green-400" />
-          </div>
-          <div>
-            <h2 className="text-lg font-semibold text-dark-100">System Information</h2>
-            <p className="text-sm text-dark-400">Fixed configuration (via environment)</p>
-          </div>
-        </div>
-
-        <div className="space-y-3 text-sm">
-          <div className="flex justify-between py-2 border-b border-dark-700">
-            <span className="text-dark-400">Backup Directory</span>
-            <span className="text-dark-200 font-mono">/backups</span>
-          </div>
-          <div className="flex justify-between py-2 border-b border-dark-700">
-            <span className="text-dark-400">Timezone</span>
-            <span className="text-dark-200">Configured via TZ environment variable</span>
-          </div>
-          <div className="flex justify-between py-2">
-            <span className="text-dark-400">Database</span>
-            <span className="text-dark-200 font-mono">/data/backups.db</span>
-          </div>
-        </div>
-
-        <div className="mt-4 p-4 bg-dark-700/50 rounded-lg flex items-start gap-3">
-          <Shield className="w-5 h-5 text-primary-400 flex-shrink-0 mt-0.5" />
-          <div className="text-sm text-dark-300">
-            <p className="font-medium text-dark-200 mb-1">Retention Policies</p>
-            <p>
-              Configure backup retention (how many backups to keep) on the{' '}
-              <a href="/retention" className="text-primary-400 hover:underline">
-                Retention
-              </a>{' '}
-              page. You can create multiple policies and assign them to targets.
-            </p>
-          </div>
-        </div>
-      </div>
+      <SystemInfoCard />
     </div>
   )
 }

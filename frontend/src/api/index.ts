@@ -298,11 +298,26 @@ export interface KomodoTestResult {
   version?: string
 }
 
+export interface SystemInfo {
+  backup_dir: string
+  database_path: string
+  timezone: string
+  disk_total: number
+  disk_used: number
+  disk_free: number
+  db_size: number
+  backup_count: number
+  target_count: number
+  uptime_seconds: number
+  app_version: string
+}
+
 export const settingsApi = {
   getKomodo: () => api.get<KomodoSettings>('/settings/komodo'),
   updateKomodo: (data: { enabled: boolean; api_url?: string; api_key?: string }) =>
     api.put<KomodoSettings>('/settings/komodo', data),
   testKomodo: () => api.post<KomodoTestResult>('/settings/komodo/test'),
+  getSystemInfo: () => api.get<SystemInfo>('/settings/system-info'),
 }
 
 export default api

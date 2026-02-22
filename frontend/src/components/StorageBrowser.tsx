@@ -17,6 +17,7 @@ import {
 import { RemoteStorage, storageApi } from '../api'
 import toast from 'react-hot-toast'
 import { clsx } from 'clsx'
+import ConfirmDialog from './ConfirmDialog'
 
 interface StorageFile {
   name: string
@@ -52,7 +53,7 @@ function getFileIcon(name: string, isDir: boolean) {
 export default function StorageBrowser({ storage, onClose }: StorageBrowserProps) {
   const queryClient = useQueryClient()
   const [currentPath, setCurrentPath] = useState('')
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['storage-files', storage.id, currentPath],
@@ -68,25 +69,25 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
       const fileName = filePath.split('/').pop()
       toast.success(`Deleted ${fileName}`)
       queryClient.invalidateQueries({ queryKey: ['storage-files', storage.id] })
-      setConfirmDelete(null)
+      setDeleteTarget(null)
     },
     onError: () => {
       toast.error('Failed to delete file')
-      setConfirmDelete(null)
+      setDeleteTarget(null)
     },
   })
 
   const handleNavigate = (dirName: string) => {
     const newPath = currentPath ? `${currentPath}/${dirName}` : dirName
     setCurrentPath(newPath)
-    setConfirmDelete(null)
+    setDeleteTarget(null)
   }
 
   const handleBack = () => {
     const parts = currentPath.split('/')
     parts.pop()
     setCurrentPath(parts.join('/'))
-    setConfirmDelete(null)
+    setDeleteTarget(null)
   }
 
   const handleDownload = (fileName: string) => {
@@ -102,11 +103,7 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
 
   const handleDelete = (fileName: string) => {
     const filePath = currentPath ? `${currentPath}/${fileName}` : fileName
-    if (confirmDelete === filePath) {
-      deleteMutation.mutate(filePath)
-    } else {
-      setConfirmDelete(filePath)
-    }
+    setDeleteTarget(filePath)
   }
 
   const files = data?.files || []
@@ -154,7 +151,7 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
         {/* Breadcrumbs / Path Navigation */}
         <div className="flex items-center gap-1 px-4 py-2 border-b border-dark-700 text-sm overflow-x-auto">
           <button
-            onClick={() => { setCurrentPath(''); setConfirmDelete(null) }}
+            onClick={() => { setCurrentPath(''); setDeleteTarget(null) }}
             className={clsx(
               'px-2 py-1 rounded hover:bg-dark-700 transition-colors shrink-0',
               !currentPath ? 'text-primary-400 font-medium' : 'text-dark-400'
@@ -168,7 +165,7 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
               <button
                 onClick={() => {
                   setCurrentPath(breadcrumbs.slice(0, i + 1).join('/'))
-                  setConfirmDelete(null)
+                  setDeleteTarget(null)
                 }}
                 className={clsx(
                   'px-2 py-1 rounded hover:bg-dark-700 transition-colors',
@@ -233,10 +230,6 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
                 )}
                 {sortedFiles.map((file) => {
                   const Icon = getFileIcon(file.name, file.is_dir)
-                  const fullPath = currentPath
-                    ? `${currentPath}/${file.name}`
-                    : file.name
-
                   return (
                     <tr
                       key={file.name}
@@ -289,13 +282,8 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
                           <button
                             onClick={() => handleDelete(file.name)}
                             disabled={deleteMutation.isPending}
-                            className={clsx(
-                              'p-1.5 rounded transition-colors',
-                              confirmDelete === fullPath
-                                ? 'bg-red-500/20 text-red-400'
-                                : 'text-dark-400 hover:text-red-400 hover:bg-dark-600'
-                            )}
-                            title={confirmDelete === fullPath ? 'Click again to confirm' : 'Delete'}
+                            className="p-1.5 rounded transition-colors text-dark-400 hover:text-red-400 hover:bg-dark-600"
+                            title="Delete"
                           >
                             {deleteMutation.isPending ? (
                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -326,6 +314,19 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
           </button>
         </div>
       </div>
+
+      <ConfirmDialog
+        isOpen={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          if (deleteTarget) deleteMutation.mutate(deleteTarget)
+        }}
+        title="Delete File"
+        message={`Delete "${deleteTarget?.split('/').pop()}"? This cannot be undone.`}
+        confirmLabel="Delete"
+        confirmVariant="danger"
+        isLoading={deleteMutation.isPending}
+      />
     </div>
   )
 }

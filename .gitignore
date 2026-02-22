@@ -79,3 +79,4 @@ backups/
 # git
 .github/agents
 .github/prompts
+backend/venv/

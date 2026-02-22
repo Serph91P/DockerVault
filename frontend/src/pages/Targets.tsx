@@ -4,11 +4,13 @@ import { targetsApi, backupsApi, schedulesApi, BackupTarget, ScheduleEntity } fr
 import toast from 'react-hot-toast'
 import { useState } from 'react'
 import BackupWizard from '../components/BackupWizard'
+import ConfirmDialog from '../components/ConfirmDialog'
 
 function TargetCard({ target, schedules, onEdit }: { target: BackupTarget; schedules: ScheduleEntity[]; onEdit: (target: BackupTarget) => void }) {
   const queryClient = useQueryClient()
   const [editingSchedule, setEditingSchedule] = useState(false)
   const [selectedScheduleId, setSelectedScheduleId] = useState<number | undefined>(target.schedule_id)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
   const triggerBackupMutation = useMutation({
     mutationFn: () => backupsApi.create(target.id),
@@ -233,13 +235,27 @@ function TargetCard({ target, schedules, onEdit }: { target: BackupTarget; sched
           <Pencil className="w-4 h-4" />
         </button>
         <button
-          onClick={() => deleteMutation.mutate()}
+          onClick={() => setShowDeleteConfirm(true)}
           disabled={deleteMutation.isPending}
           className="px-3 py-2 bg-red-500/10 text-red-400 rounded-lg hover:bg-red-500/20 transition-colors"
         >
           <Trash2 className="w-4 h-4" />
         </button>
       </div>
+
+      <ConfirmDialog
+        isOpen={showDeleteConfirm}
+        onClose={() => setShowDeleteConfirm(false)}
+        onConfirm={() => {
+          deleteMutation.mutate()
+          setShowDeleteConfirm(false)
+        }}
+        title="Delete Target"
+        message={`Delete target "${target.name}"? This cannot be undone. Existing backups will be kept.`}
+        confirmLabel="Delete"
+        confirmVariant="danger"
+        isLoading={deleteMutation.isPending}
+      />
     </div>
   )
 }

@@ -89,7 +89,9 @@ class BackupTarget(Base):
     exclude_paths = Column(JSON, default=list)  # Exclude these paths/patterns
 
     # Per-volume path rules (overrides global include/exclude for specific volumes)
-    per_volume_rules = Column(JSON, default=dict)  # {volume_name: {include_paths: [], exclude_paths: []}}
+    per_volume_rules = Column(
+        JSON, default=dict
+    )  # {volume_name: {include_paths: [], exclude_paths: []}}
 
     # Pre/Post hooks
     pre_backup_command = Column(Text, nullable=True)

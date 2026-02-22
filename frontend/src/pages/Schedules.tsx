@@ -1,9 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Clock, Plus, Edit2, Trash2, HelpCircle, Calendar, Target } from 'lucide-react'
+import { Clock, Plus, Edit2, Trash2, HelpCircle, Calendar, Target, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { schedulesApi, targetsApi, ScheduleEntity, ScheduleCreate, ScheduleUpdate, BackupTarget } from '../api'
 import { formatDistanceToNow } from 'date-fns'
 import toast from 'react-hot-toast'
 import { useState } from 'react'
+import { clsx } from 'clsx'
 import ConfirmDialog from '../components/ConfirmDialog'
 
 interface ScheduleFormData {
@@ -287,6 +288,7 @@ export default function Schedules() {
   const queryClient = useQueryClient()
   const [showForm, setShowForm] = useState(false)
   const [editingSchedule, setEditingSchedule] = useState<ScheduleEntity | null>(null)
+  const [showCronHelp, setShowCronHelp] = useState(false)
 
   const { data: schedules, isLoading } = useQuery({
     queryKey: ['schedules'],
@@ -352,47 +354,39 @@ export default function Schedules() {
           <h1 className="text-2xl font-bold text-dark-100">Schedules</h1>
           <p className="text-dark-400 mt-1">Reusable backup schedules for targets</p>
         </div>
-        <button
-          onClick={() => {
-            setEditingSchedule(null)
-            setShowForm(true)
-          }}
-          className="flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          New Schedule
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setShowCronHelp(!showCronHelp)}
+            className={clsx(
+              'flex items-center gap-2 px-3 py-2 rounded-lg transition-colors border',
+              showCronHelp
+                ? 'bg-primary-500/10 border-primary-500/50 text-primary-400'
+                : 'bg-dark-800 border-dark-700 text-dark-400 hover:text-dark-300'
+            )}
+            title={showCronHelp ? 'Hide cron help' : 'Show cron help'}
+          >
+            {showCronHelp ? (
+              <PanelRightClose className="w-4 h-4" />
+            ) : (
+              <PanelRightOpen className="w-4 h-4" />
+            )}
+            <HelpCircle className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => {
+              setEditingSchedule(null)
+              setShowForm(true)
+            }}
+            className="flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            New Schedule
+          </button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-6">
-          {/* Form */}
-          {(showForm || editingSchedule) && (
-            <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
-              <h2 className="text-lg font-semibold text-dark-100 mb-4">
-                {editingSchedule ? 'Edit Schedule' : 'New Schedule'}
-              </h2>
-              <ScheduleForm
-                initialData={
-                  editingSchedule
-                    ? {
-                        name: editingSchedule.name,
-                        cron_expression: editingSchedule.cron_expression,
-                        description: editingSchedule.description || '',
-                        enabled: editingSchedule.enabled,
-                      }
-                    : undefined
-                }
-                onSubmit={handleSubmit}
-                onCancel={() => {
-                  setShowForm(false)
-                  setEditingSchedule(null)
-                }}
-                isLoading={createMutation.isPending || updateMutation.isPending}
-              />
-            </div>
-          )}
-
+      <div className={clsx('grid gap-6', showCronHelp ? 'grid-cols-1 lg:grid-cols-3' : 'grid-cols-1')}>
+        <div className={clsx(showCronHelp ? 'lg:col-span-2' : '', 'space-y-6')}>
           {/* Schedule List */}
           {isLoading ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -440,10 +434,42 @@ export default function Schedules() {
           )}
         </div>
 
-        <div>
-          <CronHelp />
-        </div>
+        {showCronHelp && (
+          <div>
+            <CronHelp />
+          </div>
+        )}
       </div>
+
+      {/* Schedule Form Modal */}
+      {(showForm || editingSchedule) && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => { setShowForm(false); setEditingSchedule(null) }} />
+          <div className="relative bg-dark-800 rounded-2xl border border-dark-700 shadow-2xl w-full max-w-lg p-6">
+            <h2 className="text-lg font-semibold text-dark-100 mb-4">
+              {editingSchedule ? 'Edit Schedule' : 'New Schedule'}
+            </h2>
+            <ScheduleForm
+              initialData={
+                editingSchedule
+                  ? {
+                      name: editingSchedule.name,
+                      cron_expression: editingSchedule.cron_expression,
+                      description: editingSchedule.description || '',
+                      enabled: editingSchedule.enabled,
+                    }
+                  : undefined
+              }
+              onSubmit={handleSubmit}
+              onCancel={() => {
+                setShowForm(false)
+                setEditingSchedule(null)
+              }}
+              isLoading={createMutation.isPending || updateMutation.isPending}
+            />
+          </div>
+        </div>
+      )}
     </div>
   )
 }

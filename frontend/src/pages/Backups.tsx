@@ -16,6 +16,7 @@ import {
   FolderOpen,
   Pencil,
   Search,
+  ArrowUpDown,
 } from 'lucide-react'
 import {
   backupsApi,
@@ -368,6 +369,7 @@ export default function Backups() {
   const [editingTarget, setEditingTarget] = useState<BackupTarget | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [typeFilter, setTypeFilter] = useState<string | null>(null)
+  const [sortBy, setSortBy] = useState<'name' | 'type' | 'last-backup' | 'created'>('name')
 
   // Confirm dialog state
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -420,10 +422,10 @@ export default function Backups() {
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
   }
 
-  // Filter targets
+  // Filter and sort targets
   const filteredTargets = useMemo(() => {
     if (!targets) return []
-    return targets.filter((t) => {
+    const filtered = targets.filter((t) => {
       if (searchQuery) {
         const q = searchQuery.toLowerCase()
         const nameMatch = t.name.toLowerCase().includes(q)
@@ -433,7 +435,27 @@ export default function Backups() {
       if (typeFilter && t.target_type !== typeFilter) return false
       return true
     })
-  }, [targets, searchQuery, typeFilter])
+
+    return filtered.sort((a, b) => {
+      switch (sortBy) {
+        case 'name':
+          return a.name.localeCompare(b.name)
+        case 'type':
+          return a.target_type.localeCompare(b.target_type) || a.name.localeCompare(b.name)
+        case 'last-backup': {
+          const aBackups = getBackupsForTarget(a.id)
+          const bBackups = getBackupsForTarget(b.id)
+          const aLast = aBackups[0]?.created_at || ''
+          const bLast = bBackups[0]?.created_at || ''
+          return bLast.localeCompare(aLast) || a.name.localeCompare(b.name)
+        }
+        case 'created':
+          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        default:
+          return 0
+      }
+    })
+  }, [targets, searchQuery, typeFilter, sortBy, allBackups])
 
   // Stats
   const stats = {
@@ -521,20 +543,45 @@ export default function Backups() {
             />
           </div>
           <div className="flex gap-1.5">
-            {(['container', 'volume', 'stack', 'path'] as const).map((type) => (
-              <button
-                key={type}
-                onClick={() => setTypeFilter(typeFilter === type ? null : type)}
-                className={clsx(
-                  'px-3 py-1.5 rounded-lg text-xs capitalize transition-colors border',
-                  typeFilter === type
-                    ? 'bg-primary-500/20 border-primary-500/50 text-primary-300'
-                    : 'bg-dark-800 border-dark-700 text-dark-400 hover:text-dark-300'
-                )}
-              >
-                {type}
-              </button>
-            ))}
+            {(['container', 'volume', 'stack', 'path'] as const).map((type) => {
+              const count = targets?.filter((t) => t.target_type === type).length || 0
+              if (count === 0) return null
+              return (
+                <button
+                  key={type}
+                  onClick={() => setTypeFilter(typeFilter === type ? null : type)}
+                  className={clsx(
+                    'px-3 py-1.5 rounded-lg text-xs capitalize transition-colors border',
+                    typeFilter === type
+                      ? 'bg-primary-500/20 border-primary-500/50 text-primary-300'
+                      : 'bg-dark-800 border-dark-700 text-dark-400 hover:text-dark-300'
+                  )}
+                >
+                  {type}
+                  <span className={clsx(
+                    'ml-1.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium',
+                    typeFilter === type
+                      ? 'bg-primary-500/30 text-primary-200'
+                      : 'bg-dark-700 text-dark-500'
+                  )}>
+                    {count}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <ArrowUpDown className="w-3.5 h-3.5 text-dark-500" />
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+              className="bg-dark-800 border border-dark-700 rounded-lg text-dark-300 text-xs py-1.5 px-2 focus:border-primary-500 focus:ring-1 focus:ring-primary-500 cursor-pointer"
+            >
+              <option value="name">Name</option>
+              <option value="type">Type</option>
+              <option value="last-backup">Last Backup</option>
+              <option value="created">Newest First</option>
+            </select>
           </div>
         </div>
       )}
