@@ -180,25 +180,25 @@ export default function StepTargetSelect({
       case 'container':
         updateData({
           containerName: value,
-          targetName: data.targetName || `Backup: ${value}`,
+          targetName: data.targetName || `${value} Backup`,
         })
         break
       case 'volume':
         updateData({
           volumeName: value,
-          targetName: data.targetName || `Volume: ${value}`,
+          targetName: data.targetName || `${value} Backup`,
         })
         break
       case 'stack':
         updateData({
           stackName: value,
-          targetName: data.targetName || `Stack: ${value}`,
+          targetName: data.targetName || `${value} Stack Backup`,
         })
         break
       case 'path':
         updateData({
           hostPath: value,
-          targetName: data.targetName || `Path: ${value.split('/').pop()}`,
+          targetName: data.targetName || `${value.split('/').pop() || value} Backup`,
         })
         break
     }

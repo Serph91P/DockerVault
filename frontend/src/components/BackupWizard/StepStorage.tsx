@@ -93,20 +93,22 @@ export default function StepStorage({ data, updateData, storages, isLoadingStora
           <div className="animate-spin rounded-full h-8 w-8 border-2 border-primary-500 border-t-transparent" />
         </div>
       ) : enabledStorages.length === 0 ? (
-        <div className="bg-dark-800 rounded-xl border border-dark-700 p-6 text-center">
-          <Cloud className="w-12 h-12 text-dark-500 mx-auto mb-3" />
-          <h4 className="text-dark-300 font-medium mb-2">No Remote Storage Configured</h4>
-          <p className="text-sm text-dark-400 mb-4">
-            You can configure remote storage locations in Settings to enable backup sync.
-          </p>
+        <div className="bg-dark-800 rounded-xl border border-dark-700 p-4 flex items-center gap-4">
+          <Cloud className="w-8 h-8 text-dark-500 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <h4 className="text-dark-300 font-medium text-sm">No Remote Storage Configured</h4>
+            <p className="text-xs text-dark-400 mt-0.5">
+              You can skip this step — backups are always stored locally. Add remote storage for extra redundancy.
+            </p>
+          </div>
           <a
             href="/storage"
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 px-4 py-2 bg-primary-500/20 text-primary-400 rounded-lg hover:bg-primary-500/30 transition-colors text-sm"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-primary-500/20 text-primary-400 rounded-lg hover:bg-primary-500/30 transition-colors text-xs whitespace-nowrap"
           >
-            <Plus className="w-4 h-4" />
-            Configure Storage
+            <Plus className="w-3 h-3" />
+            Configure
             <ExternalLink className="w-3 h-3" />
           </a>
         </div>

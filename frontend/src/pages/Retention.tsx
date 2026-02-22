@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Trash2, Plus, Edit, Target } from 'lucide-react'
+import { Trash2, Plus, Edit, Target, ChevronDown, ChevronRight } from 'lucide-react'
 import { retentionApi, targetsApi, RetentionPolicy, BackupTarget } from '../api'
 import toast from 'react-hot-toast'
 import { useState } from 'react'
@@ -354,6 +354,7 @@ export default function Retention() {
   const [showCreate, setShowCreate] = useState(false)
   const [showCleanupConfirm, setShowCleanupConfirm] = useState(false)
   const [editingPolicy, setEditingPolicy] = useState<RetentionPolicy | null>(null)
+  const [showGfsInfo, setShowGfsInfo] = useState(false)
 
   const { data: policies, isLoading } = useQuery({
     queryKey: ['retention-policies'],
@@ -385,6 +386,7 @@ export default function Retention() {
           <button
             onClick={() => setShowCleanupConfirm(true)}
             disabled={cleanupMutation.isPending}
+            title="Remove orphaned backup files that are no longer referenced by any backup record"
             className="flex items-center gap-2 px-4 py-2 bg-dark-700 text-dark-200 rounded-lg hover:bg-dark-600 transition-colors"
           >
             <Trash2 className="w-4 h-4" />
@@ -400,31 +402,45 @@ export default function Retention() {
         </div>
       </div>
 
-      {/* Info Box */}
-      <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
-        <h2 className="text-lg font-semibold text-dark-100 mb-2">
-          Grandfather-Father-Son (GFS) Strategy
-        </h2>
-        <p className="text-sm text-dark-400">
-          The retention policy uses the GFS strategy for intelligent backup retention:
-        </p>
-        <ul className="mt-2 space-y-1 text-sm text-dark-400">
-          <li>
-            • <span className="text-dark-200">Daily:</span> Keeps the last N daily backups
-          </li>
-          <li>
-            • <span className="text-dark-200">Weekly:</span> Keeps one backup per week for the
-            last N weeks
-          </li>
-          <li>
-            • <span className="text-dark-200">Monthly:</span> Keeps one backup per month for the
-            last N months
-          </li>
-          <li>
-            • <span className="text-dark-200">Yearly:</span> Keeps one backup per year for the
-            last N years
-          </li>
-        </ul>
+      {/* Info Box — collapsible */}
+      <div className="bg-dark-800 rounded-xl border border-dark-700">
+        <button
+          onClick={() => setShowGfsInfo(!showGfsInfo)}
+          className="w-full flex items-center justify-between p-4 text-left hover:bg-dark-750 rounded-xl transition-colors"
+        >
+          <h2 className="text-sm font-semibold text-dark-200">
+            Grandfather-Father-Son (GFS) Strategy
+          </h2>
+          {showGfsInfo ? (
+            <ChevronDown className="w-4 h-4 text-dark-400" />
+          ) : (
+            <ChevronRight className="w-4 h-4 text-dark-400" />
+          )}
+        </button>
+        {showGfsInfo && (
+          <div className="px-4 pb-4">
+            <p className="text-sm text-dark-400">
+              The retention policy uses the GFS strategy for intelligent backup retention:
+            </p>
+            <ul className="mt-2 space-y-1 text-sm text-dark-400">
+              <li>
+                • <span className="text-dark-200">Daily:</span> Keeps the last N daily backups
+              </li>
+              <li>
+                • <span className="text-dark-200">Weekly:</span> Keeps one backup per week for the
+                last N weeks
+              </li>
+              <li>
+                • <span className="text-dark-200">Monthly:</span> Keeps one backup per month for the
+                last N months
+              </li>
+              <li>
+                • <span className="text-dark-200">Yearly:</span> Keeps one backup per year for the
+                last N years
+              </li>
+            </ul>
+          </div>
+        )}
       </div>
 
       {/* Create Form */}

@@ -159,9 +159,12 @@ ${setupData.recovery_instructions}
             <h3 className="text-lg font-semibold text-dark-100 mb-2">
               Encryption Not Configured
             </h3>
-            <p className="text-dark-400 mb-6 max-w-md mx-auto">
+            <p className="text-dark-400 mb-4 max-w-md mx-auto">
               Your backups are currently stored unencrypted. Set up encryption to protect
               your data with industry-standard AES-256 encryption.
+            </p>
+            <p className="text-xs text-amber-400/80 mb-6 max-w-sm mx-auto">
+              ⚠ After setup, download and safely store your private key — without it, encrypted backups cannot be restored.
             </p>
             <button
               onClick={() => setupMutation.mutate()}
