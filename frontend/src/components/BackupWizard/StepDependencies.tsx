@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
-import { AlertCircle, Link2, Power, Search, X, Layers, ChevronDown, ChevronRight } from 'lucide-react'
+import { AlertCircle, Link2, Power, Search, X, Layers, ChevronDown, ChevronRight, ArrowUp, ArrowDown, GripVertical } from 'lucide-react'
 import { WizardData } from './index'
 import { Container, Stack } from '../../api'
 
@@ -358,18 +358,60 @@ export default function StepDependencies({ data, updateData, containers, stacks 
         )}
       </div>
 
-      {/* Selected dependencies summary */}
+      {/* Selected dependencies summary with reorder */}
       {data.dependencies.length > 0 && (
         <div className="bg-dark-800 rounded-xl border border-dark-700 p-4">
-          <h4 className="text-sm font-medium text-dark-300 mb-2">
-            Backup order ({data.dependencies.length} dependencies):
+          <h4 className="text-sm font-medium text-dark-300 mb-3">
+            Stop/Start order ({data.dependencies.length} dependencies):
           </h4>
-          <div className="text-sm text-dark-400">
+          <div className="space-y-1.5 mb-3">
+            {data.dependencies.map((dep, index) => (
+              <div
+                key={dep}
+                className="flex items-center gap-2 px-3 py-2 bg-dark-750 rounded-lg border border-dark-700"
+              >
+                <GripVertical className="w-3.5 h-3.5 text-dark-500 flex-shrink-0" />
+                <span className="text-xs text-dark-500 w-5 text-center font-mono">{index + 1}</span>
+                <span className="text-sm text-dark-100 flex-1 truncate">{dep}</span>
+                <div className="flex gap-1 flex-shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (index === 0) return
+                      const newDeps = [...data.dependencies]
+                      ;[newDeps[index - 1], newDeps[index]] = [newDeps[index], newDeps[index - 1]]
+                      updateData({ dependencies: newDeps })
+                    }}
+                    disabled={index === 0}
+                    className="p-1 rounded hover:bg-dark-600 text-dark-400 hover:text-dark-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    title="Move up"
+                  >
+                    <ArrowUp className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (index === data.dependencies.length - 1) return
+                      const newDeps = [...data.dependencies]
+                      ;[newDeps[index], newDeps[index + 1]] = [newDeps[index + 1], newDeps[index]]
+                      updateData({ dependencies: newDeps })
+                    }}
+                    disabled={index === data.dependencies.length - 1}
+                    className="p-1 rounded hover:bg-dark-600 text-dark-400 hover:text-dark-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    title="Move down"
+                  >
+                    <ArrowDown className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="text-xs text-dark-500 space-y-1 border-t border-dark-700 pt-2">
             <p>
               <span className="text-orange-400">Stop:</span>{' '}
               {data.dependencies.join(' \u2192 ')}
             </p>
-            <p className="mt-1">
+            <p>
               <span className="text-green-400">Start:</span>{' '}
               {[...data.dependencies].reverse().join(' \u2192 ')}
             </p>
