@@ -63,7 +63,21 @@ export default function Storage() {
   const [showForm, setShowForm] = useState(false);
   const [editingStorage, setEditingStorage] = useState<RemoteStorage | null>(null);
   const [testingId, setTestingId] = useState<number | null>(null);
-  const [testResult, setTestResult] = useState<{ id: number; success: boolean; message: string } | null>(null);
+
+  // ST3: Persistent test results via localStorage
+  const [testResults, setTestResults] = useState<Record<number, { success: boolean; message: string; testedAt: string }>>(() => {
+    try {
+      const stored = localStorage.getItem('storage-test-results');
+      return stored ? JSON.parse(stored) : {};
+    } catch { return {}; }
+  });
+  const saveTestResult = (id: number, result: { success: boolean; message: string }) => {
+    setTestResults((prev) => {
+      const next = { ...prev, [id]: { ...result, testedAt: new Date().toISOString() } };
+      localStorage.setItem('storage-test-results', JSON.stringify(next));
+      return next;
+    });
+  };
   const [browsingStorage, setBrowsingStorage] = useState<RemoteStorage | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{ id: number; name: string } | null>(null);
   const [formStep, setFormStep] = useState(1); // ST1: 1=Name+Type, 2=Details, 3=Review
@@ -125,7 +139,7 @@ export default function Storage() {
       return { id, ...res.data };
     },
     onSuccess: (data) => {
-      setTestResult(data);
+      saveTestResult(data.id, { success: data.success ?? true, message: data.message || 'Connection successful' });
       setTestingId(null);
     },
     onError: (error: Error, id) => {
@@ -134,7 +148,7 @@ export default function Storage() {
         const data = error.response?.data as { message?: string; detail?: string } | undefined;
         message = data?.message || data?.detail || error.message;
       }
-      setTestResult({ id, success: false, message });
+      saveTestResult(id, { success: false, message });
       setTestingId(null);
     },
   });
@@ -652,19 +666,19 @@ export default function Storage() {
                   </div>
                   <div className="flex flex-col items-end gap-1">
                     <div className="flex items-center gap-2">
-                      {testResult?.id === storage.id && (
+                      {testResults[storage.id] && (
                         <span
                           className={`flex items-center gap-1 text-sm ${
-                            testResult.success ? 'text-green-600' : 'text-red-600'
+                            testResults[storage.id].success ? 'text-green-600' : 'text-red-600'
                           }`}
-                          title={testResult.message}
+                          title={`${testResults[storage.id].message} — ${new Date(testResults[storage.id].testedAt).toLocaleString()}`}
                         >
-                          {testResult.success ? (
+                          {testResults[storage.id].success ? (
                             <CheckCircle className="w-4 h-4" />
                           ) : (
                             <XCircle className="w-4 h-4" />
                           )}
-                          {testResult.success ? 'Connected' : 'Error'}
+                          {testResults[storage.id].success ? 'Connected' : 'Error'}
                         </span>
                       )}
                       <button
@@ -701,13 +715,13 @@ export default function Storage() {
                         <Trash2 className="w-5 h-5" />
                       </button>
                     </div>
-                    {testResult?.id === storage.id && testResult.message && (
+                    {testResults[storage.id]?.message && (
                       <p
                         className={`max-w-xs text-right text-xs ${
-                          testResult.success ? 'text-green-600' : 'text-red-600'
+                          testResults[storage.id].success ? 'text-green-600' : 'text-red-600'
                         }`}
                       >
-                        {testResult.message}
+                        {testResults[storage.id].message}
                       </p>
                     )}
                   </div>

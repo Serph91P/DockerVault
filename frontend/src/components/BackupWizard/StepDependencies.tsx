@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { AlertCircle, Link2, Power, Search, X, Layers, ChevronDown, ChevronRight } from 'lucide-react'
 import { WizardData } from './index'
 import { Container, Stack } from '../../api'
@@ -88,6 +88,16 @@ export default function StepDependencies({ data, updateData, containers, stacks 
     }
   }
 
+  // D2: Auto-run detection for stacks when no dependencies are selected yet
+  const hasAutoDetected = useRef(false)
+  useEffect(() => {
+    if (hasAutoDetected.current || data.dependencies.length > 0) return
+    if (isStack && stackContainerInfo.length > 0) {
+      autoDetectDependencies()
+      hasAutoDetected.current = true
+    }
+  }, [isStack, stackContainerInfo.length])
+
   return (
     <div className="space-y-6">
       <div>
@@ -124,16 +134,17 @@ export default function StepDependencies({ data, updateData, containers, stacks 
           <div className="flex items-start gap-3">
             <Link2 className="w-5 h-5 text-blue-400 mt-0.5" />
             <div className="flex-1">
-              <h4 className="text-blue-400 font-medium">Stack Dependencies Detected</h4>
+              <h4 className="text-blue-400 font-medium">Stack Dependencies {data.dependencies.length > 0 ? 'Applied' : 'Detected'}</h4>
               <p className="text-sm text-dark-300 mt-1">
-                We found {stackContainerInfo.length} containers in this stack. Dependencies can be
-                auto-detected from docker-compose configuration.
+                {data.dependencies.length > 0
+                  ? `${data.dependencies.length} dependencies detected from docker-compose configuration. You can adjust the selection below.`
+                  : `We found ${stackContainerInfo.length} containers in this stack. Dependencies can be auto-detected from docker-compose configuration.`}
               </p>
               <button
                 onClick={autoDetectDependencies}
                 className="mt-3 px-4 py-2 bg-blue-500/20 text-blue-400 rounded-lg hover:bg-blue-500/30 transition-colors text-sm"
               >
-                Auto-detect Dependencies
+                Re-detect Dependencies
               </button>
             </div>
           </div>

@@ -537,7 +537,7 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={handleClose} />
 
       {/* Modal */}
-      <div className="relative bg-dark-800 rounded-2xl border border-dark-700 w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+      <div className="relative bg-dark-800 rounded-2xl border border-dark-700 w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-dark-700">
           <div>
@@ -568,20 +568,20 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
                       onClick={() => canClick && setCurrentStep(step.id)}
                       disabled={!canClick && step.id !== currentStep}
                       title={skipped ? `${step.name} (skipped)` : step.name}
-                      className={`flex items-center justify-center w-8 h-8 rounded-full text-sm font-medium transition-colors ${
+                      className={`flex items-center justify-center rounded-full font-medium transition-colors ${
                         skipped
-                          ? 'bg-dark-700/50 text-dark-500 cursor-default'
+                          ? 'w-5 h-5 text-[10px] bg-dark-700/50 text-dark-500 cursor-default'
                           : step.id === currentStep
-                          ? 'bg-primary-500 text-white'
+                          ? 'w-8 h-8 text-sm bg-primary-500 text-white'
                           : isVisited
-                          ? 'bg-green-500 text-white cursor-pointer'
-                          : 'bg-dark-700 text-dark-400'
+                          ? 'w-8 h-8 text-sm bg-green-500 text-white cursor-pointer'
+                          : 'w-8 h-8 text-sm bg-dark-700 text-dark-400'
                       }`}
                     >
-                      {skipped ? '-' : isVisited && step.id !== currentStep ? <Check className="w-4 h-4" /> : step.id}
+                      {skipped ? '·' : isVisited && step.id !== currentStep ? <Check className="w-4 h-4" /> : step.id}
                     </button>
                     <span className={`text-[10px] mt-1 ${
-                      skipped ? 'text-dark-600' : step.id === currentStep ? 'text-primary-400' : 'text-dark-500'
+                      skipped ? 'text-dark-600 text-[9px]' : step.id === currentStep ? 'text-primary-400' : 'text-dark-500'
                     }`}>
                       {step.name.length > 6 ? step.name.slice(0, 5) + '.' : step.name}
                     </span>
