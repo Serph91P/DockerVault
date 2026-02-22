@@ -768,7 +768,9 @@ class BackupEngine:
                 volume_key = archive_name.lstrip("/")
                 # For stacks: archive_name is "volumes/vol_name", key might be just "vol_name"
                 volume_basename = os.path.basename(volume_key)
-                vol_rules = per_volume_rules.get(volume_key) or per_volume_rules.get(volume_basename)
+                vol_rules = per_volume_rules.get(volume_key) or per_volume_rules.get(
+                    volume_basename
+                )
 
                 if vol_rules:
                     # Use per-volume rules
@@ -780,11 +782,15 @@ class BackupEngine:
                     vol_exclude = exclude_paths
 
                 if vol_include or vol_exclude:
+
                     def make_filter(inc, exc):
-                        def filter_func(tarinfo: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
+                        def filter_func(
+                            tarinfo: tarfile.TarInfo,
+                        ) -> Optional[tarfile.TarInfo]:
                             if not self._should_include_path(tarinfo.name, inc, exc):
                                 return None
                             return tarinfo
+
                         return filter_func
 
                     tar.add(

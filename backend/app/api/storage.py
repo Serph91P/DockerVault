@@ -360,9 +360,7 @@ def _validate_remote_path(path: str) -> str:
 
 
 @router.get("/{storage_id}/files/download")
-async def download_file(
-    storage_id: int, path: str, db: AsyncSession = Depends(get_db)
-):
+async def download_file(storage_id: int, path: str, db: AsyncSession = Depends(get_db)):
     """Download a file from remote storage"""
     storage = await db.get(RemoteStorageModel, storage_id)
     if not storage:
@@ -406,9 +404,7 @@ async def download_file(
 
 
 @router.delete("/{storage_id}/files")
-async def delete_file(
-    storage_id: int, path: str, db: AsyncSession = Depends(get_db)
-):
+async def delete_file(storage_id: int, path: str, db: AsyncSession = Depends(get_db)):
     """Delete a file from remote storage"""
     storage = await db.get(RemoteStorageModel, storage_id)
     if not storage:

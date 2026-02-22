@@ -3,18 +3,25 @@ Application settings API endpoints.
 """
 
 import logging
+import os
+import shutil
+import time
+from pathlib import Path
 from typing import Optional
 
 import httpx
 from fastapi import APIRouter
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from app.database import AppSettings, async_session
+from app.config import Settings
+from app.database import AppSettings, Backup, BackupTarget, async_session
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_start_time = time.time()
 
 
 class KomodoSettingsRequest(BaseModel):
@@ -170,3 +177,70 @@ async def test_komodo_connection():
     except Exception as e:
         logger.error(f"Komodo connection test failed: {e}")
         return KomodoTestResponse(success=False, message=str(e))
+
+
+class SystemInfoResponse(BaseModel):
+    """System information response."""
+
+    backup_dir: str
+    database_path: str
+    timezone: str
+    disk_total: int
+    disk_used: int
+    disk_free: int
+    db_size: int
+    backup_count: int
+    target_count: int
+    uptime_seconds: int
+    app_version: str
+
+
+@router.get("/system-info", response_model=SystemInfoResponse)
+async def get_system_info():
+    """Get system information and statistics."""
+    settings = Settings()
+
+    # Disk usage for backup directory
+    backup_dir = settings.BACKUP_BASE_PATH
+    try:
+        disk = shutil.disk_usage(backup_dir)
+        disk_total = disk.total
+        disk_used = disk.used
+        disk_free = disk.free
+    except OSError:
+        disk_total = disk_used = disk_free = 0
+
+    # Database file size
+    db_path = settings.DATABASE_URL.replace("sqlite+aiosqlite:///", "")
+    try:
+        db_size = Path(db_path).stat().st_size
+    except OSError:
+        db_size = 0
+
+    # Counts from database
+    async with async_session() as session:
+        backup_count_result = await session.execute(select(func.count(Backup.id)))
+        backup_count = backup_count_result.scalar() or 0
+
+        target_count_result = await session.execute(select(func.count(BackupTarget.id)))
+        target_count = target_count_result.scalar() or 0
+
+    # Uptime
+    uptime = int(time.time() - _start_time)
+
+    # Timezone
+    tz = os.environ.get("TZ", settings.TZ)
+
+    return SystemInfoResponse(
+        backup_dir=backup_dir,
+        database_path=db_path,
+        timezone=tz,
+        disk_total=disk_total,
+        disk_used=disk_used,
+        disk_free=disk_free,
+        db_size=db_size,
+        backup_count=backup_count,
+        target_count=target_count,
+        uptime_seconds=uptime,
+        app_version="1.0.0",
+    )

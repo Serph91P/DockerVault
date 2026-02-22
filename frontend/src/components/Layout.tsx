@@ -46,7 +46,7 @@ export default function Layout() {
               <Archive className="w-5 h-5 text-white" />
             </div>
             <span className="text-lg font-semibold text-dark-100">
-              Backup Manager
+              DockerVault
             </span>
           </div>
         </div>

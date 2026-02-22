@@ -373,19 +373,19 @@ Verbesserter Wizard-Flow:
 16. **[W5]** ✅ Wizard: Edit-Modus alle Steps als visited
 17. **[S4]** ✅ Schedule: Presets direkt sichtbar statt hinter Toggle
 
-### Phase 3: Konsistenz & Polish (2-3 Tage)
+### Phase 3: Konsistenz & Polish (2-3 Tage) ✅
 
 Pattern-Vereinheitlichung:
 
-18. **[G1]** ConfirmDialog überall einsetzen
-19. **[G2]** Edit-Pattern vereinheitlichen (Modal-basiert)
-20. **[G5]** Branding: "DockerVault" statt "Backup Manager"
-21. **[D3]** Dependencies: "Select all" Logik für Stacks
-22. **[B2]** Backups-Seite: Sortierung
-23. **[B5]** Filter-Buttons mit Count-Badges
-24. **[R1]** Retention: Visuelle Vorschau
-25. **[SE1]** Settings: Dynamische System-Infos
-26. **[SC2]** Schedules: Cron-Help als Popover
+18. **[G1]** ✅ ConfirmDialog überall einsetzen
+19. **[G2]** ✅ Edit-Pattern vereinheitlichen (Modal-basiert)
+20. **[G5]** ✅ Branding: "DockerVault" statt "Backup Manager"
+21. **[D3]** ✅ Dependencies: "Select all" Logik für Stacks
+22. **[B2]** ✅ Backups-Seite: Sortierung
+23. **[B5]** ✅ Filter-Buttons mit Count-Badges
+24. **[R1]** ✅ Retention: Visuelle Vorschau
+25. **[SE1]** ✅ Settings: Dynamische System-Infos
+26. **[SC2]** ✅ Schedules: Cron-Help als Popover
 
 ### Phase 4: Nice-to-Have (ongoing)
 
@@ -492,7 +492,7 @@ function useSmartDefault<T extends { id: number }>(
 | V4 | Wizard/Volumes | Volume-Größe anzeigen | Niedrig | Offen |
 | D1 | Wizard/Deps | Stack vs. External Container | Hoch | ✅ Done |
 | D2 | Wizard/Deps | Auto-detect bei Stacks automatisch | Mittel | Offen |
-| D3 | Wizard/Deps | "Select all" Logik für Stacks | Mittel | Offen |
+| D3 | Wizard/Deps | "Select all" Logik für Stacks | Mittel | ✅ Done |
 | D4 | Wizard/Deps | Drag & Drop Reihenfolge | Niedrig | Offen |
 | S1 | Wizard/Schedule | Nutzungs-Sortierung | Mittel | Offen |
 | S2 | Wizard/Schedule | Human-readable Cron | Hoch | ✅ Done |
@@ -501,7 +501,7 @@ function useSmartDefault<T extends { id: number }>(
 | RS1 | Wizard/Storage | Link öffnet neuen Tab | Hoch | ✅ Done |
 | RS2 | Wizard/Storage | Kompakterer Empty-State | Niedrig | Offen |
 | RS3 | Wizard/Storage | Multiselect Hinweis | Niedrig | Offen |
-| R1 | Wizard/Retention | Visuelle Vorschau | Mittel | Offen |
+| R1 | Wizard/Retention | Visuelle Vorschau | Mittel | ✅ Done |
 | R2 | Wizard/Retention | Preset füllt Namen | Niedrig | Offen |
 | R3 | Wizard/Retention | Konkretere "None" Warnung | Niedrig | Offen |
 | O1 | Wizard/Options | Compression hauptsächlich | Niedrig | Offen |
@@ -519,32 +519,32 @@ function useSmartDefault<T extends { id: number }>(
 | DA4 | Dashboard | Alert-Banner | Hoch | ✅ Done |
 | DA5 | Dashboard | Disk-Usage | Mittel | Offen |
 | B1 | Backups | Last-Backup sichtbar | Hoch | ✅ Done |
-| B2 | Backups | Sortierung | Mittel | Offen |
+| B2 | Backups | Sortierung | Mittel | ✅ Done |
 | B3 | Backups | Run-Now Feedback | Mittel | Offen |
 | B4 | Backups | Klickbare Stats | Niedrig | Offen |
-| B5 | Backups | Filter mit Count | Niedrig | Offen |
+| B5 | Backups | Filter mit Count | Niedrig | ✅ Done |
 | SC1 | Schedules | Targets anzeigen | Hoch | ✅ Done |
-| SC2 | Schedules | Cron-Help Popover | Mittel | Offen |
-| SC3 | Schedules | Form als Modal | Niedrig | Offen |
+| SC2 | Schedules | Cron-Help Popover | Mittel | ✅ Done |
+| SC3 | Schedules | Form als Modal | Niedrig | ✅ Done |
 | SC4 | Schedules | Inactive dimmen | Niedrig | Offen |
 | RE1 | Retention | ConfirmDialog | Hoch | ✅ Done |
 | RE2 | Retention | "Used by X" Badge | Hoch | ✅ Done |
 | RE3 | Retention | GFS-Box collapsible | Niedrig | Offen |
-| RE4 | Retention | Modal-basiertes Editing | Mittel | Offen |
+| RE4 | Retention | Modal-basiertes Editing | Mittel | ✅ Done |
 | RE5 | Retention | Cleanup Tooltip | Niedrig | Offen |
 | RE6 | Retention | keep_last Feld | Hoch | ✅ Done |
 | ST1 | Storage | Form in Steps | Mittel | Offen |
 | ST2 | Storage | Größere Type-Cards | Niedrig | Offen |
 | ST3 | Storage | Persistent Test-Result | Mittel | Offen |
 | ST4 | Storage | Browse als Drawer | Niedrig | Offen |
-| SE1 | Settings | Dynamische Infos | Mittel | Offen |
+| SE1 | Settings | Dynamische Infos | Mittel | ✅ Done |
 | SE2 | Settings | Encryption Erklärung | Mittel | Offen |
 | SE3 | Settings | Form Race-Condition | Niedrig | Offen |
-| G1 | Global | ConfirmDialog überall | Mittel | Offen |
-| G2 | Global | Edit-Pattern einheitlich | Mittel | Offen |
+| G1 | Global | ConfirmDialog überall | Mittel | ✅ Done |
+| G2 | Global | Edit-Pattern einheitlich | Mittel | ✅ Done |
 | G3 | Global | Empty-State Komponente | Niedrig | Offen |
 | G4 | Global | Loading-State einheitlich | Niedrig | Offen |
-| G5 | Global | Branding "DockerVault" | Niedrig | Offen |
+| G5 | Global | Branding "DockerVault" | Niedrig | ✅ Done |
 | GF1 | Global | Notification-Center | Mittel | Offen |
 | GF2 | Global | Keyboard-Shortcuts | Niedrig | Offen |
 | GF3 | Global | Theme-Toggle | Niedrig | Offen |
