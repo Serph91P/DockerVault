@@ -29,6 +29,7 @@ function KomodoSettingsCard() {
 
   // Reset form data when entering edit mode
   const handleStartEdit = () => {
+    if (isLoading) return
     setFormData(initialFormData)
     setIsEditing(true)
   }
@@ -229,7 +230,8 @@ function KomodoSettingsCard() {
           <div className="flex gap-2 pt-2">
             <button
               onClick={handleStartEdit}
-              className="px-4 py-2 bg-dark-700 text-dark-200 rounded-lg hover:bg-dark-600 transition-colors text-sm"
+              disabled={isLoading}
+              className="px-4 py-2 bg-dark-700 text-dark-200 rounded-lg hover:bg-dark-600 transition-colors text-sm disabled:opacity-50"
             >
               Edit Settings
             </button>

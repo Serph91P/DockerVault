@@ -415,6 +415,17 @@ Pattern-Vereinheitlichung:
 47. **[RS3]** ✅ Storage Wizard: Multiselect Hinweis (already present)
 48. **[B3]** ✅ Backups: Run-Now Spinner-Feedback
 
+### Phase 6: Final Polish & Stacks
+
+49. **[W1]** ✅ Wizard: Modal vergrößert (max-w-5xl)
+50. **[W4]** ✅ Wizard: Skipped Steps kleiner dargestellt
+51. **[O1]** ✅ Options: Compression bereits prominent (kein Toggle)
+52. **[B4]** ✅ Backups: Klickbare Stats-Karten als Filter
+53. **[SE3]** ✅ Settings: Komodo Form Race-Condition behoben
+54. **[T4]** ✅ Target-Select: Stack-Details expandierbar (Container + Volumes)
+55. **[D2]** ✅ Dependencies: Auto-detect bei Stacks automatisch
+56. **[ST3]** ✅ Storage: Persistent Test-Result via localStorage
+
 ---
 
 ## 7. Design-Tokens & Patterns
@@ -503,13 +514,13 @@ function useSmartDefault<T extends { id: number }>(
 | T1 | Wizard/Target | Preselection beim Starten | Hoch | ✅ Done |
 | T2 | Wizard/Target | Intelligentere Namen | Niedrig | ✅ Done |
 | T3 | Wizard/Target | "Already configured" Badge | Niedrig | ✅ Done |
-| T4 | Wizard/Target | Stack-Details expandierbar | Niedrig | Offen |
+| T4 | Wizard/Target | Stack-Details expandierbar | Niedrig | ✅ Done |
 | V1 | Wizard/Volumes | Per-Volume prominent bei Stacks | Hoch | ✅ Done |
 | V2 | Wizard/Volumes | Klareres "All vs. Specific" | Mittel | Offen |
 | V3 | Wizard/Volumes | Volume-Labels/Container anzeigen | Mittel | Offen |
 | V4 | Wizard/Volumes | Volume-Größe anzeigen | Niedrig | Offen |
 | D1 | Wizard/Deps | Stack vs. External Container | Hoch | ✅ Done |
-| D2 | Wizard/Deps | Auto-detect bei Stacks automatisch | Mittel | Offen |
+| D2 | Wizard/Deps | Auto-detect bei Stacks automatisch | Mittel | ✅ Done |
 | D3 | Wizard/Deps | "Select all" Logik für Stacks | Mittel | ✅ Done |
 | D4 | Wizard/Deps | Drag & Drop Reihenfolge | Niedrig | Offen |
 | S1 | Wizard/Schedule | Nutzungs-Sortierung | Mittel | ✅ Done |
@@ -522,14 +533,14 @@ function useSmartDefault<T extends { id: number }>(
 | R1 | Wizard/Retention | Visuelle Vorschau | Mittel | ✅ Done |
 | R2 | Wizard/Retention | Preset füllt Namen | Niedrig | ✅ Done |
 | R3 | Wizard/Retention | Konkretere "None" Warnung | Niedrig | ✅ Done |
-| O1 | Wizard/Options | Compression hauptsächlich | Niedrig | Offen |
+| O1 | Wizard/Options | Compression hauptsächlich | Niedrig | ✅ Done |
 | O2 | Wizard/Options | Compression-Erklärung | Niedrig | ✅ Done |
 | SU1 | Wizard/Summary | Edit-Buttons pro Section | Mittel | ✅ Done |
 | SU2 | Wizard/Summary | Volume-Config Section | Mittel | ✅ Done |
-| W1 | Wizard/Global | Larger modal Option | Niedrig | Offen |
+| W1 | Wizard/Global | Larger modal Option | Niedrig | ✅ Done |
 | W2 | Wizard/Global | LocalStorage Draft | Mittel | ✅ Done |
 | W3 | Wizard/Global | Step-Labels | Mittel | ✅ Done |
-| W4 | Wizard/Global | Skipped Steps kleiner | Niedrig | Offen |
+| W4 | Wizard/Global | Skipped Steps kleiner | Niedrig | ✅ Done |
 | W5 | Wizard/Global | Edit-Modus visited Steps | Mittel | ✅ Done |
 | DA1 | Dashboard | Actionable Insights | Hoch | ✅ Done |
 | DA2 | Dashboard | Quick-Actions | Mittel | ✅ Done |
@@ -539,7 +550,7 @@ function useSmartDefault<T extends { id: number }>(
 | B1 | Backups | Last-Backup sichtbar | Hoch | ✅ Done |
 | B2 | Backups | Sortierung | Mittel | ✅ Done |
 | B3 | Backups | Run-Now Feedback | Mittel | ✅ Done |
-| B4 | Backups | Klickbare Stats | Niedrig | Offen |
+| B4 | Backups | Klickbare Stats | Niedrig | ✅ Done |
 | B5 | Backups | Filter mit Count | Niedrig | ✅ Done |
 | SC1 | Schedules | Targets anzeigen | Hoch | ✅ Done |
 | SC2 | Schedules | Cron-Help Popover | Mittel | ✅ Done |
@@ -553,11 +564,11 @@ function useSmartDefault<T extends { id: number }>(
 | RE6 | Retention | keep_last Feld | Hoch | ✅ Done |
 | ST1 | Storage | Form in Steps | Mittel | ✅ Done |
 | ST2 | Storage | Größere Type-Cards | Niedrig | ✅ Done |
-| ST3 | Storage | Persistent Test-Result | Mittel | Offen |
+| ST3 | Storage | Persistent Test-Result | Mittel | ✅ Done |
 | ST4 | Storage | Browse als Drawer | Niedrig | Offen |
 | SE1 | Settings | Dynamische Infos | Mittel | ✅ Done |
 | SE2 | Settings | Encryption Erklärung | Mittel | ✅ Done |
-| SE3 | Settings | Form Race-Condition | Niedrig | Offen |
+| SE3 | Settings | Form Race-Condition | Niedrig | ✅ Done |
 | G1 | Global | ConfirmDialog überall | Mittel | ✅ Done |
 | G2 | Global | Edit-Pattern einheitlich | Mittel | ✅ Done |
 | G3 | Global | Empty-State Komponente | Niedrig | Offen |

@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { Container, Database, FolderOpen, Layers, Search, X, CheckCircle } from 'lucide-react'
+import { Container, Database, FolderOpen, Layers, Search, X, CheckCircle, ChevronDown, ChevronRight } from 'lucide-react'
 import { WizardData } from './index'
 import { Container as ContainerType, Volume, Stack, BackupTarget } from '../../api'
 
@@ -141,6 +141,58 @@ function SearchableList({ items, selectedId, onSelect, placeholder, emptyMessage
         {filtered.length} of {items.length} items
         {selectedId && <> &middot; 1 selected</>}
       </p>
+    </div>
+  )
+}
+
+function StackDetails({ stackName, stacks }: { stackName: string; stacks: Stack[] }) {
+  const [expanded, setExpanded] = useState(false)
+  const stack = stacks.find((s) => s.name === stackName)
+  if (!stack) return null
+
+  return (
+    <div className="mt-2">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-1.5 text-xs text-dark-400 hover:text-dark-300 transition-colors"
+      >
+        {expanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+        Stack details
+      </button>
+      {expanded && (
+        <div className="mt-2 bg-dark-800 rounded-lg border border-dark-700 p-3 space-y-3">
+          <div>
+            <p className="text-xs font-medium text-dark-300 mb-1">Containers ({stack.containers.length})</p>
+            <div className="flex flex-wrap gap-1.5">
+              {stack.containers.map((c) => (
+                <span
+                  key={c.name}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 bg-dark-700 rounded text-xs text-dark-300"
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${c.status === 'running' ? 'bg-green-400' : 'bg-dark-500'}`} />
+                  {c.name}
+                </span>
+              ))}
+            </div>
+          </div>
+          {stack.volumes.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-dark-300 mb-1">Volumes ({stack.volumes.length})</p>
+              <div className="flex flex-wrap gap-1.5">
+                {stack.volumes.map((v) => (
+                  <span
+                    key={v}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 bg-dark-700 rounded text-xs text-dark-300"
+                  >
+                    <Database className="w-3 h-3 text-dark-500" />
+                    {v}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -304,6 +356,7 @@ export default function StepTargetSelect({
                 emptyMessage="No stacks found"
                 icon={Layers}
               />
+              <StackDetails stackName={data.stackName} stacks={stacks} />
             </div>
           )}
 

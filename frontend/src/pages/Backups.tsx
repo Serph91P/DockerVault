@@ -374,6 +374,7 @@ export default function Backups() {
   const [searchQuery, setSearchQuery] = useState('')
   const [typeFilter, setTypeFilter] = useState<string | null>(null)
   const [sortBy, setSortBy] = useState<'name' | 'type' | 'last-backup' | 'created'>('name')
+  const [statsFilter, setStatsFilter] = useState<'active' | 'completed' | 'failed' | null>(null)
 
   // Confirm dialog state
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -437,6 +438,15 @@ export default function Backups() {
         if (!nameMatch && !targetMatch) return false
       }
       if (typeFilter && t.target_type !== typeFilter) return false
+      if (statsFilter === 'active' && !t.enabled) return false
+      if (statsFilter === 'completed') {
+        const backups = getBackupsForTarget(t.id)
+        if (!backups.some((b) => b.status === 'completed')) return false
+      }
+      if (statsFilter === 'failed') {
+        const backups = getBackupsForTarget(t.id)
+        if (!backups.some((b) => b.status === 'failed')) return false
+      }
       return true
     })
 
@@ -459,7 +469,7 @@ export default function Backups() {
           return 0
       }
     })
-  }, [targets, searchQuery, typeFilter, sortBy, allBackups])
+  }, [targets, searchQuery, typeFilter, statsFilter, sortBy, allBackups])
 
   // Stats
   const stats = {
@@ -515,22 +525,37 @@ export default function Backups() {
 
       {/* Stats */}
       <div className="grid grid-cols-4 gap-4">
-        <div className="bg-dark-800 rounded-xl border border-dark-700 p-4">
+        <button
+          onClick={() => setStatsFilter(statsFilter === 'active' ? null : 'active')}
+          className={`bg-dark-800 rounded-xl border p-4 text-left transition-colors ${
+            statsFilter === 'active' ? 'border-primary-500 bg-primary-500/5' : 'border-dark-700 hover:border-dark-600'
+          }`}
+        >
           <p className="text-2xl font-bold text-primary-500">{stats.activeTargets}</p>
           <p className="text-sm text-dark-400">Active Backups</p>
-        </div>
+        </button>
         <div className="bg-dark-800 rounded-xl border border-dark-700 p-4">
           <p className="text-2xl font-bold text-dark-200">{stats.totalBackups}</p>
           <p className="text-sm text-dark-400">Total Backups</p>
         </div>
-        <div className="bg-dark-800 rounded-xl border border-dark-700 p-4">
+        <button
+          onClick={() => setStatsFilter(statsFilter === 'completed' ? null : 'completed')}
+          className={`bg-dark-800 rounded-xl border p-4 text-left transition-colors ${
+            statsFilter === 'completed' ? 'border-green-500 bg-green-500/5' : 'border-dark-700 hover:border-dark-600'
+          }`}
+        >
           <p className="text-2xl font-bold text-green-500">{stats.completedBackups}</p>
           <p className="text-sm text-dark-400">Completed</p>
-        </div>
-        <div className="bg-dark-800 rounded-xl border border-dark-700 p-4">
+        </button>
+        <button
+          onClick={() => setStatsFilter(statsFilter === 'failed' ? null : 'failed')}
+          className={`bg-dark-800 rounded-xl border p-4 text-left transition-colors ${
+            statsFilter === 'failed' ? 'border-red-500 bg-red-500/5' : 'border-dark-700 hover:border-dark-600'
+          }`}
+        >
           <p className="text-2xl font-bold text-red-500">{stats.failedBackups}</p>
           <p className="text-sm text-dark-400">Failed</p>
-        </div>
+        </button>
       </div>
 
       {/* Search & Filter Bar */}
