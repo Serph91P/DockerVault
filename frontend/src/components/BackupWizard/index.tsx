@@ -222,15 +222,15 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
         break
       case 'volume':
         updates.volumeName = preselectedTarget ?? ''
-        updates.targetName = `Volume: ${preselectedTarget}`
+        updates.targetName = `${preselectedTarget} Backup`
         break
       case 'stack':
         updates.stackName = preselectedTarget ?? ''
-        updates.targetName = `Stack: ${preselectedTarget}`
+        updates.targetName = `${preselectedTarget} Stack Backup`
         break
       case 'path':
         updates.hostPath = preselectedTarget ?? ''
-        updates.targetName = `Path: ${preselectedTarget}`
+        updates.targetName = `${preselectedTarget?.split('/').pop() || preselectedTarget} Backup`
         break
     }
     setData((prev) => ({ ...prev, ...updates }))

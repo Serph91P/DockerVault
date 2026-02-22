@@ -171,10 +171,10 @@ export default function StepSchedule({ data, updateData, schedules, isLoadingSch
       <div className="space-y-3">
         <label className="block text-sm font-medium text-dark-300">Select Schedule</label>
 
-        {/* Existing Schedules */}
+        {/* Existing Schedules - S1: sorted by usage (most targets first) */}
         {schedules.length > 0 && (
           <div className="rounded-xl border border-dark-700 divide-y divide-dark-700 overflow-hidden">
-            {schedules.map((schedule) => {
+            {[...schedules].sort((a, b) => b.target_count - a.target_count).map((schedule) => {
               const isSelected = !createNew && data.scheduleId === schedule.id
               return (
                 <button
@@ -196,6 +196,11 @@ export default function StepSchedule({ data, updateData, schedules, isLoadingSch
                       {schedule.description && ` — ${schedule.description}`}
                     </span>
                   </div>
+                  {schedule.target_count > 0 && (
+                    <span className="flex-shrink-0 px-1.5 py-0.5 rounded text-xs bg-dark-700 text-dark-400">
+                      {schedule.target_count} target{schedule.target_count !== 1 ? 's' : ''}
+                    </span>
+                  )}
                   {isSelected && (
                     <span className="flex-shrink-0 w-2 h-2 rounded-full bg-primary-400" />
                   )}
@@ -223,20 +228,22 @@ export default function StepSchedule({ data, updateData, schedules, isLoadingSch
             <Plus className="w-4 h-4" />
             <span className="text-sm font-medium">Create new schedule</span>
           </button>
-
-          <button
-            type="button"
-            onClick={() => handleScheduleSelect('none')}
-            className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 transition-all ${
-              !createNew && !data.scheduleId
-                ? 'border-yellow-500/50 bg-yellow-500/10 text-yellow-400'
-                : 'border-dark-700 text-dark-500 hover:border-dark-600 hover:text-dark-400'
-            }`}
-          >
-            <Ban className="w-4 h-4" />
-            <span className="text-sm font-medium">None</span>
-          </button>
         </div>
+
+        {/* S3: None option - less prominent, at the bottom */}
+        <button
+          type="button"
+          onClick={() => handleScheduleSelect('none')}
+          className={`w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs transition-all ${
+            !createNew && !data.scheduleId
+              ? 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/30'
+              : 'text-dark-500 hover:text-dark-400 hover:bg-dark-800'
+          }`}
+          title="Only for manual backups — no automatic scheduling"
+        >
+          <Ban className="w-3 h-3" />
+          <span>No schedule (manual only)</span>
+        </button>
       </div>
 
       {/* Create New Schedule Form */}

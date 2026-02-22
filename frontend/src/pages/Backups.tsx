@@ -333,8 +333,12 @@ function TargetBackupCard({
               disabled={triggerMutation.isPending || !target.enabled}
               className="flex items-center gap-1.5 px-4 py-1.5 bg-primary-500 hover:bg-primary-600 text-white rounded-lg text-sm transition-colors disabled:opacity-50"
             >
-              <Play className="w-4 h-4" />
-              Run Now
+              {triggerMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Play className="w-4 h-4" />
+              )}
+              {triggerMutation.isPending ? 'Starting...' : 'Run Now'}
             </button>
           </div>
 

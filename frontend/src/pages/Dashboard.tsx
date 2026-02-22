@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Archive, Container, HardDrive, Clock, AlertCircle, CheckCircle, AlertTriangle, ShieldCheck } from 'lucide-react'
+import { Archive, Container, HardDrive, Clock, AlertCircle, CheckCircle, AlertTriangle, ShieldCheck, Plus } from 'lucide-react'
 import { dockerApi, backupsApi, targetsApi, schedulesApi, settingsApi } from '../api'
 import { formatDistanceToNow } from 'date-fns'
 import { Link } from 'react-router-dom'
@@ -93,9 +93,19 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-dark-100">Dashboard</h1>
-        <p className="text-dark-400 mt-1">Overview of your Docker backups</p>
+      {/* DA2: Quick Actions */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-dark-100">Dashboard</h1>
+          <p className="text-dark-400 mt-1">Overview of your Docker backups</p>
+        </div>
+        <Link
+          to="/backups"
+          className="flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors text-sm"
+        >
+          <Plus className="w-4 h-4" />
+          New Backup
+        </Link>
       </div>
 
       {/* DA4: Alert Banner */}
@@ -198,8 +208,9 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Recent Backups */}
         <div className="bg-dark-800 rounded-xl border border-dark-700">
-          <div className="px-6 py-4 border-b border-dark-700">
+          <div className="px-6 py-4 border-b border-dark-700 flex items-center justify-between">
             <h2 className="text-lg font-semibold text-dark-100">Recent Backups</h2>
+            <Link to="/backups" className="text-xs text-primary-400 hover:text-primary-300">View All</Link>
           </div>
           <div className="divide-y divide-dark-700">
             {backups?.slice(0, 5).map((backup) => (
@@ -241,8 +252,9 @@ export default function Dashboard() {
 
         {/* Next Scheduled Backups */}
         <div className="bg-dark-800 rounded-xl border border-dark-700">
-          <div className="px-6 py-4 border-b border-dark-700">
+          <div className="px-6 py-4 border-b border-dark-700 flex items-center justify-between">
             <h2 className="text-lg font-semibold text-dark-100">Upcoming Scheduled Backups</h2>
+            <Link to="/schedules" className="text-xs text-primary-400 hover:text-primary-300">View All</Link>
           </div>
           <div className="divide-y divide-dark-700">
             {schedules

@@ -129,6 +129,7 @@ export default function StepRetention({ data, updateData, policies, isLoadingPol
       keepDaily: preset.keepDaily,
       keepWeekly: preset.keepWeekly,
       keepMonthly: preset.keepMonthly,
+      ...(data.newRetentionPolicy?.name ? {} : { name: preset.name }),
     })
   }
 
@@ -203,20 +204,22 @@ export default function StepRetention({ data, updateData, policies, isLoadingPol
             <Plus className="w-4 h-4" />
             <span className="text-sm font-medium">Create new policy</span>
           </button>
-
-          <button
-            type="button"
-            onClick={() => handlePolicySelect('none')}
-            className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 transition-all ${
-              !createNew && !data.retentionPolicyId
-                ? 'border-yellow-500/50 bg-yellow-500/10 text-yellow-400'
-                : 'border-dark-700 text-dark-500 hover:border-dark-600 hover:text-dark-400'
-            }`}
-          >
-            <Ban className="w-4 h-4" />
-            <span className="text-sm font-medium">None</span>
-          </button>
         </div>
+
+        {/* R3: None option - less prominent */}
+        <button
+          type="button"
+          onClick={() => handlePolicySelect('none')}
+          className={`w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs transition-all ${
+            !createNew && !data.retentionPolicyId
+              ? 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/30'
+              : 'text-dark-500 hover:text-dark-400 hover:bg-dark-800'
+          }`}
+          title="Not recommended — disk usage will grow without limits"
+        >
+          <Ban className="w-3 h-3" />
+          <span>No retention policy</span>
+        </button>
 
         {/* R1: Preview for selected existing policy */}
         {!createNew && data.retentionPolicyId && (() => {
@@ -346,7 +349,18 @@ export default function StepRetention({ data, updateData, policies, isLoadingPol
               <h4 className="text-yellow-400 font-medium">No Retention Policy</h4>
               <p className="text-sm text-dark-300 mt-1">
                 Without a retention policy, all backups will be kept indefinitely.
-                This may consume significant disk space over time.
+                Disk space usage will grow continuously. We recommend at least a
+                <button
+                  type="button"
+                  onClick={() => {
+                    handlePolicySelect('new')
+                    setTimeout(() => applyPreset(RETENTION_PRESETS[0]), 0)
+                  }}
+                  className="mx-1 text-yellow-400 underline hover:text-yellow-300"
+                >
+                  “Keep Last 7”
+                </button>
+                policy.
               </p>
             </div>
           </div>

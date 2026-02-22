@@ -9,9 +9,9 @@ interface Props {
 
 // Compression options
 const COMPRESSION_OPTIONS = [
-  { value: 'none', label: 'None', description: 'No compression, fastest but largest files' },
-  { value: 'gzip', label: 'Gzip', description: 'Good balance of speed and compression' },
-  { value: 'zstd', label: 'Zstandard', description: 'Best compression ratio, slightly slower' },
+  { value: 'none', label: 'None', description: 'No compression — fastest, but largest backup files' },
+  { value: 'gzip', label: 'Gzip', description: 'Good balance — ~60% smaller, widely compatible' },
+  { value: 'zstd', label: 'Zstandard', description: 'Best ratio — ~70% smaller, slightly slower' },
 ]
 
 export default function StepOptions({ data, updateData }: Props) {

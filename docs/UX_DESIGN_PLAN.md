@@ -397,6 +397,24 @@ Pattern-Vereinheitlichung:
 32. **[D4]** ⏭️ Dependencies: Drag & Drop Reihenfolge (externe Library nötig)
 33. **[ST1]** ✅ Storage: Formular in Steps aufteilen
 
+### Phase 5: UX Polish (Niedrig/Mittel Batch)
+
+34. **[T2]** ✅ Target-Select: Intelligentere Backup-Namen
+35. **[S1]** ✅ Schedule: Nutzungs-Sortierung (meistgenutzte zuerst)
+36. **[S3]** ✅ Schedule: "None" weniger prominent
+37. **[R2]** ✅ Retention: Preset füllt Policy-Namen
+38. **[R3]** ✅ Retention: Konkretere "None" Warnung mit Empfehlung
+39. **[O2]** ✅ Options: Compression-Erklärung mit Größenangaben
+40. **[DA2]** ✅ Dashboard: Quick-Action "New Backup" Button
+41. **[DA3]** ✅ Dashboard: "View All" Links bei Sections
+42. **[SC4]** ✅ Schedules: Inactive dimmen + Sortierung
+43. **[RE3]** ✅ Retention: GFS-Box collapsible
+44. **[RE5]** ✅ Retention: Cleanup Tooltip
+45. **[SE2]** ✅ Settings: Encryption Erklärung + Key-Warnung
+46. **[RS2]** ✅ Storage Wizard: Kompakterer Empty-State
+47. **[RS3]** ✅ Storage Wizard: Multiselect Hinweis (already present)
+48. **[B3]** ✅ Backups: Run-Now Spinner-Feedback
+
 ---
 
 ## 7. Design-Tokens & Patterns
@@ -483,7 +501,7 @@ function useSmartDefault<T extends { id: number }>(
 | ID | Bereich | Titel | Priorität | Status |
 |----|---------|-------|-----------|--------|
 | T1 | Wizard/Target | Preselection beim Starten | Hoch | ✅ Done |
-| T2 | Wizard/Target | Intelligentere Namen | Niedrig | Offen |
+| T2 | Wizard/Target | Intelligentere Namen | Niedrig | ✅ Done |
 | T3 | Wizard/Target | "Already configured" Badge | Niedrig | ✅ Done |
 | T4 | Wizard/Target | Stack-Details expandierbar | Niedrig | Offen |
 | V1 | Wizard/Volumes | Per-Volume prominent bei Stacks | Hoch | ✅ Done |
@@ -494,18 +512,18 @@ function useSmartDefault<T extends { id: number }>(
 | D2 | Wizard/Deps | Auto-detect bei Stacks automatisch | Mittel | Offen |
 | D3 | Wizard/Deps | "Select all" Logik für Stacks | Mittel | ✅ Done |
 | D4 | Wizard/Deps | Drag & Drop Reihenfolge | Niedrig | Offen |
-| S1 | Wizard/Schedule | Nutzungs-Sortierung | Mittel | Offen |
+| S1 | Wizard/Schedule | Nutzungs-Sortierung | Mittel | ✅ Done |
 | S2 | Wizard/Schedule | Human-readable Cron | Hoch | ✅ Done |
-| S3 | Wizard/Schedule | "None" weniger prominent | Niedrig | Offen |
+| S3 | Wizard/Schedule | "None" weniger prominent | Niedrig | ✅ Done |
 | S4 | Wizard/Schedule | Presets direkt sichtbar | Mittel | ✅ Done |
 | RS1 | Wizard/Storage | Link öffnet neuen Tab | Hoch | ✅ Done |
-| RS2 | Wizard/Storage | Kompakterer Empty-State | Niedrig | Offen |
-| RS3 | Wizard/Storage | Multiselect Hinweis | Niedrig | Offen |
+| RS2 | Wizard/Storage | Kompakterer Empty-State | Niedrig | ✅ Done |
+| RS3 | Wizard/Storage | Multiselect Hinweis | Niedrig | ✅ Done |
 | R1 | Wizard/Retention | Visuelle Vorschau | Mittel | ✅ Done |
-| R2 | Wizard/Retention | Preset füllt Namen | Niedrig | Offen |
-| R3 | Wizard/Retention | Konkretere "None" Warnung | Niedrig | Offen |
+| R2 | Wizard/Retention | Preset füllt Namen | Niedrig | ✅ Done |
+| R3 | Wizard/Retention | Konkretere "None" Warnung | Niedrig | ✅ Done |
 | O1 | Wizard/Options | Compression hauptsächlich | Niedrig | Offen |
-| O2 | Wizard/Options | Compression-Erklärung | Niedrig | Offen |
+| O2 | Wizard/Options | Compression-Erklärung | Niedrig | ✅ Done |
 | SU1 | Wizard/Summary | Edit-Buttons pro Section | Mittel | ✅ Done |
 | SU2 | Wizard/Summary | Volume-Config Section | Mittel | ✅ Done |
 | W1 | Wizard/Global | Larger modal Option | Niedrig | Offen |
@@ -514,31 +532,31 @@ function useSmartDefault<T extends { id: number }>(
 | W4 | Wizard/Global | Skipped Steps kleiner | Niedrig | Offen |
 | W5 | Wizard/Global | Edit-Modus visited Steps | Mittel | ✅ Done |
 | DA1 | Dashboard | Actionable Insights | Hoch | ✅ Done |
-| DA2 | Dashboard | Quick-Actions | Mittel | Offen |
-| DA3 | Dashboard | "View All" Link | Niedrig | Offen |
+| DA2 | Dashboard | Quick-Actions | Mittel | ✅ Done |
+| DA3 | Dashboard | "View All" Link | Niedrig | ✅ Done |
 | DA4 | Dashboard | Alert-Banner | Hoch | ✅ Done |
 | DA5 | Dashboard | Disk-Usage | Mittel | ✅ Done |
 | B1 | Backups | Last-Backup sichtbar | Hoch | ✅ Done |
 | B2 | Backups | Sortierung | Mittel | ✅ Done |
-| B3 | Backups | Run-Now Feedback | Mittel | Offen |
+| B3 | Backups | Run-Now Feedback | Mittel | ✅ Done |
 | B4 | Backups | Klickbare Stats | Niedrig | Offen |
 | B5 | Backups | Filter mit Count | Niedrig | ✅ Done |
 | SC1 | Schedules | Targets anzeigen | Hoch | ✅ Done |
 | SC2 | Schedules | Cron-Help Popover | Mittel | ✅ Done |
 | SC3 | Schedules | Form als Modal | Niedrig | ✅ Done |
-| SC4 | Schedules | Inactive dimmen | Niedrig | Offen |
+| SC4 | Schedules | Inactive dimmen | Niedrig | ✅ Done |
 | RE1 | Retention | ConfirmDialog | Hoch | ✅ Done |
 | RE2 | Retention | "Used by X" Badge | Hoch | ✅ Done |
-| RE3 | Retention | GFS-Box collapsible | Niedrig | Offen |
+| RE3 | Retention | GFS-Box collapsible | Niedrig | ✅ Done |
 | RE4 | Retention | Modal-basiertes Editing | Mittel | ✅ Done |
-| RE5 | Retention | Cleanup Tooltip | Niedrig | Offen |
+| RE5 | Retention | Cleanup Tooltip | Niedrig | ✅ Done |
 | RE6 | Retention | keep_last Feld | Hoch | ✅ Done |
 | ST1 | Storage | Form in Steps | Mittel | ✅ Done |
 | ST2 | Storage | Größere Type-Cards | Niedrig | ✅ Done |
 | ST3 | Storage | Persistent Test-Result | Mittel | Offen |
 | ST4 | Storage | Browse als Drawer | Niedrig | Offen |
 | SE1 | Settings | Dynamische Infos | Mittel | ✅ Done |
-| SE2 | Settings | Encryption Erklärung | Mittel | Offen |
+| SE2 | Settings | Encryption Erklärung | Mittel | ✅ Done |
 | SE3 | Settings | Form Race-Condition | Niedrig | Offen |
 | G1 | Global | ConfirmDialog überall | Mittel | ✅ Done |
 | G2 | Global | Edit-Pattern einheitlich | Mittel | ✅ Done |

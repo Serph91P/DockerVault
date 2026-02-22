@@ -136,7 +136,7 @@ function ScheduleCard({
   })
 
   return (
-    <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
+    <div className={`bg-dark-800 rounded-xl border border-dark-700 p-6 ${!schedule.enabled ? 'opacity-60' : ''}`}>
       <div className="flex items-start justify-between mb-4">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-orange-500/10 rounded-lg flex items-center justify-center">
@@ -402,7 +402,11 @@ export default function Schedules() {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {schedules?.map((schedule) => (
+              {[...(schedules ?? [])].sort((a, b) => {
+                // SC4: Active first, then inactive
+                if (a.enabled !== b.enabled) return a.enabled ? -1 : 1
+                return a.name.localeCompare(b.name)
+              }).map((schedule) => (
                 <ScheduleCard
                   key={schedule.id}
                   schedule={schedule}
