@@ -6,6 +6,8 @@ import toast from 'react-hot-toast'
 import { useState } from 'react'
 import { clsx } from 'clsx'
 import ConfirmDialog from '../components/ConfirmDialog'
+import EmptyState from '../components/EmptyState'
+import LoadingSkeleton from '../components/LoadingSkeleton'
 
 interface ScheduleFormData {
   name: string
@@ -389,17 +391,7 @@ export default function Schedules() {
         <div className={clsx(showCronHelp ? 'lg:col-span-2' : '', 'space-y-6')}>
           {/* Schedule List */}
           {isLoading ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {[...Array(4)].map((_, i) => (
-                <div
-                  key={i}
-                  className="bg-dark-800 rounded-xl border border-dark-700 p-6 animate-pulse"
-                >
-                  <div className="h-6 bg-dark-700 rounded w-1/2 mb-2" />
-                  <div className="h-4 bg-dark-700 rounded w-3/4" />
-                </div>
-              ))}
-            </div>
+            <LoadingSkeleton count={4} layout="grid-2" />
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {[...(schedules ?? [])].sort((a, b) => {
@@ -421,20 +413,12 @@ export default function Schedules() {
           )}
 
           {!isLoading && schedules?.length === 0 && !showForm && (
-            <div className="bg-dark-800 rounded-xl border border-dark-700 p-12 text-center">
-              <Clock className="w-12 h-12 text-dark-500 mx-auto mb-4" />
-              <p className="text-dark-400">No schedules configured</p>
-              <p className="text-sm text-dark-500 mt-2">
-                Create a schedule and assign it to backup targets
-              </p>
-              <button
-                onClick={() => setShowForm(true)}
-                className="inline-flex items-center gap-2 mt-4 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors"
-              >
-                <Plus className="w-4 h-4" />
-                Create Schedule
-              </button>
-            </div>
+            <EmptyState
+              icon={Clock}
+              title="No schedules configured"
+              description="Create a schedule and assign it to backup targets"
+              action={{ label: 'Create Schedule', onClick: () => setShowForm(true), icon: Plus }}
+            />
           )}
         </div>
 

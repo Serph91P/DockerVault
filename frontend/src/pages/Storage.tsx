@@ -607,8 +607,16 @@ export default function Storage() {
         </div>
 
         {isLoading ? (
-          <div className="p-8 text-center">
-            <Loader2 className="w-8 h-8 animate-spin text-indigo-600 mx-auto" />
+          <div className="p-6 space-y-3">
+            {[...Array(2)].map((_, i) => (
+              <div key={i} className="flex items-center gap-4 animate-pulse">
+                <div className="w-12 h-12 bg-slate-200 dark:bg-slate-700 rounded-lg" />
+                <div className="flex-1">
+                  <div className="h-5 bg-slate-200 dark:bg-slate-700 rounded w-1/3 mb-2" />
+                  <div className="h-4 bg-slate-200 dark:bg-slate-700 rounded w-1/2" />
+                </div>
+              </div>
+            ))}
           </div>
         ) : storages && storages.length > 0 ? (
           <div className="divide-y divide-slate-200 dark:divide-slate-700">

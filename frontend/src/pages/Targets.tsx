@@ -5,6 +5,8 @@ import toast from 'react-hot-toast'
 import { useState } from 'react'
 import BackupWizard from '../components/BackupWizard'
 import ConfirmDialog from '../components/ConfirmDialog'
+import EmptyState from '../components/EmptyState'
+import LoadingSkeleton from '../components/LoadingSkeleton'
 
 function TargetCard({ target, schedules, onEdit }: { target: BackupTarget; schedules: ScheduleEntity[]; onEdit: (target: BackupTarget) => void }) {
   const queryClient = useQueryClient()
@@ -301,14 +303,7 @@ export default function Targets() {
       </div>
 
       {isLoading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {[...Array(3)].map((_, i) => (
-            <div key={i} className="bg-dark-800 rounded-xl border border-dark-700 p-6 animate-pulse">
-              <div className="h-6 bg-dark-700 rounded w-1/2 mb-2" />
-              <div className="h-4 bg-dark-700 rounded w-3/4" />
-            </div>
-          ))}
-        </div>
+        <LoadingSkeleton count={3} layout="grid-3" />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {targets?.map((target) => (
@@ -318,20 +313,12 @@ export default function Targets() {
       )}
 
       {!isLoading && targets?.length === 0 && (
-        <div className="bg-dark-800 rounded-xl border border-dark-700 p-12 text-center">
-          <Target className="w-12 h-12 text-dark-500 mx-auto mb-4" />
-          <p className="text-dark-400">No backup targets configured</p>
-          <p className="text-sm text-dark-500 mt-2">
-            Click "New Target" to create your first backup target
-          </p>
-          <button
-            onClick={() => { setEditingTarget(null); setWizardOpen(true) }}
-            className="mt-4 flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors mx-auto"
-          >
-            <Plus className="w-4 h-4" />
-            Create Backup Target
-          </button>
-        </div>
+        <EmptyState
+          icon={Target}
+          title="No backup targets configured"
+          description='Click "New Target" to create your first backup target'
+          action={{ label: 'Create Backup Target', onClick: () => { setEditingTarget(null); setWizardOpen(true) }, icon: Plus }}
+        />
       )}
 
       {/* Backup Wizard Modal */}

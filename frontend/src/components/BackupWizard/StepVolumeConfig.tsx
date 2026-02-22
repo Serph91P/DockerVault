@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { Plus, Trash2, Database, Filter, FolderOpen, ChevronDown, ChevronRight, Settings2 } from 'lucide-react'
 import { WizardData } from './index'
 import { Container as ContainerType, Stack } from '../../api'
@@ -85,11 +85,13 @@ function PathEditor({
 // Per-volume rule accordion
 function VolumeRuleAccordion({
   volumeName,
+  usedBy,
   rules,
   onUpdate,
   onClear,
 }: {
   volumeName: string
+  usedBy?: string[]
   rules: { includePaths: string[]; excludePaths: string[] } | undefined
   onUpdate: (rules: { includePaths: string[]; excludePaths: string[] }) => void
   onClear: () => void
@@ -104,14 +106,19 @@ function VolumeRuleAccordion({
         onClick={() => setExpanded(!expanded)}
         className="w-full flex items-center justify-between p-3 text-left"
       >
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 min-w-0">
           {expanded ? (
-            <ChevronDown className="w-4 h-4 text-dark-400" />
+            <ChevronDown className="w-4 h-4 text-dark-400 flex-shrink-0" />
           ) : (
-            <ChevronRight className="w-4 h-4 text-dark-400" />
+            <ChevronRight className="w-4 h-4 text-dark-400 flex-shrink-0" />
           )}
-          <Database className="w-3.5 h-3.5 text-dark-400" />
+          <Database className="w-3.5 h-3.5 text-dark-400 flex-shrink-0" />
           <span className="text-sm text-dark-200 truncate">{volumeName}</span>
+          {usedBy && usedBy.length > 0 && (
+            <span className="text-[11px] text-dark-500 truncate flex-shrink-0">
+              → {usedBy.join(', ')}
+            </span>
+          )}
         </div>
         {hasRules ? (
           <span className="px-2 py-0.5 bg-purple-500/20 text-purple-400 rounded text-xs">
@@ -199,6 +206,29 @@ export default function StepVolumeConfig({
 
   const showPerVolumeRules = showVolumeSelection && activeVolumes.length > 1
 
+  // V3: Map volumes to their container names
+  const volumeContainerMap = useMemo(() => {
+    const map: Record<string, string[]> = {}
+    const relevantContainers =
+      data.targetType === 'stack' && data.stackName
+        ? stacks.find((s) => s.name === data.stackName)?.containers ?? []
+        : data.targetType === 'container' && data.containerName
+          ? containers.filter((c) => c.name === data.containerName)
+          : []
+    for (const container of relevantContainers) {
+      for (const mount of container.mounts) {
+        if (mount.type === 'volume' && mount.name) {
+          if (!map[mount.name]) map[mount.name] = []
+          const shortName = container.name.replace(/^\//, '')
+          if (!map[mount.name].includes(shortName)) {
+            map[mount.name].push(shortName)
+          }
+        }
+      }
+    }
+    return map
+  }, [data.targetType, data.stackName, data.containerName, stacks, containers])
+
   const handleVolumeToggle = (volumeName: string) => {
     const isSelected = data.selectedVolumes.includes(volumeName)
     if (isSelected) {
@@ -214,10 +244,6 @@ export default function StepVolumeConfig({
 
   const handleSelectAll = () => {
     updateData({ selectedVolumes: [] }) // Empty = all volumes
-  }
-
-  const handleSelectNone = () => {
-    updateData({ selectedVolumes: availableVolumes })
   }
 
   const updateVolumeRule = (volumeName: string, rules: { includePaths: string[]; excludePaths: string[] }) => {
@@ -244,56 +270,97 @@ export default function StepVolumeConfig({
       {/* Volume Selection (only for container/stack) */}
       {showVolumeSelection && availableVolumes.length > 0 && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h4 className="font-medium text-dark-200 flex items-center gap-2">
-              <Database className="w-4 h-4" />
-              Select Volumes
-            </h4>
-            <div className="flex gap-2">
-              <button
-                onClick={handleSelectAll}
-                className="text-xs px-2 py-1 bg-dark-700 hover:bg-dark-600 text-dark-300 rounded"
-              >
-                All
-              </button>
-              <button
-                onClick={handleSelectNone}
-                className="text-xs px-2 py-1 bg-dark-700 hover:bg-dark-600 text-dark-300 rounded"
-              >
-                None
-              </button>
+          <h4 className="font-medium text-dark-200 flex items-center gap-2">
+            <Database className="w-4 h-4" />
+            Volume Selection
+          </h4>
+
+          {/* V2: Radio-style selection mode */}
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              onClick={handleSelectAll}
+              className={`flex items-center gap-3 p-3 rounded-lg border transition-colors text-left ${
+                data.selectedVolumes.length === 0
+                  ? 'border-primary-500 bg-primary-500/10 text-primary-400'
+                  : 'border-dark-700 bg-dark-800 text-dark-400 hover:border-dark-600'
+              }`}
+            >
+              <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
+                data.selectedVolumes.length === 0 ? 'border-primary-500' : 'border-dark-600'
+              }`}>
+                {data.selectedVolumes.length === 0 && (
+                  <div className="w-2 h-2 rounded-full bg-primary-500" />
+                )}
+              </div>
+              <div>
+                <span className="text-sm font-medium">Backup all volumes</span>
+                <p className="text-xs text-dark-500">{availableVolumes.length} volume{availableVolumes.length !== 1 ? 's' : ''}</p>
+              </div>
+            </button>
+            <button
+              onClick={() => {
+                if (data.selectedVolumes.length === 0) {
+                  // Switch to specific mode – pre-select all
+                  updateData({ selectedVolumes: [...availableVolumes] })
+                }
+              }}
+              className={`flex items-center gap-3 p-3 rounded-lg border transition-colors text-left ${
+                data.selectedVolumes.length > 0
+                  ? 'border-primary-500 bg-primary-500/10 text-primary-400'
+                  : 'border-dark-700 bg-dark-800 text-dark-400 hover:border-dark-600'
+              }`}
+            >
+              <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
+                data.selectedVolumes.length > 0 ? 'border-primary-500' : 'border-dark-600'
+              }`}>
+                {data.selectedVolumes.length > 0 && (
+                  <div className="w-2 h-2 rounded-full bg-primary-500" />
+                )}
+              </div>
+              <div>
+                <span className="text-sm font-medium">Select specific volumes</span>
+                <p className="text-xs text-dark-500">Choose which to backup</p>
+              </div>
+            </button>
+          </div>
+
+          {/* Volume checkboxes – only when "specific" mode */}
+          {data.selectedVolumes.length > 0 && (
+            <div className="grid grid-cols-2 gap-2">
+              {availableVolumes.map((volume) => {
+                const isSelected = data.selectedVolumes.includes(volume)
+                const usedBy = volumeContainerMap[volume]
+                return (
+                  <button
+                    key={volume}
+                    onClick={() => handleVolumeToggle(volume)}
+                    className={`flex items-center gap-2 p-3 rounded-lg border transition-colors text-left ${
+                      isSelected
+                        ? 'border-primary-500 bg-primary-500/10 text-primary-400'
+                        : 'border-dark-700 bg-dark-800 text-dark-400 hover:border-dark-600'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => {}}
+                      className="w-4 h-4 rounded border-dark-600 bg-dark-700 text-primary-500 flex-shrink-0"
+                    />
+                    <div className="min-w-0">
+                      <span className="text-sm truncate block">{volume}</span>
+                      {usedBy && usedBy.length > 0 && (
+                        <span className="text-[11px] text-dark-500 truncate block">
+                          → {usedBy.join(', ')}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                )
+              })}
             </div>
-          </div>
+          )}
 
-          <div className="grid grid-cols-2 gap-2">
-            {availableVolumes.map((volume) => {
-              // If no volumes selected = all, otherwise check if this volume is selected
-              const isSelected = data.selectedVolumes.length === 0 || data.selectedVolumes.includes(volume)
-              return (
-                <button
-                  key={volume}
-                  onClick={() => handleVolumeToggle(volume)}
-                  className={`flex items-center gap-2 p-3 rounded-lg border transition-colors text-left ${
-                    isSelected
-                      ? 'border-primary-500 bg-primary-500/10 text-primary-400'
-                      : 'border-dark-700 bg-dark-800 text-dark-400 hover:border-dark-600'
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={isSelected}
-                    onChange={() => {}}
-                    className="w-4 h-4 rounded border-dark-600 bg-dark-700 text-primary-500"
-                  />
-                  <span className="text-sm truncate">{volume}</span>
-                </button>
-              )
-            })}
-          </div>
-
-          {data.selectedVolumes.length === 0 ? (
-            <p className="text-xs text-green-400">All volumes will be backed up</p>
-          ) : (
+          {data.selectedVolumes.length > 0 && (
             <p className="text-xs text-dark-400">
               {data.selectedVolumes.length} of {availableVolumes.length} volumes selected
             </p>
@@ -331,6 +398,7 @@ export default function StepVolumeConfig({
               <VolumeRuleAccordion
                 key={volume}
                 volumeName={volume}
+                usedBy={volumeContainerMap[volume]}
                 rules={data.perVolumeRules[volume]}
                 onUpdate={(rules) => updateVolumeRule(volume, rules)}
                 onClear={() => clearVolumeRule(volume)}
@@ -437,6 +505,7 @@ export default function StepVolumeConfig({
               <VolumeRuleAccordion
                 key={volume}
                 volumeName={volume}
+                usedBy={volumeContainerMap[volume]}
                 rules={data.perVolumeRules[volume]}
                 onUpdate={(rules) => updateVolumeRule(volume, rules)}
                 onClear={() => clearVolumeRule(volume)}

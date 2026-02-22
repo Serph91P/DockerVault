@@ -11,9 +11,11 @@ import {
   WifiOff,
   LogOut,
   User,
+  Keyboard,
 } from 'lucide-react'
 import { useWebSocketStore } from '../store/websocket'
 import { useAuthStore } from '../store/auth'
+import { useKeyboardShortcuts } from './KeyboardShortcuts'
 import toast from 'react-hot-toast'
 
 const navigation = [
@@ -29,6 +31,7 @@ export default function Layout() {
   const location = useLocation()
   const connected = useWebSocketStore((state) => state.connected)
   const { user, logout } = useAuthStore()
+  const { showHelp, setShowHelp, ShortcutHelp } = useKeyboardShortcuts()
   
   const handleLogout = async () => {
     await logout()
@@ -106,6 +109,16 @@ export default function Layout() {
               </>
             )}
           </div>
+
+          {/* Keyboard Shortcuts Hint */}
+          <button
+            onClick={() => setShowHelp(true)}
+            className="flex items-center gap-2 text-xs text-dark-500 hover:text-dark-300 transition-colors"
+            title="Keyboard Shortcuts"
+          >
+            <Keyboard className="w-3.5 h-3.5" />
+            <span>Press <kbd className="px-1 py-0.5 bg-dark-700 border border-dark-600 rounded text-[10px] font-mono">?</kbd> for shortcuts</span>
+          </button>
         </div>
       </div>
 
@@ -115,6 +128,9 @@ export default function Layout() {
           <Outlet />
         </main>
       </div>
+
+      {/* Keyboard Shortcut Help Dialog */}
+      <ShortcutHelp isOpen={showHelp} onClose={() => setShowHelp(false)} />
     </div>
   )
 }

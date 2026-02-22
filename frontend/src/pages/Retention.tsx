@@ -4,6 +4,7 @@ import { retentionApi, targetsApi, RetentionPolicy, BackupTarget } from '../api'
 import toast from 'react-hot-toast'
 import { useState } from 'react'
 import ConfirmDialog from '../components/ConfirmDialog'
+import LoadingSkeleton from '../components/LoadingSkeleton'
 
 function PolicyCard({ policy, targets, onEdit }: { policy: RetentionPolicy; targets: BackupTarget[]; onEdit: (policy: RetentionPolicy) => void }) {
   const queryClient = useQueryClient()
@@ -448,17 +449,7 @@ export default function Retention() {
 
       {/* Policies Grid */}
       {isLoading ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {[...Array(2)].map((_, i) => (
-            <div
-              key={i}
-              className="bg-dark-800 rounded-xl border border-dark-700 p-6 animate-pulse"
-            >
-              <div className="h-6 bg-dark-700 rounded w-1/2 mb-2" />
-              <div className="h-4 bg-dark-700 rounded w-3/4" />
-            </div>
-          ))}
-        </div>
+        <LoadingSkeleton count={2} layout="grid-3" />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {policies?.map((policy) => (
