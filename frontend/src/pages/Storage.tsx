@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import api, { RemoteStorage } from '../api';
 import StorageBrowser from '../components/StorageBrowser';
+import ConfirmDialog from '../components/ConfirmDialog';
 
 interface StorageFormData {
   name: string;
@@ -62,6 +63,7 @@ export default function Storage() {
   const [testingId, setTestingId] = useState<number | null>(null);
   const [testResult, setTestResult] = useState<{ id: number; success: boolean; message: string } | null>(null);
   const [browsingStorage, setBrowsingStorage] = useState<RemoteStorage | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{ id: number; name: string } | null>(null);
 
   const [formData, setFormData] = useState<StorageFormData>({
     name: '',
@@ -687,11 +689,7 @@ export default function Storage() {
                         <Edit className="w-5 h-5" />
                       </button>
                       <button
-                        onClick={() => {
-                          if (confirm(`Really delete storage "${storage.name}"?`)) {
-                            deleteMutation.mutate(storage.id);
-                          }
-                        }}
+                        onClick={() => setConfirmDialog({ id: storage.id, name: storage.name })}
                         className="p-2 text-slate-600 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
                         title="Delete"
                       >
@@ -822,6 +820,23 @@ export default function Storage() {
           </div>
         </div>
       )}
+
+      {/* Confirm Delete Dialog */}
+      <ConfirmDialog
+        isOpen={!!confirmDialog}
+        onClose={() => setConfirmDialog(null)}
+        onConfirm={() => {
+          if (confirmDialog) {
+            deleteMutation.mutate(confirmDialog.id);
+            setConfirmDialog(null);
+          }
+        }}
+        title="Delete Storage"
+        message={`Really delete storage "${confirmDialog?.name}"? This action cannot be undone.`}
+        confirmLabel="Delete"
+        confirmVariant="danger"
+        isLoading={deleteMutation.isPending}
+      />
     </div>
   );
 }

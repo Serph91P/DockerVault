@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Calendar, Clock, HelpCircle, Plus, ChevronDown, ChevronUp, Ban } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Calendar, Clock, HelpCircle, Plus, Ban } from 'lucide-react'
 import { WizardData } from './index'
 import { ScheduleEntity } from '../../api'
 
@@ -20,10 +20,117 @@ const CRON_PRESETS = [
   { label: 'Monthly', cron: '0 0 1 * *', description: 'First day of month at 00:00' },
 ]
 
+// Human-readable cron description
+function describeCron(expr: string): string {
+  const parts = expr.trim().split(/\s+/)
+  if (parts.length !== 5) return 'Invalid cron expression'
+  const [min, hour, dom, mon, dow] = parts
+
+  const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+  const MONTHS = ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+
+  const pad = (n: string) => n.padStart(2, '0')
+  const timeStr = hour !== '*' && min !== '*' ? `at ${pad(hour)}:${pad(min)}` : min === '0' && hour.startsWith('*/') ? `every ${hour.slice(2)} hours` : hour === '*' && min === '0' ? 'every hour' : hour === '*' ? `every minute` : `at ${pad(hour)}:${pad(min)}`
+
+  if (dom === '*' && mon === '*' && dow === '*') {
+    if (hour === '*' && min === '*') return 'Every minute'
+    if (hour === '*' && min === '0') return 'Every hour at minute 0'
+    if (hour === '*') return `Every hour at minute ${min}`
+    if (hour.startsWith('*/')) return `Every ${hour.slice(2)} hours`
+    return `Every day ${timeStr}`
+  }
+  if (dom === '*' && mon === '*' && dow !== '*') {
+    const dayName = WEEKDAYS[parseInt(dow)] || dow
+    return `Every ${dayName} ${timeStr}`
+  }
+  if (dom !== '*' && mon === '*' && dow === '*') {
+    return `On day ${dom} of every month ${timeStr}`
+  }
+  if (dom !== '*' && mon !== '*') {
+    const monthName = MONTHS[parseInt(mon)] || mon
+    return `On ${monthName} ${dom} ${timeStr}`
+  }
+  return `${expr}`
+}
+
+// Compute next N run dates from a cron expression
+function getNextRuns(expr: string, count: number): Date[] {
+  const parts = expr.trim().split(/\s+/)
+  if (parts.length !== 5) return []
+  const [minPart, hourPart, domPart, monPart, dowPart] = parts
+
+  const parseField = (field: string, max: number): number[] | null => {
+    if (field === '*') return null // means "all"
+    if (field.startsWith('*/')) {
+      const step = parseInt(field.slice(2))
+      if (isNaN(step) || step <= 0) return null
+      const result: number[] = []
+      for (let i = 0; i <= max; i += step) result.push(i)
+      return result
+    }
+    const vals = field.split(',').map(Number).filter(n => !isNaN(n))
+    return vals.length > 0 ? vals : null
+  }
+
+  const allowedMin = parseField(minPart, 59)
+  const allowedHour = parseField(hourPart, 23)
+  const allowedDom = parseField(domPart, 31)
+  const allowedMon = parseField(monPart, 12)
+  const allowedDow = parseField(dowPart, 6)
+
+  const results: Date[] = []
+  const now = new Date()
+  const cursor = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes() + 1, 0, 0)
+
+  // Iterate at most 525600 minutes (1 year)
+  for (let i = 0; i < 525600 && results.length < count; i++) {
+    const m = cursor.getMinutes()
+    const h = cursor.getHours()
+    const d = cursor.getDate()
+    const mo = cursor.getMonth() + 1
+    const wd = cursor.getDay()
+
+    const minOk = !allowedMin || allowedMin.includes(m)
+    const hourOk = !allowedHour || allowedHour.includes(h)
+    const domOk = !allowedDom || allowedDom.includes(d)
+    const monOk = !allowedMon || allowedMon.includes(mo)
+    const dowOk = !allowedDow || allowedDow.includes(wd)
+
+    if (minOk && hourOk && domOk && monOk && dowOk) {
+      results.push(new Date(cursor))
+    }
+    cursor.setMinutes(cursor.getMinutes() + 1)
+  }
+  return results
+}
+
 export default function StepSchedule({ data, updateData, schedules, isLoadingSchedules }: Props) {
   const [showCronHelp, setShowCronHelp] = useState(false)
-  const [showPresets, setShowPresets] = useState(false)
-  const [createNew, setCreateNew] = useState(!data.scheduleId)
+  const [createNew, setCreateNew] = useState(false)
+  const [hasAutoSelected, setHasAutoSelected] = useState(false)
+
+  // Smart defaults: auto-select schedule based on available options
+  useEffect(() => {
+    if (hasAutoSelected || data.scheduleId || data.newSchedule) return
+    if (isLoadingSchedules) return
+
+    if (schedules.length === 0) {
+      // No schedules exist: default to "create new"
+      setCreateNew(true)
+      updateData({
+        scheduleId: null,
+        newSchedule: { name: '', cronExpression: '0 0 * * *', description: '' },
+      })
+    } else if (schedules.length === 1) {
+      // Exactly one schedule: auto-select it
+      updateData({ scheduleId: schedules[0].id, newSchedule: null })
+      setCreateNew(false)
+    } else {
+      // Multiple schedules: neutral state, user must choose
+      setCreateNew(false)
+    }
+    setHasAutoSelected(true)
+  }, [schedules, isLoadingSchedules, hasAutoSelected])
 
   const handleScheduleSelect = (scheduleId: string) => {
     if (scheduleId === 'none') {
@@ -49,7 +156,6 @@ export default function StepSchedule({ data, updateData, schedules, isLoadingSch
 
   const applyPreset = (cron: string) => {
     updateNewSchedule({ cronExpression: cron })
-    setShowPresets(false)
   }
 
   return (
@@ -175,31 +281,54 @@ export default function StepSchedule({ data, updateData, schedules, isLoadingSch
                 placeholder="0 0 * * *"
                 className="flex-1 px-4 py-2 bg-dark-900 border border-dark-600 rounded-lg text-dark-100 font-mono focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
               />
-              <button
-                type="button"
-                onClick={() => setShowPresets(!showPresets)}
-                className="px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-dark-300 hover:text-dark-100 transition-colors"
-              >
-                {showPresets ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-              </button>
             </div>
 
-            {/* Cron Presets */}
-            {showPresets && (
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                {CRON_PRESETS.map((preset) => (
+            {/* Human-readable cron preview */}
+            {data.newSchedule.cronExpression && (
+              <div className="mt-2 space-y-2">
+                <p className="text-sm text-primary-400">
+                  {describeCron(data.newSchedule.cronExpression)}
+                </p>
+                {(() => {
+                  const nextRuns = getNextRuns(data.newSchedule.cronExpression, 3)
+                  if (nextRuns.length === 0) return null
+                  return (
+                    <div className="text-xs text-dark-500">
+                      <span className="text-dark-400">Next runs: </span>
+                      {nextRuns.map((d, i) => (
+                        <span key={i}>
+                          {i > 0 && ', '}
+                          {d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}{' '}
+                          {d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      ))}
+                    </div>
+                  )
+                })()}
+              </div>
+            )}
+
+            {/* Cron Presets — always visible */}
+            <div className="mt-3 grid grid-cols-3 gap-2">
+              {CRON_PRESETS.map((preset) => {
+                const isActive = data.newSchedule?.cronExpression === preset.cron
+                return (
                   <button
                     key={preset.cron}
                     type="button"
                     onClick={() => applyPreset(preset.cron)}
-                    className="p-2 text-left bg-dark-900 border border-dark-600 rounded-lg hover:border-primary-500 transition-colors"
+                    className={`p-2 text-left rounded-lg border transition-colors ${
+                      isActive
+                        ? 'border-primary-500 bg-primary-500/10'
+                        : 'border-dark-600 bg-dark-900 hover:border-primary-500/50'
+                    }`}
                   >
-                    <p className="text-sm text-dark-100">{preset.label}</p>
+                    <p className={`text-sm ${isActive ? 'text-primary-300' : 'text-dark-100'}`}>{preset.label}</p>
                     <p className="text-xs text-dark-500 font-mono">{preset.cron}</p>
                   </button>
-                ))}
-              </div>
-            )}
+                )
+              })}
+            </div>
 
             {/* Cron Help */}
             {showCronHelp && (

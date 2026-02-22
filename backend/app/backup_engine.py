@@ -644,6 +644,7 @@ class BackupEngine:
         # Get path filters
         include_paths = target.include_paths or []
         exclude_paths = target.exclude_paths or []
+        per_volume_rules = target.per_volume_rules or {}
 
         # Create tarball
         loop = asyncio.get_event_loop()
@@ -657,6 +658,7 @@ class BackupEngine:
                     target.compression_enabled,
                     include_paths,
                     exclude_paths,
+                    per_volume_rules,
                 ),
             )
         else:
@@ -746,31 +748,52 @@ class BackupEngine:
         compress: bool = True,
         include_paths: Optional[List[str]] = None,
         exclude_paths: Optional[List[str]] = None,
+        per_volume_rules: Optional[Dict[str, Dict[str, List[str]]]] = None,
     ):
-        """Create tar archive from multiple sources with optional path filtering."""
+        """Create tar archive from multiple sources with optional path filtering.
+
+        Per-volume rules override global include/exclude for specific volumes.
+        """
         include_paths = include_paths or []
         exclude_paths = exclude_paths or []
-
-        def filter_func(tarinfo: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
-            if not self._should_include_path(
-                tarinfo.name, include_paths, exclude_paths
-            ):
-                return None
-            return tarinfo
+        per_volume_rules = per_volume_rules or {}
 
         mode = "w:gz" if compress else "w"
         with tarfile.open(dest, mode, compresslevel=6 if compress else None) as tar:
             for archive_name, source_path in sources:
-                if os.path.exists(source_path):
-                    # Only use filter if we have path restrictions
-                    if include_paths or exclude_paths:
-                        tar.add(
-                            source_path,
-                            arcname=archive_name.lstrip("/"),
-                            filter=filter_func,
-                        )
-                    else:
-                        tar.add(source_path, arcname=archive_name.lstrip("/"))
+                if not os.path.exists(source_path):
+                    continue
+
+                # Determine per-volume rules: check by archive_name and basename
+                volume_key = archive_name.lstrip("/")
+                # For stacks: archive_name is "volumes/vol_name", key might be just "vol_name"
+                volume_basename = os.path.basename(volume_key)
+                vol_rules = per_volume_rules.get(volume_key) or per_volume_rules.get(volume_basename)
+
+                if vol_rules:
+                    # Use per-volume rules
+                    vol_include = vol_rules.get("include_paths", [])
+                    vol_exclude = vol_rules.get("exclude_paths", [])
+                else:
+                    # Fallback to global rules
+                    vol_include = include_paths
+                    vol_exclude = exclude_paths
+
+                if vol_include or vol_exclude:
+                    def make_filter(inc, exc):
+                        def filter_func(tarinfo: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
+                            if not self._should_include_path(tarinfo.name, inc, exc):
+                                return None
+                            return tarinfo
+                        return filter_func
+
+                    tar.add(
+                        source_path,
+                        arcname=volume_key,
+                        filter=make_filter(vol_include, vol_exclude),
+                    )
+                else:
+                    tar.add(source_path, arcname=volume_key)
 
     async def _calculate_checksum(self, file_path: str) -> str:
         """Calculate SHA256 checksum of file."""

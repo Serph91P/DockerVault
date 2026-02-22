@@ -88,6 +88,9 @@ class BackupTarget(Base):
     include_paths = Column(JSON, default=list)  # Include only these paths (empty = all)
     exclude_paths = Column(JSON, default=list)  # Exclude these paths/patterns
 
+    # Per-volume path rules (overrides global include/exclude for specific volumes)
+    per_volume_rules = Column(JSON, default=dict)  # {volume_name: {include_paths: [], exclude_paths: []}}
+
     # Pre/Post hooks
     pre_backup_command = Column(Text, nullable=True)
     post_backup_command = Column(Text, nullable=True)
@@ -396,6 +399,14 @@ async def run_migrations():
                 text(
                     "ALTER TABLE backup_targets ADD COLUMN exclude_paths JSON "
                     "DEFAULT '[]'"
+                )
+            )
+
+        if "per_volume_rules" not in targets_columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE backup_targets ADD COLUMN per_volume_rules JSON "
+                    "DEFAULT '{}'"
                 )
             )
 

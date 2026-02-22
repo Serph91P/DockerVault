@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Archive,
@@ -15,6 +15,7 @@ import {
   Calendar,
   FolderOpen,
   Pencil,
+  Search,
 } from 'lucide-react'
 import {
   backupsApi,
@@ -31,27 +32,20 @@ import { clsx } from 'clsx'
 import BackupWizard from '../components/BackupWizard'
 import BackupBrowser from '../components/BackupBrowser'
 import BackupEditDialog from '../components/BackupEditDialog'
+import ConfirmDialog from '../components/ConfirmDialog'
 
 // Backup Row Component with browser option
 function BackupRow({
   backup,
   onBrowse,
+  onDelete,
 }: {
   backup: Backup
   onBrowse: (backup: Backup) => void
+  onDelete: (backup: Backup) => void
 }) {
-  const queryClient = useQueryClient()
   const backupProgress = useWebSocketStore((state) => state.backupProgress)
   const progress = backupProgress.get(backup.id)
-
-  const deleteMutation = useMutation({
-    mutationFn: () => backupsApi.delete(backup.id),
-    onSuccess: () => {
-      toast.success('Backup deleted')
-      queryClient.invalidateQueries({ queryKey: ['backups'] })
-    },
-    onError: () => toast.error('Failed to delete backup'),
-  })
 
   const restoreMutation = useMutation({
     mutationFn: () => backupsApi.restore(backup.id),
@@ -124,12 +118,7 @@ function BackupRow({
           </>
         )}
         <button
-          onClick={() => {
-            if (confirm('Delete this backup?')) {
-              deleteMutation.mutate()
-            }
-          }}
-          disabled={deleteMutation.isPending}
+          onClick={() => onDelete(backup)}
           className="p-1.5 text-dark-400 hover:text-red-400 hover:bg-dark-600 rounded transition-colors"
           title="Delete backup"
         >
@@ -147,12 +136,16 @@ function TargetBackupCard({
   schedules,
   onBrowseBackup,
   onEdit,
+  onDeleteBackup,
+  onDeleteTarget,
 }: {
   target: BackupTarget
   backups: Backup[]
   schedules: ScheduleEntity[]
   onBrowseBackup: (backup: Backup) => void
   onEdit: (target: BackupTarget) => void
+  onDeleteBackup: (backup: Backup) => void
+  onDeleteTarget: (target: BackupTarget) => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const queryClient = useQueryClient()
@@ -175,27 +168,18 @@ function TargetBackupCard({
     onError: () => toast.error('Failed to update backup'),
   })
 
-  const deleteMutation = useMutation({
-    mutationFn: () => targetsApi.delete(target.id),
-    onSuccess: () => {
-      toast.success('Backup configuration removed')
-      queryClient.invalidateQueries({ queryKey: ['targets'] })
-    },
-    onError: () => toast.error('Failed to remove backup'),
-  })
-
   const getTargetTypeIcon = () => {
     switch (target.target_type) {
       case 'container':
-        return '🐳'
+        return '\uD83D\uDC33'
       case 'volume':
-        return '💾'
+        return '\uD83D\uDCBE'
       case 'path':
-        return '📁'
+        return '\uD83D\uDCC1'
       case 'stack':
-        return '📚'
+        return '\uD83D\uDCDA'
       default:
-        return '📦'
+        return '\uD83D\uDCE6'
     }
   }
 
@@ -233,27 +217,34 @@ function TargetBackupCard({
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Last Backup Status */}
+            {/* B1: Last Backup Status - more info on collapsed card */}
             {lastBackup ? (
               <div className="flex items-center gap-2 text-sm">
-                <span
-                  className={clsx(
-                    'px-2 py-1 rounded-full text-xs font-medium',
-                    lastBackup.status === 'completed'
-                      ? 'bg-green-500/10 text-green-400'
-                      : lastBackup.status === 'failed'
-                        ? 'bg-red-500/10 text-red-400'
-                        : lastBackup.status === 'running'
-                          ? 'bg-primary-500/10 text-primary-400'
-                          : 'bg-dark-600 text-dark-400'
-                  )}
-                >
+                {lastBackup.status === 'completed' ? (
+                  <CheckCircle className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />
+                ) : lastBackup.status === 'failed' ? (
+                  <XCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />
+                ) : lastBackup.status === 'running' ? (
+                  <Loader2 className="w-3.5 h-3.5 text-primary-500 animate-spin flex-shrink-0" />
+                ) : null}
+                <span className="text-xs text-dark-300">
                   {formatDistanceToNow(new Date(lastBackup.created_at), { addSuffix: true })}
                 </span>
+                {lastBackup.file_size_human && (
+                  <span className="text-xs text-dark-500">{lastBackup.file_size_human}</span>
+                )}
               </div>
             ) : (
               <span className="px-2 py-1 rounded-full text-xs font-medium bg-dark-600 text-dark-400">
                 No backups
+              </span>
+            )}
+
+            {/* Schedule name on collapsed card */}
+            {schedule && (
+              <span className="hidden sm:flex items-center gap-1 text-xs text-dark-500">
+                <Calendar className="w-3 h-3" />
+                {schedule.name}
               </span>
             )}
 
@@ -326,12 +317,9 @@ function TargetBackupCard({
               <button
                 onClick={(e) => {
                   e.stopPropagation()
-                  if (confirm('Remove backup configuration? Existing backups will be kept.')) {
-                    deleteMutation.mutate()
-                  }
+                  onDeleteTarget(target)
                 }}
-                disabled={deleteMutation.isPending}
-                className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg text-sm transition-colors disabled:opacity-50"
+                className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg text-sm transition-colors"
               >
                 <Trash2 className="w-4 h-4" />
               </button>
@@ -355,7 +343,7 @@ function TargetBackupCard({
             {backups.length > 0 ? (
               <div className="space-y-2 max-h-64 overflow-y-auto">
                 {backups.slice(0, 10).map((backup) => (
-                  <BackupRow key={backup.id} backup={backup} onBrowse={onBrowseBackup} />
+                  <BackupRow key={backup.id} backup={backup} onBrowse={onBrowseBackup} onDelete={onDeleteBackup} />
                 ))}
                 {backups.length > 10 && (
                   <p className="text-xs text-dark-500 text-center py-2">
@@ -374,9 +362,20 @@ function TargetBackupCard({
 }
 
 export default function Backups() {
+  const queryClient = useQueryClient()
   const [wizardOpen, setWizardOpen] = useState(false)
   const [browsingBackup, setBrowsingBackup] = useState<Backup | null>(null)
   const [editingTarget, setEditingTarget] = useState<BackupTarget | null>(null)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [typeFilter, setTypeFilter] = useState<string | null>(null)
+
+  // Confirm dialog state
+  const [confirmDialog, setConfirmDialog] = useState<{
+    type: 'backup' | 'target'
+    id: number
+    title: string
+    message: string
+  } | null>(null)
 
   const { data: targets, isLoading: targetsLoading } = useQuery({
     queryKey: ['targets'],
@@ -394,6 +393,26 @@ export default function Backups() {
     queryFn: () => schedulesApi.list().then((r) => r.data),
   })
 
+  const deleteBackupMutation = useMutation({
+    mutationFn: (backupId: number) => backupsApi.delete(backupId),
+    onSuccess: () => {
+      toast.success('Backup deleted')
+      queryClient.invalidateQueries({ queryKey: ['backups'] })
+      setConfirmDialog(null)
+    },
+    onError: () => toast.error('Failed to delete backup'),
+  })
+
+  const deleteTargetMutation = useMutation({
+    mutationFn: (targetId: number) => targetsApi.delete(targetId),
+    onSuccess: () => {
+      toast.success('Backup configuration removed')
+      queryClient.invalidateQueries({ queryKey: ['targets'] })
+      setConfirmDialog(null)
+    },
+    onError: () => toast.error('Failed to remove backup'),
+  })
+
   // Group backups by target
   const getBackupsForTarget = (targetId: number): Backup[] => {
     return (allBackups || [])
@@ -401,12 +420,54 @@ export default function Backups() {
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
   }
 
+  // Filter targets
+  const filteredTargets = useMemo(() => {
+    if (!targets) return []
+    return targets.filter((t) => {
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase()
+        const nameMatch = t.name.toLowerCase().includes(q)
+        const targetMatch = (t.container_name || t.volume_name || t.stack_name || t.host_path || '').toLowerCase().includes(q)
+        if (!nameMatch && !targetMatch) return false
+      }
+      if (typeFilter && t.target_type !== typeFilter) return false
+      return true
+    })
+  }, [targets, searchQuery, typeFilter])
+
   // Stats
   const stats = {
     activeTargets: targets?.filter((t) => t.enabled).length || 0,
     totalBackups: allBackups?.length || 0,
     completedBackups: allBackups?.filter((b) => b.status === 'completed').length || 0,
     failedBackups: allBackups?.filter((b) => b.status === 'failed').length || 0,
+  }
+
+  const handleDeleteBackup = (backup: Backup) => {
+    setConfirmDialog({
+      type: 'backup',
+      id: backup.id,
+      title: 'Delete Backup',
+      message: 'Are you sure you want to delete this backup? This action cannot be undone.',
+    })
+  }
+
+  const handleDeleteTarget = (target: BackupTarget) => {
+    setConfirmDialog({
+      type: 'target',
+      id: target.id,
+      title: 'Remove Backup Configuration',
+      message: 'Remove this backup configuration? Existing backups will be kept.',
+    })
+  }
+
+  const handleConfirmDelete = () => {
+    if (!confirmDialog) return
+    if (confirmDialog.type === 'backup') {
+      deleteBackupMutation.mutate(confirmDialog.id)
+    } else {
+      deleteTargetMutation.mutate(confirmDialog.id)
+    }
   }
 
   return (
@@ -446,6 +507,38 @@ export default function Backups() {
         </div>
       </div>
 
+      {/* Search & Filter Bar */}
+      {targets && targets.length > 0 && (
+        <div className="flex items-center gap-3">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-500" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search backup targets..."
+              className="w-full pl-9 pr-4 py-2 bg-dark-800 border border-dark-700 rounded-lg text-dark-100 text-sm placeholder:text-dark-500 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
+            />
+          </div>
+          <div className="flex gap-1.5">
+            {(['container', 'volume', 'stack', 'path'] as const).map((type) => (
+              <button
+                key={type}
+                onClick={() => setTypeFilter(typeFilter === type ? null : type)}
+                className={clsx(
+                  'px-3 py-1.5 rounded-lg text-xs capitalize transition-colors border',
+                  typeFilter === type
+                    ? 'bg-primary-500/20 border-primary-500/50 text-primary-300'
+                    : 'bg-dark-800 border-dark-700 text-dark-400 hover:text-dark-300'
+                )}
+              >
+                {type}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Backup Targets List */}
       {targetsLoading ? (
         <div className="space-y-4">
@@ -456,9 +549,9 @@ export default function Backups() {
             </div>
           ))}
         </div>
-      ) : targets && targets.length > 0 ? (
+      ) : filteredTargets.length > 0 ? (
         <div className="space-y-4">
-          {targets.map((target) => (
+          {filteredTargets.map((target) => (
             <TargetBackupCard
               key={target.id}
               target={target}
@@ -466,8 +559,21 @@ export default function Backups() {
               schedules={schedules}
               onBrowseBackup={setBrowsingBackup}
               onEdit={setEditingTarget}
+              onDeleteBackup={handleDeleteBackup}
+              onDeleteTarget={handleDeleteTarget}
             />
           ))}
+        </div>
+      ) : targets && targets.length > 0 ? (
+        <div className="bg-dark-800 rounded-xl border border-dark-700 p-8 text-center">
+          <Search className="w-8 h-8 text-dark-500 mx-auto mb-3" />
+          <p className="text-dark-400">No targets matching your search</p>
+          <button
+            onClick={() => { setSearchQuery(''); setTypeFilter(null) }}
+            className="mt-2 text-sm text-primary-400 hover:text-primary-300"
+          >
+            Clear filters
+          </button>
         </div>
       ) : (
         <div className="bg-dark-800 rounded-xl border border-dark-700 p-12 text-center">
@@ -502,6 +608,18 @@ export default function Backups() {
           onClose={() => setEditingTarget(null)}
         />
       )}
+
+      {/* Confirm Dialog */}
+      <ConfirmDialog
+        isOpen={!!confirmDialog}
+        onClose={() => setConfirmDialog(null)}
+        onConfirm={handleConfirmDelete}
+        title={confirmDialog?.title || ''}
+        message={confirmDialog?.message || ''}
+        confirmLabel="Delete"
+        confirmVariant="danger"
+        isLoading={deleteBackupMutation.isPending || deleteTargetMutation.isPending}
+      />
     </div>
   )
 }

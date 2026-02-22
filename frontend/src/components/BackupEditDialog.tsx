@@ -49,7 +49,7 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
     enabled: target.enabled,
     schedule_id: target.schedule_id || null,
     retention_policy_id: target.retention_policy_id || null,
-    remote_storage_ids: [] as number[],
+    remote_storage_ids: (target.remote_storage_ids || []) as number[],
     compression: target.compression_enabled ? 'gzip' : 'none',
     exclude_paths: target.exclude_paths || [],
     pre_backup_command: target.pre_backup_command || '',
@@ -117,6 +117,7 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
       pre_backup_command: formData.pre_backup_command || undefined,
       post_backup_command: formData.post_backup_command || undefined,
       stop_container: formData.stop_container,
+      remote_storage_ids: formData.remote_storage_ids,
     })
   }
 

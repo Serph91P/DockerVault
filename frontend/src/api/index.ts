@@ -75,10 +75,14 @@ export interface BackupTarget {
   // Path filtering
   include_paths: string[]  // Include only these paths (empty = all)
   exclude_paths: string[]  // Exclude these paths/patterns
+  // Per-volume path rules (overrides global for specific volumes)
+  per_volume_rules: Record<string, { include_paths: string[]; exclude_paths: string[] }>
   pre_backup_command?: string
   post_backup_command?: string
   stop_container: boolean
   compression_enabled: boolean
+  // Remote storage sync
+  remote_storage_ids: number[]
   created_at: string
   updated_at: string
 }
