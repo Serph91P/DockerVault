@@ -389,13 +389,13 @@ Pattern-Vereinheitlichung:
 
 ### Phase 4: Nice-to-Have (ongoing)
 
-27. **[W2]** Wizard: LocalStorage Draft-Persistierung
-28. **[T3]** Target-Select: "Already configured" Badge
-29. **[DA5]** Dashboard: Disk-Usage Anzeige
-30. **[V4]** Volume-Config: Volume-Größe anzeigen
-31. **[GF1]** Notification-Center
-32. **[D4]** Dependencies: Drag & Drop Reihenfolge
-33. **[ST1]** Storage: Formular in Steps aufteilen
+27. **[W2]** ✅ Wizard: LocalStorage Draft-Persistierung
+28. **[T3]** ✅ Target-Select: "Already configured" Badge
+29. **[DA5]** ✅ Dashboard: Disk-Usage Anzeige
+30. **[V4]** ⏭️ Volume-Config: Volume-Größe anzeigen (Docker API unterstützt keine Volume-Größen)
+31. **[GF1]** ⏭️ Notification-Center (zu komplex für Phase 4)
+32. **[D4]** ⏭️ Dependencies: Drag & Drop Reihenfolge (externe Library nötig)
+33. **[ST1]** ✅ Storage: Formular in Steps aufteilen
 
 ---
 
@@ -484,7 +484,7 @@ function useSmartDefault<T extends { id: number }>(
 |----|---------|-------|-----------|--------|
 | T1 | Wizard/Target | Preselection beim Starten | Hoch | ✅ Done |
 | T2 | Wizard/Target | Intelligentere Namen | Niedrig | Offen |
-| T3 | Wizard/Target | "Already configured" Badge | Niedrig | Offen |
+| T3 | Wizard/Target | "Already configured" Badge | Niedrig | ✅ Done |
 | T4 | Wizard/Target | Stack-Details expandierbar | Niedrig | Offen |
 | V1 | Wizard/Volumes | Per-Volume prominent bei Stacks | Hoch | ✅ Done |
 | V2 | Wizard/Volumes | Klareres "All vs. Specific" | Mittel | Offen |
@@ -509,7 +509,7 @@ function useSmartDefault<T extends { id: number }>(
 | SU1 | Wizard/Summary | Edit-Buttons pro Section | Mittel | ✅ Done |
 | SU2 | Wizard/Summary | Volume-Config Section | Mittel | ✅ Done |
 | W1 | Wizard/Global | Larger modal Option | Niedrig | Offen |
-| W2 | Wizard/Global | LocalStorage Draft | Mittel | Offen |
+| W2 | Wizard/Global | LocalStorage Draft | Mittel | ✅ Done |
 | W3 | Wizard/Global | Step-Labels | Mittel | ✅ Done |
 | W4 | Wizard/Global | Skipped Steps kleiner | Niedrig | Offen |
 | W5 | Wizard/Global | Edit-Modus visited Steps | Mittel | ✅ Done |
@@ -517,7 +517,7 @@ function useSmartDefault<T extends { id: number }>(
 | DA2 | Dashboard | Quick-Actions | Mittel | Offen |
 | DA3 | Dashboard | "View All" Link | Niedrig | Offen |
 | DA4 | Dashboard | Alert-Banner | Hoch | ✅ Done |
-| DA5 | Dashboard | Disk-Usage | Mittel | Offen |
+| DA5 | Dashboard | Disk-Usage | Mittel | ✅ Done |
 | B1 | Backups | Last-Backup sichtbar | Hoch | ✅ Done |
 | B2 | Backups | Sortierung | Mittel | ✅ Done |
 | B3 | Backups | Run-Now Feedback | Mittel | Offen |
@@ -533,8 +533,8 @@ function useSmartDefault<T extends { id: number }>(
 | RE4 | Retention | Modal-basiertes Editing | Mittel | ✅ Done |
 | RE5 | Retention | Cleanup Tooltip | Niedrig | Offen |
 | RE6 | Retention | keep_last Feld | Hoch | ✅ Done |
-| ST1 | Storage | Form in Steps | Mittel | Offen |
-| ST2 | Storage | Größere Type-Cards | Niedrig | Offen |
+| ST1 | Storage | Form in Steps | Mittel | ✅ Done |
+| ST2 | Storage | Größere Type-Cards | Niedrig | ✅ Done |
 | ST3 | Storage | Persistent Test-Result | Mittel | Offen |
 | ST4 | Storage | Browse als Drawer | Niedrig | Offen |
 | SE1 | Settings | Dynamische Infos | Mittel | ✅ Done |

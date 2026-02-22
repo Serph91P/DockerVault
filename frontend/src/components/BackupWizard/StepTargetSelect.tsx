@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react'
-import { Container, Database, FolderOpen, Layers, Search, X } from 'lucide-react'
+import { Container, Database, FolderOpen, Layers, Search, X, CheckCircle } from 'lucide-react'
 import { WizardData } from './index'
-import { Container as ContainerType, Volume, Stack } from '../../api'
+import { Container as ContainerType, Volume, Stack, BackupTarget } from '../../api'
 
 interface Props {
   data: WizardData
@@ -9,6 +9,7 @@ interface Props {
   containers: ContainerType[]
   volumes: Volume[]
   stacks: Stack[]
+  existingTargets?: BackupTarget[]
 }
 
 const TARGET_TYPES = [
@@ -39,7 +40,7 @@ const TARGET_TYPES = [
 ]
 
 interface SearchableListProps {
-  items: { id: string; label: string; sublabel?: string; status?: string }[]
+  items: { id: string; label: string; sublabel?: string; status?: string; configured?: boolean }[]
   selectedId: string
   onSelect: (id: string) => void
   placeholder: string
@@ -122,6 +123,12 @@ function SearchableList({ items, selectedId, onSelect, placeholder, emptyMessage
                     {item.status}
                   </span>
                 )}
+                {item.configured && (
+                  <span className="flex-shrink-0 flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-400" title="A backup target already exists for this item">
+                    <CheckCircle className="w-3 h-3" />
+                    Configured
+                  </span>
+                )}
                 {isSelected && (
                   <span className="flex-shrink-0 w-2 h-2 rounded-full bg-primary-400" />
                 )}
@@ -144,7 +151,18 @@ export default function StepTargetSelect({
   containers,
   volumes,
   stacks,
+  existingTargets = [],
 }: Props) {
+  // T3: Build sets of already-configured target names per type
+  const configuredContainers = useMemo(() => new Set(
+    existingTargets.filter((t) => t.target_type === 'container').map((t) => t.container_name)
+  ), [existingTargets])
+  const configuredVolumes = useMemo(() => new Set(
+    existingTargets.filter((t) => t.target_type === 'volume').map((t) => t.volume_name)
+  ), [existingTargets])
+  const configuredStacks = useMemo(() => new Set(
+    existingTargets.filter((t) => t.target_type === 'stack').map((t) => t.stack_name)
+  ), [existingTargets])
   const handleTypeSelect = (type: WizardData['targetType']) => {
     updateData({
       targetType: type,
@@ -240,6 +258,7 @@ export default function StepTargetSelect({
                   label: c.name,
                   sublabel: c.image,
                   status: c.status,
+                  configured: configuredContainers.has(c.name),
                 }))}
                 selectedId={data.containerName}
                 onSelect={handleTargetChange}
@@ -258,6 +277,7 @@ export default function StepTargetSelect({
                   id: v.name,
                   label: v.name,
                   sublabel: v.used_by?.length ? `Used by: ${v.used_by.join(', ')}` : 'Unused',
+                  configured: configuredVolumes.has(v.name),
                 }))}
                 selectedId={data.volumeName}
                 onSelect={handleTargetChange}
@@ -276,6 +296,7 @@ export default function StepTargetSelect({
                   id: s.name,
                   label: s.name,
                   sublabel: `${s.containers.length} container${s.containers.length !== 1 ? 's' : ''} · ${s.volumes.length} volume${s.volumes.length !== 1 ? 's' : ''}`,
+                  configured: configuredStacks.has(s.name),
                 }))}
                 selectedId={data.stackName}
                 onSelect={handleTargetChange}

@@ -101,6 +101,42 @@ const STEPS = [
   { id: 8, name: 'Summary', description: 'Review & create' },
 ]
 
+// W2: LocalStorage draft persistence
+const DRAFT_KEY = 'dockervault-wizard-draft'
+
+interface WizardDraft {
+  data: WizardData
+  currentStep: number
+  savedAt: number
+}
+
+function saveDraft(data: WizardData, currentStep: number) {
+  try {
+    const draft: WizardDraft = { data, currentStep, savedAt: Date.now() }
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
+  } catch { /* localStorage full or unavailable */ }
+}
+
+function loadDraft(): WizardDraft | null {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY)
+    if (!raw) return null
+    const draft: WizardDraft = JSON.parse(raw)
+    // Discard drafts older than 24 hours
+    if (Date.now() - draft.savedAt > 24 * 60 * 60 * 1000) {
+      localStorage.removeItem(DRAFT_KEY)
+      return null
+    }
+    return draft
+  } catch {
+    return null
+  }
+}
+
+function clearDraft() {
+  try { localStorage.removeItem(DRAFT_KEY) } catch { /* ignore */ }
+}
+
 interface BackupWizardProps {
   isOpen: boolean
   onClose: () => void
@@ -145,6 +181,20 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
   const isEditing = !!editTarget
   const [currentStep, setCurrentStep] = useState(1)
   const [data, setData] = useState<WizardData>(initialData)
+  const [showDraftBanner, setShowDraftBanner] = useState(false)
+
+  // W2: Check for saved draft when wizard opens (non-edit, no preselection)
+  const [draftChecked, setDraftChecked] = useState(false)
+  if (isOpen && !isEditing && !preselectedType && !draftChecked) {
+    setDraftChecked(true)
+    const draft = loadDraft()
+    if (draft && draft.data.targetType) {
+      setShowDraftBanner(true)
+    }
+  }
+  if (!isOpen && draftChecked) {
+    setDraftChecked(false)
+  }
 
   // Pre-populate data when editing
   const [lastEditId, setLastEditId] = useState<number | null>(null)
@@ -191,6 +241,13 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
       setCurrentStep(2)
     }
   }
+
+  // Fetch existing targets for T3: "Already configured" badge
+  const { data: existingTargets = [] } = useQuery({
+    queryKey: ['targets'],
+    queryFn: () => targetsApi.list().then((r) => r.data),
+    enabled: isOpen,
+  })
 
   // Fetch data for all steps
   const { data: containers = [] } = useQuery({
@@ -247,6 +304,7 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
       targetsApi.create(targetData),
     onSuccess: () => {
       toast.success('Backup target created successfully!')
+      clearDraft()
       queryClient.invalidateQueries({ queryKey: ['targets'] })
       queryClient.invalidateQueries({ queryKey: ['schedules'] })
       handleClose()
@@ -262,6 +320,7 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
       targetsApi.update(editTarget!.id, targetData),
     onSuccess: () => {
       toast.success('Backup target updated successfully!')
+      clearDraft()
       queryClient.invalidateQueries({ queryKey: ['targets'] })
       queryClient.invalidateQueries({ queryKey: ['schedules'] })
       handleClose()
@@ -272,15 +331,42 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
   })
 
   const handleClose = () => {
+    // W2: Save draft if user has made progress (has selected a target type)
+    if (!isEditing && data.targetType) {
+      saveDraft(data, currentStep)
+    }
     setCurrentStep(1)
     setData(initialData)
     setLastEditId(null)
     setLastPreselection(null)
+    setShowDraftBanner(false)
     onClose()
   }
 
+  const handleDiscardDraft = () => {
+    clearDraft()
+    setShowDraftBanner(false)
+  }
+
+  const handleRestoreDraft = () => {
+    const draft = loadDraft()
+    if (draft) {
+      setData(draft.data)
+      setCurrentStep(draft.currentStep)
+      clearDraft()
+    }
+    setShowDraftBanner(false)
+  }
+
   const updateData = (updates: Partial<WizardData>) => {
-    setData((prev) => ({ ...prev, ...updates }))
+    setData((prev) => {
+      const next = { ...prev, ...updates }
+      // W2: Auto-save draft to localStorage (only for new targets)
+      if (!isEditing) {
+        saveDraft(next, currentStep)
+      }
+      return next
+    })
   }
 
   const canProceed = (): boolean => {
@@ -515,6 +601,28 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6">
+          {/* W2: Draft restoration banner */}
+          {showDraftBanner && (
+            <div className="mb-4 flex items-center gap-3 p-3 bg-primary-500/10 border border-primary-500/30 rounded-lg">
+              <div className="flex-1">
+                <p className="text-sm font-medium text-primary-300">Continue where you left off?</p>
+                <p className="text-xs text-primary-400/70">You have an unsaved wizard draft</p>
+              </div>
+              <button
+                onClick={handleRestoreDraft}
+                className="px-3 py-1.5 text-xs bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors"
+              >
+                Restore
+              </button>
+              <button
+                onClick={handleDiscardDraft}
+                className="px-3 py-1.5 text-xs bg-dark-600 text-dark-300 rounded-lg hover:bg-dark-500 transition-colors"
+              >
+                Discard
+              </button>
+            </div>
+          )}
+
           {currentStep === 1 && (
             <StepTargetSelect
               data={data}
@@ -522,6 +630,7 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
               containers={containers}
               volumes={volumes}
               stacks={stacks}
+              existingTargets={existingTargets}
             />
           )}
           {currentStep === 2 && (
