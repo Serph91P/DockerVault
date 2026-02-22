@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Archive, Container, HardDrive, Clock, AlertCircle, CheckCircle, AlertTriangle, ShieldCheck } from 'lucide-react'
-import { dockerApi, backupsApi, targetsApi, schedulesApi } from '../api'
+import { dockerApi, backupsApi, targetsApi, schedulesApi, settingsApi } from '../api'
 import { formatDistanceToNow } from 'date-fns'
 import { Link } from 'react-router-dom'
 
@@ -30,6 +30,13 @@ function StatCard({
   )
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(1024))
+  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`
+}
+
 export default function Dashboard() {
   const { data: containers } = useQuery({
     queryKey: ['containers'],
@@ -54,6 +61,13 @@ export default function Dashboard() {
   const { data: schedules } = useQuery({
     queryKey: ['schedules'],
     queryFn: () => schedulesApi.list().then((r) => r.data),
+  })
+
+  // DA5: Fetch system info for disk usage
+  const { data: systemInfo } = useQuery({
+    queryKey: ['system-info'],
+    queryFn: () => settingsApi.getSystemInfo().then((r) => r.data),
+    refetchInterval: 60000,
   })
 
   const runningContainers = containers?.filter((c) => c.status === 'running').length ?? 0
@@ -141,6 +155,44 @@ export default function Dashboard() {
           color="bg-orange-500"
         />
       </div>
+
+      {/* DA5: Disk Usage */}
+      {systemInfo && (
+        <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-medium text-dark-400">Backup Storage</h2>
+            <span className="text-xs text-dark-500 font-mono">{systemInfo.backup_dir}</span>
+          </div>
+          <div className="flex items-end gap-4">
+            <div className="flex-1">
+              <div className="flex items-baseline gap-2 mb-2">
+                <span className="text-2xl font-bold text-dark-100">
+                  {formatBytes(systemInfo.disk_used)}
+                </span>
+                <span className="text-sm text-dark-500">
+                  of {formatBytes(systemInfo.disk_total)} used
+                </span>
+              </div>
+              <div className="h-2 bg-dark-700 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all ${
+                    systemInfo.disk_total > 0 && (systemInfo.disk_used / systemInfo.disk_total) > 0.9
+                      ? 'bg-red-500'
+                      : systemInfo.disk_total > 0 && (systemInfo.disk_used / systemInfo.disk_total) > 0.7
+                      ? 'bg-yellow-500'
+                      : 'bg-green-500'
+                  }`}
+                  style={{ width: `${systemInfo.disk_total > 0 ? Math.round((systemInfo.disk_used / systemInfo.disk_total) * 100) : 0}%` }}
+                />
+              </div>
+              <p className="text-xs text-dark-500 mt-1">
+                {formatBytes(systemInfo.disk_free)} free
+                {systemInfo.db_size > 0 && ` · DB: ${formatBytes(systemInfo.db_size)}`}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Recent Backups & Next Scheduled */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
