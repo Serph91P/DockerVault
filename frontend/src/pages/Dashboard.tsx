@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Archive, Container, HardDrive, Clock, AlertCircle, CheckCircle, AlertTriangle, ShieldCheck, Plus } from 'lucide-react'
+import { Archive, Container, HardDrive, Clock, AlertCircle, CheckCircle, AlertTriangle, ShieldCheck, Plus, ArrowRight, Cloud, Shield } from 'lucide-react'
 import { dockerApi, backupsApi, targetsApi, schedulesApi, settingsApi } from '../api'
 import { formatDistanceToNow } from 'date-fns'
 import { Link } from 'react-router-dom'
@@ -124,18 +124,54 @@ export default function Dashboard() {
         </Link>
       )}
 
-      {/* DA1: No targets configured hint */}
+      {/* GF4: Onboarding guide when no targets configured */}
       {targets && targets.length === 0 && (
-        <Link
-          to="/backups"
-          className="flex items-center gap-3 p-4 bg-primary-500/10 border border-primary-500/30 rounded-xl hover:bg-primary-500/15 transition-colors"
-        >
-          <ShieldCheck className="w-5 h-5 text-primary-400 flex-shrink-0" />
-          <div className="flex-1">
-            <p className="text-sm font-medium text-primary-300">No backup targets configured yet</p>
-            <p className="text-xs text-primary-400/70 mt-0.5">Click to set up your first backup</p>
+        <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 bg-primary-500/20 rounded-lg flex items-center justify-center">
+              <ShieldCheck className="w-5 h-5 text-primary-400" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-dark-100">Welcome to DockerVault</h2>
+              <p className="text-sm text-dark-400">Get started in 3 easy steps</p>
+            </div>
           </div>
-        </Link>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <Link
+              to="/backups"
+              className="flex items-start gap-3 p-4 bg-primary-500/5 border border-primary-500/20 rounded-lg hover:bg-primary-500/10 transition-colors group"
+            >
+              <div className="w-7 h-7 rounded-full bg-primary-500 text-white flex items-center justify-center text-sm font-bold flex-shrink-0">1</div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-dark-200 group-hover:text-primary-400 transition-colors">Create a backup</p>
+                <p className="text-xs text-dark-500 mt-0.5">Select containers, volumes or stacks to protect</p>
+              </div>
+              <ArrowRight className="w-4 h-4 text-dark-600 group-hover:text-primary-400 flex-shrink-0 mt-0.5 transition-colors" />
+            </Link>
+            <Link
+              to="/storage"
+              className="flex items-start gap-3 p-4 bg-dark-750 border border-dark-700 rounded-lg hover:border-dark-600 transition-colors group"
+            >
+              <div className="w-7 h-7 rounded-full bg-dark-600 text-dark-300 flex items-center justify-center text-sm font-bold flex-shrink-0">2</div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-dark-300 group-hover:text-dark-100 transition-colors">Add remote storage</p>
+                <p className="text-xs text-dark-500 mt-0.5">S3, FTP, WebDAV or SSH for off-site copies</p>
+              </div>
+              <Cloud className="w-4 h-4 text-dark-600 flex-shrink-0 mt-0.5" />
+            </Link>
+            <Link
+              to="/settings"
+              className="flex items-start gap-3 p-4 bg-dark-750 border border-dark-700 rounded-lg hover:border-dark-600 transition-colors group"
+            >
+              <div className="w-7 h-7 rounded-full bg-dark-600 text-dark-300 flex items-center justify-center text-sm font-bold flex-shrink-0">3</div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-dark-300 group-hover:text-dark-100 transition-colors">Enable encryption</p>
+                <p className="text-xs text-dark-500 mt-0.5">Protect sensitive backup data at rest</p>
+              </div>
+              <Shield className="w-4 h-4 text-dark-600 flex-shrink-0 mt-0.5" />
+            </Link>
+          </div>
+        </div>
       )}
 
       {/* Stats Grid - DA1: Actionable Insights */}

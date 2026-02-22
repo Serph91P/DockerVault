@@ -426,6 +426,15 @@ Pattern-Vereinheitlichung:
 55. **[D2]** ✅ Dependencies: Auto-detect bei Stacks automatisch
 56. **[ST3]** ✅ Storage: Persistent Test-Result via localStorage
 
+### Phase 7: Components & Volumes & Global (Finalisierung)
+
+57. **[G3]** ✅ Global: Reusable EmptyState Komponente
+58. **[G4]** ✅ Global: Einheitliche LoadingSkeleton Komponente
+59. **[V2]** ✅ Wizard/Volumes: Radio-Style "All" vs "Specific" Auswahl
+60. **[V3]** ✅ Wizard/Volumes: Container-Namen als Sublabel bei Volumes
+61. **[GF2]** ✅ Global: Keyboard-Shortcuts (g+d/b/s/r/o/e Navigation, ? Help)
+62. **[GF4]** ✅ Dashboard: Onboarding-Guide für neue Nutzer
+
 ---
 
 ## 7. Design-Tokens & Patterns
@@ -516,8 +525,8 @@ function useSmartDefault<T extends { id: number }>(
 | T3 | Wizard/Target | "Already configured" Badge | Niedrig | ✅ Done |
 | T4 | Wizard/Target | Stack-Details expandierbar | Niedrig | ✅ Done |
 | V1 | Wizard/Volumes | Per-Volume prominent bei Stacks | Hoch | ✅ Done |
-| V2 | Wizard/Volumes | Klareres "All vs. Specific" | Mittel | Offen |
-| V3 | Wizard/Volumes | Volume-Labels/Container anzeigen | Mittel | Offen |
+| V2 | Wizard/Volumes | Klareres "All vs. Specific" | Mittel | ✅ Done |
+| V3 | Wizard/Volumes | Volume-Labels/Container anzeigen | Mittel | ✅ Done |
 | V4 | Wizard/Volumes | Volume-Größe anzeigen | Niedrig | Offen |
 | D1 | Wizard/Deps | Stack vs. External Container | Hoch | ✅ Done |
 | D2 | Wizard/Deps | Auto-detect bei Stacks automatisch | Mittel | ✅ Done |
@@ -571,10 +580,10 @@ function useSmartDefault<T extends { id: number }>(
 | SE3 | Settings | Form Race-Condition | Niedrig | ✅ Done |
 | G1 | Global | ConfirmDialog überall | Mittel | ✅ Done |
 | G2 | Global | Edit-Pattern einheitlich | Mittel | ✅ Done |
-| G3 | Global | Empty-State Komponente | Niedrig | Offen |
-| G4 | Global | Loading-State einheitlich | Niedrig | Offen |
+| G3 | Global | Empty-State Komponente | Niedrig | ✅ Done |
+| G4 | Global | Loading-State einheitlich | Niedrig | ✅ Done |
 | G5 | Global | Branding "DockerVault" | Niedrig | ✅ Done |
 | GF1 | Global | Notification-Center | Mittel | Offen |
-| GF2 | Global | Keyboard-Shortcuts | Niedrig | Offen |
+| GF2 | Global | Keyboard-Shortcuts | Niedrig | ✅ Done |
 | GF3 | Global | Theme-Toggle | Niedrig | Offen |
-| GF4 | Global | Onboarding-Hints | Niedrig | Offen |
+| GF4 | Global | Onboarding-Hints | Niedrig | ✅ Done |

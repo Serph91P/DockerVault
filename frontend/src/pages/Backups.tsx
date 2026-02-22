@@ -34,6 +34,8 @@ import BackupWizard from '../components/BackupWizard'
 import BackupBrowser from '../components/BackupBrowser'
 import BackupEditDialog from '../components/BackupEditDialog'
 import ConfirmDialog from '../components/ConfirmDialog'
+import EmptyState from '../components/EmptyState'
+import LoadingSkeleton from '../components/LoadingSkeleton'
 
 // Backup Row Component with browser option
 function BackupRow({
@@ -617,14 +619,7 @@ export default function Backups() {
 
       {/* Backup Targets List */}
       {targetsLoading ? (
-        <div className="space-y-4">
-          {[...Array(3)].map((_, i) => (
-            <div key={i} className="bg-dark-800 rounded-xl border border-dark-700 p-6 animate-pulse">
-              <div className="h-6 bg-dark-700 rounded w-1/3 mb-2" />
-              <div className="h-4 bg-dark-700 rounded w-1/2" />
-            </div>
-          ))}
-        </div>
+        <LoadingSkeleton count={3} layout="list" />
       ) : filteredTargets.length > 0 ? (
         <div className="space-y-4">
           {filteredTargets.map((target) => (
@@ -652,20 +647,12 @@ export default function Backups() {
           </button>
         </div>
       ) : (
-        <div className="bg-dark-800 rounded-xl border border-dark-700 p-12 text-center">
-          <Archive className="w-12 h-12 text-dark-500 mx-auto mb-4" />
-          <p className="text-dark-400">No backups configured</p>
-          <p className="text-sm text-dark-500 mt-2">
-            Click "New Backup" to set up your first backup
-          </p>
-          <button
-            onClick={() => setWizardOpen(true)}
-            className="mt-4 flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors mx-auto"
-          >
-            <Plus className="w-4 h-4" />
-            Create Backup
-          </button>
-        </div>
+        <EmptyState
+          icon={Archive}
+          title="No backups configured"
+          description='Click "New Backup" to set up your first backup'
+          action={{ label: 'Create Backup', onClick: () => setWizardOpen(true), icon: Plus }}
+        />
       )}
 
       {/* Backup Wizard Modal */}
