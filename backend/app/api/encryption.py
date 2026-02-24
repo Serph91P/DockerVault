@@ -3,7 +3,7 @@
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +14,7 @@ from ..encryption import (
     generate_key_pair,
     get_recovery_instructions,
 )
+from ..rate_limit import limiter
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -71,7 +72,8 @@ async def get_encryption_status(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/setup", response_model=EncryptionSetupResponse)
-async def setup_encryption(db: AsyncSession = Depends(get_db)):
+@limiter.limit("3/minute")
+async def setup_encryption(request: Request, db: AsyncSession = Depends(get_db)):
     """
     Generate a new encryption key pair.
 
@@ -119,7 +121,8 @@ async def setup_encryption(db: AsyncSession = Depends(get_db)):
         )
 
     except EncryptionError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Encryption setup failed: %s", e)
+        raise HTTPException(status_code=500, detail="Encryption setup failed")
 
 
 @router.post("/confirm-setup")
@@ -196,8 +199,9 @@ class RegenerateKeysRequest(BaseModel):
 
 
 @router.post("/regenerate", response_model=EncryptionSetupResponse)
+@limiter.limit("3/minute")
 async def regenerate_keys(
-    data: RegenerateKeysRequest, db: AsyncSession = Depends(get_db)
+    request: Request, data: RegenerateKeysRequest, db: AsyncSession = Depends(get_db)
 ):
     """
     Generate new encryption keys.

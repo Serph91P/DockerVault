@@ -31,7 +31,9 @@ def _validate_ssh_key_path(path: str) -> str:
         d.strip() for d in settings.ALLOWED_SSH_KEY_DIRS.split(",") if d.strip()
     ]
     for allowed in allowed_dirs:
-        if real_path.startswith(os.path.realpath(allowed) + os.sep) or real_path == os.path.realpath(allowed):
+        if real_path.startswith(
+            os.path.realpath(allowed) + os.sep
+        ) or real_path == os.path.realpath(allowed):
             return real_path
     raise HTTPException(
         status_code=400,
@@ -213,8 +215,12 @@ async def create_storage(data: StorageCreate, db: AsyncSession = Depends(get_db)
         ssh_key_path=validated_ssh_key_path,
         s3_bucket=data.s3_bucket,
         s3_region=data.s3_region,
-        s3_access_key=encrypt_value(data.s3_access_key) if data.s3_access_key else data.s3_access_key,
-        s3_secret_key=encrypt_value(data.s3_secret_key) if data.s3_secret_key else data.s3_secret_key,
+        s3_access_key=encrypt_value(data.s3_access_key)
+        if data.s3_access_key
+        else data.s3_access_key,
+        s3_secret_key=encrypt_value(data.s3_secret_key)
+        if data.s3_secret_key
+        else data.s3_secret_key,
         s3_endpoint_url=data.s3_endpoint_url,
         webdav_url=data.webdav_url,
         rclone_remote=data.rclone_remote,
@@ -506,13 +512,19 @@ def _db_to_config(storage: RemoteStorageModel) -> StorageConfig:
         host=storage.host,
         port=storage.port,
         username=storage.username,
-        password=decrypt_value(storage.password) if storage.password else storage.password,
+        password=decrypt_value(storage.password)
+        if storage.password
+        else storage.password,
         base_path=storage.base_path,
         ssh_key_path=storage.ssh_key_path,
         s3_bucket=storage.s3_bucket,
         s3_region=storage.s3_region,
-        s3_access_key=decrypt_value(storage.s3_access_key) if storage.s3_access_key else storage.s3_access_key,
-        s3_secret_key=decrypt_value(storage.s3_secret_key) if storage.s3_secret_key else storage.s3_secret_key,
+        s3_access_key=decrypt_value(storage.s3_access_key)
+        if storage.s3_access_key
+        else storage.s3_access_key,
+        s3_secret_key=decrypt_value(storage.s3_secret_key)
+        if storage.s3_secret_key
+        else storage.s3_secret_key,
         s3_endpoint_url=storage.s3_endpoint_url,
         webdav_url=storage.webdav_url,
         rclone_remote=storage.rclone_remote,

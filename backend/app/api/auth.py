@@ -1,7 +1,7 @@
 """Authentication API endpoints."""
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -45,7 +45,7 @@ class SetupRequest(BaseModel):
 class ChangePasswordRequest(BaseModel):
     """Change password request."""
 
-    current_password: str
+    current_password: str = Field(..., min_length=1)
     new_password: str = Field(..., min_length=8)
     confirm_password: str = Field(..., min_length=8)
 
@@ -205,7 +205,7 @@ async def login(request: Request, data: LoginRequest, response: Response):
             )
 
         # Update last login
-        user.last_login = datetime.utcnow()
+        user.last_login = datetime.now(timezone.utc)
         await db.commit()
 
         # Create session

@@ -3,7 +3,7 @@ Database configuration and models using SQLAlchemy with async support.
 """
 
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import JSON, Boolean, Column, DateTime
 from sqlalchemy import Enum as SQLEnum
@@ -31,6 +31,10 @@ class BackupType(enum.Enum):
     INCREMENTAL = "incremental"
 
 
+def _utcnow():
+    return datetime.now(timezone.utc)
+
+
 class RetentionPolicy(Base):
     """Retention policy configuration using GFS (Grandfather-Father-Son) strategy."""
 
@@ -47,8 +51,8 @@ class RetentionPolicy(Base):
     keep_monthly = Column(Integer, default=6)  # Keep last N monthly backups
     keep_yearly = Column(Integer, default=2)  # Keep last N yearly backups
     max_age_days = Column(Integer, default=365)  # Maximum age of any backup
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class BackupTarget(Base):
@@ -105,8 +109,8 @@ class BackupTarget(Base):
     sync_to_remote = Column(Boolean, default=False)
     remote_storage_ids = Column(JSON, default=list)  # List of storage IDs to sync to
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     backups = relationship(
         "Backup", back_populates="target", cascade="all, delete-orphan"
@@ -146,7 +150,7 @@ class Backup(Base):
     # Extra data
     backup_metadata = Column(JSON, default=dict)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class Schedule(Base):
@@ -160,8 +164,8 @@ class Schedule(Base):
     description = Column(Text, nullable=True)
     enabled = Column(Boolean, default=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     # Relationship to targets using this schedule
     targets = relationship("BackupTarget", back_populates="schedule")
@@ -181,8 +185,8 @@ class BackupSchedule(Base):
     last_run = Column(DateTime, nullable=True)
     enabled = Column(Boolean, default=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class RemoteStorage(Base):
@@ -222,8 +226,8 @@ class RemoteStorage(Base):
     # Rclone specific
     rclone_remote = Column(String(255), nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class BackupStorageSync(Base):
@@ -253,12 +257,12 @@ class EncryptionConfig(Base):
     id = Column(Integer, primary_key=True, index=True)
     public_key = Column(Text, nullable=False)  # age public key (age1...)
     # Private key is NOT stored - user must export and save it
-    key_created_at = Column(DateTime, default=datetime.utcnow)
+    key_created_at = Column(DateTime, default=_utcnow)
     encryption_enabled = Column(Boolean, default=True)
     setup_completed = Column(Boolean, default=False)  # User confirmed key export
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class User(Base):
@@ -271,8 +275,8 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     is_admin = Column(Boolean, default=True)  # First user is always admin
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
     last_login = Column(DateTime, nullable=True)
 
 
@@ -285,7 +289,7 @@ class Session(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     token = Column(String(255), unique=True, nullable=False, index=True)
     expires_at = Column(DateTime, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     user = relationship("User")
 
@@ -298,7 +302,7 @@ class AppSettings(Base):
     id = Column(Integer, primary_key=True, index=True)
     key = Column(String(100), unique=True, nullable=False, index=True)
     value = Column(Text, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 # Database engine and session

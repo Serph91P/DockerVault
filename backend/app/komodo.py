@@ -6,7 +6,7 @@ Provides API client and webhook support for Komodo.
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import aiohttp
@@ -71,7 +71,7 @@ class KomodoClient:
                 "backup_id": backup_id,
                 "target_name": target_name,
                 "containers": containers,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
             async with self.session.post(
@@ -112,7 +112,7 @@ class KomodoClient:
                 "duration_seconds": duration_seconds,
                 "file_size": file_size,
                 "error_message": error_message,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
             async with self.session.post(

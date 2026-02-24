@@ -10,9 +10,7 @@ import logging
 import os
 from pathlib import Path
 
-import stat
-
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet
 
 from app.config import settings
 

@@ -6,7 +6,7 @@ Provides password hashing, session management, and auth dependencies.
 
 import logging
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import bcrypt as bcrypt_lib
@@ -58,7 +58,7 @@ def generate_session_token() -> str:
 async def create_session(user_id: int, db: AsyncSession) -> str:
     """Create a new session for a user."""
     token = generate_session_token()
-    expires_at = datetime.utcnow() + timedelta(hours=SESSION_EXPIRE_HOURS)
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=SESSION_EXPIRE_HOURS)
 
     session = Session(
         user_id=user_id,
@@ -89,7 +89,7 @@ async def invalidate_all_user_sessions(user_id: int, db: AsyncSession) -> int:
 async def cleanup_expired_sessions(db: AsyncSession) -> int:
     """Remove expired sessions from database."""
     result = await db.execute(
-        delete(Session).where(Session.expires_at < datetime.utcnow())
+        delete(Session).where(Session.expires_at < datetime.now(timezone.utc))
     )
     await db.commit()
     return result.rowcount
@@ -99,7 +99,7 @@ async def get_session_user(token: str, db: AsyncSession) -> Optional[User]:
     """Get user from session token."""
     result = await db.execute(
         select(Session).where(
-            Session.token == token, Session.expires_at > datetime.utcnow()
+            Session.token == token, Session.expires_at > datetime.now(timezone.utc)
         )
     )
     session = result.scalar_one_or_none()

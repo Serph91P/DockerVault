@@ -60,7 +60,12 @@ def _validate_komodo_url(url: str) -> str:
         resolved_ips = socket.getaddrinfo(hostname, None)
         for _family, _type, _proto, _canonname, sockaddr in resolved_ips:
             addr = ip_address(sockaddr[0])
-            if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+            if (
+                addr.is_private
+                or addr.is_loopback
+                or addr.is_link_local
+                or addr.is_reserved
+            ):
                 raise HTTPException(
                     status_code=400,
                     detail=f"URL resolves to a private/internal address ({addr}). This is not allowed.",

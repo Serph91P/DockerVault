@@ -2,7 +2,9 @@
 Komodo integration API endpoints.
 """
 
-from typing import Optional
+from typing import Literal, Optional
+
+import logging
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -11,6 +13,7 @@ from app.config import settings
 from app.komodo import komodo_client
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class KomodoConfigUpdate(BaseModel):
@@ -25,7 +28,7 @@ class ContainerActionRequest(BaseModel):
     """Container action request."""
 
     container_name: str
-    action: str  # start, stop
+    action: Literal["start", "stop"]
     reason: Optional[str] = None
 
 
@@ -61,18 +64,23 @@ async def request_container_action(request: ContainerActionRequest):
     if not settings.KOMODO_ENABLED:
         raise HTTPException(status_code=400, detail="Komodo integration is not enabled")
 
+    logger.info(
+        "Komodo container action: %s on %s (reason: %s)",
+        request.action,
+        request.container_name,
+        request.reason,
+    )
+
     if request.action == "stop":
         success = await komodo_client.request_container_stop(
             request.container_name,
             request.reason or "backup",
         )
-    elif request.action == "start":
+    else:
         success = await komodo_client.request_container_start(
             request.container_name,
             request.reason or "backup_complete",
         )
-    else:
-        raise HTTPException(status_code=400, detail=f"Unknown action: {request.action}")
 
     if not success:
         raise HTTPException(
