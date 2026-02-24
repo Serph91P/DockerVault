@@ -79,7 +79,7 @@ export default function EncryptionSetup() {
 
   const regenerateMutation = useMutation<SetupResponse, Error, void>({
     mutationFn: async () => {
-      const res = await api.post('/encryption/regenerate?confirm_data_loss=true');
+      const res = await api.post('/encryption/regenerate', { confirm_data_loss: true });
       return res.data as SetupResponse;
     },
     onSuccess: (data: SetupResponse) => {
