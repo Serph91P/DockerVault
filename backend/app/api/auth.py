@@ -15,6 +15,7 @@ from app.auth import (
     get_session_user,
     get_user_by_username,
     hash_password,
+    invalidate_all_user_sessions,
     invalidate_session,
     verify_password,
 )
@@ -190,7 +191,14 @@ async def login(request: Request, data: LoginRequest, response: Response):
         # Get user
         user = await get_user_by_username(data.username, db)
 
-        if not user or not verify_password(data.password, user.password_hash):
+        # Constant-time comparison: always run bcrypt to prevent
+        # timing side-channel that reveals whether a username exists
+        DUMMY_HASH = "$2b$12$LJ3m4ys3Lg2UsSEgDKr9ceULEiZoSUsVT2D0E.kFYRPQr0K3YBmiy"
+        password_valid = verify_password(
+            data.password, user.password_hash if user else DUMMY_HASH
+        )
+
+        if not user or not password_valid:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid username or password",
@@ -249,10 +257,14 @@ async def logout(request: Request, response: Response):
 async def change_password(
     request: Request,
     data: ChangePasswordRequest,
+    response: Response,
     current_user: User = Depends(get_current_user),
 ):
     """
     Change password for current user.
+
+    Invalidates all existing sessions and creates a new one for the
+    current request, forcing re-authentication on all other devices.
     """
     async with async_session() as db:
         # Get fresh user from database
@@ -283,7 +295,22 @@ async def change_password(
         user.password_hash = hash_password(data.new_password)
         await db.commit()
 
-        logger.info(f"Password changed for user: {user.username}")
+        # Invalidate all sessions, then create a fresh one for this device
+        count = await invalidate_all_user_sessions(user.id, db)
+        new_token = await create_session(user.id, db)
+
+        response.set_cookie(
+            key="session_token",
+            value=new_token,
+            httponly=True,
+            secure=settings.COOKIE_SECURE,
+            samesite="lax",
+            max_age=SESSION_EXPIRE_HOURS * 3600,
+        )
+
+        logger.info(
+            f"Password changed for user {user.username}, invalidated {count} sessions"
+        )
 
         return {"message": "Password changed successfully"}
 
