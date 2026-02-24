@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useRef, useEffect } from 'react'
 import { Cloud, HardDrive, Plus, Check, ExternalLink } from 'lucide-react'
 import { WizardData } from './index'
 import { RemoteStorage } from '../../api'
@@ -40,20 +40,20 @@ const STORAGE_TYPES: Record<string, { icon: React.ReactNode; color: string; name
 }
 
 export default function StepStorage({ data, updateData, storages, isLoadingStorages }: Props) {
-  const [hasAutoSelected, setHasAutoSelected] = useState(false)
+  const hasAutoSelected = useRef(false)
 
   const enabledStorages = storages.filter((s) => s.enabled !== false)
 
   // Smart default: auto-select the single enabled storage if only one exists
   useEffect(() => {
-    if (hasAutoSelected || data.remoteStorageIds.length > 0) return
+    if (hasAutoSelected.current || data.remoteStorageIds.length > 0) return
     if (isLoadingStorages) return
 
     if (enabledStorages.length === 1) {
       updateData({ remoteStorageIds: [enabledStorages[0].id] })
     }
-    setHasAutoSelected(true)
-  }, [enabledStorages, isLoadingStorages, hasAutoSelected])
+    hasAutoSelected.current = true
+  }, [enabledStorages, isLoadingStorages, data.remoteStorageIds.length, updateData])
 
   const toggleStorage = (storageId: number) => {
     const newIds = data.remoteStorageIds.includes(storageId)
