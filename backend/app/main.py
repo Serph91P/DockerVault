@@ -16,6 +16,7 @@ from slowapi.errors import RateLimitExceeded
 from app.api import router as api_router
 from app.auth import get_session_user, is_setup_complete
 from app.config import settings
+from app.credential_encryption import _enforce_key_file_permissions
 from app.database import async_session, init_db
 from app.rate_limit import limiter
 from app.scheduler import BackupScheduler
@@ -43,6 +44,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     # Startup
     logger.info("Starting DockerVault backend...")
+    _enforce_key_file_permissions()
     await init_db()
     logger.info("Database initialized")
     scheduler = BackupScheduler()
@@ -65,6 +67,9 @@ app = FastAPI(
     ),
     version="1.0.0",
     lifespan=lifespan,
+    docs_url="/docs" if settings.ENABLE_DOCS else None,
+    redoc_url="/redoc" if settings.ENABLE_DOCS else None,
+    openapi_url="/openapi.json" if settings.ENABLE_DOCS else None,
 )
 
 app.state.limiter = limiter

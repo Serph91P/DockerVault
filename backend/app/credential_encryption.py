@@ -10,6 +10,8 @@ import logging
 import os
 from pathlib import Path
 
+import stat
+
 from cryptography.fernet import Fernet, InvalidToken
 
 from app.config import settings
@@ -19,6 +21,20 @@ logger = logging.getLogger(__name__)
 FERNET_PREFIX = "fernet:"
 _KEY_FILE_PATH = Path("/app/data/.credential_key")
 _fernet: Fernet | None = None
+
+
+def _enforce_key_file_permissions() -> None:
+    """Verify and fix key file permissions to 0600 on startup."""
+    if not _KEY_FILE_PATH.exists():
+        return
+    current = _KEY_FILE_PATH.stat().st_mode & 0o777
+    if current != 0o600:
+        logger.warning(
+            "Key file %s had insecure permissions %o, fixing to 0600",
+            _KEY_FILE_PATH,
+            current,
+        )
+        os.chmod(_KEY_FILE_PATH, 0o600)
 
 
 def _get_fernet() -> Fernet:
@@ -32,6 +48,7 @@ def _get_fernet() -> Fernet:
     if not key:
         if _KEY_FILE_PATH.exists():
             key = _KEY_FILE_PATH.read_text().strip()
+            _enforce_key_file_permissions()
             logger.info("Loaded credential encryption key from %s", _KEY_FILE_PATH)
         else:
             key = Fernet.generate_key().decode()
