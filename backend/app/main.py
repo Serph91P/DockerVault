@@ -68,6 +68,7 @@ PUBLIC_PATHS = {
     "/api/v1/auth/status",
     "/api/v1/auth/setup",
     "/api/v1/auth/login",
+    "/ws",  # WebSocket handles its own token-based auth
 }
 
 
