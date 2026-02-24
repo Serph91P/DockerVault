@@ -200,8 +200,14 @@ async def create_backup(request: CreateBackupRequest):
 
     logger.info(f"Created backup {backup.id}, starting backup task...")
 
-    # Run backup in background
-    asyncio.create_task(backup_engine.run_backup(backup.id))
+    # Run backup in background with error logging
+    async def _run_backup_logged(bid: int):
+        try:
+            await backup_engine.run_backup(bid)
+        except Exception as exc:
+            logger.error("Background backup task %d failed: %s", bid, exc)
+
+    asyncio.create_task(_run_backup_logged(backup.id))
 
     return BackupResponse(
         id=backup.id,
@@ -230,24 +236,19 @@ async def restore_backup(backup_id: int, request: RestoreBackupRequest):
     to prevent path traversal attacks.
     """
     if request.target_path:
-        # Validate the target path to prevent path traversal
+        # Resolve symlinks and normalize to prevent TOCTOU attacks
         abs_path = os.path.realpath(request.target_path)
 
-        # Check for path traversal attempts
-        if ".." in request.target_path:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid restore path: path traversal not allowed",
-            )
-
         # Ensure path is within allowed restore directories
-        # Allow restoring to backup base path or Docker volume paths
         allowed_prefixes = [
-            os.path.abspath(settings.BACKUP_BASE_PATH),
+            os.path.realpath(settings.BACKUP_BASE_PATH),
             "/var/lib/docker/volumes",
         ]
 
-        is_allowed = any(abs_path.startswith(prefix) for prefix in allowed_prefixes)
+        is_allowed = any(
+            abs_path == prefix or abs_path.startswith(prefix + os.sep)
+            for prefix in allowed_prefixes
+        )
 
         if not is_allowed:
             raise HTTPException(
@@ -402,7 +403,7 @@ def _sanitize_filename(name: str) -> str:
     Prevents header injection by stripping unsafe characters.
     """
     basename = os.path.basename(name)
-    sanitized = re.sub(r'[^a-zA-Z0-9._-]', '_', basename)
+    sanitized = re.sub(r"[^a-zA-Z0-9._-]", "_", basename)
     sanitized = sanitized[:255]
     return sanitized or "download"
 
@@ -459,11 +460,11 @@ async def _get_decrypted_archive_path(
             private_key=private_key,
             output_path=temp_path,
         )
-    except DecryptionError as e:
+    except DecryptionError:
         temp_path.unlink(missing_ok=True)
         raise HTTPException(
             status_code=400,
-            detail=f"Decryption failed. Is the private key correct? ({e})",
+            detail="Decryption failed. Is the private key correct?",
         )
 
     decrypted_path = str(temp_path)
@@ -703,37 +704,47 @@ async def download_backup_file(backup_id: int, file_path: str):
 
     mode = _get_tar_mode(archive_path)
 
+    tar = None
     try:
-        with tarfile.open(archive_path, mode) as tar:
-            normalized_path = _validate_archive_path(file_path)
+        tar = tarfile.open(archive_path, mode)
+        normalized_path = _validate_archive_path(file_path)
 
-            member = tar.getmember(normalized_path)
+        member = tar.getmember(normalized_path)
 
-            if member.isdir():
-                raise HTTPException(
-                    status_code=400, detail="Cannot download directories"
-                )
+        if member.isdir():
+            tar.close()
+            raise HTTPException(status_code=400, detail="Cannot download directories")
 
-            file_obj = tar.extractfile(member)
-            if file_obj is None:
-                raise HTTPException(status_code=500, detail="Failed to extract file")
+        file_obj = tar.extractfile(member)
+        if file_obj is None:
+            tar.close()
+            raise HTTPException(status_code=500, detail="Failed to extract file")
 
-            filename = _sanitize_filename(member.name)
+        filename = _sanitize_filename(member.name)
 
-            def iter_file():
+        def iter_file():
+            try:
                 while chunk := file_obj.read(65536):
                     yield chunk
+            finally:
+                file_obj.close()
+                tar.close()
 
-            return StreamingResponse(
-                iter_file(),
-                media_type="application/octet-stream",
-                headers={
-                    "Content-Disposition": f'attachment; filename="{filename}"',
-                },
-            )
+        return StreamingResponse(
+            iter_file(),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Cache-Control": "no-store",
+            },
+        )
 
     except KeyError:
+        if tar:
+            tar.close()
         raise HTTPException(status_code=404, detail="File not found in archive")
     except tarfile.TarError as e:
-        logger.error(f"Failed to extract file from {archive_path}: {e}")
+        if tar:
+            tar.close()
+        logger.error("Failed to extract file from archive: %s", e)
         raise HTTPException(status_code=500, detail="Failed to read backup archive")

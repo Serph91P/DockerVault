@@ -3,7 +3,7 @@ Schedules API endpoints.
 Redesigned to support Schedule as a standalone entity that can be reused across targets.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -257,7 +257,7 @@ async def update_schedule(schedule_id: int, data: ScheduleUpdate, request: Reque
         if data.enabled is not None:
             schedule.enabled = data.enabled
 
-        schedule.updated_at = datetime.utcnow()
+        schedule.updated_at = datetime.now(timezone.utc)
         await session.commit()
         await session.refresh(schedule)
 

@@ -2,12 +2,15 @@
 Docker API endpoints.
 """
 
+import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.docker_client import docker_client
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -125,8 +128,12 @@ async def get_container(container_id: str):
 
 
 @router.post("/containers/{container_id}/stop")
-async def stop_container(container_id: str, timeout: int = 30):
+async def stop_container(
+    container_id: str,
+    timeout: int = Query(default=30, ge=1, le=300),
+):
     """Stop a container."""
+    logger.info("Stopping container %s (timeout=%ds)", container_id, timeout)
     success = await docker_client.stop_container(container_id, timeout=timeout)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to stop container")
@@ -136,6 +143,7 @@ async def stop_container(container_id: str, timeout: int = 30):
 @router.post("/containers/{container_id}/start")
 async def start_container(container_id: str):
     """Start a container."""
+    logger.info("Starting container %s", container_id)
     success = await docker_client.start_container(container_id)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to start container")

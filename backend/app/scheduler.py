@@ -4,7 +4,7 @@ Backup scheduler using APScheduler.
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from apscheduler.jobstores.memory import MemoryJobStore
@@ -182,7 +182,7 @@ class BackupScheduler:
                     update(BackupSchedule)
                     .where(BackupSchedule.target_id == target_id)
                     .values(
-                        last_run=datetime.utcnow(),
+                        last_run=datetime.now(timezone.utc),
                         next_run=self.get_next_run(cron_expr) if cron_expr else None,
                     )
                 )

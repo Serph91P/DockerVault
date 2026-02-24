@@ -5,7 +5,7 @@ Implements Grandfather-Father-Son (GFS) backup retention strategy.
 
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List
 
@@ -109,7 +109,7 @@ class RetentionManager:
         Select which backups to keep based on GFS strategy.
         Returns set of backup IDs to keep.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         max_age = now - timedelta(days=policy.max_age_days)
 
         to_keep = set()

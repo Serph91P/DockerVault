@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 
 from croniter import croniter
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -45,16 +45,14 @@ def _validate_hook_command(v: str | None) -> str | None:
     args = shlex.split(v)
     allowed = settings.ALLOWED_HOOK_COMMANDS.split(",")
     if args[0] not in allowed:
-        raise ValueError(
-            f"Command '{args[0]}' is not allowed. Allowed: {allowed}"
-        )
+        raise ValueError(f"Command '{args[0]}' is not allowed. Allowed: {allowed}")
     return v
 
 
 class TargetCreate(BaseModel):
     """Create backup target request."""
 
-    name: str
+    name: str = Field(..., min_length=1, max_length=255)
     target_type: str  # container, volume, path, stack
     container_name: Optional[str] = None
     volume_name: Optional[str] = None
@@ -275,6 +273,13 @@ async def create_target(target: TargetCreate):
             raise HTTPException(
                 status_code=400, detail="host_path required for path type"
             )
+        if target.target_type == "path" and target.host_path:
+            real_host = os.path.realpath(target.host_path)
+            if not os.path.exists(real_host):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Path '{target.host_path}' does not exist",
+                )
         if target.target_type == "stack" and not target.stack_name:
             raise HTTPException(
                 status_code=400, detail="stack_name required for stack type"

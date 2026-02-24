@@ -12,7 +12,7 @@ import tarfile
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -78,7 +78,7 @@ class BackupMetrics:
 
         self.target_durations[target_id].append(duration)
         self.target_sizes[target_id].append(size)
-        self.last_backup_time = datetime.utcnow()
+        self.last_backup_time = datetime.now(timezone.utc)
 
         # Keep only last 100 entries per target to limit memory
         if len(self.target_durations[target_id]) > 100:
@@ -351,7 +351,7 @@ class BackupEngine:
                         )
                         backup.status = BackupStatus.FAILED
                         backup.error_message = error_msg
-                        backup.completed_at = datetime.utcnow()
+                        backup.completed_at = datetime.now(timezone.utc)
                         await session.commit()
                         await self._notify_progress(backup_id, -1, error_msg)
 
@@ -362,7 +362,7 @@ class BackupEngine:
 
                 # Update status to running
                 backup.status = BackupStatus.RUNNING
-                backup.started_at = datetime.utcnow()
+                backup.started_at = datetime.now(timezone.utc)
                 await session.commit()
 
             await self._notify_progress(backup_id, 0, "Starting backup...")
@@ -476,7 +476,7 @@ class BackupEngine:
             # Update backup record
             async with async_session() as session:
                 duration_seconds = int(
-                    (datetime.utcnow() - backup.started_at).total_seconds()
+                    (datetime.now(timezone.utc) - backup.started_at).total_seconds()
                 )
                 await session.execute(
                     update(Backup)
@@ -486,7 +486,7 @@ class BackupEngine:
                         file_path=backup_path,
                         file_size=file_size,
                         checksum=checksum,
-                        completed_at=datetime.utcnow(),
+                        completed_at=datetime.now(timezone.utc),
                         duration_seconds=duration_seconds,
                         encrypted=encrypted,
                         encryption_key_path=encryption_key_path,
@@ -549,7 +549,7 @@ class BackupEngine:
                     .values(
                         status=BackupStatus.FAILED,
                         error_message=str(e),
-                        completed_at=datetime.utcnow(),
+                        completed_at=datetime.now(timezone.utc),
                     )
                 )
                 await session.commit()
@@ -631,7 +631,7 @@ class BackupEngine:
             raise ValueError(f"Unknown target type: {target.target_type}")
 
         # Create backup directory
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         backup_dir = Path(settings.BACKUP_BASE_PATH) / target.name
         backup_dir.mkdir(parents=True, exist_ok=True)
 
