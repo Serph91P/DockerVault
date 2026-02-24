@@ -289,6 +289,7 @@ export interface KomodoSettings {
   enabled: boolean
   api_url: string | null
   has_api_key: boolean
+  has_api_secret: boolean
   connected: boolean
 }
 
@@ -314,7 +315,7 @@ export interface SystemInfo {
 
 export const settingsApi = {
   getKomodo: () => api.get<KomodoSettings>('/settings/komodo'),
-  updateKomodo: (data: { enabled: boolean; api_url?: string; api_key?: string }) =>
+  updateKomodo: (data: { enabled: boolean; api_url?: string; api_key?: string; api_secret?: string }) =>
     api.put<KomodoSettings>('/settings/komodo', data),
   testKomodo: () => api.post<KomodoTestResult>('/settings/komodo/test'),
   getSystemInfo: () => api.get<SystemInfo>('/settings/system-info'),

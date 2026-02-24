@@ -22,6 +22,7 @@ class KomodoClient:
     def __init__(self):
         self.api_url = settings.KOMODO_API_URL.rstrip("/")
         self.api_key = settings.KOMODO_API_KEY
+        self.api_secret = settings.KOMODO_API_SECRET
         self.enabled = settings.KOMODO_ENABLED
         self._session: Optional[aiohttp.ClientSession] = None
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
@@ -32,7 +33,9 @@ class KomodoClient:
         if self._session is None or self._session.closed:
             headers = {}
             if self.api_key:
-                headers["Authorization"] = f"Bearer {self.api_key}"
+                headers["x-api-key"] = self.api_key
+            if self.api_secret:
+                headers["x-api-secret"] = self.api_secret
             self._session = aiohttp.ClientSession(headers=headers)
         return self._session
 
@@ -228,7 +231,8 @@ class KomodoClient:
             await self._ws.send_json(
                 {
                     "type": "auth",
-                    "token": self.api_key,
+                    "key": self.api_key,
+                    "secret": self.api_secret,
                     "client": "backup-manager",
                 }
             )
