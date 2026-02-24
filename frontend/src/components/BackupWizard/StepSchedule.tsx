@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Calendar, Clock, HelpCircle, Plus, Ban } from 'lucide-react'
 import { WizardData } from './index'
 import { ScheduleEntity } from '../../api'
@@ -106,45 +106,35 @@ function getNextRuns(expr: string, count: number): Date[] {
 
 export default function StepSchedule({ data, updateData, schedules, isLoadingSchedules }: Props) {
   const [showCronHelp, setShowCronHelp] = useState(false)
-  const [createNew, setCreateNew] = useState(false)
-  const [hasAutoSelected, setHasAutoSelected] = useState(false)
+  const createNew = !!data.newSchedule
+  const hasAutoSelected = useRef(false)
 
   // Smart defaults: auto-select schedule based on available options
   useEffect(() => {
-    if (hasAutoSelected || data.scheduleId || data.newSchedule) return
+    if (hasAutoSelected.current || data.scheduleId || data.newSchedule) return
     if (isLoadingSchedules) return
 
     if (schedules.length === 0) {
-      // No schedules exist: default to "create new"
-      setCreateNew(true)
       updateData({
         scheduleId: null,
         newSchedule: { name: '', cronExpression: '0 0 * * *', description: '' },
       })
     } else if (schedules.length === 1) {
-      // Exactly one schedule: auto-select it
       updateData({ scheduleId: schedules[0].id, newSchedule: null })
-      setCreateNew(false)
-    } else {
-      // Multiple schedules: neutral state, user must choose
-      setCreateNew(false)
     }
-    setHasAutoSelected(true)
-  }, [schedules, isLoadingSchedules, hasAutoSelected])
+    hasAutoSelected.current = true
+  }, [schedules, isLoadingSchedules, data.scheduleId, data.newSchedule, updateData])
 
   const handleScheduleSelect = (scheduleId: string) => {
     if (scheduleId === 'none') {
       updateData({ scheduleId: null, newSchedule: null })
-      setCreateNew(false)
     } else if (scheduleId === 'new') {
       updateData({
         scheduleId: null,
         newSchedule: { name: '', cronExpression: '0 0 * * *', description: '' },
       })
-      setCreateNew(true)
     } else {
       updateData({ scheduleId: parseInt(scheduleId), newSchedule: null })
-      setCreateNew(false)
     }
   }
 
