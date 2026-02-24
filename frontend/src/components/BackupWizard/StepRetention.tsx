@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { Archive, Plus, Clock, Trash2, Ban, BarChart3 } from 'lucide-react'
 import { WizardData } from './index'
 import { RetentionPolicy } from '../../api'
@@ -60,17 +60,15 @@ function RetentionPreview({ keepLast, keepDaily, keepWeekly, keepMonthly }: {
 }
 
 export default function StepRetention({ data, updateData, policies, isLoadingPolicies }: Props) {
-  const [createNew, setCreateNew] = useState(false)
-  const [hasAutoSelected, setHasAutoSelected] = useState(false)
+  const createNew = !!data.newRetentionPolicy
+  const hasAutoSelected = useRef(false)
 
   // Smart defaults: auto-select policy based on available options
   useEffect(() => {
-    if (hasAutoSelected || data.retentionPolicyId || data.newRetentionPolicy) return
+    if (hasAutoSelected.current || data.retentionPolicyId || data.newRetentionPolicy) return
     if (isLoadingPolicies) return
 
     if (policies.length === 0) {
-      // No policies exist: default to "create new"
-      setCreateNew(true)
       updateData({
         retentionPolicyId: null,
         newRetentionPolicy: {
@@ -82,15 +80,10 @@ export default function StepRetention({ data, updateData, policies, isLoadingPol
         },
       })
     } else if (policies.length === 1) {
-      // Exactly one policy: auto-select it
       updateData({ retentionPolicyId: policies[0].id, newRetentionPolicy: null })
-      setCreateNew(false)
-    } else {
-      // Multiple policies: neutral state, user must choose
-      setCreateNew(false)
     }
-    setHasAutoSelected(true)
-  }, [policies, isLoadingPolicies, hasAutoSelected])
+    hasAutoSelected.current = true
+  }, [policies, isLoadingPolicies, data.retentionPolicyId, data.newRetentionPolicy, updateData])
 
   const handlePolicySelect = (policyId: string) => {
     if (policyId === 'none') {
@@ -98,7 +91,6 @@ export default function StepRetention({ data, updateData, policies, isLoadingPol
         retentionPolicyId: null,
         newRetentionPolicy: null,
       })
-      setCreateNew(false)
     } else if (policyId === 'new') {
       updateData({
         retentionPolicyId: null,
@@ -110,10 +102,8 @@ export default function StepRetention({ data, updateData, policies, isLoadingPol
           keepMonthly: 0,
         },
       })
-      setCreateNew(true)
     } else {
       updateData({ retentionPolicyId: parseInt(policyId), newRetentionPolicy: null })
-      setCreateNew(false)
     }
   }
 
