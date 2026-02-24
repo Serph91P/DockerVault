@@ -30,7 +30,7 @@ class Settings(BaseSettings):
 
     # Security
     CORS_ORIGINS: str = "http://localhost"
-    COOKIE_SECURE: bool = False
+    COOKIE_SECURE: bool = True  # Safe default for production behind TLS proxy
     CREDENTIAL_ENCRYPTION_KEY: str = ""
     ALLOWED_HOOK_COMMANDS: str = (
         "pg_dump,pg_dumpall,mysqldump,mongodump,redis-cli,mariadb-dump"

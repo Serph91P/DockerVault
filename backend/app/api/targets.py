@@ -6,7 +6,7 @@ import logging
 import os
 import shlex
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from croniter import croniter
 from fastapi import APIRouter, HTTPException
@@ -63,7 +63,7 @@ class TargetCreate(BaseModel):
     """Create backup target request."""
 
     name: str = Field(..., min_length=1, max_length=255)
-    target_type: str  # container, volume, path, stack
+    target_type: Literal["container", "volume", "path", "stack"]
     container_name: Optional[str] = None
     volume_name: Optional[str] = None
     host_path: Optional[str] = None

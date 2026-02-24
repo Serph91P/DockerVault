@@ -31,23 +31,23 @@ class LoginRequest(BaseModel):
     """Login request."""
 
     username: str = Field(..., min_length=3, max_length=255)
-    password: str = Field(..., min_length=8)
+    password: str = Field(..., min_length=8, max_length=128)
 
 
 class SetupRequest(BaseModel):
     """Initial setup request to create admin user."""
 
     username: str = Field(..., min_length=3, max_length=255)
-    password: str = Field(..., min_length=8)
-    confirm_password: str = Field(..., min_length=8)
+    password: str = Field(..., min_length=8, max_length=128)
+    confirm_password: str = Field(..., min_length=8, max_length=128)
 
 
 class ChangePasswordRequest(BaseModel):
     """Change password request."""
 
-    current_password: str = Field(..., min_length=1)
-    new_password: str = Field(..., min_length=8)
-    confirm_password: str = Field(..., min_length=8)
+    current_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
+    confirm_password: str = Field(..., min_length=8, max_length=128)
 
 
 class UserResponse(BaseModel):
@@ -246,8 +246,13 @@ async def logout(request: Request, response: Response):
         async with async_session() as db:
             await invalidate_session(token, db)
 
-    # Clear cookie
-    response.delete_cookie(key="session_token")
+    # Clear cookie with matching attributes so the browser actually deletes it
+    response.delete_cookie(
+        key="session_token",
+        httponly=True,
+        secure=settings.COOKIE_SECURE,
+        samesite="lax",
+    )
 
     return {"message": "Logged out successfully"}
 

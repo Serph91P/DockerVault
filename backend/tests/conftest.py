@@ -116,12 +116,13 @@ def temp_backup_dir():
 @pytest.fixture
 def mock_file_operations():
     """Mock file operations for testing."""
-    with patch("builtins.open"), patch("os.path.exists") as mock_exists, patch(
-        "os.makedirs"
-    ) as mock_makedirs, patch("shutil.copy2") as mock_copy, patch(
-        "tarfile.open"
-    ) as mock_tarfile:
-
+    with (
+        patch("builtins.open"),
+        patch("os.path.exists") as mock_exists,
+        patch("os.makedirs") as mock_makedirs,
+        patch("shutil.copy2") as mock_copy,
+        patch("tarfile.open") as mock_tarfile,
+    ):
         mock_exists.return_value = True
         yield {
             "exists": mock_exists,
