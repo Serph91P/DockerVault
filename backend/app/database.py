@@ -322,6 +322,9 @@ async def init_db():
     # Run migrations for existing databases
     await run_migrations()
 
+    # Encrypt any plaintext credentials in remote_storage
+    await _migrate_plaintext_credentials()
+
     # Create default retention policy
     async with async_session() as session:
         from sqlalchemy import select
@@ -423,6 +426,27 @@ async def run_migrations():
                     "DEFAULT 0"
                 )
             )
+
+
+async def _migrate_plaintext_credentials():
+    """Encrypt any plaintext credentials in remote_storage rows."""
+    from app.credential_encryption import FERNET_PREFIX, encrypt_value
+
+    from sqlalchemy import select as sa_select
+
+    async with async_session() as session:
+        result = await session.execute(sa_select(RemoteStorage))
+        storages = result.scalars().all()
+        for storage in storages:
+            changed = False
+            for col in ("password", "s3_secret_key", "s3_access_key"):
+                val = getattr(storage, col, None)
+                if val and not val.startswith(FERNET_PREFIX):
+                    setattr(storage, col, encrypt_value(val))
+                    changed = True
+            if changed:
+                session.add(storage)
+        await session.commit()
 
 
 async def get_session() -> AsyncSession:

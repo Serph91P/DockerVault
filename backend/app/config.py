@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     DEFAULT_KEEP_MONTHLY: int = 6
     DEFAULT_KEEP_YEARLY: int = 2
 
+    # Security
+    CORS_ORIGINS: str = "http://localhost"
+    COOKIE_SECURE: bool = True
+    CREDENTIAL_ENCRYPTION_KEY: str = ""
+    ALLOWED_HOOK_COMMANDS: str = "pg_dump,pg_dumpall,mysqldump,mongodump,redis-cli,mariadb-dump"
+
     # Komodo Integration
     KOMODO_API_URL: str = ""
     KOMODO_API_KEY: str = ""

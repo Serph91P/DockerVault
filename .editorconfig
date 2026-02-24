@@ -1,0 +1,86 @@
+# .editorconfig
+# https://editorconfig.org
+
+# Top-most EditorConfig file
+root = true
+
+# ── Universal defaults ───────────────────────────────────────────────
+[*]
+indent_style = space
+indent_size = 2
+end_of_line = lf
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+# ── Python (PEP 8: 4 spaces) ────────────────────────────────────────
+[*.py]
+indent_size = 4
+max_line_length = 88
+
+# ── INI / Config files ──────────────────────────────────────────────
+[*.{ini,cfg,conf,toml}]
+indent_size = 4
+
+# ── Markdown ─────────────────────────────────────────────────────────
+[*.md]
+trim_trailing_whitespace = false
+max_line_length = off
+
+# ── Makefiles (require tabs) ────────────────────────────────────────
+[Makefile]
+indent_style = tab
+
+[*.mk]
+indent_style = tab
+
+# ── Shell scripts ────────────────────────────────────────────────────
+[*.sh]
+indent_size = 2
+
+# ── Docker ───────────────────────────────────────────────────────────
+[Dockerfile]
+indent_size = 4
+
+[Dockerfile.*]
+indent_size = 4
+
+[*.dockerfile]
+indent_size = 4
+
+[docker-compose*.{yml,yaml}]
+indent_size = 2
+
+# ── YAML ─────────────────────────────────────────────────────────────
+[*.{yml,yaml}]
+indent_size = 2
+
+# ── JSON ─────────────────────────────────────────────────────────────
+[*.json]
+indent_size = 2
+insert_final_newline = false
+
+# ── TypeScript / JavaScript / React ──────────────────────────────────
+[*.{ts,tsx,js,jsx,mjs,cjs}]
+indent_size = 2
+
+# ── HTML ─────────────────────────────────────────────────────────────
+[*.html]
+indent_size = 2
+
+# ── CSS ──────────────────────────────────────────────────────────────
+[*.{css,scss,sass,less}]
+indent_size = 2
+
+# ── SQL ──────────────────────────────────────────────────────────────
+[*.sql]
+indent_size = 2
+
+# ── Text / Requirements ─────────────────────────────────────────────
+[*.txt]
+insert_final_newline = true
+
+# ── Git / EditorConfig / Dotfiles ────────────────────────────────────
+[.{gitignore,gitattributes,editorconfig,dockerignore,env,env.*}]
+indent_size = 2
+insert_final_newline = true

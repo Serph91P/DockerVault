@@ -819,6 +819,7 @@ class BackupEngine:
 
         Uses shlex.split to parse the command into arguments, preventing
         shell injection attacks by avoiding shell=True.
+        Only commands in the ALLOWED_HOOK_COMMANDS allowlist are permitted.
         """
         try:
             # Parse command into safe argument list
@@ -828,6 +829,14 @@ class BackupEngine:
 
         if not args:
             raise Exception("Empty hook command")
+
+        allowed = settings.ALLOWED_HOOK_COMMANDS.split(",")
+        if args[0] not in allowed:
+            raise Exception(
+                f"Hook command '{args[0]}' is not in the allowed commands list: {allowed}"
+            )
+
+        logger.info(f"Executing hook command: {args[0]} (full: {command})")
 
         process = await asyncio.create_subprocess_exec(
             *args,
@@ -1024,7 +1033,12 @@ class BackupEngine:
                         )
 
             # Safe to extract after validation
-            tar.extractall(dest)
+            import sys
+
+            if sys.version_info >= (3, 12):
+                tar.extractall(dest, filter="data")
+            else:
+                tar.extractall(dest)
 
     async def _get_encryption_config(self) -> Optional[EncryptionConfig]:
         """Get encryption configuration if set up."""

@@ -10,10 +10,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from app.api import router as api_router
 from app.auth import get_session_user, is_setup_complete
+from app.config import settings
 from app.database import async_session, init_db
+from app.rate_limit import limiter
 from app.scheduler import BackupScheduler
 from app.websocket import router as ws_router
 
@@ -31,7 +35,6 @@ PUBLIC_PATHS = {
     "/api/v1/auth/status",
     "/api/v1/auth/setup",
     "/api/v1/auth/login",
-    "/ws",
 }
 
 
@@ -63,6 +66,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 @app.middleware("http")
@@ -114,10 +120,10 @@ async def auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-# CORS Configuration - allow all origins since we run behind nginx
+# CORS Configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.CORS_ORIGINS.split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

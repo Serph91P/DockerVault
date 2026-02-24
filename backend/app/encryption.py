@@ -188,33 +188,34 @@ async def decrypt_dek(encrypted_dek: bytes, private_key: str) -> bytes:
         raise DecryptionError("age not installed")
 
     # Write private key to temp file (age requires file input for identity)
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".key", delete=False) as f:
+    # delete=True ensures the file is removed when the context manager exits
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".key", delete=True) as f:
         f.write(private_key)
+        f.flush()
         key_file = f.name
+        os.chmod(key_file, 0o600)
 
-    try:
-        process = await asyncio.create_subprocess_exec(
-            "age",
-            "-d",
-            "-i",
-            key_file,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await process.communicate(input=encrypted_dek)
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "age",
+                "-d",
+                "-i",
+                key_file,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate(input=encrypted_dek)
 
-        if process.returncode != 0:
-            raise DecryptionError(f"DEK decryption failed: {stderr.decode()}")
+            if process.returncode != 0:
+                raise DecryptionError(f"DEK decryption failed: {stderr.decode()}")
 
-        return stdout
+            return stdout
 
-    except Exception as e:
-        if isinstance(e, DecryptionError):
-            raise
-        raise DecryptionError(f"DEK decryption error: {e}")
-    finally:
-        os.unlink(key_file)
+        except Exception as e:
+            if isinstance(e, DecryptionError):
+                raise
+            raise DecryptionError(f"DEK decryption error: {e}")
 
 
 async def encrypt_file(input_path: Path, output_path: Path, dek: bytes) -> None:
