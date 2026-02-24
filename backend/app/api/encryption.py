@@ -250,4 +250,5 @@ async def regenerate_keys(
         )
 
     except EncryptionError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Key regeneration failed: %s", e)
+        raise HTTPException(status_code=500, detail="Key regeneration failed")
