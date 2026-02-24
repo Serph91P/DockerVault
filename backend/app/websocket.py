@@ -92,9 +92,13 @@ backup_engine.add_progress_callback(backup_progress_callback)
 @router.websocket("/updates")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time updates."""
-    # Authenticate via token query parameter
-    token = websocket.query_params.get("token")
-    if token is None:
+    # Authenticate via cookie (sent automatically by the browser) or
+    # fall back to a token query parameter for programmatic clients.
+    token = websocket.cookies.get("session_token")
+    if not token:
+        token = websocket.query_params.get("token")
+
+    if not token:
         await websocket.close(code=4001, reason="Authentication required")
         return
 
