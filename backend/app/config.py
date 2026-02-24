@@ -33,7 +33,9 @@ class Settings(BaseSettings):
     COOKIE_SECURE: bool = True
     CREDENTIAL_ENCRYPTION_KEY: str = ""
     ALLOWED_HOOK_COMMANDS: str = "pg_dump,pg_dumpall,mysqldump,mongodump,redis-cli,mariadb-dump"
-
+    HOOK_COMMAND_TIMEOUT: int = 300
+    ALLOWED_SSH_KEY_DIRS: str = "/app/data/ssh_keys,/root/.ssh"
+    ENABLE_DOCS: bool = False
     # Komodo Integration
     KOMODO_API_URL: str = ""
     KOMODO_API_KEY: str = ""
