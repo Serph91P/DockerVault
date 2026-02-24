@@ -819,6 +819,7 @@ class BackupEngine:
 
         Uses shlex.split to parse the command into arguments, preventing
         shell injection attacks by avoiding shell=True.
+        Only commands in the ALLOWED_HOOK_COMMANDS allowlist are permitted.
         """
         try:
             # Parse command into safe argument list
@@ -829,12 +830,30 @@ class BackupEngine:
         if not args:
             raise Exception("Empty hook command")
 
+        allowed = settings.ALLOWED_HOOK_COMMANDS.split(",")
+        if args[0] not in allowed:
+            raise Exception(
+                f"Hook command '{args[0]}' is not in the allowed commands list: {allowed}"
+            )
+
+        logger.info(f"Executing hook command: {args[0]} (full: {command})")
+
         process = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await process.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=settings.HOOK_COMMAND_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            raise Exception(
+                f"Hook command timed out after {settings.HOOK_COMMAND_TIMEOUT}s"
+            )
 
         if process.returncode != 0:
             raise Exception(f"Hook command failed: {stderr.decode()}")
@@ -988,13 +1007,13 @@ class BackupEngine:
         Validates that all extracted files stay within the destination
         directory to prevent path traversal attacks (CVE-2007-4559).
         """
-        abs_dest = os.path.abspath(dest)
+        abs_dest = os.path.realpath(dest)
 
         with tarfile.open(source, mode) as tar:
             # Validate all members before extraction
             for member in tar.getmembers():
                 member_path = os.path.join(dest, member.name)
-                abs_member = os.path.abspath(member_path)
+                abs_member = os.path.realpath(member_path)
 
                 # Check for path traversal
                 if (
@@ -1016,7 +1035,7 @@ class BackupEngine:
                     link_path = os.path.join(
                         dest, os.path.dirname(member.name), member.linkname
                     )
-                    abs_link = os.path.abspath(link_path)
+                    abs_link = os.path.realpath(link_path)
                     if not abs_link.startswith(abs_dest + os.sep):
                         raise ValueError(
                             f"Symlink escape detected in archive: "
@@ -1024,7 +1043,12 @@ class BackupEngine:
                         )
 
             # Safe to extract after validation
-            tar.extractall(dest)
+            import sys
+
+            if sys.version_info >= (3, 12):
+                tar.extractall(dest, filter="data")
+            else:
+                tar.extractall(dest)
 
     async def _get_encryption_config(self) -> Optional[EncryptionConfig]:
         """Get encryption configuration if set up."""

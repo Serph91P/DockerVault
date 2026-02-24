@@ -32,5 +32,11 @@ webdavclient3>=3.14.6
 bcrypt>=4.0.0
 python-jose[cryptography]>=3.3.0
 
+# Encryption
+cryptography>=42.0.0
+
+# Rate limiting
+slowapi>=0.1.9
+
 # Utilities
 python-dateutil>=2.8.2

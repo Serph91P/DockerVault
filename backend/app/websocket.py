@@ -9,7 +9,9 @@ from typing import Dict, Set
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.auth import get_session_user
 from app.backup_engine import backup_engine
+from app.database import async_session
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +92,18 @@ backup_engine.add_progress_callback(backup_progress_callback)
 @router.websocket("/updates")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time updates."""
+    # Authenticate via token query parameter
+    token = websocket.query_params.get("token")
+    if token is None:
+        await websocket.close(code=4001, reason="Authentication required")
+        return
+
+    async with async_session() as db:
+        user = await get_session_user(token, db)
+        if user is None:
+            await websocket.close(code=4001, reason="Invalid or expired session")
+            return
+
     await manager.connect(websocket)
 
     try:

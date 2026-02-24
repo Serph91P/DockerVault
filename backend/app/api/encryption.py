@@ -189,15 +189,23 @@ async def get_instructions(db: AsyncSession = Depends(get_db)):
     }
 
 
+class RegenerateKeysRequest(BaseModel):
+    """Request to regenerate encryption keys."""
+
+    confirm_data_loss: bool
+
+
 @router.post("/regenerate", response_model=EncryptionSetupResponse)
-async def regenerate_keys(confirm_data_loss: bool, db: AsyncSession = Depends(get_db)):
+async def regenerate_keys(
+    data: RegenerateKeysRequest, db: AsyncSession = Depends(get_db)
+):
     """
     Generate new encryption keys.
 
     WARNING: This will make ALL existing encrypted backups UNRECOVERABLE
     unless you still have the old private key!
     """
-    if not confirm_data_loss:
+    if not data.confirm_data_loss:
         raise HTTPException(
             status_code=400,
             detail=(

@@ -15,10 +15,13 @@ from app.auth import (
     get_session_user,
     get_user_by_username,
     hash_password,
+    invalidate_all_user_sessions,
     invalidate_session,
     verify_password,
 )
+from app.config import settings
 from app.database import User, async_session
+from app.rate_limit import limiter
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -106,7 +109,8 @@ async def get_auth_status(request: Request):
 
 
 @router.post("/setup")
-async def initial_setup(request: SetupRequest, response: Response):
+@limiter.limit("5/minute")
+async def initial_setup(request: Request, data: SetupRequest, response: Response):
     """
     Initial setup - create the first admin user.
 
@@ -124,7 +128,7 @@ async def initial_setup(request: SetupRequest, response: Response):
             )
 
         # Validate passwords match
-        if request.password != request.confirm_password:
+        if data.password != data.confirm_password:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Passwords do not match",
@@ -132,8 +136,8 @@ async def initial_setup(request: SetupRequest, response: Response):
 
         # Create admin user
         user = User(
-            username=request.username,
-            password_hash=hash_password(request.password),
+            username=data.username,
+            password_hash=hash_password(data.password),
             is_admin=True,
         )
         db.add(user)
@@ -148,7 +152,7 @@ async def initial_setup(request: SetupRequest, response: Response):
             key="session_token",
             value=token,
             httponly=True,
-            secure=False,  # Set to True in production with HTTPS
+            secure=settings.COOKIE_SECURE,
             samesite="lax",
             max_age=SESSION_EXPIRE_HOURS * 3600,
         )
@@ -168,7 +172,8 @@ async def initial_setup(request: SetupRequest, response: Response):
 
 
 @router.post("/login")
-async def login(request: LoginRequest, response: Response):
+@limiter.limit("5/minute")
+async def login(request: Request, data: LoginRequest, response: Response):
     """
     Login with username and password.
     """
@@ -184,9 +189,16 @@ async def login(request: LoginRequest, response: Response):
             )
 
         # Get user
-        user = await get_user_by_username(request.username, db)
+        user = await get_user_by_username(data.username, db)
 
-        if not user or not verify_password(request.password, user.password_hash):
+        # Constant-time comparison: always run bcrypt to prevent
+        # timing side-channel that reveals whether a username exists
+        DUMMY_HASH = "$2b$12$LJ3m4ys3Lg2UsSEgDKr9ceULEiZoSUsVT2D0E.kFYRPQr0K3YBmiy"
+        password_valid = verify_password(
+            data.password, user.password_hash if user else DUMMY_HASH
+        )
+
+        if not user or not password_valid:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid username or password",
@@ -204,7 +216,7 @@ async def login(request: LoginRequest, response: Response):
             key="session_token",
             value=token,
             httponly=True,
-            secure=False,  # Set to True in production with HTTPS
+            secure=settings.COOKIE_SECURE,
             samesite="lax",
             max_age=SESSION_EXPIRE_HOURS * 3600,
         )
@@ -241,12 +253,18 @@ async def logout(request: Request, response: Response):
 
 
 @router.post("/change-password")
+@limiter.limit("5/minute")
 async def change_password(
-    request: ChangePasswordRequest,
+    request: Request,
+    data: ChangePasswordRequest,
+    response: Response,
     current_user: User = Depends(get_current_user),
 ):
     """
     Change password for current user.
+
+    Invalidates all existing sessions and creates a new one for the
+    current request, forcing re-authentication on all other devices.
     """
     async with async_session() as db:
         # Get fresh user from database
@@ -260,24 +278,39 @@ async def change_password(
             )
 
         # Verify current password
-        if not verify_password(request.current_password, user.password_hash):
+        if not verify_password(data.current_password, user.password_hash):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Current password is incorrect",
             )
 
         # Validate new passwords match
-        if request.new_password != request.confirm_password:
+        if data.new_password != data.confirm_password:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="New passwords do not match",
             )
 
         # Update password
-        user.password_hash = hash_password(request.new_password)
+        user.password_hash = hash_password(data.new_password)
         await db.commit()
 
-        logger.info(f"Password changed for user: {user.username}")
+        # Invalidate all sessions, then create a fresh one for this device
+        count = await invalidate_all_user_sessions(user.id, db)
+        new_token = await create_session(user.id, db)
+
+        response.set_cookie(
+            key="session_token",
+            value=new_token,
+            httponly=True,
+            secure=settings.COOKIE_SECURE,
+            samesite="lax",
+            max_age=SESSION_EXPIRE_HOURS * 3600,
+        )
+
+        logger.info(
+            f"Password changed for user {user.username}, invalidated {count} sessions"
+        )
 
         return {"message": "Password changed successfully"}
 

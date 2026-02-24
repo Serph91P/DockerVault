@@ -284,7 +284,7 @@ class SSHStorage(StorageBackend):
         Note: The remote_cmd should already have paths sanitized with shlex.quote()
         before being passed to this method.
         """
-        cmd = ["ssh"]
+        cmd = ["ssh", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=15"]
         if self.config.port:
             cmd.extend(["-p", str(self.config.port)])
         if self.config.ssh_key_path:
@@ -376,7 +376,8 @@ class WebDAVStorage(StorageBackend):
         auth = None
         if self.config.username and self.config.password:
             auth = aiohttp.BasicAuth(self.config.username, self.config.password)
-        return aiohttp.ClientSession(auth=auth)
+        timeout = aiohttp.ClientTimeout(total=300, connect=30)
+        return aiohttp.ClientSession(auth=auth, timeout=timeout)
 
     def _get_url(self, remote_path: str) -> str:
         """Build full WebDAV URL"""
@@ -517,6 +518,7 @@ class S3Storage(StorageBackend):
         if self._client is None:
             try:
                 import aioboto3
+                from botocore.config import Config as BotoConfig
 
                 session = aioboto3.Session()
 
@@ -524,12 +526,19 @@ class S3Storage(StorageBackend):
                 if not endpoint_url and self.config.host:
                     endpoint_url = f"https://{self.config.host}"
 
+                boto_config = BotoConfig(
+                    connect_timeout=30,
+                    read_timeout=300,
+                    retries={"max_attempts": 3},
+                )
+
                 self._client = await session.client(
                     "s3",
                     region_name=self.config.s3_region or "us-east-1",
                     aws_access_key_id=self.config.s3_access_key,
                     aws_secret_access_key=self.config.s3_secret_key,
                     endpoint_url=endpoint_url,
+                    config=boto_config,
                 ).__aenter__()
             except ImportError:
                 logger.error("aioboto3 not installed. Run: pip install aioboto3")
@@ -620,7 +629,7 @@ class RcloneStorage(StorageBackend):
 
     async def _run_rclone(self, args: List[str]) -> tuple[int, str, str]:
         """Run rclone command"""
-        cmd = ["rclone"] + args
+        cmd = ["rclone", "--timeout", "300s", "--contimeout", "30s"] + args
 
         process = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -733,6 +742,8 @@ class FTPStorage(StorageBackend):
 
         client = aioftp.Client()
         await client.connect(self.config.host, port=self.config.port or 21)
+        # Set socket timeout for data operations
+        client.socket.settimeout(60)
         if self.config.username:
             await client.login(self.config.username, self.config.password or "")
         return client

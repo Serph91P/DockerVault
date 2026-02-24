@@ -5,13 +5,14 @@ Backups API endpoints.
 import asyncio
 import logging
 import os
+import re
 import tarfile
 import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -78,8 +79,8 @@ def format_size(size_bytes: Optional[int]) -> Optional[str]:
 async def list_backups(
     target_id: Optional[int] = None,
     status: Optional[str] = None,
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(default=50, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
 ):
     """List backups with optional filters and pagination.
 
@@ -230,7 +231,7 @@ async def restore_backup(backup_id: int, request: RestoreBackupRequest):
     """
     if request.target_path:
         # Validate the target path to prevent path traversal
-        abs_path = os.path.abspath(request.target_path)
+        abs_path = os.path.realpath(request.target_path)
 
         # Check for path traversal attempts
         if ".." in request.target_path:
@@ -395,6 +396,30 @@ def _format_file_size(size_bytes: int) -> str:
     return f"{size_bytes:.1f} PB"
 
 
+def _sanitize_filename(name: str) -> str:
+    """Sanitize a filename for use in Content-Disposition headers.
+
+    Prevents header injection by stripping unsafe characters.
+    """
+    basename = os.path.basename(name)
+    sanitized = re.sub(r'[^a-zA-Z0-9._-]', '_', basename)
+    sanitized = sanitized[:255]
+    return sanitized or "download"
+
+
+def _validate_archive_path(file_path: str) -> str:
+    """Normalize and validate a path used for tar member lookup.
+
+    Prevents path traversal by rejecting '..' components and leading slashes.
+    Returns the normalized path for use with tar.getmember().
+    """
+    normalized = os.path.normpath(file_path).lstrip("/\\")
+    parts = normalized.split("/")
+    if ".." in parts or normalized.startswith("/"):
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    return normalized
+
+
 async def _get_decrypted_archive_path(
     backup: Backup, private_key: str
 ) -> tuple[str, str, Path | None]:
@@ -554,11 +579,9 @@ async def download_encrypted_backup_file(
         )
 
         with tarfile.open(archive_path, mode) as tar:
-            normalized_path = os.path.normpath(file_path).lstrip("/\\")
-            if ".." in normalized_path:
-                raise HTTPException(status_code=400, detail="Invalid file path")
+            normalized_path = _validate_archive_path(file_path)
 
-            member = tar.getmember(file_path)
+            member = tar.getmember(normalized_path)
 
             if member.isdir():
                 raise HTTPException(
@@ -569,15 +592,17 @@ async def download_encrypted_backup_file(
             if file_obj is None:
                 raise HTTPException(status_code=500, detail="Failed to extract file")
 
-            content = file_obj.read()
-            filename = os.path.basename(file_path)
+            filename = _sanitize_filename(member.name)
+
+            def iter_file():
+                while chunk := file_obj.read(65536):
+                    yield chunk
 
             return StreamingResponse(
-                iter([content]),
+                iter_file(),
                 media_type="application/octet-stream",
                 headers={
                     "Content-Disposition": f'attachment; filename="{filename}"',
-                    "Content-Length": str(len(content)),
                 },
             )
 
@@ -680,36 +705,30 @@ async def download_backup_file(backup_id: int, file_path: str):
 
     try:
         with tarfile.open(archive_path, mode) as tar:
-            # Validate the file path to prevent path traversal
-            # Normalize path and ensure it doesn't escape
-            normalized_path = os.path.normpath(file_path).lstrip("/\\")
-            if ".." in normalized_path:
-                raise HTTPException(status_code=400, detail="Invalid file path")
+            normalized_path = _validate_archive_path(file_path)
 
-            member = tar.getmember(file_path)
+            member = tar.getmember(normalized_path)
 
             if member.isdir():
                 raise HTTPException(
                     status_code=400, detail="Cannot download directories"
                 )
 
-            # Extract and stream the file
             file_obj = tar.extractfile(member)
             if file_obj is None:
                 raise HTTPException(status_code=500, detail="Failed to extract file")
 
-            # Read content into memory (for small files)
-            # For very large files, consider streaming
-            content = file_obj.read()
+            filename = _sanitize_filename(member.name)
 
-            filename = os.path.basename(file_path)
+            def iter_file():
+                while chunk := file_obj.read(65536):
+                    yield chunk
 
             return StreamingResponse(
-                iter([content]),
+                iter_file(),
                 media_type="application/octet-stream",
                 headers={
                     "Content-Disposition": f'attachment; filename="{filename}"',
-                    "Content-Length": str(len(content)),
                 },
             )
 

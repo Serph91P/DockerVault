@@ -31,16 +31,28 @@ export const useWebSocketStore = create<WebSocketStore>((set, get) => ({
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.host
-    ws = new WebSocket(`${protocol}//${host}/ws/updates`)
+
+    // Extract session token from cookie for WebSocket authentication
+    const tokenMatch = document.cookie.match(/(?:^|;\s*)session_token=([^;]+)/)
+    const token = tokenMatch?.[1] ?? ''
+    const queryParam = token ? `?token=${encodeURIComponent(token)}` : ''
+
+    ws = new WebSocket(`${protocol}//${host}/ws/updates${queryParam}`)
 
     ws.onopen = () => {
       console.log('WebSocket connected')
       set({ connected: true })
     }
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       console.log('WebSocket disconnected')
       set({ connected: false })
+
+      // 4001 = authentication failure — do not reconnect
+      if (event.code === 4001) {
+        console.warn('WebSocket auth failed, not reconnecting')
+        return
+      }
       
       // Reconnect after 5 seconds
       reconnectTimeout = setTimeout(() => {

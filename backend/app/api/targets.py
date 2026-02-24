@@ -4,6 +4,7 @@ Backup targets API endpoints.
 
 import logging
 import os
+import shlex
 from typing import Dict, List, Optional
 
 from croniter import croniter
@@ -12,6 +13,7 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from app.config import settings
 from app.database import BackupTarget, Schedule, async_session
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,19 @@ def validate_cron_expression(cron_expr: Optional[str]) -> Optional[str]:
         raise ValueError(f"Invalid cron expression: {cron_expr}")
 
     return cron_expr
+
+
+def _validate_hook_command(v: str | None) -> str | None:
+    """Validate that a hook command uses only allowed binaries."""
+    if v is None or v.strip() == "":
+        return None
+    args = shlex.split(v)
+    allowed = settings.ALLOWED_HOOK_COMMANDS.split(",")
+    if args[0] not in allowed:
+        raise ValueError(
+            f"Command '{args[0]}' is not allowed. Allowed: {allowed}"
+        )
+    return v
 
 
 class TargetCreate(BaseModel):
@@ -69,6 +84,11 @@ class TargetCreate(BaseModel):
     def validate_schedule_cron(cls, v: Optional[str]) -> Optional[str]:
         return validate_cron_expression(v)
 
+    @field_validator("pre_backup_command", "post_backup_command")
+    @classmethod
+    def validate_hook_commands(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_hook_command(v)
+
 
 class TargetUpdate(BaseModel):
     """Update backup target request."""
@@ -97,6 +117,11 @@ class TargetUpdate(BaseModel):
     @classmethod
     def validate_schedule_cron(cls, v: Optional[str]) -> Optional[str]:
         return validate_cron_expression(v)
+
+    @field_validator("pre_backup_command", "post_backup_command")
+    @classmethod
+    def validate_hook_commands(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_hook_command(v)
 
 
 class ScheduleInfo(BaseModel):

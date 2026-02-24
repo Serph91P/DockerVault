@@ -200,6 +200,36 @@ rm dek.txt private_key.txt
 > [!TIP]
 > The downloaded private key file includes these recovery instructions.
 
+## Security Considerations
+
+### Container Privileges
+
+DockerVault runs as root inside the container to access Docker volumes and the Docker socket. The Docker volume directory (`/var/lib/docker/volumes`) is owned by root, and reading volume data at the filesystem level requires root access. Inside the container, the backend process runs as the `dockervault` user under supervisord, and only the Docker socket interaction requires elevated privileges.
+
+### Docker Socket Access
+
+Mounting `/var/run/docker.sock` into the container grants full Docker API access. This is required for container discovery, volume enumeration, and stop/start operations during backups. To reduce risk:
+
+- Do **not** expose the DockerVault port to the public internet without a reverse proxy and TLS
+- Restrict network access to trusted clients only
+- Monitor Docker daemon audit logs for unexpected API calls
+
+### Recommended Deployment
+
+- Deploy behind a **reverse proxy** (nginx, Traefik, Caddy) with **TLS termination**
+- Set `COOKIE_SECURE=true` (the default) so session cookies are only sent over HTTPS
+- Set `CORS_ORIGINS` to the exact frontend origin (e.g., `https://vault.example.com`)
+- Back up the credential encryption key file (`/app/data/.credential_key`) — losing it makes encrypted remote storage credentials unrecoverable
+
+### Security Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CORS_ORIGINS` | `http://localhost` | Comma-separated list of allowed CORS origins |
+| `COOKIE_SECURE` | `true` | Set session cookie `Secure` flag (requires HTTPS) |
+| `CREDENTIAL_ENCRYPTION_KEY` | Auto-generated | Fernet key for encrypting remote storage credentials at rest. If empty, a key is generated and saved to `/app/data/.credential_key` |
+| `ALLOWED_HOOK_COMMANDS` | `pg_dump,pg_dumpall,mysqldump,mongodump,redis-cli,mariadb-dump` | Comma-separated allowlist of binaries permitted in pre/post backup hooks |
+
 ## Development
 
 ### Backend

@@ -3,6 +3,7 @@
 import logging
 import os
 import tempfile
+import shutil
 from pathlib import Path
 from typing import List, Optional
 
@@ -11,13 +12,31 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
 
 from ..database import RemoteStorage as RemoteStorageModel
 from ..database import get_db
 from ..remote_storage import StorageConfig, StorageType, storage_manager
+from ..credential_encryption import decrypt_value, encrypt_value
+from ..config import settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _validate_ssh_key_path(path: str) -> str:
+    """Validate that the SSH key path is within allowed directories."""
+    real_path = os.path.realpath(path)
+    allowed_dirs = [
+        d.strip() for d in settings.ALLOWED_SSH_KEY_DIRS.split(",") if d.strip()
+    ]
+    for allowed in allowed_dirs:
+        if real_path.startswith(os.path.realpath(allowed) + os.sep) or real_path == os.path.realpath(allowed):
+            return real_path
+    raise HTTPException(
+        status_code=400,
+        detail=f"SSH key path must be within allowed directories: {allowed_dirs}",
+    )
 
 
 class StorageCreate(BaseModel):
@@ -178,6 +197,10 @@ async def list_storage_types():
 @router.post("", response_model=StorageResponse)
 async def create_storage(data: StorageCreate, db: AsyncSession = Depends(get_db)):
     """Create a new remote storage configuration"""
+    validated_ssh_key_path = None
+    if data.ssh_key_path:
+        validated_ssh_key_path = _validate_ssh_key_path(data.ssh_key_path)
+
     storage = RemoteStorageModel(
         name=data.name,
         storage_type=data.storage_type.value,
@@ -185,13 +208,13 @@ async def create_storage(data: StorageCreate, db: AsyncSession = Depends(get_db)
         host=data.host,
         port=data.port,
         username=data.username,
-        password=data.password,
+        password=encrypt_value(data.password) if data.password else data.password,
         base_path=data.base_path,
-        ssh_key_path=data.ssh_key_path,
+        ssh_key_path=validated_ssh_key_path,
         s3_bucket=data.s3_bucket,
         s3_region=data.s3_region,
-        s3_access_key=data.s3_access_key,
-        s3_secret_key=data.s3_secret_key,
+        s3_access_key=encrypt_value(data.s3_access_key) if data.s3_access_key else data.s3_access_key,
+        s3_secret_key=encrypt_value(data.s3_secret_key) if data.s3_secret_key else data.s3_secret_key,
         s3_endpoint_url=data.s3_endpoint_url,
         webdav_url=data.webdav_url,
         rclone_remote=data.rclone_remote,
@@ -264,6 +287,10 @@ async def update_storage(
     for field, value in data.model_dump(exclude_unset=True).items():
         if isinstance(value, str) and value == "":
             continue
+        if field in ("password", "s3_access_key", "s3_secret_key") and value:
+            value = encrypt_value(value)
+        if field == "ssh_key_path" and value:
+            value = _validate_ssh_key_path(value)
         setattr(storage, field, value)
 
     await db.commit()
@@ -333,6 +360,14 @@ async def test_storage(storage_id: int, db: AsyncSession = Depends(get_db)):
     return StorageTestResult(success=bool(result.get("success")), message=message)
 
 
+def _validate_remote_path(path: str) -> str:
+    """Validate and normalize a remote file path to prevent traversal."""
+    normalized = os.path.normpath(path).lstrip("/\\")
+    if ".." in normalized.split(os.sep):
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    return normalized
+
+
 @router.get("/{storage_id}/files")
 async def list_files(
     storage_id: int, path: str = "", db: AsyncSession = Depends(get_db)
@@ -347,16 +382,9 @@ async def list_files(
         config = _db_to_config(storage)
         backend = storage_manager.add_storage(config)
 
-    files = await backend.list_files(path)
-    return {"files": files, "path": path}
-
-
-def _validate_remote_path(path: str) -> str:
-    """Validate and normalize a remote file path to prevent traversal."""
-    normalized = os.path.normpath(path).lstrip("/\\")
-    if ".." in normalized.split(os.sep):
-        raise HTTPException(status_code=400, detail="Invalid file path")
-    return normalized
+    safe_path = _validate_remote_path(path) if path else path
+    files = await backend.list_files(safe_path)
+    return {"files": files, "path": safe_path}
 
 
 @router.get("/{storage_id}/files/download")
@@ -378,27 +406,25 @@ async def download_file(storage_id: int, path: str, db: AsyncSession = Depends(g
     temp_dir = tempfile.mkdtemp()
     local_path = Path(temp_dir) / filename
 
+    def cleanup():
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
     try:
         success = await backend.download(safe_path, local_path)
         if not success or not local_path.exists():
+            cleanup()
             raise HTTPException(status_code=500, detail="Download failed")
 
         return FileResponse(
             path=str(local_path),
             filename=filename,
             media_type="application/octet-stream",
-            background=None,
+            background=BackgroundTask(cleanup),
         )
     except HTTPException:
-        # Clean up on known errors
-        if local_path.exists():
-            local_path.unlink()
-        Path(temp_dir).rmdir()
         raise
     except Exception as e:
-        if local_path.exists():
-            local_path.unlink()
-        Path(temp_dir).rmdir()
+        cleanup()
         logger.error(f"Remote storage download failed: {e}")
         raise HTTPException(status_code=500, detail="Download failed")
 
@@ -480,13 +506,13 @@ def _db_to_config(storage: RemoteStorageModel) -> StorageConfig:
         host=storage.host,
         port=storage.port,
         username=storage.username,
-        password=storage.password,
+        password=decrypt_value(storage.password) if storage.password else storage.password,
         base_path=storage.base_path,
         ssh_key_path=storage.ssh_key_path,
         s3_bucket=storage.s3_bucket,
         s3_region=storage.s3_region,
-        s3_access_key=storage.s3_access_key,
-        s3_secret_key=storage.s3_secret_key,
+        s3_access_key=decrypt_value(storage.s3_access_key) if storage.s3_access_key else storage.s3_access_key,
+        s3_secret_key=decrypt_value(storage.s3_secret_key) if storage.s3_secret_key else storage.s3_secret_key,
         s3_endpoint_url=storage.s3_endpoint_url,
         webdav_url=storage.webdav_url,
         rclone_remote=storage.rclone_remote,
