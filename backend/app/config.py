@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     # Komodo Integration
     KOMODO_API_URL: str = ""
     KOMODO_API_KEY: str = ""
+    KOMODO_API_SECRET: str = ""
     KOMODO_ENABLED: bool = False
 
     # Timezone

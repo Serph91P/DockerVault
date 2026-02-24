@@ -9,6 +9,7 @@ function KomodoSettingsCard() {
   const queryClient = useQueryClient()
   const [isEditing, setIsEditing] = useState(false)
   const [showApiKey, setShowApiKey] = useState(false)
+  const [showApiSecret, setShowApiSecret] = useState(false)
   const { data: komodoSettings, isLoading, refetch } = useQuery({
     queryKey: ['komodo-settings'],
     queryFn: () => settingsApi.getKomodo().then((r) => r.data),
@@ -19,12 +20,14 @@ function KomodoSettingsCard() {
     enabled: komodoSettings?.enabled ?? false,
     api_url: komodoSettings?.api_url || '',
     api_key: '',
+    api_secret: '',
   }), [komodoSettings])
 
   const [formData, setFormData] = useState({
     enabled: false,
     api_url: '',
     api_key: '',
+    api_secret: '',
   })
 
   // Reset form data when entering edit mode
@@ -35,13 +38,13 @@ function KomodoSettingsCard() {
   }
 
   const updateMutation = useMutation({
-    mutationFn: (data: { enabled: boolean; api_url?: string; api_key?: string }) =>
+    mutationFn: (data: { enabled: boolean; api_url?: string; api_key?: string; api_secret?: string }) =>
       settingsApi.updateKomodo(data),
     onSuccess: () => {
       toast.success('Komodo settings saved')
       queryClient.invalidateQueries({ queryKey: ['komodo-settings'] })
       setIsEditing(false)
-      setFormData((prev) => ({ ...prev, api_key: '' }))
+      setFormData((prev) => ({ ...prev, api_key: '', api_secret: '' }))
     },
     onError: () => toast.error('Failed to save settings'),
   })
@@ -61,7 +64,7 @@ function KomodoSettingsCard() {
   })
 
   const handleSave = () => {
-    const data: { enabled: boolean; api_url?: string; api_key?: string } = {
+    const data: { enabled: boolean; api_url?: string; api_key?: string; api_secret?: string } = {
       enabled: formData.enabled,
     }
     if (formData.api_url) {
@@ -69,6 +72,9 @@ function KomodoSettingsCard() {
     }
     if (formData.api_key) {
       data.api_key = formData.api_key
+    }
+    if (formData.api_secret) {
+      data.api_secret = formData.api_secret
     }
     updateMutation.mutate(data)
   }
@@ -165,6 +171,29 @@ function KomodoSettingsCard() {
             </div>
           </div>
 
+          {/* API Secret */}
+          <div>
+            <label className="block text-sm text-dark-400 mb-1">
+              API Secret {komodoSettings?.has_api_secret && '(leave empty to keep current)'}
+            </label>
+            <div className="relative">
+              <input
+                type={showApiSecret ? 'text' : 'password'}
+                value={formData.api_secret}
+                onChange={(e) => setFormData((prev) => ({ ...prev, api_secret: e.target.value }))}
+                placeholder={komodoSettings?.has_api_secret ? '••••••••' : 'Enter API secret'}
+                className="w-full px-3 py-2 pr-10 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
+              />
+              <button
+                type="button"
+                onClick={() => setShowApiSecret(!showApiSecret)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-dark-400 hover:text-dark-200"
+              >
+                {showApiSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+
           {/* Actions */}
           <div className="flex gap-2 pt-2">
             <button
@@ -220,6 +249,16 @@ function KomodoSettingsCard() {
           <div className="text-sm">
             <span className="text-dark-400">API Key: </span>
             {komodoSettings?.has_api_key ? (
+              <span className="text-green-400">Configured</span>
+            ) : (
+              <span className="text-dark-500">Not set</span>
+            )}
+          </div>
+
+          {/* API Secret Status */}
+          <div className="text-sm">
+            <span className="text-dark-400">API Secret: </span>
+            {komodoSettings?.has_api_secret ? (
               <span className="text-green-400">Configured</span>
             ) : (
               <span className="text-dark-500">Not set</span>

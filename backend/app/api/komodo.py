@@ -21,6 +21,7 @@ class KomodoConfigUpdate(BaseModel):
 
     api_url: Optional[str] = None
     api_key: Optional[str] = None
+    api_secret: Optional[str] = None
     enabled: Optional[bool] = None
 
 

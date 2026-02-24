@@ -85,6 +85,7 @@ class KomodoSettingsRequest(BaseModel):
     enabled: bool
     api_url: Optional[str] = None
     api_key: Optional[str] = None
+    api_secret: Optional[str] = None
 
 
 class KomodoSettingsResponse(BaseModel):
@@ -93,6 +94,7 @@ class KomodoSettingsResponse(BaseModel):
     enabled: bool
     api_url: Optional[str] = None
     has_api_key: bool = False
+    has_api_secret: bool = False
     connected: bool = False
 
 
@@ -138,15 +140,20 @@ async def get_komodo_settings():
     api_url = await get_setting("komodo_api_url")
     api_key_raw = await get_setting("komodo_api_key")
     api_key = decrypt_value(api_key_raw) if api_key_raw else None
+    api_secret_raw = await get_setting("komodo_api_secret")
+    api_secret = decrypt_value(api_secret_raw) if api_secret_raw else None
 
     connected = False
-    if enabled and api_url and api_key:
+    if enabled and api_url and api_key and api_secret:
         try:
             _validate_komodo_url(api_url)
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.get(
                     f"{api_url.rstrip('/')}/api/version",
-                    headers={"Authorization": f"Bearer {api_key}"},
+                    headers={
+                        "x-api-key": api_key,
+                        "x-api-secret": api_secret,
+                    },
                 )
                 connected = response.status_code == 200
         except Exception:
@@ -156,6 +163,7 @@ async def get_komodo_settings():
         enabled=enabled,
         api_url=api_url,
         has_api_key=bool(api_key),
+        has_api_secret=bool(api_secret),
         connected=connected,
     )
 
@@ -174,6 +182,12 @@ async def update_komodo_settings(request: KomodoSettingsRequest):
         encrypted_key = encrypt_value(request.api_key) if request.api_key else ""
         await set_setting("komodo_api_key", encrypted_key)
 
+    if request.api_secret is not None:
+        encrypted_secret = (
+            encrypt_value(request.api_secret) if request.api_secret else ""
+        )
+        await set_setting("komodo_api_secret", encrypted_secret)
+
     logger.info(f"Komodo settings updated: enabled={request.enabled}")
 
     return await get_komodo_settings()
@@ -186,6 +200,8 @@ async def test_komodo_connection():
     api_url = await get_setting("komodo_api_url")
     api_key_raw = await get_setting("komodo_api_key")
     api_key = decrypt_value(api_key_raw) if api_key_raw else None
+    api_secret_raw = await get_setting("komodo_api_secret")
+    api_secret = decrypt_value(api_secret_raw) if api_secret_raw else None
 
     if not enabled:
         return KomodoTestResponse(
@@ -198,12 +214,18 @@ async def test_komodo_connection():
     if not api_key:
         return KomodoTestResponse(success=False, message="API key is not configured")
 
+    if not api_secret:
+        return KomodoTestResponse(success=False, message="API secret is not configured")
+
     try:
         _validate_komodo_url(api_url)
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(
                 f"{api_url.rstrip('/')}/api/version",
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers={
+                    "x-api-key": api_key,
+                    "x-api-secret": api_secret,
+                },
             )
 
             if response.status_code == 200:
@@ -216,12 +238,13 @@ async def test_komodo_connection():
                 )
             elif response.status_code == 401:
                 return KomodoTestResponse(
-                    success=False, message="Authentication failed - check API key"
+                    success=False,
+                    message="Authentication failed - check API key and secret",
                 )
             elif response.status_code == 403:
                 return KomodoTestResponse(
                     success=False,
-                    message="Access forbidden - check API key permissions",
+                    message="Access forbidden - check API key/secret permissions",
                 )
             else:
                 return KomodoTestResponse(

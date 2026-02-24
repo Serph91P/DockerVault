@@ -12,6 +12,7 @@ services:
       - KOMODO_ENABLED=${KOMODO_ENABLED:-false}
       - KOMODO_API_URL=${KOMODO_API_URL:-}
       - KOMODO_API_KEY=${KOMODO_API_KEY:-}
+      - KOMODO_API_SECRET=${KOMODO_API_SECRET:-}
     volumes:
       # Docker socket - required for container management
       - /var/run/docker.sock:/var/run/docker.sock
