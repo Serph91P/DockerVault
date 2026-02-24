@@ -217,18 +217,70 @@ Mounting `/var/run/docker.sock` into the container grants full Docker API access
 ### Recommended Deployment
 
 - Deploy behind a **reverse proxy** (nginx, Traefik, Caddy) with **TLS termination**
-- Set `COOKIE_SECURE=true` (the default) so session cookies are only sent over HTTPS
+- Set `COOKIE_SECURE=true` so session cookies are only sent over HTTPS
 - Set `CORS_ORIGINS` to the exact frontend origin (e.g., `https://vault.example.com`)
 - Back up the credential encryption key file (`/app/data/.credential_key`) — losing it makes encrypted remote storage credentials unrecoverable
+
+#### Traefik Example
+
+```yaml
+services:
+  dockervault:
+    image: ghcr.io/serph91p/dockervault:latest
+    container_name: dockervault
+    restart: unless-stopped
+    user: root
+    environment:
+      - TZ=Europe/Berlin
+      - COOKIE_SECURE=true
+      - CORS_ORIGINS=https://vault.example.com
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - backup-data:/app/data
+      - /path/to/backups:/backups
+      - /var/lib/docker/volumes:/var/lib/docker/volumes:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dockervault.rule=Host(`vault.example.com`)"
+      - "traefik.http.routers.dockervault.entrypoints=websecure"
+      - "traefik.http.routers.dockervault.tls.certresolver=letsencrypt"
+      - "traefik.http.services.dockervault.loadbalancer.server.port=80"
+    networks:
+      - traefik
+      - backup-network
+
+volumes:
+  backup-data:
+    name: dockervault-data
+
+networks:
+  traefik:
+    external: true
+  backup-network:
+    driver: bridge
+```
+
+#### Caddy Example
+
+```
+vault.example.com {
+    reverse_proxy dockervault:80
+}
+```
+
+Start Caddy in the same Docker network as DockerVault, and it handles TLS certificates automatically.
 
 ### Security Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CORS_ORIGINS` | `http://localhost` | Comma-separated list of allowed CORS origins |
-| `COOKIE_SECURE` | `true` | Set session cookie `Secure` flag (requires HTTPS) |
+| `COOKIE_SECURE` | `false` | Set session cookie `Secure` flag. Set to `true` behind a TLS-terminating reverse proxy |
 | `CREDENTIAL_ENCRYPTION_KEY` | Auto-generated | Fernet key for encrypting remote storage credentials at rest. If empty, a key is generated and saved to `/app/data/.credential_key` |
 | `ALLOWED_HOOK_COMMANDS` | `pg_dump,pg_dumpall,mysqldump,mongodump,redis-cli,mariadb-dump` | Comma-separated allowlist of binaries permitted in pre/post backup hooks |
+| `LOG_FORMAT` | `text` | Log output format: `text` or `json` (structured logging for production) |
+| `LOG_LEVEL` | `INFO` | Logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
+| `SHUTDOWN_TIMEOUT` | `30` | Seconds to wait for in-progress backups to finish during shutdown |
 
 ## Development
 

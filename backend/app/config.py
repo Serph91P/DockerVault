@@ -30,7 +30,7 @@ class Settings(BaseSettings):
 
     # Security
     CORS_ORIGINS: str = "http://localhost"
-    COOKIE_SECURE: bool = True
+    COOKIE_SECURE: bool = False
     CREDENTIAL_ENCRYPTION_KEY: str = ""
     ALLOWED_HOOK_COMMANDS: str = (
         "pg_dump,pg_dumpall,mysqldump,mongodump,redis-cli,mariadb-dump"
@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     HOOK_COMMAND_TIMEOUT: int = 300
     ALLOWED_SSH_KEY_DIRS: str = "/app/data/ssh_keys,/root/.ssh"
     ENABLE_DOCS: bool = False
+
+    # Logging
+    LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "text"
+
+    # Shutdown
+    SHUTDOWN_TIMEOUT: int = 30
     # Komodo Integration
     KOMODO_API_URL: str = ""
     KOMODO_API_KEY: str = ""

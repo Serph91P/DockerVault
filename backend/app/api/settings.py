@@ -294,8 +294,8 @@ async def get_system_info():
     tz = os.environ.get("TZ", settings.TZ)
 
     return SystemInfoResponse(
-        backup_dir=backup_dir,
-        database_path=db_path,
+        backup_dir="[configured]",
+        database_path="[configured]",
         timezone=tz,
         disk_total=disk_total,
         disk_used=disk_used,

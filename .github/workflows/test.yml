@@ -41,7 +41,7 @@ jobs:
     - name: Run backend tests with coverage
       working-directory: backend
       run: |
-        pytest --cov=app --cov-report=xml --cov-report=html || true
+        pytest --cov=app --cov-report=xml --cov-report=html
         
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v5
@@ -76,7 +76,7 @@ jobs:
       
     - name: Run frontend tests with coverage
       working-directory: frontend
-      run: npm run test:coverage -- --run || true
+      run: npm run test:coverage -- --run
       
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v5
@@ -123,7 +123,11 @@ jobs:
       
     - name: Lint Python code
       working-directory: backend
-      run: ruff check app/ || true
+      run: ruff check app/
+      
+    - name: Check Python formatting
+      working-directory: backend
+      run: ruff format --check app/
       
     - name: Type check Python code
       working-directory: backend
@@ -131,11 +135,11 @@ jobs:
       
     - name: Lint TypeScript code
       working-directory: frontend
-      run: npm run lint || true
+      run: npm run lint
       
     - name: Type check TypeScript code
       working-directory: frontend
-      run: npx tsc --noEmit || true
+      run: npx tsc --noEmit
 
   integration-tests:
     runs-on: ubuntu-latest

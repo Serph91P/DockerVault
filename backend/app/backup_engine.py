@@ -123,6 +123,30 @@ class BackupEngine:
         self.metrics = BackupMetrics()
         self._backup_semaphore = asyncio.Semaphore(2)  # Max concurrent backups
 
+    async def shutdown(self, timeout: int = 30) -> None:
+        """Wait for in-progress backups to finish before shutdown."""
+        if not self.active_backups:
+            return
+
+        logger.info(
+            "Waiting up to %ds for %d active backup(s) to finish...",
+            timeout,
+            len(self.active_backups),
+        )
+        tasks = list(self.active_backups.values())
+        done, pending = await asyncio.wait(tasks, timeout=timeout)
+
+        if pending:
+            logger.warning(
+                "Cancelling %d backup(s) that didn't finish within timeout",
+                len(pending),
+            )
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        logger.info("Backup engine shutdown complete")
+
     def add_progress_callback(self, callback: Callable):
         """Add a callback for progress updates."""
         self.progress_callbacks.append(callback)

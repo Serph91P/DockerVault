@@ -5,10 +5,11 @@ Docker API endpoints.
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.docker_client import docker_client
+from app.rate_limit import limiter
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +129,9 @@ async def get_container(container_id: str):
 
 
 @router.post("/containers/{container_id}/stop")
+@limiter.limit("10/minute")
 async def stop_container(
+    request: Request,
     container_id: str,
     timeout: int = Query(default=30, ge=1, le=300),
 ):
@@ -141,7 +144,8 @@ async def stop_container(
 
 
 @router.post("/containers/{container_id}/start")
-async def start_container(container_id: str):
+@limiter.limit("10/minute")
+async def start_container(request: Request, container_id: str):
     """Start a container."""
     logger.info("Starting container %s", container_id)
     success = await docker_client.start_container(container_id)

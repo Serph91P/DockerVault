@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -21,6 +21,7 @@ from app.backup_engine import backup_engine
 from app.config import settings
 from app.database import Backup, BackupStatus, BackupTarget, BackupType, async_session
 from app.encryption import DecryptionError, decrypt_backup
+from app.rate_limit import limiter
 
 logger = logging.getLogger(__name__)
 
@@ -173,28 +174,31 @@ async def get_backup(backup_id: int):
 
 
 @router.post("", response_model=BackupResponse)
-async def create_backup(request: CreateBackupRequest):
+@limiter.limit("10/minute")
+async def create_backup(request: Request, request_body: CreateBackupRequest):
     """Create and run a new backup."""
     logger.info(
-        f"Creating backup for target {request.target_id}, type: {request.backup_type}"
+        f"Creating backup for target {request_body.target_id}, type: {request_body.backup_type}"
     )
 
     async with async_session() as session:
         # Get target
         result = await session.execute(
-            select(BackupTarget).where(BackupTarget.id == request.target_id)
+            select(BackupTarget).where(BackupTarget.id == request_body.target_id)
         )
         target = result.scalar_one_or_none()
 
         if not target:
-            logger.error(f"Target {request.target_id} not found")
+            logger.error("Target %s not found", request_body.target_id)
             raise HTTPException(status_code=404, detail="Target not found")
 
         logger.info(f"Found target: {target.name} (type: {target.target_type})")
 
     # Create backup
     backup_type = (
-        BackupType.FULL if request.backup_type == "full" else BackupType.INCREMENTAL
+        BackupType.FULL
+        if request_body.backup_type == "full"
+        else BackupType.INCREMENTAL
     )
     backup = await backup_engine.create_backup(target, backup_type)
 
@@ -229,15 +233,18 @@ async def create_backup(request: CreateBackupRequest):
 
 
 @router.post("/{backup_id}/restore")
-async def restore_backup(backup_id: int, request: RestoreBackupRequest):
+@limiter.limit("10/minute")
+async def restore_backup(
+    request: Request, backup_id: int, restore_request: RestoreBackupRequest
+):
     """Restore a backup.
 
     If target_path is provided, it must be within allowed restore directories
     to prevent path traversal attacks.
     """
-    if request.target_path:
+    if restore_request.target_path:
         # Resolve symlinks and normalize to prevent TOCTOU attacks
-        abs_path = os.path.realpath(request.target_path)
+        abs_path = os.path.realpath(restore_request.target_path)
 
         # Ensure path is within allowed restore directories
         allowed_prefixes = [
@@ -257,7 +264,7 @@ async def restore_backup(backup_id: int, request: RestoreBackupRequest):
             )
 
     success = await backup_engine.restore_backup(
-        backup_id, request.target_path, request.private_key
+        backup_id, restore_request.target_path, restore_request.private_key
     )
 
     if not success:
@@ -267,7 +274,8 @@ async def restore_backup(backup_id: int, request: RestoreBackupRequest):
 
 
 @router.delete("/{backup_id}")
-async def delete_backup(backup_id: int):
+@limiter.limit("20/minute")
+async def delete_backup(request: Request, backup_id: int):
     """Delete a backup."""
     async with async_session() as session:
         result = await session.execute(select(Backup).where(Backup.id == backup_id))
@@ -542,7 +550,7 @@ async def list_encrypted_backup_files(backup_id: int, body: BrowseEncryptedReque
         return files
 
     except tarfile.TarError as e:
-        logger.error(f"Failed to read decrypted archive: {e}")
+        logger.error("Failed to read decrypted archive: %s", e)
         raise HTTPException(status_code=500, detail="Failed to read backup archive")
     finally:
         if temp_path and temp_path.exists():
@@ -574,47 +582,65 @@ async def download_encrypted_backup_file(
             )
 
     temp_path: Path | None = None
+    tar = None
     try:
         archive_path, mode, temp_path = await _get_decrypted_archive_path(
             backup, body.private_key
         )
 
-        with tarfile.open(archive_path, mode) as tar:
-            normalized_path = _validate_archive_path(file_path)
+        tar = tarfile.open(archive_path, mode)
+        normalized_path = _validate_archive_path(file_path)
 
-            member = tar.getmember(normalized_path)
+        member = tar.getmember(normalized_path)
 
-            if member.isdir():
-                raise HTTPException(
-                    status_code=400, detail="Cannot download directories"
-                )
+        if member.isdir():
+            tar.close()
+            if temp_path and temp_path.exists():
+                temp_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail="Cannot download directories")
 
-            file_obj = tar.extractfile(member)
-            if file_obj is None:
-                raise HTTPException(status_code=500, detail="Failed to extract file")
+        file_obj = tar.extractfile(member)
+        if file_obj is None:
+            tar.close()
+            if temp_path and temp_path.exists():
+                temp_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail="Failed to extract file")
 
-            filename = _sanitize_filename(member.name)
+        filename = _sanitize_filename(member.name)
+        cleanup_temp = temp_path
 
-            def iter_file():
+        def iter_file():
+            try:
                 while chunk := file_obj.read(65536):
                     yield chunk
+            finally:
+                file_obj.close()
+                tar.close()
+                if cleanup_temp and cleanup_temp.exists():
+                    cleanup_temp.unlink(missing_ok=True)
 
-            return StreamingResponse(
-                iter_file(),
-                media_type="application/octet-stream",
-                headers={
-                    "Content-Disposition": f'attachment; filename="{filename}"',
-                },
-            )
+        return StreamingResponse(
+            iter_file(),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Cache-Control": "no-store",
+            },
+        )
 
     except KeyError:
-        raise HTTPException(status_code=404, detail="File not found in archive")
-    except tarfile.TarError as e:
-        logger.error(f"Failed to extract file from decrypted archive: {e}")
-        raise HTTPException(status_code=500, detail="Failed to read backup archive")
-    finally:
+        if tar:
+            tar.close()
         if temp_path and temp_path.exists():
             temp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=404, detail="File not found in archive")
+    except tarfile.TarError as e:
+        if tar:
+            tar.close()
+        if temp_path and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+        logger.error("Failed to extract file from decrypted archive: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to read backup archive")
 
 
 @router.get("/{backup_id}/files", response_model=List[BackupFileInfo])
@@ -669,7 +695,7 @@ async def list_backup_files(backup_id: int):
                 )
 
     except tarfile.TarError as e:
-        logger.error(f"Failed to read archive {backup.file_path}: {e}")
+        logger.error("Failed to read archive: %s", e)
         raise HTTPException(status_code=500, detail="Failed to read backup archive")
 
     return files

@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from 'react'
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { AlertCircle, Link2, Power, Search, X, Layers, ChevronDown, ChevronRight, ArrowUp, ArrowDown, GripVertical } from 'lucide-react'
 import { WizardData } from './index'
 import { Container, Stack } from '../../api'
@@ -25,10 +25,12 @@ export default function StepDependencies({ data, updateData, containers, stacks 
   })
 
   // Get stack containers for auto-detection
-  const stackContainerInfo =
+  const stackContainerInfo = useMemo(() =>
     isStack
       ? stacks.find((s) => s.name === data.stackName)?.containers || []
-      : []
+      : [],
+    [isStack, stacks, data.stackName]
+  )
   const stackContainerNames = new Set(stackContainerInfo.map((c) => c.name))
 
   // Split containers into stack-own and external
@@ -72,7 +74,7 @@ export default function StepDependencies({ data, updateData, containers, stacks 
   }
 
   // Auto-detect dependencies from stack
-  const autoDetectDependencies = () => {
+  const autoDetectDependencies = useCallback(() => {
     if (isStack && stackContainerInfo.length > 0) {
       const detected: string[] = []
       stackContainerInfo.forEach((container) => {
@@ -86,7 +88,7 @@ export default function StepDependencies({ data, updateData, containers, stacks 
       })
       updateData({ dependencies: detected })
     }
-  }
+  }, [isStack, stackContainerInfo, updateData])
 
   // D2: Auto-run detection for stacks when no dependencies are selected yet
   const hasAutoDetected = useRef(false)
@@ -96,7 +98,7 @@ export default function StepDependencies({ data, updateData, containers, stacks 
       autoDetectDependencies()
       hasAutoDetected.current = true
     }
-  }, [isStack, stackContainerInfo.length])
+  }, [isStack, stackContainerInfo.length, data.dependencies.length, autoDetectDependencies])
 
   return (
     <div className="space-y-6">

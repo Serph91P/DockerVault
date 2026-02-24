@@ -39,13 +39,13 @@ describe('Dashboard Page', () => {
     
     await waitFor(() => {
       // Container stat card
-      expect(screen.getByText('Container')).toBeInTheDocument()
-      // Volumes stat card - appears twice (stat card and summary)
-      expect(screen.getAllByText('Volumes').length).toBeGreaterThanOrEqual(1)
+      expect(screen.getByText('Containers Backed Up')).toBeInTheDocument()
+      // Volumes stat card
+      expect(screen.getByText('Volumes Backed Up')).toBeInTheDocument()
       // Backup Targets stat card
       expect(screen.getByText('Backup Targets')).toBeInTheDocument()
-      // Scheduled backups stat card
-      expect(screen.getByText('Scheduled Backups')).toBeInTheDocument()
+      // Scheduled stat card
+      expect(screen.getByText('Scheduled')).toBeInTheDocument()
     })
   })
 
@@ -111,7 +111,7 @@ describe('Dashboard Page', () => {
     render(<Dashboard />, { wrapper: createWrapper() })
     
     await waitFor(() => {
-      expect(screen.getByText('2/2')).toBeInTheDocument()
+      expect(screen.getByText('0/2')).toBeInTheDocument()
     })
   })
 

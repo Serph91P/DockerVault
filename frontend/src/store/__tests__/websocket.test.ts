@@ -11,7 +11,7 @@ class MockWebSocket {
   
   readyState = MockWebSocket.CONNECTING
   onopen?: () => void
-  onclose?: () => void
+  onclose?: (event: CloseEvent) => void
   onmessage?: (event: MessageEvent) => void
   onerror?: () => void
   
@@ -26,7 +26,7 @@ class MockWebSocket {
   send = vi.fn()
   close = vi.fn(() => {
     this.readyState = MockWebSocket.CLOSED
-    this.onclose?.()
+    this.onclose?.(new CloseEvent('close', { code: 1000 }))
   })
   
   // Helper method to simulate receiving messages
