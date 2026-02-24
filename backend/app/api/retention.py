@@ -5,7 +5,7 @@ Retention policy API endpoints.
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.database import RetentionPolicy, async_session
@@ -36,24 +36,24 @@ class CreateRetentionPolicyRequest(BaseModel):
     """Create retention policy request."""
 
     name: str
-    keep_last: int = 3
-    keep_daily: int = 7
-    keep_weekly: int = 4
-    keep_monthly: int = 6
-    keep_yearly: int = 2
-    max_age_days: int = 365
+    keep_last: int = Field(default=3, ge=1, le=1000)
+    keep_daily: int = Field(default=7, ge=0, le=1000)
+    keep_weekly: int = Field(default=4, ge=0, le=1000)
+    keep_monthly: int = Field(default=6, ge=0, le=1000)
+    keep_yearly: int = Field(default=2, ge=0, le=1000)
+    max_age_days: int = Field(default=365, ge=1, le=36500)
 
 
 class UpdateRetentionPolicyRequest(BaseModel):
     """Update retention policy request."""
 
     name: Optional[str] = None
-    keep_last: Optional[int] = None
-    keep_daily: Optional[int] = None
-    keep_weekly: Optional[int] = None
-    keep_monthly: Optional[int] = None
-    keep_yearly: Optional[int] = None
-    max_age_days: Optional[int] = None
+    keep_last: Optional[int] = Field(default=None, ge=1, le=1000)
+    keep_daily: Optional[int] = Field(default=None, ge=0, le=1000)
+    keep_weekly: Optional[int] = Field(default=None, ge=0, le=1000)
+    keep_monthly: Optional[int] = Field(default=None, ge=0, le=1000)
+    keep_yearly: Optional[int] = Field(default=None, ge=0, le=1000)
+    max_age_days: Optional[int] = Field(default=None, ge=1, le=36500)
 
 
 @router.get("", response_model=List[RetentionPolicyResponse])
