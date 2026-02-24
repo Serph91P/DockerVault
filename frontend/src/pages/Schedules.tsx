@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Clock, Plus, Edit2, Trash2, HelpCircle, Calendar, Target, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { schedulesApi, targetsApi, ScheduleEntity, ScheduleCreate, ScheduleUpdate, BackupTarget } from '../api'
-import { formatDistanceToNow } from 'date-fns'
+import { formatDistanceToNowStrict } from 'date-fns'
 import toast from 'react-hot-toast'
 import { useState } from 'react'
 import { clsx } from 'clsx'
@@ -177,7 +177,7 @@ function ScheduleCard({
           <p className="text-dark-400">Next run:</p>
           <p className="text-dark-200">
             {schedule.next_run
-              ? formatDistanceToNow(new Date(schedule.next_run), { addSuffix: true })
+              ? formatDistanceToNowStrict(new Date(schedule.next_run), { addSuffix: true })
               : '-'}
           </p>
         </div>

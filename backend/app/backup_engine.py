@@ -708,7 +708,7 @@ class BackupEngine:
         """Check if a path should be included in the backup.
 
         Args:
-            path: The path to check (relative to archive root)
+            path: The path to check (relative to volume/source root, NOT archive root)
             include_paths: List of paths/patterns to include (empty = all)
             exclude_paths: List of paths/patterns to exclude
 
@@ -723,7 +723,9 @@ class BackupEngine:
         # Check excludes first
         for pattern in exclude_paths:
             pattern = pattern.lstrip("/")
-            if fnmatch.fnmatch(path, pattern) or path.startswith(pattern.rstrip("*")):
+            if fnmatch.fnmatch(path, pattern) or path.startswith(
+                pattern.rstrip("*").rstrip("/") + "/"
+            ):
                 return False
 
         # If include_paths is specified, path must match at least one
@@ -731,12 +733,127 @@ class BackupEngine:
             for pattern in include_paths:
                 pattern = pattern.lstrip("/")
                 if fnmatch.fnmatch(path, pattern) or path.startswith(
-                    pattern.rstrip("*")
+                    pattern.rstrip("*").rstrip("/") + "/"
                 ):
                     return True
             return False
 
         return True
+
+    def _is_parent_of_included(
+        self,
+        dir_path: str,
+        include_paths: List[str],
+    ) -> bool:
+        """Check if dir_path is a parent directory of any include path pattern.
+
+        This ensures directories leading to included content are traversed
+        even when include_paths filtering would otherwise skip them.
+        """
+        dir_path = dir_path.lstrip("/").rstrip("/") + "/"
+
+        for pattern in include_paths:
+            pattern = pattern.lstrip("/")
+            # Extract the literal prefix before any wildcard characters
+            literal_prefix = ""
+            for char in pattern:
+                if char in "*?[":
+                    break
+                literal_prefix += char
+
+            # Directory is a parent of the pattern's target location
+            if literal_prefix.startswith(dir_path):
+                return True
+            # Directory is within or at the pattern's target location
+            if dir_path.startswith(literal_prefix):
+                return True
+
+        return False
+
+    def _add_source_to_tar(
+        self,
+        tar: tarfile.TarFile,
+        source_path: str,
+        arcname_base: str,
+        include_paths: List[str],
+        exclude_paths: List[str],
+    ) -> List[str]:
+        """Add a source directory to a tar archive with filtering and error handling.
+
+        Walks directories manually instead of using tar.add() to:
+        1. Catch PermissionError/OSError per file (skip instead of failing)
+        2. Match include/exclude against paths relative to the source root
+           (not the archive path which has an arcname prefix)
+        3. Properly handle directory traversal for include_paths
+
+        Returns:
+            List of skipped file paths due to permission errors.
+        """
+        skipped_files: List[str] = []
+        has_filters = bool(include_paths or exclude_paths)
+
+        for dirpath, dirnames, filenames in os.walk(source_path):
+            # Calculate path relative to source root
+            rel_dir = os.path.relpath(dirpath, source_path)
+            if rel_dir == ".":
+                rel_dir = ""
+
+            # Archive path includes the arcname prefix
+            arc_dir = os.path.join(arcname_base, rel_dir) if rel_dir else arcname_base
+
+            # Prune excluded directories in-place (prevents recursion)
+            if exclude_paths:
+                dirnames[:] = [
+                    d
+                    for d in dirnames
+                    if self._should_include_path(
+                        os.path.join(rel_dir, d) if rel_dir else d, [], exclude_paths
+                    )
+                ]
+
+            # For include paths: skip directories that can't contain included files
+            if include_paths and rel_dir:
+                if not self._should_include_path(
+                    rel_dir, include_paths, []
+                ) and not self._is_parent_of_included(rel_dir, include_paths):
+                    dirnames.clear()
+                    continue
+
+            # Try to add directory entry
+            try:
+                tarinfo = tar.gettarinfo(dirpath, arcname=arc_dir)
+                tar.addfile(tarinfo)
+            except (PermissionError, OSError) as e:
+                logger.warning(f"Cannot read directory {dirpath}, skipping: {e}")
+                skipped_files.append(dirpath)
+                dirnames.clear()
+                continue
+
+            # Add files
+            for filename in filenames:
+                filepath = os.path.join(dirpath, filename)
+                file_rel = os.path.join(rel_dir, filename) if rel_dir else filename
+                arcpath = os.path.join(arc_dir, filename)
+
+                # Check include/exclude against relative path (no archive prefix)
+                if has_filters and not self._should_include_path(
+                    file_rel, include_paths, exclude_paths
+                ):
+                    continue
+
+                try:
+                    tarinfo = tar.gettarinfo(filepath, arcname=arcpath)
+                    if tarinfo.isreg():
+                        with open(filepath, "rb") as f:
+                            tar.addfile(tarinfo, f)
+                    else:
+                        tar.addfile(tarinfo)
+                except (PermissionError, OSError) as e:
+                    logger.warning(f"Cannot read file {filepath}, skipping: {e}")
+                    skipped_files.append(filepath)
+                    continue
+
+        return skipped_files
 
     def _create_tar(
         self,
@@ -746,24 +863,22 @@ class BackupEngine:
         include_paths: Optional[List[str]] = None,
         exclude_paths: Optional[List[str]] = None,
     ):
-        """Create tar archive with optional path filtering."""
+        """Create tar archive with path filtering and graceful permission error handling."""
         include_paths = include_paths or []
         exclude_paths = exclude_paths or []
-
-        def filter_func(tarinfo: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
-            if not self._should_include_path(
-                tarinfo.name, include_paths, exclude_paths
-            ):
-                return None
-            return tarinfo
+        arcname_base = os.path.basename(source)
 
         mode = "w:gz" if compress else "w"
         with tarfile.open(dest, mode, compresslevel=6 if compress else None) as tar:
-            # Only use filter if we have path restrictions
-            if include_paths or exclude_paths:
-                tar.add(source, arcname=os.path.basename(source), filter=filter_func)
-            else:
-                tar.add(source, arcname=os.path.basename(source))
+            skipped = self._add_source_to_tar(
+                tar, source, arcname_base, include_paths, exclude_paths
+            )
+
+        if skipped:
+            logger.info(
+                f"Backup completed with {len(skipped)} skipped file(s) "
+                f"due to permission errors"
+            )
 
     def _create_multi_source_tar(
         self,
@@ -777,10 +892,12 @@ class BackupEngine:
         """Create tar archive from multiple sources with optional path filtering.
 
         Per-volume rules override global include/exclude for specific volumes.
+        Handles permission errors gracefully by skipping unreadable files.
         """
         include_paths = include_paths or []
         exclude_paths = exclude_paths or []
         per_volume_rules = per_volume_rules or {}
+        all_skipped: List[str] = []
 
         mode = "w:gz" if compress else "w"
         with tarfile.open(dest, mode, compresslevel=6 if compress else None) as tar:
@@ -790,40 +907,29 @@ class BackupEngine:
 
                 # Determine per-volume rules: check by archive_name and basename
                 volume_key = archive_name.lstrip("/")
-                # For stacks: archive_name is "volumes/vol_name", key might be just "vol_name"
+                # For stacks: archive_name is "volumes/vol_name", key might be "vol_name"
                 volume_basename = os.path.basename(volume_key)
                 vol_rules = per_volume_rules.get(volume_key) or per_volume_rules.get(
                     volume_basename
                 )
 
                 if vol_rules:
-                    # Use per-volume rules
                     vol_include = vol_rules.get("include_paths", [])
                     vol_exclude = vol_rules.get("exclude_paths", [])
                 else:
-                    # Fallback to global rules
                     vol_include = include_paths
                     vol_exclude = exclude_paths
 
-                if vol_include or vol_exclude:
+                skipped = self._add_source_to_tar(
+                    tar, source_path, volume_key, vol_include, vol_exclude
+                )
+                all_skipped.extend(skipped)
 
-                    def make_filter(inc, exc):
-                        def filter_func(
-                            tarinfo: tarfile.TarInfo,
-                        ) -> Optional[tarfile.TarInfo]:
-                            if not self._should_include_path(tarinfo.name, inc, exc):
-                                return None
-                            return tarinfo
-
-                        return filter_func
-
-                    tar.add(
-                        source_path,
-                        arcname=volume_key,
-                        filter=make_filter(vol_include, vol_exclude),
-                    )
-                else:
-                    tar.add(source_path, arcname=volume_key)
+        if all_skipped:
+            logger.info(
+                f"Backup completed with {len(all_skipped)} skipped file(s) "
+                f"due to permission errors"
+            )
 
     async def _calculate_checksum(self, file_path: str) -> str:
         """Calculate SHA256 checksum of file."""

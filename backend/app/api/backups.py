@@ -8,7 +8,7 @@ import os
 import re
 import tarfile
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -26,6 +26,20 @@ from app.rate_limit import limiter
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _to_utc_isoformat(dt: Optional[datetime]) -> Optional[str]:
+    """Serialize a datetime to ISO format with UTC timezone indicator.
+
+    SQLite stores datetimes without timezone info. Since all datetimes
+    in the database are UTC, this appends 'Z' to naive datetimes so
+    the frontend correctly interprets them as UTC.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.isoformat() + "Z"
+    return dt.astimezone(timezone.utc).isoformat()
 
 
 class BackupResponse(BaseModel):
@@ -125,12 +139,12 @@ async def list_backups(
                 file_size=b.file_size,
                 file_size_human=format_size(b.file_size),
                 checksum=b.checksum,
-                started_at=b.started_at.isoformat() if b.started_at else None,
-                completed_at=b.completed_at.isoformat() if b.completed_at else None,
+                started_at=_to_utc_isoformat(b.started_at),
+                completed_at=_to_utc_isoformat(b.completed_at),
                 duration_seconds=b.duration_seconds,
                 error_message=b.error_message,
                 encrypted=b.encrypted or False,
-                created_at=b.created_at.isoformat(),
+                created_at=_to_utc_isoformat(b.created_at) or "",
             )
             for b in backups
         ]
@@ -162,14 +176,12 @@ async def get_backup(backup_id: int):
             file_size=backup.file_size,
             file_size_human=format_size(backup.file_size),
             checksum=backup.checksum,
-            started_at=backup.started_at.isoformat() if backup.started_at else None,
-            completed_at=(
-                backup.completed_at.isoformat() if backup.completed_at else None
-            ),
+            started_at=_to_utc_isoformat(backup.started_at),
+            completed_at=_to_utc_isoformat(backup.completed_at),
             duration_seconds=backup.duration_seconds,
             error_message=backup.error_message,
             encrypted=backup.encrypted or False,
-            created_at=backup.created_at.isoformat(),
+            created_at=_to_utc_isoformat(backup.created_at) or "",
         )
 
 
@@ -223,12 +235,12 @@ async def create_backup(request: Request, request_body: CreateBackupRequest):
         file_size=backup.file_size,
         file_size_human=format_size(backup.file_size),
         checksum=backup.checksum,
-        started_at=backup.started_at.isoformat() if backup.started_at else None,
-        completed_at=backup.completed_at.isoformat() if backup.completed_at else None,
+        started_at=_to_utc_isoformat(backup.started_at),
+        completed_at=_to_utc_isoformat(backup.completed_at),
         duration_seconds=backup.duration_seconds,
         error_message=backup.error_message,
         encrypted=backup.encrypted or False,
-        created_at=backup.created_at.isoformat(),
+        created_at=_to_utc_isoformat(backup.created_at) or "",
     )
 
 

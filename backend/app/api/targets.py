@@ -5,6 +5,7 @@ Backup targets API endpoints.
 import logging
 import os
 import shlex
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from croniter import croniter
@@ -19,6 +20,15 @@ from app.database import BackupTarget, Schedule, async_session
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _to_utc_isoformat(dt: Optional[datetime]) -> Optional[str]:
+    """Serialize a datetime to ISO format with UTC timezone indicator."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.isoformat() + "Z"
+    return dt.astimezone(timezone.utc).isoformat()
 
 
 def validate_cron_expression(cron_expr: Optional[str]) -> Optional[str]:
@@ -225,8 +235,8 @@ def _build_target_response(t: BackupTarget) -> TargetResponse:
         stop_container=t.stop_container,
         compression_enabled=t.compression_enabled,
         remote_storage_ids=t.remote_storage_ids or [],
-        created_at=t.created_at.isoformat(),
-        updated_at=t.updated_at.isoformat(),
+        created_at=_to_utc_isoformat(t.created_at) or "",
+        updated_at=_to_utc_isoformat(t.updated_at) or "",
     )
 
 

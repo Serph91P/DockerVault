@@ -3,6 +3,7 @@ Tests for backups API endpoints.
 """
 
 import json
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -87,8 +88,8 @@ class TestBackupsAPI:
         mock_backup.completed_at = None
         mock_backup.duration_seconds = None
         mock_backup.error_message = None
-        mock_backup.created_at = MagicMock()
-        mock_backup.created_at.isoformat.return_value = "2024-01-01T00:00:00"
+        mock_backup.encrypted = False
+        mock_backup.created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
         mock_engine.create_backup = AsyncMock(return_value=mock_backup)
         mock_engine.run_backup = AsyncMock(return_value=True)
@@ -141,8 +142,8 @@ class TestBackupsAPI:
         mock_backup.completed_at = None
         mock_backup.duration_seconds = None
         mock_backup.error_message = None
-        mock_backup.created_at = MagicMock()
-        mock_backup.created_at.isoformat.return_value = "2024-01-01T00:00:00"
+        mock_backup.encrypted = False
+        mock_backup.created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
         mock_engine.create_backup = AsyncMock(return_value=mock_backup)
         mock_engine.run_backup = AsyncMock(return_value=True)
@@ -186,8 +187,8 @@ class TestBackupsAPI:
         mock_backup.completed_at = None
         mock_backup.duration_seconds = None
         mock_backup.error_message = None
-        mock_backup.created_at = MagicMock()
-        mock_backup.created_at.isoformat.return_value = "2024-01-01T00:00:00"
+        mock_backup.encrypted = False
+        mock_backup.created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
         mock_engine.create_backup = AsyncMock(return_value=mock_backup)
         mock_engine.run_backup = AsyncMock(return_value=True)
@@ -314,8 +315,8 @@ class TestBackupsAPI:
         mock_backup.completed_at = None
         mock_backup.duration_seconds = None
         mock_backup.error_message = None
-        mock_backup.created_at = MagicMock()
-        mock_backup.created_at.isoformat.return_value = "2024-01-01T00:00:00"
+        mock_backup.encrypted = False
+        mock_backup.created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
         mock_engine.create_backup = AsyncMock(return_value=mock_backup)
         mock_engine.run_backup = AsyncMock(return_value=True)

@@ -12,6 +12,10 @@ import {
   ChevronDown,
   ChevronUp,
   FolderMinus,
+  FolderPlus,
+  Database,
+  Link,
+  Filter,
 } from 'lucide-react'
 import {
   targetsApi,
@@ -51,6 +55,7 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
     retention_policy_id: target.retention_policy_id || null,
     remote_storage_ids: (target.remote_storage_ids || []) as number[],
     compression: target.compression_enabled ? 'gzip' : 'none',
+    include_paths: target.include_paths || [],
     exclude_paths: target.exclude_paths || [],
     pre_backup_command: target.pre_backup_command || '',
     post_backup_command: target.post_backup_command || '',
@@ -69,6 +74,8 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
 
   // New exclude path input
   const [newExcludePath, setNewExcludePath] = useState('')
+  // New include path input
+  const [newIncludePath, setNewIncludePath] = useState('')
 
   // Fetch schedules
   const { data: schedules = [] } = useQuery({
@@ -113,6 +120,7 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
       schedule_id: formData.schedule_id || undefined,
       retention_policy_id: formData.retention_policy_id || undefined,
       compression_enabled: formData.compression !== 'none',
+      include_paths: formData.include_paths,
       exclude_paths: formData.exclude_paths,
       pre_backup_command: formData.pre_backup_command || undefined,
       post_backup_command: formData.post_backup_command || undefined,
@@ -135,6 +143,23 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
     setFormData((prev) => ({
       ...prev,
       exclude_paths: prev.exclude_paths.filter((p) => p !== path),
+    }))
+  }
+
+  const addIncludePath = () => {
+    if (newIncludePath && !formData.include_paths.includes(newIncludePath)) {
+      setFormData((prev) => ({
+        ...prev,
+        include_paths: [...prev.include_paths, newIncludePath],
+      }))
+      setNewIncludePath('')
+    }
+  }
+
+  const removeIncludePath = (path: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      include_paths: prev.include_paths.filter((p) => p !== path),
     }))
   }
 
@@ -322,6 +347,100 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
             </div>
           )}
 
+          {/* Selected Volumes (read-only info) */}
+          {(target.target_type === 'container' || target.target_type === 'stack') &&
+            target.selected_volumes &&
+            target.selected_volumes.length > 0 && (
+              <div>
+                <label className="flex items-center gap-2 text-sm font-medium text-dark-300 mb-2">
+                  <Database className="w-4 h-4" />
+                  Selected Volumes
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {target.selected_volumes.map((vol) => (
+                    <span
+                      key={vol}
+                      className="inline-flex items-center gap-1 px-2 py-1 bg-primary-500/10 text-primary-400 rounded text-sm"
+                    >
+                      {vol}
+                    </span>
+                  ))}
+                </div>
+                <p className="text-xs text-dark-500 mt-1">
+                  Configured in the backup wizard. To change volumes, recreate the target.
+                </p>
+              </div>
+            )}
+
+          {/* Dependencies (read-only info) */}
+          {target.dependencies && target.dependencies.length > 0 && (
+            <div>
+              <label className="flex items-center gap-2 text-sm font-medium text-dark-300 mb-2">
+                <Link className="w-4 h-4" />
+                Dependencies
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {target.dependencies.map((dep) => (
+                  <span
+                    key={dep}
+                    className="inline-flex items-center gap-1 px-2 py-1 bg-blue-500/10 text-blue-400 rounded text-sm"
+                  >
+                    {dep}
+                  </span>
+                ))}
+              </div>
+              <p className="text-xs text-dark-500 mt-1">
+                Containers that will be stopped/started together during backup.
+              </p>
+            </div>
+          )}
+
+          {/* Include Paths */}
+          <div>
+            <label className="flex items-center gap-2 text-sm font-medium text-dark-300 mb-2">
+              <FolderPlus className="w-4 h-4" />
+              Include Paths
+            </label>
+            <div className="flex gap-2 mb-2">
+              <input
+                type="text"
+                value={newIncludePath}
+                onChange={(e) => setNewIncludePath(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addIncludePath())}
+                placeholder="e.g., config/, data/*.db (empty = all)"
+                className="flex-1 px-3 py-2 bg-dark-900 border border-dark-600 rounded-lg text-dark-100 focus:outline-none focus:border-primary-500 text-sm"
+              />
+              <button
+                type="button"
+                onClick={addIncludePath}
+                className="px-3 py-2 bg-dark-700 hover:bg-dark-600 text-dark-300 rounded-lg transition-colors text-sm"
+              >
+                Add
+              </button>
+            </div>
+            {formData.include_paths.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {formData.include_paths.map((path) => (
+                  <span
+                    key={path}
+                    className="inline-flex items-center gap-1 px-2 py-1 bg-green-500/10 text-green-400 rounded text-sm"
+                  >
+                    {path}
+                    <button
+                      type="button"
+                      onClick={() => removeIncludePath(path)}
+                      className="hover:text-green-300"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-dark-500">No include filters — all files will be backed up</p>
+            )}
+          </div>
+
           {/* Exclude Paths */}
           <div>
             <label className="flex items-center gap-2 text-sm font-medium text-dark-300 mb-2">
@@ -365,6 +484,48 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
               </div>
             )}
           </div>
+
+          {/* Per-Volume Rules (read-only info) */}
+          {target.per_volume_rules &&
+            Object.keys(target.per_volume_rules).length > 0 && (
+              <div>
+                <label className="flex items-center gap-2 text-sm font-medium text-dark-300 mb-2">
+                  <Filter className="w-4 h-4" />
+                  Per-Volume Filter Rules
+                </label>
+                <div className="space-y-2">
+                  {Object.entries(target.per_volume_rules).map(([vol, rules]) => (
+                    <div
+                      key={vol}
+                      className="p-2 bg-dark-750 rounded-lg border border-dark-700"
+                    >
+                      <span className="text-xs font-medium text-dark-200">{vol}</span>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {rules.include_paths?.map((p: string) => (
+                          <span
+                            key={`inc-${p}`}
+                            className="px-1.5 py-0.5 bg-green-500/10 text-green-400 rounded text-[11px]"
+                          >
+                            +{p}
+                          </span>
+                        ))}
+                        {rules.exclude_paths?.map((p: string) => (
+                          <span
+                            key={`exc-${p}`}
+                            className="px-1.5 py-0.5 bg-orange-500/10 text-orange-400 rounded text-[11px]"
+                          >
+                            −{p}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-dark-500 mt-1">
+                  Configured in the backup wizard. To change, recreate the target.
+                </p>
+              </div>
+            )}
 
           {/* Advanced Options Toggle */}
           <button
