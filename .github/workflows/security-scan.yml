@@ -1,0 +1,212 @@
+name: Security Scanning (SAST/DAST)
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    # Weekly scan every Monday at 06:00 UTC
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  # ──────────────────────────────────────────────
+  # Python SAST — Bandit
+  # ──────────────────────────────────────────────
+  bandit:
+    name: Bandit (Python SAST)
+    runs-on: ubuntu-latest
+    steps:
+      - uses:  actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Install Bandit
+        run: pip install bandit[toml]
+
+      - name: Run Bandit scan
+        run: |
+          bandit -r backend/app \
+            -f json \
+            -o bandit-results.json \
+            --severity-level medium \
+            --confidence-level medium \
+            -x 'backend/app/__pycache__' \
+            || true
+
+      - name: Display results
+        if: always()
+        run: |
+          if [ -f bandit-results.json ]; then
+            python -m json.tool bandit-results.json
+          fi
+
+      - name: Upload Bandit results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: bandit-results
+          path: bandit-results.json
+          retention-days: 30
+
+  # ──────────────────────────────────────────────
+  # Python dependency audit — pip-audit
+  # ──────────────────────────────────────────────
+  pip-audit:
+    name: pip-audit (Python Dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - uses:  actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Run pip-audit
+        run: |
+          pip-audit \
+            -r backend/requirements.txt \
+            --format json \
+            --output pip-audit-results.json \
+            || true
+
+      - name: Display results
+        if: always()
+        run: |
+          if [ -f pip-audit-results.json ]; then
+            python -m json.tool pip-audit-results.json
+          fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pip-audit-results
+          path: pip-audit-results.json
+          retention-days: 30
+
+  # ──────────────────────────────────────────────
+  # JavaScript dependency audit — npm audit
+  # ──────────────────────────────────────────────
+  npm-audit:
+    name: npm audit (JS Dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - uses:  actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run npm audit
+        working-directory: frontend
+        run: |
+          npm audit --json > npm-audit-results.json 2>&1 || true
+
+      - name: Display results
+        if: always()
+        working-directory: frontend
+        run: |
+          if [ -f npm-audit-results.json ]; then
+            cat npm-audit-results.json | head -100
+          fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: npm-audit-results
+          path: frontend/npm-audit-results.json
+          retention-days: 30
+
+  # ──────────────────────────────────────────────
+  # Container image scanning — Trivy
+  # ──────────────────────────────────────────────
+  trivy:
+    name: Trivy (Container Scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses:  actions/checkout@v6
+
+      - name: Build Docker image
+        run: docker build -t dockervault:scan .
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.34.1
+        with:
+          image-ref: 'dockervault:scan'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+
+      - name: Upload Trivy SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: 'trivy-container'
+
+      - name: Run Trivy (table output for logs)
+        if: always()
+        uses: aquasecurity/trivy-action@0.34.1
+        with:
+          image-ref: 'dockervault:scan'
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+
+  # ──────────────────────────────────────────────
+  # Dockerfile linting — Hadolint
+  # ──────────────────────────────────────────────
+  hadolint:
+    name: Hadolint (Dockerfile Lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses:  actions/checkout@v6
+
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.3.0 
+        with:
+          dockerfile: Dockerfile
+          format: sarif
+          output-file: hadolint-results.sarif
+          no-fail: true
+
+      - name: Upload Hadolint SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: hadolint-results.sarif
+          category: 'hadolint'
+
+  # ──────────────────────────────────────────────
+  # Secret scanning — Gitleaks
+  # ──────────────────────────────────────────────
+  gitleaks:
+    name: Gitleaks (Secret Detection)
+    runs-on: ubuntu-latest
+    steps:
+      - uses:  actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
