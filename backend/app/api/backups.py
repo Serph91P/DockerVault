@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -21,6 +21,7 @@ from app.backup_engine import backup_engine
 from app.config import settings
 from app.database import Backup, BackupStatus, BackupTarget, BackupType, async_session
 from app.encryption import DecryptionError, decrypt_backup
+from app.rate_limit import limiter
 
 logger = logging.getLogger(__name__)
 
@@ -173,28 +174,31 @@ async def get_backup(backup_id: int):
 
 
 @router.post("", response_model=BackupResponse)
-async def create_backup(request: CreateBackupRequest):
+@limiter.limit("10/minute")
+async def create_backup(request: Request, request_body: CreateBackupRequest):
     """Create and run a new backup."""
     logger.info(
-        f"Creating backup for target {request.target_id}, type: {request.backup_type}"
+        f"Creating backup for target {request_body.target_id}, type: {request_body.backup_type}"
     )
 
     async with async_session() as session:
         # Get target
         result = await session.execute(
-            select(BackupTarget).where(BackupTarget.id == request.target_id)
+            select(BackupTarget).where(BackupTarget.id == request_body.target_id)
         )
         target = result.scalar_one_or_none()
 
         if not target:
-            logger.error("Target %s not found", request.target_id)
+            logger.error("Target %s not found", request_body.target_id)
             raise HTTPException(status_code=404, detail="Target not found")
 
         logger.info(f"Found target: {target.name} (type: {target.target_type})")
 
     # Create backup
     backup_type = (
-        BackupType.FULL if request.backup_type == "full" else BackupType.INCREMENTAL
+        BackupType.FULL
+        if request_body.backup_type == "full"
+        else BackupType.INCREMENTAL
     )
     backup = await backup_engine.create_backup(target, backup_type)
 
@@ -229,15 +233,18 @@ async def create_backup(request: CreateBackupRequest):
 
 
 @router.post("/{backup_id}/restore")
-async def restore_backup(backup_id: int, request: RestoreBackupRequest):
+@limiter.limit("10/minute")
+async def restore_backup(
+    request: Request, backup_id: int, restore_request: RestoreBackupRequest
+):
     """Restore a backup.
 
     If target_path is provided, it must be within allowed restore directories
     to prevent path traversal attacks.
     """
-    if request.target_path:
+    if restore_request.target_path:
         # Resolve symlinks and normalize to prevent TOCTOU attacks
-        abs_path = os.path.realpath(request.target_path)
+        abs_path = os.path.realpath(restore_request.target_path)
 
         # Ensure path is within allowed restore directories
         allowed_prefixes = [
@@ -257,7 +264,7 @@ async def restore_backup(backup_id: int, request: RestoreBackupRequest):
             )
 
     success = await backup_engine.restore_backup(
-        backup_id, request.target_path, request.private_key
+        backup_id, restore_request.target_path, restore_request.private_key
     )
 
     if not success:
@@ -267,7 +274,8 @@ async def restore_backup(backup_id: int, request: RestoreBackupRequest):
 
 
 @router.delete("/{backup_id}")
-async def delete_backup(backup_id: int):
+@limiter.limit("20/minute")
+async def delete_backup(request: Request, backup_id: int):
     """Delete a backup."""
     async with async_session() as session:
         result = await session.execute(select(Backup).where(Backup.id == backup_id))
