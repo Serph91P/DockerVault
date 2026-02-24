@@ -187,7 +187,7 @@ async def create_backup(request: CreateBackupRequest):
         target = result.scalar_one_or_none()
 
         if not target:
-            logger.error(f"Target {request.target_id} not found")
+            logger.error("Target %s not found", request.target_id)
             raise HTTPException(status_code=404, detail="Target not found")
 
         logger.info(f"Found target: {target.name} (type: {target.target_type})")
@@ -542,7 +542,7 @@ async def list_encrypted_backup_files(backup_id: int, body: BrowseEncryptedReque
         return files
 
     except tarfile.TarError as e:
-        logger.error(f"Failed to read decrypted archive: {e}")
+        logger.error("Failed to read decrypted archive: %s", e)
         raise HTTPException(status_code=500, detail="Failed to read backup archive")
     finally:
         if temp_path and temp_path.exists():
@@ -574,47 +574,65 @@ async def download_encrypted_backup_file(
             )
 
     temp_path: Path | None = None
+    tar = None
     try:
         archive_path, mode, temp_path = await _get_decrypted_archive_path(
             backup, body.private_key
         )
 
-        with tarfile.open(archive_path, mode) as tar:
-            normalized_path = _validate_archive_path(file_path)
+        tar = tarfile.open(archive_path, mode)
+        normalized_path = _validate_archive_path(file_path)
 
-            member = tar.getmember(normalized_path)
+        member = tar.getmember(normalized_path)
 
-            if member.isdir():
-                raise HTTPException(
-                    status_code=400, detail="Cannot download directories"
-                )
+        if member.isdir():
+            tar.close()
+            if temp_path and temp_path.exists():
+                temp_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail="Cannot download directories")
 
-            file_obj = tar.extractfile(member)
-            if file_obj is None:
-                raise HTTPException(status_code=500, detail="Failed to extract file")
+        file_obj = tar.extractfile(member)
+        if file_obj is None:
+            tar.close()
+            if temp_path and temp_path.exists():
+                temp_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail="Failed to extract file")
 
-            filename = _sanitize_filename(member.name)
+        filename = _sanitize_filename(member.name)
+        cleanup_temp = temp_path
 
-            def iter_file():
+        def iter_file():
+            try:
                 while chunk := file_obj.read(65536):
                     yield chunk
+            finally:
+                file_obj.close()
+                tar.close()
+                if cleanup_temp and cleanup_temp.exists():
+                    cleanup_temp.unlink(missing_ok=True)
 
-            return StreamingResponse(
-                iter_file(),
-                media_type="application/octet-stream",
-                headers={
-                    "Content-Disposition": f'attachment; filename="{filename}"',
-                },
-            )
+        return StreamingResponse(
+            iter_file(),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Cache-Control": "no-store",
+            },
+        )
 
     except KeyError:
-        raise HTTPException(status_code=404, detail="File not found in archive")
-    except tarfile.TarError as e:
-        logger.error(f"Failed to extract file from decrypted archive: {e}")
-        raise HTTPException(status_code=500, detail="Failed to read backup archive")
-    finally:
+        if tar:
+            tar.close()
         if temp_path and temp_path.exists():
             temp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=404, detail="File not found in archive")
+    except tarfile.TarError as e:
+        if tar:
+            tar.close()
+        if temp_path and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+        logger.error("Failed to extract file from decrypted archive: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to read backup archive")
 
 
 @router.get("/{backup_id}/files", response_model=List[BackupFileInfo])
@@ -669,7 +687,7 @@ async def list_backup_files(backup_id: int):
                 )
 
     except tarfile.TarError as e:
-        logger.error(f"Failed to read archive {backup.file_path}: {e}")
+        logger.error("Failed to read archive: %s", e)
         raise HTTPException(status_code=500, detail="Failed to read backup archive")
 
     return files
