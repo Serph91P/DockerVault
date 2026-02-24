@@ -49,7 +49,7 @@ export const useWebSocketStore = create<WebSocketStore>((set, get) => ({
       set({ connected: false })
 
       // 4001 = authentication failure — do not reconnect
-      if (event.code === 4001) {
+      if (event?.code === 4001) {
         console.warn('WebSocket auth failed, not reconnecting')
         return
       }
