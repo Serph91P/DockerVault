@@ -843,7 +843,17 @@ class BackupEngine:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await process.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=settings.HOOK_COMMAND_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            raise Exception(
+                f"Hook command timed out after {settings.HOOK_COMMAND_TIMEOUT}s"
+            )
 
         if process.returncode != 0:
             raise Exception(f"Hook command failed: {stderr.decode()}")
@@ -997,13 +1007,13 @@ class BackupEngine:
         Validates that all extracted files stay within the destination
         directory to prevent path traversal attacks (CVE-2007-4559).
         """
-        abs_dest = os.path.abspath(dest)
+        abs_dest = os.path.realpath(dest)
 
         with tarfile.open(source, mode) as tar:
             # Validate all members before extraction
             for member in tar.getmembers():
                 member_path = os.path.join(dest, member.name)
-                abs_member = os.path.abspath(member_path)
+                abs_member = os.path.realpath(member_path)
 
                 # Check for path traversal
                 if (
@@ -1025,7 +1035,7 @@ class BackupEngine:
                     link_path = os.path.join(
                         dest, os.path.dirname(member.name), member.linkname
                     )
-                    abs_link = os.path.abspath(link_path)
+                    abs_link = os.path.realpath(link_path)
                     if not abs_link.startswith(abs_dest + os.sep):
                         raise ValueError(
                             f"Symlink escape detected in archive: "
