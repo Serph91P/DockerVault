@@ -406,7 +406,7 @@ class TestBackupsAPI:
         )
 
         assert response.status_code == 400
-        assert "path traversal" in response.json()["detail"].lower()
+        assert "allowed directories" in response.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
