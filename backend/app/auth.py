@@ -4,6 +4,7 @@ Authentication module for DockerVault.
 Provides password hashing, session management, and auth dependencies.
 """
 
+import hashlib
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -25,6 +26,11 @@ SESSION_TOKEN_LENGTH = 64
 
 # Security scheme
 security = HTTPBearer(auto_error=False)
+
+
+def _hash_token(token: str) -> str:
+    """Hash a session token with SHA-256 for safe database storage."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def hash_password(password: str) -> str:
@@ -56,25 +62,32 @@ def generate_session_token() -> str:
 
 
 async def create_session(user_id: int, db: AsyncSession) -> str:
-    """Create a new session for a user."""
+    """Create a new session for a user.
+
+    The raw token is returned to be set in the cookie.
+    Only the SHA-256 hash is stored in the database so that a database
+    leak does not directly compromise active sessions.
+    """
     token = generate_session_token()
+    token_hash = _hash_token(token)
     expires_at = datetime.now(timezone.utc) + timedelta(hours=SESSION_EXPIRE_HOURS)
 
     session = Session(
         user_id=user_id,
-        token=token,
+        token=token_hash,
         expires_at=expires_at,
     )
     db.add(session)
     await db.commit()
 
-    logger.info(f"Created session for user {user_id}")
+    logger.info("Created session for user %s", user_id)
     return token
 
 
 async def invalidate_session(token: str, db: AsyncSession) -> bool:
     """Invalidate a session token."""
-    result = await db.execute(delete(Session).where(Session.token == token))
+    token_hash = _hash_token(token)
+    result = await db.execute(delete(Session).where(Session.token == token_hash))
     await db.commit()
     return result.rowcount > 0
 
@@ -96,10 +109,15 @@ async def cleanup_expired_sessions(db: AsyncSession) -> int:
 
 
 async def get_session_user(token: str, db: AsyncSession) -> Optional[User]:
-    """Get user from session token."""
+    """Get user from session token.
+
+    The presented raw token is hashed before comparison to match
+    the SHA-256 hash stored in the database.
+    """
+    token_hash = _hash_token(token)
     result = await db.execute(
         select(Session).where(
-            Session.token == token, Session.expires_at > datetime.now(timezone.utc)
+            Session.token == token_hash, Session.expires_at > datetime.now(timezone.utc)
         )
     )
     session = result.scalar_one_or_none()

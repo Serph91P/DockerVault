@@ -8,6 +8,26 @@ services:
     user: root
     environment:
       - TZ=${TZ:-Europe/Berlin}
+      # Security
+      - COOKIE_SECURE=${COOKIE_SECURE:-true}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost}
+      - CREDENTIAL_ENCRYPTION_KEY=${CREDENTIAL_ENCRYPTION_KEY:-}
+      - ALLOWED_HOOK_COMMANDS=${ALLOWED_HOOK_COMMANDS:-pg_dump,pg_dumpall,mysqldump,mongodump,redis-cli,mariadb-dump}
+      - HOOK_COMMAND_TIMEOUT=${HOOK_COMMAND_TIMEOUT:-300}
+      - ALLOWED_SSH_KEY_DIRS=${ALLOWED_SSH_KEY_DIRS:-/app/data/ssh_keys,/root/.ssh}
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
+      - ENABLE_DOCS=${ENABLE_DOCS:-false}
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FORMAT=${LOG_FORMAT:-text}
+      # Default retention policy
+      - DEFAULT_KEEP_LAST=${DEFAULT_KEEP_LAST:-3}
+      - DEFAULT_KEEP_DAILY=${DEFAULT_KEEP_DAILY:-7}
+      - DEFAULT_KEEP_WEEKLY=${DEFAULT_KEEP_WEEKLY:-4}
+      - DEFAULT_KEEP_MONTHLY=${DEFAULT_KEEP_MONTHLY:-6}
+      - DEFAULT_KEEP_YEARLY=${DEFAULT_KEEP_YEARLY:-2}
+      # Advanced
+      - SHUTDOWN_TIMEOUT=${SHUTDOWN_TIMEOUT:-30}
       # Komodo Integration (optional)
       - KOMODO_ENABLED=${KOMODO_ENABLED:-false}
       - KOMODO_API_URL=${KOMODO_API_URL:-}

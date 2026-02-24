@@ -10,7 +10,7 @@ import tarfile
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -69,7 +69,7 @@ class CreateBackupRequest(BaseModel):
     """Create backup request."""
 
     target_id: int
-    backup_type: str = "full"
+    backup_type: Literal["full", "incremental"] = "full"
 
 
 class RestoreBackupRequest(BaseModel):

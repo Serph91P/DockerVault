@@ -117,7 +117,7 @@ class TestBackupsAPI:
     async def test_create_backup_invalid_type(
         self, mock_engine, async_client: AsyncClient, db_session
     ):
-        """Test backup creation with invalid backup type defaults to incremental."""
+        """Test backup creation with invalid backup type is rejected."""
         # Create target
         target = BackupTarget(
             name="test-target",
@@ -129,34 +129,13 @@ class TestBackupsAPI:
         await db_session.commit()
         await db_session.refresh(target)
 
-        # Mock backup engine
-        mock_backup = MagicMock()
-        mock_backup.id = 1
-        mock_backup.target_id = target.id
-        mock_backup.backup_type = BackupType.INCREMENTAL  # Non-"full" defaults to incremental
-        mock_backup.status = BackupStatus.PENDING
-        mock_backup.file_path = None
-        mock_backup.file_size = None
-        mock_backup.checksum = None
-        mock_backup.started_at = None
-        mock_backup.completed_at = None
-        mock_backup.duration_seconds = None
-        mock_backup.error_message = None
-        mock_backup.encrypted = False
-        mock_backup.created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
-
-        mock_engine.create_backup = AsyncMock(return_value=mock_backup)
-        mock_engine.run_backup = AsyncMock(return_value=True)
-
         response = await async_client.post(
             "/api/v1/backups",
             json={"target_id": target.id, "backup_type": "invalid_type"},
         )
 
-        # API doesn't validate backup_type - defaults to incremental if not "full"
-        assert response.status_code == 200
-        data = response.json()
-        assert data["backup_type"] == "incremental"
+        # Invalid backup_type is rejected with 422
+        assert response.status_code == 422
 
     @patch("app.api.backups.backup_engine")
     async def test_create_backup_with_disabled_target(
@@ -291,7 +270,7 @@ class TestBackupsAPI:
     async def test_input_validation_large_backup_type(
         self, mock_engine, async_client: AsyncClient, db_session
     ):
-        """Test that large backup_type strings are handled (defaults to incremental)."""
+        """Test that invalid backup_type strings are rejected."""
         target = BackupTarget(
             name="test-target",
             target_type="volume",
@@ -302,35 +281,16 @@ class TestBackupsAPI:
         await db_session.commit()
         await db_session.refresh(target)
 
-        # Mock backup engine
-        mock_backup = MagicMock()
-        mock_backup.id = 1
-        mock_backup.target_id = target.id
-        mock_backup.backup_type = BackupType.INCREMENTAL
-        mock_backup.status = BackupStatus.PENDING
-        mock_backup.file_path = None
-        mock_backup.file_size = None
-        mock_backup.checksum = None
-        mock_backup.started_at = None
-        mock_backup.completed_at = None
-        mock_backup.duration_seconds = None
-        mock_backup.error_message = None
-        mock_backup.encrypted = False
-        mock_backup.created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
-
-        mock_engine.create_backup = AsyncMock(return_value=mock_backup)
-        mock_engine.run_backup = AsyncMock(return_value=True)
-
         response = await async_client.post(
             "/api/v1/backups",
             json={
                 "target_id": target.id,
-                "backup_type": "x" * 1000,  # Very long string
+                "backup_type": "x" * 1000,  # Very long invalid string
             },
         )
 
-        # API accepts any string, defaults to incremental if not "full"
-        assert response.status_code == 200
+        # Invalid backup_type is rejected with 422
+        assert response.status_code == 422
 
     @patch("app.api.backups.backup_engine")
     async def test_restore_backup_success(

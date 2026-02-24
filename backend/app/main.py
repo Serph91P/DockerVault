@@ -9,14 +9,12 @@ import sys
 import traceback
 from contextlib import asynccontextmanager
 
-import docker
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api import router as api_router
@@ -62,14 +60,18 @@ def configure_logging() -> None:
 configure_logging()
 logger = logging.getLogger(__name__)
 
-# Paths that don't require authentication
+# Paths that don't require authentication (exact match)
 PUBLIC_PATHS = {
     "/health",
     "/api/v1/auth/status",
     "/api/v1/auth/setup",
     "/api/v1/auth/login",
-    "/ws",  # WebSocket handles its own token-based auth
 }
+
+# Path prefixes that don't require authentication
+PUBLIC_PATH_PREFIXES = (
+    "/ws/",  # WebSocket handles its own token-based auth
+)
 
 
 @asynccontextmanager
@@ -176,8 +178,8 @@ async def auth_middleware(request: Request, call_next):
     """
     path = request.url.path
 
-    # Allow public paths
-    if any(path.startswith(p) for p in PUBLIC_PATHS):
+    # Allow public paths (exact match or explicit prefixes)
+    if path in PUBLIC_PATHS or path.startswith(PUBLIC_PATH_PREFIXES):
         return await call_next(request)
 
     # Check if setup is complete
@@ -220,8 +222,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS.split(","),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 # Include routers
@@ -233,34 +235,9 @@ app.include_router(ws_router, prefix="/ws")
 async def health_check():
     """Liveness probe — always 200 if the process is up.
 
-    Dependency checks (database, Docker) are reported as informational
-    fields but do NOT cause a non-200 status, so healthcheck-aware
-    reverse proxies keep routing traffic to this container.
+    Returns minimal status information. Detailed dependency checks
+    are available via the authenticated /api/v1/settings/status endpoint.
     """
-    checks: dict = {}
-
-    # Database check
-    try:
-        async with async_session() as session:
-            await session.execute(text("SELECT 1"))
-        checks["database"] = "ok"
-    except Exception:
-        checks["database"] = "unavailable"
-
-    # Docker daemon check
-    client = None
-    try:
-        client = docker.from_env()
-        client.ping()
-        checks["docker"] = "ok"
-    except Exception:
-        checks["docker"] = "unavailable"
-    finally:
-        if client:
-            client.close()
-
     return {
         "status": "healthy",
-        "version": "1.0.0",
-        "checks": checks,
     }

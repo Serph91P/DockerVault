@@ -18,6 +18,7 @@ from app.backup_engine import BackupType, backup_engine
 from app.config import settings
 from app.database import BackupSchedule, BackupTarget, async_session
 from app.retention import retention_manager
+from app.auth import cleanup_expired_sessions
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,14 @@ class BackupScheduler:
             self._run_retention_cleanup,
             CronTrigger(hour=3, minute=0),
             id="retention_cleanup",
+            replace_existing=True,
+        )
+
+        # Schedule expired session cleanup (hourly)
+        self.scheduler.add_job(
+            self._run_session_cleanup,
+            CronTrigger(minute=15),
+            id="session_cleanup",
             replace_existing=True,
         )
 
@@ -212,6 +221,13 @@ class BackupScheduler:
 
         # Also cleanup orphaned files
         await retention_manager.cleanup_orphaned_files()
+
+    async def _run_session_cleanup(self):
+        """Remove expired sessions from the database."""
+        async with async_session() as db:
+            count = await cleanup_expired_sessions(db)
+            if count > 0:
+                logger.info("Cleaned up %d expired sessions", count)
 
     def get_next_run(
         self, cron_expr: str, base_time: Optional[datetime] = None

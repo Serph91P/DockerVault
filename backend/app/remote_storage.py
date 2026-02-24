@@ -130,9 +130,17 @@ class StorageBackend(ABC):
 class LocalStorage(StorageBackend):
     """Local/Network storage (NFS, SMB mounted paths)"""
 
+    def _safe_resolve(self, remote_path: str) -> Path:
+        """Resolve remote_path under base_path, rejecting traversal attempts."""
+        base = Path(self.config.base_path).resolve()
+        resolved = (base / remote_path).resolve()
+        if not str(resolved).startswith(str(base) + "/") and resolved != base:
+            raise ValueError("Path traversal detected")
+        return resolved
+
     async def upload(self, local_path: Path, remote_path: str) -> bool:
         try:
-            dest = Path(self.config.base_path) / remote_path
+            dest = self._safe_resolve(remote_path)
             dest.parent.mkdir(parents=True, exist_ok=True)
 
             # Use async copy
@@ -147,7 +155,7 @@ class LocalStorage(StorageBackend):
 
     async def download(self, remote_path: str, local_path: Path) -> bool:
         try:
-            src = Path(self.config.base_path) / remote_path
+            src = self._safe_resolve(remote_path)
             local_path.parent.mkdir(parents=True, exist_ok=True)
 
             loop = asyncio.get_event_loop()
@@ -160,7 +168,7 @@ class LocalStorage(StorageBackend):
 
     async def delete(self, remote_path: str) -> bool:
         try:
-            path = Path(self.config.base_path) / remote_path
+            path = self._safe_resolve(remote_path)
             if path.exists():
                 path.unlink()
             return True
@@ -170,7 +178,7 @@ class LocalStorage(StorageBackend):
 
     async def list_files(self, remote_path: str = "") -> List[Dict[str, Any]]:
         try:
-            path = Path(self.config.base_path) / remote_path
+            path = self._safe_resolve(remote_path)
             files = []
             if path.exists():
                 for f in path.iterdir():
@@ -206,12 +214,14 @@ class SSHStorage(StorageBackend):
 
     def _get_ssh_options(self) -> List[str]:
         """Build SSH options for commands"""
-        opts = []
+        ssh_parts = []
         if self.config.port:
-            opts.extend(["-e", f"ssh -p {self.config.port}"])
+            ssh_parts.append(f"-p {self.config.port}")
         if self.config.ssh_key_path:
-            opts.extend(["-e", f"ssh -i {self.config.ssh_key_path}"])
-        return opts
+            ssh_parts.append(f"-i {self.config.ssh_key_path}")
+        if ssh_parts:
+            return ["-e", f"ssh {' '.join(ssh_parts)}"]
+        return []
 
     def _get_remote_path(self, remote_path: str) -> str:
         """Build full remote path with user@host prefix"""

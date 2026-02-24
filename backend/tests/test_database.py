@@ -231,7 +231,7 @@ class TestDatabaseModels:
 
     async def test_backup_with_orphan_target_id(self, db_session):
         """Test backup creation with non-existent target_id.
-        
+
         Note: SQLite doesn't enforce foreign key constraints by default.
         This test verifies the backup is created but has an orphan reference.
         In production with FK constraints enabled, this would raise IntegrityError.
