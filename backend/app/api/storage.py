@@ -18,9 +18,25 @@ from ..database import RemoteStorage as RemoteStorageModel
 from ..database import get_db
 from ..remote_storage import StorageConfig, StorageType, storage_manager
 from ..credential_encryption import decrypt_value, encrypt_value
+from ..config import settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _validate_ssh_key_path(path: str) -> str:
+    """Validate that the SSH key path is within allowed directories."""
+    real_path = os.path.realpath(path)
+    allowed_dirs = [
+        d.strip() for d in settings.ALLOWED_SSH_KEY_DIRS.split(",") if d.strip()
+    ]
+    for allowed in allowed_dirs:
+        if real_path.startswith(os.path.realpath(allowed) + os.sep) or real_path == os.path.realpath(allowed):
+            return real_path
+    raise HTTPException(
+        status_code=400,
+        detail=f"SSH key path must be within allowed directories: {allowed_dirs}",
+    )
 
 
 class StorageCreate(BaseModel):
@@ -181,6 +197,10 @@ async def list_storage_types():
 @router.post("", response_model=StorageResponse)
 async def create_storage(data: StorageCreate, db: AsyncSession = Depends(get_db)):
     """Create a new remote storage configuration"""
+    validated_ssh_key_path = None
+    if data.ssh_key_path:
+        validated_ssh_key_path = _validate_ssh_key_path(data.ssh_key_path)
+
     storage = RemoteStorageModel(
         name=data.name,
         storage_type=data.storage_type.value,
@@ -190,7 +210,7 @@ async def create_storage(data: StorageCreate, db: AsyncSession = Depends(get_db)
         username=data.username,
         password=encrypt_value(data.password) if data.password else data.password,
         base_path=data.base_path,
-        ssh_key_path=data.ssh_key_path,
+        ssh_key_path=validated_ssh_key_path,
         s3_bucket=data.s3_bucket,
         s3_region=data.s3_region,
         s3_access_key=encrypt_value(data.s3_access_key) if data.s3_access_key else data.s3_access_key,
@@ -269,6 +289,8 @@ async def update_storage(
             continue
         if field in ("password", "s3_access_key", "s3_secret_key") and value:
             value = encrypt_value(value)
+        if field == "ssh_key_path" and value:
+            value = _validate_ssh_key_path(value)
         setattr(storage, field, value)
 
     await db.commit()
