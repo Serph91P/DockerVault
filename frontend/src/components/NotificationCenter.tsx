@@ -11,7 +11,7 @@ import {
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useNotificationStore, type NotificationType } from '../store/notifications'
-import { formatDistanceToNow } from 'date-fns'
+import { formatDistanceToNowStrict } from 'date-fns'
 
 const typeConfig: Record<
   NotificationType,
@@ -180,7 +180,7 @@ export function NotificationCenter({ isOpen, onClose }: NotificationCenterProps)
                       {notification.message}
                     </p>
                     <p className="text-[10px] text-dark-600 mt-1">
-                      {formatDistanceToNow(notification.timestamp, { addSuffix: true })}
+                      {formatDistanceToNowStrict(notification.timestamp, { addSuffix: true })}
                     </p>
                   </div>
                   {!notification.read && (

@@ -26,7 +26,7 @@ import {
   BackupTarget,
   ScheduleEntity,
 } from '../api'
-import { format, formatDistanceToNow } from 'date-fns'
+import { format, formatDistanceToNowStrict } from 'date-fns'
 import toast from 'react-hot-toast'
 import { useWebSocketStore } from '../store/websocket'
 import { clsx } from 'clsx'
@@ -231,7 +231,7 @@ function TargetBackupCard({
                   <Loader2 className="w-3.5 h-3.5 text-primary-500 animate-spin flex-shrink-0" />
                 ) : null}
                 <span className="text-xs text-dark-300">
-                  {formatDistanceToNow(new Date(lastBackup.created_at), { addSuffix: true })}
+                  {formatDistanceToNowStrict(new Date(lastBackup.created_at), { addSuffix: true })}
                 </span>
                 {lastBackup.file_size_human && (
                   <span className="text-xs text-dark-500">{lastBackup.file_size_human}</span>

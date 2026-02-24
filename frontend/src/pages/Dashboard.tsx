@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Archive, Container, HardDrive, Clock, AlertCircle, CheckCircle, AlertTriangle, ShieldCheck, Plus, ArrowRight, Cloud, Shield } from 'lucide-react'
 import { dockerApi, backupsApi, targetsApi, schedulesApi, settingsApi } from '../api'
-import { formatDistanceToNow } from 'date-fns'
+import { formatDistanceToNowStrict } from 'date-fns'
 import { Link } from 'react-router-dom'
 
 function StatCard({
@@ -264,7 +264,7 @@ export default function Dashboard() {
                       {backup.target_name || `Target #${backup.target_id}`}
                     </p>
                     <p className="text-xs text-dark-400">
-                      {formatDistanceToNow(new Date(backup.created_at), {
+                      {formatDistanceToNowStrict(new Date(backup.created_at), {
                         addSuffix: true,
                       })}
                     </p>
@@ -311,7 +311,7 @@ export default function Dashboard() {
                   <div className="text-right">
                     <p className="text-sm text-dark-300">
                       {schedule.next_run &&
-                        formatDistanceToNow(new Date(schedule.next_run), {
+                        formatDistanceToNowStrict(new Date(schedule.next_run), {
                           addSuffix: true,
                         })}
                     </p>
