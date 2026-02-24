@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { Backup } from '../api'
+import { useNotificationStore } from './notifications'
 
 interface BackupProgress {
   backup_id: number
@@ -113,6 +114,22 @@ function handleMessage(
         const newProgress = new Map(currentState.backupProgress)
         newProgress.delete(data.backup_id as number)
         set({ backupProgress: newProgress })
+
+        // Add persistent notification
+        const addNotification = useNotificationStore.getState().addNotification
+        if (data.type === 'backup_completed') {
+          addNotification({
+            type: 'success',
+            title: 'Backup completed',
+            message: `Backup #${data.backup_id} finished successfully`,
+          })
+        } else {
+          addNotification({
+            type: 'error',
+            title: 'Backup failed',
+            message: `Backup #${data.backup_id} failed. Check logs for details.`,
+          })
+        }
       }
       break
 

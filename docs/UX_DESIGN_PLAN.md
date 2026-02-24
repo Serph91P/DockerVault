@@ -435,6 +435,12 @@ Pattern-Vereinheitlichung:
 61. **[GF2]** ✅ Global: Keyboard-Shortcuts (g+d/b/s/r/o/e Navigation, ? Help)
 62. **[GF4]** ✅ Dashboard: Onboarding-Guide für neue Nutzer
 
+### Phase 8: Notification Center & Polish (Finalisierung)
+
+63. **[D4]** ✅ Dependencies: Up/Down Reorder-Buttons für Reihenfolge
+64. **[ST4]** ✅ Storage: Browse als Drawer statt Modal
+65. **[GF1]** ✅ Global: Notification-Center mit persistenten Events
+
 ---
 
 ## 7. Design-Tokens & Patterns
@@ -531,7 +537,7 @@ function useSmartDefault<T extends { id: number }>(
 | D1 | Wizard/Deps | Stack vs. External Container | Hoch | ✅ Done |
 | D2 | Wizard/Deps | Auto-detect bei Stacks automatisch | Mittel | ✅ Done |
 | D3 | Wizard/Deps | "Select all" Logik für Stacks | Mittel | ✅ Done |
-| D4 | Wizard/Deps | Drag & Drop Reihenfolge | Niedrig | Offen |
+| D4 | Wizard/Deps | Drag & Drop Reihenfolge | Niedrig | ✅ Done |
 | S1 | Wizard/Schedule | Nutzungs-Sortierung | Mittel | ✅ Done |
 | S2 | Wizard/Schedule | Human-readable Cron | Hoch | ✅ Done |
 | S3 | Wizard/Schedule | "None" weniger prominent | Niedrig | ✅ Done |
@@ -574,7 +580,7 @@ function useSmartDefault<T extends { id: number }>(
 | ST1 | Storage | Form in Steps | Mittel | ✅ Done |
 | ST2 | Storage | Größere Type-Cards | Niedrig | ✅ Done |
 | ST3 | Storage | Persistent Test-Result | Mittel | ✅ Done |
-| ST4 | Storage | Browse als Drawer | Niedrig | Offen |
+| ST4 | Storage | Browse als Drawer | Niedrig | ✅ Done |
 | SE1 | Settings | Dynamische Infos | Mittel | ✅ Done |
 | SE2 | Settings | Encryption Erklärung | Mittel | ✅ Done |
 | SE3 | Settings | Form Race-Condition | Niedrig | ✅ Done |
@@ -583,7 +589,7 @@ function useSmartDefault<T extends { id: number }>(
 | G3 | Global | Empty-State Komponente | Niedrig | ✅ Done |
 | G4 | Global | Loading-State einheitlich | Niedrig | ✅ Done |
 | G5 | Global | Branding "DockerVault" | Niedrig | ✅ Done |
-| GF1 | Global | Notification-Center | Mittel | Offen |
+| GF1 | Global | Notification-Center | Mittel | ✅ Done |
 | GF2 | Global | Keyboard-Shortcuts | Niedrig | ✅ Done |
 | GF3 | Global | Theme-Toggle | Niedrig | Offen |
 | GF4 | Global | Onboarding-Hints | Niedrig | ✅ Done |

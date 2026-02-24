@@ -13,9 +13,11 @@ import {
   User,
   Keyboard,
 } from 'lucide-react'
+import { useState } from 'react'
 import { useWebSocketStore } from '../store/websocket'
 import { useAuthStore } from '../store/auth'
 import { useKeyboardShortcuts } from './KeyboardShortcuts'
+import { NotificationBadge, NotificationCenter } from './NotificationCenter'
 import toast from 'react-hot-toast'
 
 const navigation = [
@@ -32,6 +34,7 @@ export default function Layout() {
   const connected = useWebSocketStore((state) => state.connected)
   const { user, logout } = useAuthStore()
   const { showHelp, setShowHelp, ShortcutHelp } = useKeyboardShortcuts()
+  const [showNotifications, setShowNotifications] = useState(false)
   
   const handleLogout = async () => {
     await logout()
@@ -96,18 +99,27 @@ export default function Layout() {
           )}
           
           {/* Connection Status */}
-          <div className="flex items-center gap-2 text-sm">
-            {connected ? (
-              <>
-                <Wifi className="w-4 h-4 text-green-500" />
-                <span className="text-dark-400">Connected</span>
-              </>
-            ) : (
-              <>
-                <WifiOff className="w-4 h-4 text-red-500" />
-                <span className="text-dark-400">Disconnected</span>
-              </>
-            )}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-sm">
+              {connected ? (
+                <>
+                  <Wifi className="w-4 h-4 text-green-500" />
+                  <span className="text-dark-400">Connected</span>
+                </>
+              ) : (
+                <>
+                  <WifiOff className="w-4 h-4 text-red-500" />
+                  <span className="text-dark-400">Disconnected</span>
+                </>
+              )}
+            </div>
+            <div className="relative">
+              <NotificationBadge onClick={() => setShowNotifications(!showNotifications)} />
+              <NotificationCenter
+                isOpen={showNotifications}
+                onClose={() => setShowNotifications(false)}
+              />
+            </div>
           </div>
 
           {/* Keyboard Shortcuts Hint */}

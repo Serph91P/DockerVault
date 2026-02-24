@@ -116,8 +116,11 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
   const breadcrumbs = currentPath ? currentPath.split('/') : []
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-dark-800 rounded-2xl border border-dark-700 shadow-2xl w-full max-w-4xl max-h-[80vh] flex flex-col">
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="bg-dark-800 border-l border-dark-700 shadow-2xl w-full max-w-xl h-full flex flex-col animate-slide-in-right"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-dark-700">
           <div className="flex items-center gap-3">
