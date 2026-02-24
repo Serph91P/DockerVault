@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Archive,
@@ -423,11 +423,11 @@ export default function Backups() {
   })
 
   // Group backups by target
-  const getBackupsForTarget = (targetId: number): Backup[] => {
+  const getBackupsForTarget = useCallback((targetId: number): Backup[] => {
     return (allBackups || [])
       .filter((b) => b.target_id === targetId)
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-  }
+  }, [allBackups])
 
   // Filter and sort targets
   const filteredTargets = useMemo(() => {
@@ -471,7 +471,7 @@ export default function Backups() {
           return 0
       }
     })
-  }, [targets, searchQuery, typeFilter, statsFilter, sortBy, allBackups])
+  }, [targets, searchQuery, typeFilter, statsFilter, sortBy, getBackupsForTarget])
 
   // Stats
   const stats = {
