@@ -187,35 +187,54 @@ async def decrypt_dek(encrypted_dek: bytes, private_key: str) -> bytes:
     if not _check_age_installed():
         raise DecryptionError("age not installed")
 
-    # Write private key to temp file (age requires file input for identity)
-    # delete=True ensures the file is removed when the context manager exits
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".key", delete=True) as f:
-        f.write(private_key)
-        f.flush()
-        key_file = f.name
+    # Strip whitespace from key (clipboard/textarea may add extra chars)
+    private_key = private_key.strip()
+
+    if not private_key.startswith("AGE-SECRET-KEY-"):
+        raise DecryptionError(
+            "Invalid private key format. Key must start with AGE-SECRET-KEY-"
+        )
+
+    # Write private key to temp file (age requires file input for identity).
+    # Use mkstemp + manual cleanup: the file is closed before the subprocess
+    # reads it, guaranteeing the content is fully flushed to disk.
+    fd, key_file = tempfile.mkstemp(suffix=".key")
+    try:
         os.chmod(key_file, 0o600)
+        os.write(fd, private_key.encode())
+        os.write(fd, b"\n")
+        os.close(fd)
 
-        try:
-            process = await asyncio.create_subprocess_exec(
-                "age",
-                "-d",
-                "-i",
-                key_file,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+        process = await asyncio.create_subprocess_exec(
+            "age",
+            "-d",
+            "-i",
+            key_file,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate(input=encrypted_dek)
+
+        if process.returncode != 0:
+            logger.error(
+                "age decryption failed (exit %d): %s",
+                process.returncode,
+                stderr.decode(),
             )
-            stdout, stderr = await process.communicate(input=encrypted_dek)
+            raise DecryptionError(f"DEK decryption failed: {stderr.decode()}")
 
-            if process.returncode != 0:
-                raise DecryptionError(f"DEK decryption failed: {stderr.decode()}")
+        return stdout
 
-            return stdout
-
-        except Exception as e:
-            if isinstance(e, DecryptionError):
-                raise
-            raise DecryptionError(f"DEK decryption error: {e}")
+    except Exception as e:
+        if isinstance(e, DecryptionError):
+            raise
+        raise DecryptionError(f"DEK decryption error: {e}")
+    finally:
+        try:
+            os.unlink(key_file)
+        except OSError:
+            pass
 
 
 async def encrypt_file(input_path: Path, output_path: Path, dek: bytes) -> None:
@@ -229,8 +248,14 @@ async def encrypt_file(input_path: Path, output_path: Path, dek: bytes) -> None:
         output_path: Path for encrypted output
         dek: Data Encryption Key (32 bytes)
     """
+    # Write DEK to a temp file to avoid exposing it via /proc/cmdline.
+    # Using a file is more reliable across OpenSSL versions than stdin.
+    fd, pass_file = tempfile.mkstemp(suffix=".pass")
     try:
-        # Use openssl for maximum compatibility
+        os.chmod(pass_file, 0o600)
+        os.write(fd, dek.hex().encode())
+        os.close(fd)
+
         process = await asyncio.create_subprocess_exec(
             "openssl",
             "enc",
@@ -243,12 +268,10 @@ async def encrypt_file(input_path: Path, output_path: Path, dek: bytes) -> None:
             "-out",
             str(output_path),
             "-pass",
-            "stdin",
-            stdin=asyncio.subprocess.PIPE,
+            f"file:{pass_file}",
             stderr=asyncio.subprocess.PIPE,
         )
-        # DEK passed via stdin to avoid exposure in /proc/cmdline
-        _, stderr = await process.communicate(input=dek.hex().encode())
+        _, stderr = await process.communicate()
 
         if process.returncode != 0:
             raise EncryptionError(f"File encryption failed: {stderr.decode()}")
@@ -257,6 +280,11 @@ async def encrypt_file(input_path: Path, output_path: Path, dek: bytes) -> None:
         if isinstance(e, EncryptionError):
             raise
         raise EncryptionError(f"File encryption error: {e}")
+    finally:
+        try:
+            os.unlink(pass_file)
+        except OSError:
+            pass
 
 
 async def decrypt_file(input_path: Path, output_path: Path, dek: bytes) -> None:
@@ -268,7 +296,14 @@ async def decrypt_file(input_path: Path, output_path: Path, dek: bytes) -> None:
         output_path: Path for decrypted output
         dek: Data Encryption Key (32 bytes)
     """
+    # Write DEK to a temp file to avoid exposing it via /proc/cmdline.
+    # Using a file is more reliable across OpenSSL versions than stdin.
+    fd, pass_file = tempfile.mkstemp(suffix=".pass")
     try:
+        os.chmod(pass_file, 0o600)
+        os.write(fd, dek.hex().encode())
+        os.close(fd)
+
         process = await asyncio.create_subprocess_exec(
             "openssl",
             "enc",
@@ -282,20 +317,28 @@ async def decrypt_file(input_path: Path, output_path: Path, dek: bytes) -> None:
             "-out",
             str(output_path),
             "-pass",
-            "stdin",
-            stdin=asyncio.subprocess.PIPE,
+            f"file:{pass_file}",
             stderr=asyncio.subprocess.PIPE,
         )
-        # DEK passed via stdin to avoid exposure in /proc/cmdline
-        _, stderr = await process.communicate(input=dek.hex().encode())
+        _, stderr = await process.communicate()
 
         if process.returncode != 0:
+            logger.error(
+                "openssl decryption failed (exit %d): %s",
+                process.returncode,
+                stderr.decode(),
+            )
             raise DecryptionError(f"File decryption failed: {stderr.decode()}")
 
     except Exception as e:
         if isinstance(e, DecryptionError):
             raise
         raise DecryptionError(f"File decryption error: {e}")
+    finally:
+        try:
+            os.unlink(pass_file)
+        except OSError:
+            pass
 
 
 async def encrypt_backup(

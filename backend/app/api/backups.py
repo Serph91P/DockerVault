@@ -468,7 +468,8 @@ async def _get_decrypted_archive_path(
             private_key=private_key,
             output_path=temp_path,
         )
-    except DecryptionError:
+    except DecryptionError as e:
+        logger.error("Backup decryption failed for backup %s: %s", backup.id, e)
         temp_path.unlink(missing_ok=True)
         raise HTTPException(
             status_code=400,

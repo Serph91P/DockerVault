@@ -269,12 +269,13 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
   const [showKey, setShowKey] = useState(false)
 
   const shouldFetch = isEncrypted ? keySubmitted : true
+  const trimmedKey = privateKey.trim()
 
   const { data: files, isLoading, error } = useQuery({
-    queryKey: ['backup-files', backup.id, isEncrypted ? 'encrypted' : 'plain', keySubmitted ? privateKey : ''],
+    queryKey: ['backup-files', backup.id, isEncrypted ? 'encrypted' : 'plain', keySubmitted ? trimmedKey : ''],
     queryFn: async () => {
       if (isEncrypted) {
-        const response = await backupsApi.listFilesEncrypted(backup.id, privateKey)
+        const response = await backupsApi.listFilesEncrypted(backup.id, trimmedKey)
         return response.data as BackupFile[]
       }
       const response = await backupsApi.listFiles(backup.id)
@@ -302,7 +303,7 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
       const response = await fetch(`/api/v1/backups/${backup.id}/files/${encodeURIComponent(filePath)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ private_key: privateKey }),
+        body: JSON.stringify({ private_key: privateKey.trim() }),
       })
       if (!response.ok) throw new Error('Download failed')
 
