@@ -243,10 +243,12 @@ async def encrypt_file(input_path: Path, output_path: Path, dek: bytes) -> None:
             "-out",
             str(output_path),
             "-pass",
-            f"pass:{dek.hex()}",
+            "stdin",
+            stdin=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await process.communicate()
+        # DEK passed via stdin to avoid exposure in /proc/cmdline
+        _, stderr = await process.communicate(input=dek.hex().encode())
 
         if process.returncode != 0:
             raise EncryptionError(f"File encryption failed: {stderr.decode()}")
@@ -280,10 +282,12 @@ async def decrypt_file(input_path: Path, output_path: Path, dek: bytes) -> None:
             "-out",
             str(output_path),
             "-pass",
-            f"pass:{dek.hex()}",
+            "stdin",
+            stdin=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await process.communicate()
+        # DEK passed via stdin to avoid exposure in /proc/cmdline
+        _, stderr = await process.communicate(input=dek.hex().encode())
 
         if process.returncode != 0:
             raise DecryptionError(f"File decryption failed: {stderr.decode()}")
