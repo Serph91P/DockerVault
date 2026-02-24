@@ -15,6 +15,7 @@ services:
       - ALLOWED_HOOK_COMMANDS=${ALLOWED_HOOK_COMMANDS:-pg_dump,pg_dumpall,mysqldump,mongodump,redis-cli,mariadb-dump}
       - HOOK_COMMAND_TIMEOUT=${HOOK_COMMAND_TIMEOUT:-300}
       - ALLOWED_SSH_KEY_DIRS=${ALLOWED_SSH_KEY_DIRS:-/app/data/ssh_keys,/root/.ssh}
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-}
       - ENABLE_DOCS=${ENABLE_DOCS:-false}
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-INFO}

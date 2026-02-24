@@ -24,5 +24,26 @@ fi
 mkdir -p /app/data /backups /var/log/supervisor /run/nginx
 chmod 755 /app/data /backups /var/log/supervisor /run/nginx 2>/dev/null || true
 
+# Generate nginx realip config from TRUSTED_PROXIES env var.
+# When set, nginx uses the real_ip module to extract the actual client IP
+# from X-Forwarded-For headers sent by trusted reverse proxies.
+REALIP_CONF="/etc/nginx/conf.d/realip.conf"
+if [ -n "${TRUSTED_PROXIES:-}" ]; then
+    echo "# Auto-generated from TRUSTED_PROXIES" > "$REALIP_CONF"
+    echo "real_ip_header X-Forwarded-For;" >> "$REALIP_CONF"
+    echo "real_ip_recursive on;" >> "$REALIP_CONF"
+    IFS=',' read -ra PROXIES <<< "$TRUSTED_PROXIES"
+    for proxy in "${PROXIES[@]}"; do
+        proxy=$(echo "$proxy" | xargs)  # trim whitespace
+        if [ -n "$proxy" ]; then
+            echo "set_real_ip_from $proxy;" >> "$REALIP_CONF"
+        fi
+    done
+    echo "Configured trusted proxies: ${TRUSTED_PROXIES}"
+else
+    # Empty file so nginx include doesn't fail
+    echo "# No TRUSTED_PROXIES configured" > "$REALIP_CONF"
+fi
+
 # Start supervisord
 exec /usr/bin/tini -- /usr/bin/supervisord -c /etc/supervisor/supervisord.conf

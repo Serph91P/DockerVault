@@ -120,6 +120,9 @@ COPY --from=frontend-builder /app/dist /usr/share/nginx/html
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
 COPY docker/supervisord.conf /etc/supervisor/conf.d/dockervault.conf
 
+# Create empty realip config (populated by entrypoint from TRUSTED_PROXIES)
+RUN echo '# No TRUSTED_PROXIES configured' > /etc/nginx/conf.d/realip.conf
+
 # Fix nginx permissions for non-root operation
 RUN chown -R dockervault:dockervault /var/log/nginx /var/lib/nginx /run/nginx && \
     chmod 755 /var/log/nginx /var/lib/nginx /run/nginx
