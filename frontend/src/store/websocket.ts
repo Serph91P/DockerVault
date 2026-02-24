@@ -32,12 +32,10 @@ export const useWebSocketStore = create<WebSocketStore>((set, get) => ({
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.host
 
-    // Extract session token from cookie for WebSocket authentication
-    const tokenMatch = document.cookie.match(/(?:^|;\s*)session_token=([^;]+)/)
-    const token = tokenMatch?.[1] ?? ''
-    const queryParam = token ? `?token=${encodeURIComponent(token)}` : ''
-
-    ws = new WebSocket(`${protocol}//${host}/ws/updates${queryParam}`)
+    // The session_token cookie is httpOnly, so it cannot be read from JS.
+    // Instead, the browser automatically sends cookies on same-origin
+    // WebSocket connections and the backend reads the cookie directly.
+    ws = new WebSocket(`${protocol}//${host}/ws/updates`)
 
     ws.onopen = () => {
       console.log('WebSocket connected')
