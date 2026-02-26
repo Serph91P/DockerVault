@@ -27,6 +27,40 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Characters that _sanitize_path_name replaces with underscores
+_UNSAFE_PATH_CHARS = re.compile(r'[<>:"|?*]')
+
+
+def _resolve_backup_path(file_path: str | None) -> str | None:
+    """Resolve a backup file path, handling legacy paths with unsafe characters.
+
+    Old backups may have been stored with names containing characters like ':'
+    that were later sanitized by _sanitize_path_name.  This helper checks both
+    the stored path AND a sanitised variant so that old DB records still resolve
+    after the path-sanitisation fix has been applied.
+
+    Returns the first existing path, or None if neither variant exists.
+    """
+    if not file_path:
+        return None
+
+    # Try the exact path first (most common case)
+    if os.path.exists(file_path):
+        return file_path
+
+    # Try sanitised variant: replace unsafe chars with '_' and collapse
+    sanitized = _UNSAFE_PATH_CHARS.sub("_", file_path)
+    sanitized = re.sub(r"_+", "_", sanitized)
+    if sanitized != file_path and os.path.exists(sanitized):
+        logger.info(
+            "Resolved backup via sanitised path fallback: %s -> %s",
+            file_path,
+            sanitized,
+        )
+        return sanitized
+
+    return None
+
 
 def _to_utc_isoformat(dt: Optional[datetime]) -> Optional[str]:
     """Serialize a datetime to ISO format with UTC timezone indicator.
@@ -298,10 +332,14 @@ async def delete_backup(request: Request, backup_id: int):
 
         # Delete file if exists
         if backup.file_path:
-            import os
-
-            if os.path.exists(backup.file_path):
-                os.remove(backup.file_path)
+            resolved = _resolve_backup_path(backup.file_path)
+            if resolved:
+                os.remove(resolved)
+            # Also try to remove the .key sidecar file
+            if backup.encryption_key_path:
+                resolved_key = _resolve_backup_path(backup.encryption_key_path)
+                if resolved_key:
+                    os.remove(resolved_key)
 
         await session.delete(backup)
         await session.commit()
@@ -454,19 +492,22 @@ async def _get_decrypted_archive_path(
     if not key_path:
         # Try to find key file next to the backup
         potential_key = archive_path.replace(".enc", ".key")
-        if os.path.exists(potential_key):
-            key_path = potential_key
+        resolved_key = _resolve_backup_path(potential_key)
+        if resolved_key:
+            key_path = resolved_key
         else:
             raise HTTPException(
                 status_code=400,
                 detail="Encryption key file (.key) not found for this backup.",
             )
 
-    if not os.path.exists(key_path):
+    resolved_key = _resolve_backup_path(key_path)
+    if not resolved_key:
         raise HTTPException(
             status_code=404,
             detail="Encryption key file not found on disk.",
         )
+    key_path = resolved_key
 
     # Decrypt to temp file
     temp_fd, temp_name = tempfile.mkstemp(suffix=".tar.gz")
@@ -526,8 +567,19 @@ async def list_encrypted_backup_files(backup_id: int, body: BrowseEncryptedReque
         if backup.status != BackupStatus.COMPLETED:
             raise HTTPException(status_code=400, detail="Backup is not completed")
 
-        if not backup.file_path or not os.path.exists(backup.file_path):
-            raise HTTPException(status_code=404, detail="Backup file not found")
+        resolved_path = _resolve_backup_path(backup.file_path)
+        if not resolved_path:
+            logger.warning(
+                "Backup file missing on disk for backup %s: %s",
+                backup.id,
+                backup.file_path,
+            )
+            raise HTTPException(
+                status_code=404,
+                detail="Backup file not found on disk. The file may have been moved or deleted.",
+            )
+        # Use the resolved (possibly sanitised) path for downstream operations
+        backup.file_path = resolved_path
 
         if not backup.encrypted:
             raise HTTPException(
@@ -585,8 +637,18 @@ async def download_encrypted_backup_file(
         if backup.status != BackupStatus.COMPLETED:
             raise HTTPException(status_code=400, detail="Backup is not completed")
 
-        if not backup.file_path or not os.path.exists(backup.file_path):
-            raise HTTPException(status_code=404, detail="Backup file not found")
+        resolved_path = _resolve_backup_path(backup.file_path)
+        if not resolved_path:
+            logger.warning(
+                "Backup file missing on disk for backup %s: %s",
+                backup.id,
+                backup.file_path,
+            )
+            raise HTTPException(
+                status_code=404,
+                detail="Backup file not found on disk. The file may have been moved or deleted.",
+            )
+        backup.file_path = resolved_path
 
         if not backup.encrypted:
             raise HTTPException(
@@ -673,8 +735,18 @@ async def list_backup_files(backup_id: int):
         if backup.status != BackupStatus.COMPLETED:
             raise HTTPException(status_code=400, detail="Backup is not completed")
 
-        if not backup.file_path or not os.path.exists(backup.file_path):
-            raise HTTPException(status_code=404, detail="Backup file not found")
+        resolved_path = _resolve_backup_path(backup.file_path)
+        if not resolved_path:
+            logger.warning(
+                "Backup file missing on disk for backup %s: %s",
+                backup.id,
+                backup.file_path,
+            )
+            raise HTTPException(
+                status_code=404,
+                detail="Backup file not found on disk. The file may have been moved or deleted.",
+            )
+        backup.file_path = resolved_path
 
     files: List[BackupFileInfo] = []
 
@@ -730,8 +802,18 @@ async def download_backup_file(backup_id: int, file_path: str):
         if backup.status != BackupStatus.COMPLETED:
             raise HTTPException(status_code=400, detail="Backup is not completed")
 
-        if not backup.file_path or not os.path.exists(backup.file_path):
-            raise HTTPException(status_code=404, detail="Backup file not found")
+        resolved_path = _resolve_backup_path(backup.file_path)
+        if not resolved_path:
+            logger.warning(
+                "Backup file missing on disk for backup %s: %s",
+                backup.id,
+                backup.file_path,
+            )
+            raise HTTPException(
+                status_code=404,
+                detail="Backup file not found on disk. The file may have been moved or deleted.",
+            )
+        backup.file_path = resolved_path
 
     # Handle encrypted backups
     archive_path = backup.file_path

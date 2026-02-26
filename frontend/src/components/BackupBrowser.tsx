@@ -18,7 +18,9 @@ import {
   Eye,
   EyeOff,
   AlertTriangle,
+  AlertCircle,
 } from 'lucide-react'
+import axios from 'axios'
 import { Backup, backupsApi } from '../api'
 import { clsx } from 'clsx'
 
@@ -422,30 +424,60 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
             </div>
           ) : error ? (
             <div className="text-center py-12">
-              {isEncrypted && keySubmitted ? (
-                <>
-                  <div className="w-16 h-16 bg-red-500/10 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                    <KeyRound className="w-8 h-8 text-red-400" />
-                  </div>
-                  <p className="text-red-400 font-medium">Decryption Failed</p>
-                  <p className="text-sm text-dark-500 mt-2 max-w-sm mx-auto">
-                    The private key may be incorrect or the backup file may be corrupted.
-                  </p>
-                  <button
-                    onClick={handleRetryKey}
-                    className="mt-4 px-4 py-2 bg-dark-700 hover:bg-dark-600 text-dark-200 rounded-lg transition-colors"
-                  >
-                    Try a different key
-                  </button>
-                </>
-              ) : (
-                <>
-                  <p className="text-red-400">Failed to load backup contents</p>
-                  <p className="text-sm text-dark-500 mt-2">
-                    The backup file may be corrupted or inaccessible
-                  </p>
-                </>
-              )}
+              {(() => {
+                // Extract the error detail from the API response
+                const detail = axios.isAxiosError(error)
+                  ? error.response?.data?.detail
+                  : undefined
+                const status = axios.isAxiosError(error)
+                  ? error.response?.status
+                  : undefined
+                const isFileNotFound =
+                  status === 404 && typeof detail === 'string' && detail.toLowerCase().includes('file not found')
+
+                if (isFileNotFound) {
+                  return (
+                    <>
+                      <div className="w-16 h-16 bg-red-500/10 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                        <AlertCircle className="w-8 h-8 text-red-400" />
+                      </div>
+                      <p className="text-red-400 font-medium">Backup File Not Found</p>
+                      <p className="text-sm text-dark-500 mt-2 max-w-sm mx-auto">
+                        {detail || 'The backup file could not be found on disk. It may have been moved or deleted.'}
+                      </p>
+                    </>
+                  )
+                }
+
+                if (isEncrypted && keySubmitted) {
+                  return (
+                    <>
+                      <div className="w-16 h-16 bg-red-500/10 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                        <KeyRound className="w-8 h-8 text-red-400" />
+                      </div>
+                      <p className="text-red-400 font-medium">Decryption Failed</p>
+                      <p className="text-sm text-dark-500 mt-2 max-w-sm mx-auto">
+                        {detail || 'The private key may be incorrect or the backup file may be corrupted.'}
+                      </p>
+                      <button
+                        onClick={handleRetryKey}
+                        className="mt-4 px-4 py-2 bg-dark-700 hover:bg-dark-600 text-dark-200 rounded-lg transition-colors"
+                      >
+                        Try a different key
+                      </button>
+                    </>
+                  )
+                }
+
+                return (
+                  <>
+                    <p className="text-red-400">Failed to load backup contents</p>
+                    <p className="text-sm text-dark-500 mt-2">
+                      {detail || 'The backup file may be corrupted or inaccessible'}
+                    </p>
+                  </>
+                )
+              })()}
             </div>
           ) : files && files.length > 0 ? (
             <div className="space-y-0.5">
