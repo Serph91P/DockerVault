@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 import shlex
 import shutil
 import tarfile
@@ -586,6 +587,48 @@ class BackupEngine:
             await self._notify_progress(backup_id, -1, f"Backup failed: {e}")
             return False
 
+    @staticmethod
+    def _sanitize_path_name(name: str) -> str:
+        """Sanitize a target name for safe use in filesystem paths.
+
+        Replaces characters that are invalid or problematic on common
+        filesystems (ext4, NTFS, SMB/CIFS, NFS) with underscores and
+        collapses consecutive underscores.
+        """
+        # Replace characters invalid on Windows/SMB/CIFS or problematic in paths
+        safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name)
+        # Collapse multiple underscores
+        safe = re.sub(r"_+", "_", safe)
+        # Strip leading/trailing whitespace and underscores
+        safe = safe.strip(" _")
+        # Fallback if name is completely empty after sanitization
+        return safe or "unnamed_target"
+
+    @staticmethod
+    def _resolve_backup_path(file_path: str) -> str | None:
+        """Resolve a backup file path, handling legacy paths with unsafe characters.
+
+        Old backups may reference paths containing characters like ':' that are
+        now sanitised.  Tries the exact stored path first, then a sanitised
+        variant so that legacy DB records still work.
+
+        Returns the first existing path, or None.
+        """
+        if os.path.exists(file_path):
+            return file_path
+
+        sanitized = re.sub(r'[<>:"|?*]', "_", file_path)
+        sanitized = re.sub(r"_+", "_", sanitized)
+        if sanitized != file_path and os.path.exists(sanitized):
+            logger.info(
+                "Resolved backup via sanitised path: %s -> %s",
+                file_path,
+                sanitized,
+            )
+            return sanitized
+
+        return None
+
     async def _create_backup_archive(
         self,
         target: BackupTarget,
@@ -656,10 +699,11 @@ class BackupEngine:
 
         # Create backup directory
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        backup_dir = Path(settings.BACKUP_BASE_PATH) / target.name
+        safe_name = self._sanitize_path_name(target.name)
+        backup_dir = Path(settings.BACKUP_BASE_PATH) / safe_name
         backup_dir.mkdir(parents=True, exist_ok=True)
 
-        filename = f"{target.name}_{timestamp}.tar"
+        filename = f"{safe_name}_{timestamp}.tar"
         if target.compression_enabled:
             filename += ".gz"
 
@@ -1032,9 +1076,16 @@ class BackupEngine:
             )
             target = result.scalar_one_or_none()
 
-        if not backup.file_path or not os.path.exists(backup.file_path):
-            logger.error(f"Backup file not found: {backup.file_path}")
+        if not backup.file_path:
+            logger.error("Backup file path is empty for backup %s", backup.id)
             return False
+
+        # Resolve the file path (handle legacy paths with unsafe chars)
+        resolved_path = self._resolve_backup_path(backup.file_path)
+        if not resolved_path:
+            logger.error("Backup file not found: %s", backup.file_path)
+            return False
+        backup_file = resolved_path
 
         # Determine restore path
         if target_path:
@@ -1069,12 +1120,12 @@ class BackupEngine:
                     await docker_client.stop_container(container_name)
 
             # Handle encrypted backups
-            backup_file_to_extract = backup.file_path
+            backup_file_to_extract = backup_file
             temp_decrypted_file = None
 
             if is_encrypted:
                 try:
-                    encrypted_path = Path(backup.file_path)
+                    encrypted_path = Path(backup_file)
                     key_path = Path(encryption_key_path)
 
                     # Decrypt to temp file
