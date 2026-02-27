@@ -4,11 +4,13 @@ Backup engine - handles the actual backup process.
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
 import shlex
 import shutil
+import subprocess
 import tarfile
 import time
 from collections import defaultdict
@@ -35,6 +37,11 @@ from app.encryption import (
     decrypt_backup,
     encrypt_backup,
 )
+
+# Path to the tar worker script that runs as root via sudo.
+# This allows reading Docker volume files owned by arbitrary UIDs.
+_TAR_WORKER = os.path.join(os.path.dirname(__file__), "tar_worker.py")
+_PYTHON = "/opt/venv/bin/python3"
 
 logger = logging.getLogger(__name__)
 
@@ -519,6 +526,10 @@ class BackupEngine:
                 )
                 await session.commit()
 
+            # Sync to remote storage if configured
+            if target.sync_to_remote and target.remote_storage_ids:
+                await self._sync_to_remote(backup_id, target, backup_path)
+
             # Record successful backup metrics
             duration = time.time() - start_time
             self.metrics.record_backup(target_id, duration, file_size, True)
@@ -586,6 +597,116 @@ class BackupEngine:
 
             await self._notify_progress(backup_id, -1, f"Backup failed: {e}")
             return False
+
+    async def _sync_to_remote(
+        self,
+        backup_id: int,
+        target: BackupTarget,
+        backup_path: str,
+    ) -> None:
+        """Sync a completed backup to configured remote storage backends.
+
+        Failures are logged but do NOT mark the backup as failed — the
+        local backup is still valid.
+        """
+        from app.remote_storage import StorageConfig, StorageType, storage_manager
+
+        await self._notify_progress(backup_id, 95, "Syncing to remote storage...")
+
+        try:
+            # Ensure backends are initialised from the database
+            async with async_session() as session:
+                from app.database import RemoteStorage as RemoteStorageModel
+
+                for storage_id in target.remote_storage_ids:
+                    if storage_manager.get_backend(storage_id):
+                        continue
+                    result = await session.execute(
+                        select(RemoteStorageModel).where(
+                            RemoteStorageModel.id == storage_id
+                        )
+                    )
+                    storage = result.scalar_one_or_none()
+                    if not storage or not storage.enabled:
+                        continue
+
+                    from app.credential_encryption import decrypt_value
+
+                    config = StorageConfig(
+                        id=storage.id,
+                        name=storage.name,
+                        storage_type=StorageType(storage.storage_type),
+                        enabled=storage.enabled,
+                        host=storage.host,
+                        port=storage.port,
+                        username=storage.username,
+                        password=(
+                            decrypt_value(storage.password)
+                            if storage.password
+                            else storage.password
+                        ),
+                        base_path=storage.base_path,
+                        ssh_key_path=storage.ssh_key_path,
+                        s3_bucket=storage.s3_bucket,
+                        s3_region=storage.s3_region,
+                        s3_access_key=(
+                            decrypt_value(storage.s3_access_key)
+                            if storage.s3_access_key
+                            else storage.s3_access_key
+                        ),
+                        s3_secret_key=(
+                            decrypt_value(storage.s3_secret_key)
+                            if storage.s3_secret_key
+                            else storage.s3_secret_key
+                        ),
+                        s3_endpoint_url=storage.s3_endpoint_url,
+                        webdav_url=storage.webdav_url,
+                        rclone_remote=storage.rclone_remote,
+                    )
+                    storage_manager.add_storage(config)
+
+            local_path = Path(backup_path)
+            safe_name = self._sanitize_path_name(target.name)
+            results = await storage_manager.sync_backup(
+                local_path,
+                safe_name,
+                local_path.name,
+                target.remote_storage_ids,
+            )
+
+            succeeded = sum(1 for v in results.values() if v)
+            failed = sum(1 for v in results.values() if not v)
+
+            if failed:
+                logger.warning(
+                    "Remote sync partially failed for backup %s: %s/%s succeeded",
+                    backup_id,
+                    succeeded,
+                    succeeded + failed,
+                )
+                await self._notify_progress(
+                    backup_id,
+                    97,
+                    f"Remote sync: {succeeded}/{succeeded + failed} succeeded",
+                )
+            else:
+                logger.info(
+                    "Backup %s synced to %s remote storage(s)",
+                    backup_id,
+                    succeeded,
+                )
+                await self._notify_progress(
+                    backup_id, 97, f"Synced to {succeeded} remote storage(s)"
+                )
+
+        except Exception as e:
+            logger.error(
+                "Remote storage sync failed for backup %s: %s",
+                backup_id,
+                e,
+                exc_info=True,
+            )
+            await self._notify_progress(backup_id, 97, f"Remote sync failed: {e}")
 
     @staticmethod
     def _sanitize_path_name(name: str) -> str:
@@ -899,6 +1020,57 @@ class BackupEngine:
 
         return skipped_files
 
+    # ── Tar creation (delegates to tar_worker via sudo) ──
+
+    _sudo_checked: Optional[bool] = None
+
+    @classmethod
+    def _sudo_available(cls) -> bool:
+        """Return True when ``sudo`` can invoke the tar worker as root.
+
+        The result is cached on first call.
+        """
+        if cls._sudo_checked is not None:
+            return cls._sudo_checked
+        try:
+            # -n = non-interactive, -l = list allowed commands.
+            # We check that the specific command is allowed.
+            result = subprocess.run(
+                ["sudo", "-n", "-l", _PYTHON, _TAR_WORKER],
+                capture_output=True,
+                timeout=5,
+            )
+            cls._sudo_checked = result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            cls._sudo_checked = False
+        return cls._sudo_checked
+
+    def _run_tar_worker(self, config: dict) -> List[str]:
+        """Run tar_worker.py via sudo and return list of skipped files.
+
+        Raises RuntimeError when the worker reports an error.
+        """
+        result = subprocess.run(
+            ["sudo", "-n", _PYTHON, _TAR_WORKER, json.dumps(config)],
+            capture_output=True,
+            text=True,
+            timeout=3600,
+        )
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            raise RuntimeError(
+                f"tar_worker produced invalid output "
+                f"(exit {result.returncode}): {result.stderr or result.stdout}"
+            )
+
+        if payload.get("status") != "ok":
+            raise RuntimeError(
+                f"tar_worker failed: {payload.get('message', 'unknown error')}"
+            )
+
+        return payload.get("skipped_files", [])
+
     def _create_tar(
         self,
         source: str,
@@ -907,21 +1079,41 @@ class BackupEngine:
         include_paths: Optional[List[str]] = None,
         exclude_paths: Optional[List[str]] = None,
     ):
-        """Create tar archive with path filtering and graceful permission error handling."""
+        """Create tar archive with path filtering and graceful permission error handling.
+
+        Delegates to ``tar_worker.py`` via sudo so Docker volume files
+        owned by arbitrary UIDs (e.g. mongodb:999) can be read.
+        Falls back to in-process tarfile when sudo is unavailable.
+        """
         include_paths = include_paths or []
         exclude_paths = exclude_paths or []
         arcname_base = os.path.basename(source)
 
-        mode = "w:gz" if compress else "w"
-        with tarfile.open(dest, mode, compresslevel=6 if compress else None) as tar:
-            skipped = self._add_source_to_tar(
-                tar, source, arcname_base, include_paths, exclude_paths
+        if self._sudo_available():
+            config = {
+                "dest": dest,
+                "compress": compress,
+                "sources": [[arcname_base, source]],
+                "include_paths": include_paths,
+                "exclude_paths": exclude_paths,
+                "per_volume_rules": {},
+            }
+            skipped = self._run_tar_worker(config)
+        else:
+            logger.warning(
+                "sudo not available — falling back to in-process tar "
+                "(files owned by other UIDs may be skipped)"
             )
+            mode = "w:gz" if compress else "w"
+            with tarfile.open(dest, mode, compresslevel=6 if compress else None) as tar:
+                skipped = self._add_source_to_tar(
+                    tar, source, arcname_base, include_paths, exclude_paths
+                )
 
         if skipped:
             logger.info(
-                f"Backup completed with {len(skipped)} skipped file(s) "
-                f"due to permission errors"
+                "Backup completed with %d skipped file(s) due to permission errors",
+                len(skipped),
             )
 
     def _create_multi_source_tar(
@@ -936,43 +1128,62 @@ class BackupEngine:
         """Create tar archive from multiple sources with optional path filtering.
 
         Per-volume rules override global include/exclude for specific volumes.
-        Handles permission errors gracefully by skipping unreadable files.
+        Delegates to ``tar_worker.py`` via sudo for elevated reading
+        privileges, with in-process fallback.
         """
         include_paths = include_paths or []
         exclude_paths = exclude_paths or []
         per_volume_rules = per_volume_rules or {}
-        all_skipped: List[str] = []
 
-        mode = "w:gz" if compress else "w"
-        with tarfile.open(dest, mode, compresslevel=6 if compress else None) as tar:
-            for archive_name, source_path in sources:
-                if not os.path.exists(source_path):
-                    continue
+        if self._sudo_available():
+            config = {
+                "dest": dest,
+                "compress": compress,
+                "sources": [[a, s] for a, s in sources],
+                "include_paths": include_paths,
+                "exclude_paths": exclude_paths,
+                "per_volume_rules": per_volume_rules,
+            }
+            skipped = self._run_tar_worker(config)
+        else:
+            logger.warning(
+                "sudo not available — falling back to in-process tar "
+                "(files owned by other UIDs may be skipped)"
+            )
+            skipped = []
+            mode = "w:gz" if compress else "w"
+            with tarfile.open(dest, mode, compresslevel=6 if compress else None) as tar:
+                for archive_name, source_path in sources:
+                    if not os.path.exists(source_path):
+                        continue
 
-                # Determine per-volume rules: check by archive_name and basename
-                volume_key = archive_name.lstrip("/")
-                # For stacks: archive_name is "volumes/vol_name", key might be "vol_name"
-                volume_basename = os.path.basename(volume_key)
-                vol_rules = per_volume_rules.get(volume_key) or per_volume_rules.get(
-                    volume_basename
-                )
+                    volume_key = archive_name.lstrip("/")
+                    volume_basename = os.path.basename(volume_key)
+                    vol_rules = per_volume_rules.get(
+                        volume_key
+                    ) or per_volume_rules.get(volume_basename)
 
-                if vol_rules:
-                    vol_include = vol_rules.get("include_paths", [])
-                    vol_exclude = vol_rules.get("exclude_paths", [])
-                else:
-                    vol_include = include_paths
-                    vol_exclude = exclude_paths
+                    if vol_rules:
+                        vol_include = vol_rules.get("include_paths", [])
+                        vol_exclude = vol_rules.get("exclude_paths", [])
+                    else:
+                        vol_include = include_paths
+                        vol_exclude = exclude_paths
 
-                skipped = self._add_source_to_tar(
-                    tar, source_path, volume_key, vol_include, vol_exclude
-                )
-                all_skipped.extend(skipped)
+                    skipped.extend(
+                        self._add_source_to_tar(
+                            tar,
+                            source_path,
+                            volume_key,
+                            vol_include,
+                            vol_exclude,
+                        )
+                    )
 
-        if all_skipped:
+        if skipped:
             logger.info(
-                f"Backup completed with {len(all_skipped)} skipped file(s) "
-                f"due to permission errors"
+                "Backup completed with %d skipped file(s) due to permission errors",
+                len(skipped),
             )
 
     async def _calculate_checksum(self, file_path: str) -> str:

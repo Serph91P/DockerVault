@@ -330,20 +330,49 @@ async def delete_backup(request: Request, backup_id: int):
         if not backup:
             raise HTTPException(status_code=404, detail="Backup not found")
 
-        # Delete file if exists
+        # Delete file if exists – always remove the DB record even when
+        # the filesystem delete fails (e.g. network mount permissions).
+        file_errors: list[str] = []
         if backup.file_path:
             resolved = _resolve_backup_path(backup.file_path)
             if resolved:
-                os.remove(resolved)
+                try:
+                    os.remove(resolved)
+                except OSError as e:
+                    logger.warning("Could not delete backup file %s: %s", resolved, e)
+                    file_errors.append(str(resolved))
             # Also try to remove the .key sidecar file
             if backup.encryption_key_path:
                 resolved_key = _resolve_backup_path(backup.encryption_key_path)
                 if resolved_key:
-                    os.remove(resolved_key)
+                    try:
+                        os.remove(resolved_key)
+                    except OSError as e:
+                        logger.warning(
+                            "Could not delete key file %s: %s", resolved_key, e
+                        )
+                        file_errors.append(str(resolved_key))
+
+            # Try to remove the parent directory if it is now empty
+            if resolved and not file_errors:
+                parent = os.path.dirname(resolved)
+                try:
+                    if parent and os.path.isdir(parent) and not os.listdir(parent):
+                        os.rmdir(parent)
+                except OSError:
+                    pass  # non-critical
 
         await session.delete(backup)
         await session.commit()
 
+        if file_errors:
+            return {
+                "status": "deleted",
+                "warning": (
+                    "Database record removed but some files could not be "
+                    f"deleted (permission denied): {file_errors}"
+                ),
+            }
         return {"status": "deleted"}
 
 
