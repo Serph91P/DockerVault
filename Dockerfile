@@ -83,6 +83,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \
     tini \
     openssl \
+    sudo \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean \
     && rm -f /etc/nginx/sites-enabled/default
@@ -105,6 +106,14 @@ ENV PATH="/opt/venv/bin:$PATH" \
 # Create non-root user before copying files
 RUN groupadd --gid 1000 dockervault && \
     useradd --uid 1000 --gid dockervault --shell /bin/bash --create-home dockervault
+
+# Allow dockervault to run ONLY the tar-worker script as root (no password).
+# This is required because Docker volume files are owned by container-internal
+# UIDs (e.g. mongodb:999) that the dockervault user cannot read.
+RUN echo 'dockervault ALL=(root) NOPASSWD: /opt/venv/bin/python3 /app/app/tar_worker.py *' \
+    > /etc/sudoers.d/dockervault-tar && \
+    chmod 0440 /etc/sudoers.d/dockervault-tar && \
+    visudo -c
 
 # Create necessary directories with proper ownership
 RUN mkdir -p /app/data /backups /var/log/supervisor /run/nginx && \
