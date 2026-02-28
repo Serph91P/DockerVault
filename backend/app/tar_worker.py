@@ -190,6 +190,27 @@ def _add_source_to_tar(
     return skipped
 
 
+def _chown_to_caller(path: str) -> None:
+    """Change ownership of *path* to the user who invoked sudo.
+
+    When running under ``sudo``, the ``SUDO_UID`` / ``SUDO_GID`` environment
+    variables contain the original (non-root) caller's IDs.  We use them to
+    hand ownership back so the application process can read, browse, and
+    delete the file without elevated privileges.
+    """
+    uid = int(os.environ.get("SUDO_UID", -1))
+    gid = int(os.environ.get("SUDO_GID", -1))
+    if uid >= 0 and gid >= 0:
+        os.chown(path, uid, gid)
+        # Also fix the parent directory if we created it
+        parent = os.path.dirname(path)
+        if parent:
+            try:
+                os.chown(parent, uid, gid)
+            except OSError:
+                pass  # parent might be a mount-point; non-critical
+
+
 def create_tar(config: dict) -> dict:
     """Create a tar archive according to *config*."""
     dest: str = config["dest"]
@@ -228,6 +249,10 @@ def create_tar(config: dict) -> dict:
                 tar, source_path, volume_key, vol_include, vol_exclude
             )
             all_skipped.extend(skipped)
+
+    # Hand ownership back to the non-root caller so the application
+    # process can read, browse, encrypt, and delete the archive.
+    _chown_to_caller(dest)
 
     return {"status": "ok", "skipped_files": all_skipped}
 

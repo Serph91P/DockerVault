@@ -24,6 +24,11 @@ fi
 mkdir -p /app/data /backups /var/log/supervisor /run/nginx
 chmod 755 /app/data /backups /var/log/supervisor /run/nginx 2>/dev/null || true
 
+# Fix ownership of backup directory so the dockervault user can read,
+# browse, and delete all backup files (including ones previously created
+# as root or by containers with different UIDs).
+chown -R dockervault:dockervault /backups 2>/dev/null || true
+
 # Generate nginx realip config from TRUSTED_PROXIES env var.
 # When set, nginx uses the real_ip module to extract the actual client IP
 # from X-Forwarded-For headers sent by trusted reverse proxies.
