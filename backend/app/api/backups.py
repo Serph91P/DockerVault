@@ -2,7 +2,6 @@
 Backups API endpoints.
 """
 
-import asyncio
 import logging
 import os
 import re
@@ -250,14 +249,8 @@ async def create_backup(request: Request, request_body: CreateBackupRequest):
 
     logger.info(f"Created backup {backup.id}, starting backup task...")
 
-    # Run backup in background with error logging
-    async def _run_backup_logged(bid: int):
-        try:
-            await backup_engine.run_backup(bid)
-        except Exception as exc:
-            logger.error("Background backup task %d failed: %s", bid, exc)
-
-    asyncio.create_task(_run_backup_logged(backup.id))
+    # Enqueue backup for processing (per-target lock prevents overlaps)
+    await backup_engine.enqueue(backup.id)
 
     return BackupResponse(
         id=backup.id,

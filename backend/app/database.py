@@ -419,6 +419,34 @@ async def run_migrations():
                 )
             )
 
+        if "sync_to_remote" not in targets_columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE backup_targets ADD COLUMN sync_to_remote "
+                    "BOOLEAN DEFAULT 0"
+                )
+            )
+
+        if "remote_storage_ids" not in targets_columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE backup_targets ADD COLUMN remote_storage_ids "
+                    "JSON DEFAULT '[]'"
+                )
+            )
+
+        # Data migration: fix rows where remote_storage_ids is set but
+        # sync_to_remote is still False (can happen on older databases).
+        await conn.execute(
+            text(
+                "UPDATE backup_targets SET sync_to_remote = 1 "
+                "WHERE remote_storage_ids IS NOT NULL "
+                "AND remote_storage_ids != '[]' "
+                "AND remote_storage_ids != '' "
+                "AND sync_to_remote = 0"
+            )
+        )
+
         # Check and add missing columns to retention_policies table
         result = await conn.execute(text("PRAGMA table_info(retention_policies)"))
         retention_columns = {row[1] for row in result.fetchall()}

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Clock, Plus, Edit2, Trash2, HelpCircle, Calendar, Target, PanelRightClose, PanelRightOpen } from 'lucide-react'
+import { Clock, Plus, Edit2, Trash2, HelpCircle, Calendar, Target, PanelRightClose, PanelRightOpen, Play } from 'lucide-react'
 import { schedulesApi, targetsApi, ScheduleEntity, ScheduleCreate, ScheduleUpdate, BackupTarget } from '../api'
 import { formatDistanceToNowStrict } from 'date-fns'
 import toast from 'react-hot-toast'
@@ -137,6 +137,16 @@ function ScheduleCard({
     onError: () => toast.error('Failed to update schedule'),
   })
 
+  const triggerAllMutation = useMutation({
+    mutationFn: () => schedulesApi.triggerAll(schedule.id),
+    onSuccess: (res) => {
+      const count = res.data?.triggered_targets?.length ?? 0
+      toast.success(`Triggered ${count} backup${count !== 1 ? 's' : ''}`)
+      queryClient.invalidateQueries({ queryKey: ['backups'] })
+    },
+    onError: () => toast.error('Failed to trigger backups'),
+  })
+
   return (
     <div className={`bg-dark-800 rounded-xl border border-dark-700 p-6 ${!schedule.enabled ? 'opacity-60' : ''}`}>
       <div className="flex items-start justify-between mb-4">
@@ -205,6 +215,15 @@ function ScheduleCard({
 
       {/* Actions */}
       <div className="flex gap-2">
+        <button
+          onClick={() => triggerAllMutation.mutate()}
+          disabled={triggerAllMutation.isPending || !schedule.enabled || schedule.target_count === 0}
+          title="Run all targets in this schedule now"
+          className="flex items-center justify-center gap-2 px-3 py-2 bg-primary-500/10 text-primary-400 rounded-lg hover:bg-primary-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors text-sm"
+        >
+          <Play className="w-4 h-4" />
+          Run All
+        </button>
         <button
           onClick={onEdit}
           className="flex items-center justify-center gap-2 flex-1 px-3 py-2 bg-dark-700 text-dark-300 rounded-lg hover:bg-dark-600 transition-colors text-sm"
