@@ -141,6 +141,7 @@ function TargetBackupCard({
   onEdit,
   onDeleteBackup,
   onDeleteTarget,
+  onDeleteAllBackups,
 }: {
   target: BackupTarget
   backups: Backup[]
@@ -149,6 +150,7 @@ function TargetBackupCard({
   onEdit: (target: BackupTarget) => void
   onDeleteBackup: (backup: Backup) => void
   onDeleteTarget: (target: BackupTarget) => void
+  onDeleteAllBackups: (target: BackupTarget) => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const queryClient = useQueryClient()
@@ -346,7 +348,21 @@ function TargetBackupCard({
 
           {/* Backup History */}
           <div className="space-y-2">
-            <h4 className="text-sm font-medium text-dark-200">Backup History</h4>
+            <div className="flex items-center justify-between">
+              <h4 className="text-sm font-medium text-dark-200">Backup History</h4>
+              {backups.length > 0 && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onDeleteAllBackups(target)
+                  }}
+                  className="flex items-center gap-1 px-2 py-1 text-xs bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded transition-colors"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  Delete All ({backups.length})
+                </button>
+              )}
+            </div>
             {backups.length > 0 ? (
               <div className="space-y-2 max-h-64 overflow-y-auto">
                 {backups.slice(0, 10).map((backup) => (
@@ -380,7 +396,7 @@ export default function Backups() {
 
   // Confirm dialog state
   const [confirmDialog, setConfirmDialog] = useState<{
-    type: 'backup' | 'target'
+    type: 'backup' | 'target' | 'all-backups'
     id: number
     title: string
     message: string
@@ -420,6 +436,17 @@ export default function Backups() {
       setConfirmDialog(null)
     },
     onError: () => toast.error('Failed to remove backup'),
+  })
+
+  const deleteAllBackupsMutation = useMutation({
+    mutationFn: (targetId: number) => backupsApi.deleteAll(targetId),
+    onSuccess: (res) => {
+      const count = res.data?.deleted_count ?? 0
+      toast.success(`${count} backup(s) deleted`)
+      queryClient.invalidateQueries({ queryKey: ['backups'] })
+      setConfirmDialog(null)
+    },
+    onError: () => toast.error('Failed to delete backups'),
   })
 
   // Group backups by target
@@ -499,10 +526,22 @@ export default function Backups() {
     })
   }
 
+  const handleDeleteAllBackups = (target: BackupTarget) => {
+    const count = getBackupsForTarget(target.id).length
+    setConfirmDialog({
+      type: 'all-backups',
+      id: target.id,
+      title: 'Delete All Backups',
+      message: `Are you sure you want to delete all ${count} backup(s) for "${target.name}"? This action cannot be undone.`,
+    })
+  }
+
   const handleConfirmDelete = () => {
     if (!confirmDialog) return
     if (confirmDialog.type === 'backup') {
       deleteBackupMutation.mutate(confirmDialog.id)
+    } else if (confirmDialog.type === 'all-backups') {
+      deleteAllBackupsMutation.mutate(confirmDialog.id)
     } else {
       deleteTargetMutation.mutate(confirmDialog.id)
     }
@@ -632,6 +671,7 @@ export default function Backups() {
               onEdit={setEditingTarget}
               onDeleteBackup={handleDeleteBackup}
               onDeleteTarget={handleDeleteTarget}
+              onDeleteAllBackups={handleDeleteAllBackups}
             />
           ))}
         </div>
@@ -681,7 +721,7 @@ export default function Backups() {
         message={confirmDialog?.message || ''}
         confirmLabel="Delete"
         confirmVariant="danger"
-        isLoading={deleteBackupMutation.isPending || deleteTargetMutation.isPending}
+        isLoading={deleteBackupMutation.isPending || deleteTargetMutation.isPending || deleteAllBackupsMutation.isPending}
       />
     </div>
   )

@@ -202,6 +202,8 @@ export const backupsApi = {
   restore: (id: number, target_path?: string) => 
     api.post(`/backups/${id}/restore`, { target_path }),
   delete: (id: number) => api.delete(`/backups/${id}`),
+  deleteAll: (targetId?: number) => 
+    api.delete('/backups', { params: targetId ? { target_id: targetId } : undefined }),
   getStats: (id: number) => api.get(`/backups/${id}/stats`),
   listFiles: (id: number) => api.get(`/backups/${id}/files`),
   listFilesEncrypted: (id: number, privateKey: string) =>

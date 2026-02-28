@@ -376,6 +376,82 @@ async def delete_backup(request: Request, backup_id: int):
         return {"status": "deleted"}
 
 
+@router.delete("")
+@limiter.limit("10/minute")
+async def delete_all_backups(
+    request: Request,
+    target_id: int | None = Query(
+        None, description="Delete only backups for this target"
+    ),
+):
+    """Delete all backups, optionally filtered by target_id."""
+    async with async_session() as session:
+        query = select(Backup)
+        if target_id is not None:
+            query = query.where(Backup.target_id == target_id)
+
+        result = await session.execute(query)
+        backups = result.scalars().all()
+
+        if not backups:
+            return {"status": "deleted", "deleted_count": 0}
+
+        deleted_count = 0
+        file_errors: list[str] = []
+
+        for backup in backups:
+            # Delete file
+            if backup.file_path:
+                resolved = _resolve_backup_path(backup.file_path)
+                if resolved:
+                    try:
+                        os.remove(resolved)
+                    except OSError as e:
+                        logger.warning(
+                            "Could not delete backup file %s: %s", resolved, e
+                        )
+                        file_errors.append(str(resolved))
+
+                # Delete .key sidecar
+                if backup.encryption_key_path:
+                    resolved_key = _resolve_backup_path(backup.encryption_key_path)
+                    if resolved_key:
+                        try:
+                            os.remove(resolved_key)
+                        except OSError as e:
+                            logger.warning(
+                                "Could not delete key file %s: %s",
+                                resolved_key,
+                                e,
+                            )
+                            file_errors.append(str(resolved_key))
+
+            await session.delete(backup)
+            deleted_count += 1
+
+        await session.commit()
+
+        # Clean up empty target directories
+        for backup in backups:
+            if backup.file_path:
+                resolved = _resolve_backup_path(backup.file_path)
+                if resolved:
+                    parent = os.path.dirname(resolved)
+                    try:
+                        if parent and os.path.isdir(parent) and not os.listdir(parent):
+                            os.rmdir(parent)
+                    except OSError:
+                        pass
+
+        response: dict = {"status": "deleted", "deleted_count": deleted_count}
+        if file_errors:
+            response["warning"] = (
+                f"{deleted_count} DB records removed but {len(file_errors)} "
+                f"file(s) could not be deleted (permission denied)"
+            )
+        return response
+
+
 @router.get("/{backup_id}/stats")
 async def get_backup_stats(backup_id: int):
     """Get statistics for a backup."""
