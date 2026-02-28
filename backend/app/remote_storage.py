@@ -457,27 +457,109 @@ class WebDAVStorage(StorageBackend):
 
     async def list_files(self, remote_path: str = "") -> List[Dict[str, Any]]:
         try:
+            import xml.etree.ElementTree as ET
+            from email.utils import parsedate_to_datetime
+
             async with self._get_session() as session:
                 url = self._get_url(remote_path)
-                headers = {"Depth": "1"}
-                body = """<?xml version="1.0"?>
-                <d:propfind xmlns:d="DAV:">
-                    <d:prop>
-                        <d:getcontentlength/>
-                        <d:resourcetype/>
-                        <d:getlastmodified/>
-                    </d:prop>
-                </d:propfind>"""
+                # Ensure trailing slash so the server treats it as a collection
+                if not url.endswith("/"):
+                    url += "/"
+                headers = {"Depth": "1", "Content-Type": "application/xml"}
+                body = (
+                    '<?xml version="1.0" encoding="utf-8"?>'
+                    '<d:propfind xmlns:d="DAV:">'
+                    "<d:prop>"
+                    "<d:getcontentlength/>"
+                    "<d:resourcetype/>"
+                    "<d:getlastmodified/>"
+                    "</d:prop>"
+                    "</d:propfind>"
+                )
 
                 async with session.request(
                     "PROPFIND", url, data=body, headers=headers
                 ) as resp:
-                    if resp.status == 207:
-                        # Parse XML response (simplified)
-                        _ = await resp.text()
-                        # Would need proper XML parsing here
+                    if resp.status != 207:
+                        logger.warning(
+                            "WebDAV PROPFIND returned %s for %s", resp.status, url
+                        )
                         return []
-                    return []
+
+                    text = await resp.text()
+
+            # Parse the Multi-Status XML response
+            ns = {"d": "DAV:"}
+            root = ET.fromstring(text)
+            files: List[Dict[str, Any]] = []
+
+            # Build the "self" href so we can skip the collection itself
+            request_path = url.split("://", 1)[-1].split("/", 1)[-1].rstrip("/")
+
+            for response_el in root.findall("d:response", ns):
+                href_el = response_el.find("d:href", ns)
+                if href_el is None or href_el.text is None:
+                    continue
+
+                href = href_el.text.rstrip("/")
+                # Skip the collection entry itself (first entry is the queried dir)
+                href_decoded = href.rstrip("/")
+                if href_decoded == request_path or href_decoded == "/" + request_path:
+                    continue
+
+                # Extract the file/directory name from the href
+                name = href.rsplit("/", 1)[-1]
+                if not name:
+                    continue
+
+                # URL-decode the name
+                from urllib.parse import unquote
+
+                name = unquote(name)
+
+                propstat = response_el.find("d:propstat", ns)
+                if propstat is None:
+                    continue
+                prop = propstat.find("d:prop", ns)
+                if prop is None:
+                    continue
+
+                # Check if directory
+                resource_type = prop.find("d:resourcetype", ns)
+                is_dir = (
+                    resource_type is not None
+                    and resource_type.find("d:collection", ns) is not None
+                )
+
+                # Get size
+                size_el = prop.find("d:getcontentlength", ns)
+                size = 0
+                if size_el is not None and size_el.text:
+                    try:
+                        size = int(size_el.text)
+                    except ValueError:
+                        size = 0
+
+                # Get modified date
+                modified_el = prop.find("d:getlastmodified", ns)
+                modified = ""
+                if modified_el is not None and modified_el.text:
+                    try:
+                        dt = parsedate_to_datetime(modified_el.text)
+                        modified = dt.isoformat()
+                    except (ValueError, TypeError):
+                        modified = modified_el.text
+
+                files.append(
+                    {
+                        "name": name,
+                        "size": size,
+                        "is_dir": is_dir,
+                        "modified": modified,
+                    }
+                )
+
+            return files
         except Exception as e:
             logger.error(f"WebDAV list error: {e}")
             return []
