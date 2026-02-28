@@ -171,6 +171,20 @@ class BackupEngine:
         """Add a backup to the processing queue."""
         await self._queue.put(backup_id)
 
+    async def run_batch_sequential(self, backup_ids: list[int]) -> None:
+        """Run a list of backups strictly one after another.
+
+        Used by *trigger-all* so that each target completes its full
+        stop → backup → start cycle before the next one begins.
+        The backups still go through the per-target lock and global
+        semaphore, just like individually enqueued jobs.
+        """
+        for backup_id in backup_ids:
+            try:
+                await self.run_backup(backup_id)
+            except Exception as exc:
+                logger.error("Batch backup %d failed: %s", backup_id, exc)
+
     async def shutdown(self, timeout: int = 30) -> None:
         """Wait for in-progress backups to finish, then stop the queue worker."""
         # Cancel the queue worker so no new jobs are picked up
@@ -1174,6 +1188,9 @@ class BackupEngine:
                 "include_paths": include_paths,
                 "exclude_paths": exclude_paths,
                 "per_volume_rules": {},
+                # For host-path targets the source is outside Docker
+                # volume dirs — tell tar_worker to allow it.
+                "allowed_sources": [source],
             }
             skipped = self._run_tar_worker(config)
         else:

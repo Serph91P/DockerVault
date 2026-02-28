@@ -395,8 +395,18 @@ async def trigger_backup(target_id: int, request: Request):
 
 @router.post("/{schedule_id}/trigger-all")
 async def trigger_all_backups(schedule_id: int):
-    """Trigger a backup immediately for every enabled target assigned to a schedule."""
+    """Trigger a backup for every enabled target of a schedule.
+
+    Backups are executed **sequentially** so each target completes its
+    full stop → backup → start cycle before the next one begins.
+    If Komodo integration is enabled the Komodo stack target (if any)
+    is moved to the end of the list so that Komodo remains available
+    to manage other containers for as long as possible.
+    """
+    import asyncio
+
     from app.backup_engine import BackupType
+    from app.config import settings as app_settings
 
     async with async_session() as session:
         result = await session.execute(
@@ -409,16 +419,31 @@ async def trigger_all_backups(schedule_id: int):
         if not schedule:
             raise HTTPException(status_code=404, detail="Schedule not found")
 
-        triggered: list[int] = []
-        skipped: list[int] = []
+        enabled_targets = [t for t in schedule.targets if t.enabled]
+        skipped = [t.id for t in schedule.targets if not t.enabled]
 
-        for target in schedule.targets:
-            if not target.enabled:
-                skipped.append(target.id)
-                continue
+        # When Komodo is active, push targets whose stack/container name
+        # contains "komodo" to the end so that Komodo keeps running
+        # while every other backup goes through its stop/start cycle.
+        if app_settings.KOMODO_ENABLED:
+
+            def _is_komodo_target(t: BackupTarget) -> bool:
+                name = (t.stack_name or t.container_name or "").lower()
+                return "komodo" in name
+
+            enabled_targets.sort(key=_is_komodo_target)
+
+        # Create backup records
+        backup_ids: list[int] = []
+        triggered: list[int] = []
+        for target in enabled_targets:
             backup = await backup_engine.create_backup(target, BackupType.FULL)
-            await backup_engine.enqueue(backup.id)
+            backup_ids.append(backup.id)
             triggered.append(target.id)
+
+    # Fire off sequential execution as a background task so the
+    # HTTP response returns immediately.
+    asyncio.create_task(backup_engine.run_batch_sequential(backup_ids))
 
     return {
         "status": "triggered",

@@ -16,7 +16,8 @@ JSON config schema:
         "sources": [["arcname", "/source/path"], ...],
         "include_paths": [],
         "exclude_paths": [],
-        "per_volume_rules": {}
+        "per_volume_rules": {},
+        "allowed_sources": []  // optional extra allowed source prefixes
     }
 
 Exit codes:
@@ -50,18 +51,33 @@ _ALLOWED_DEST_PREFIX = "/backups/"
 
 
 def _validate_paths(config: dict) -> None:
-    """Reject configs that reference unexpected filesystem locations."""
+    """Reject configs that reference unexpected filesystem locations.
+
+    The caller may pass ``allowed_sources`` — a list of additional
+    directory prefixes that are permitted as source paths.  This is
+    used for host-path backup targets which are not located under
+    the standard Docker volume directories.
+    """
     dest = os.path.realpath(config["dest"])
     if not dest.startswith(_ALLOWED_DEST_PREFIX):
         raise ValueError(
             f"Destination {dest!r} is outside the allowed backup directory."
         )
 
+    # Build the full set of allowed source prefixes.
+    # Extra entries come from the backup engine and correspond to
+    # user-configured host-path targets stored in the database.
+    extra = config.get("allowed_sources") or []
+    # Normalise: ensure each entry ends with / so prefix matching is exact
+    extra_prefixes = tuple(os.path.realpath(p).rstrip("/") + "/" for p in extra)
+    allowed = _ALLOWED_SOURCE_PREFIXES + extra_prefixes
+
     for _arcname, source_path in config.get("sources", []):
         real = os.path.realpath(source_path)
-        if not any(real.startswith(p) for p in _ALLOWED_SOURCE_PREFIXES):
+        # realpath of a directory may or may not end with /, handle both
+        if not any(real.startswith(p) or real.rstrip("/") + "/" == p for p in allowed):
             raise ValueError(
-                f"Source path {real!r} is outside allowed Docker volume directories."
+                f"Source path {real!r} is outside allowed source directories."
             )
 
 
