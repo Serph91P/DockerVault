@@ -1095,12 +1095,15 @@ class BackupEngine:
         """Return True when ``sudo`` can invoke the tar worker as root.
 
         The result is cached on first call.
+
+        The sudoers rule uses a ``*`` glob that requires at least one
+        argument after the script path, so we pass a dummy ``{}`` here.
         """
         if cls._sudo_checked is not None:
             return cls._sudo_checked
         try:
             # -n = non-interactive, -l = list allowed commands.
-            # We pass a dummy argument so the sudoers glob pattern
+            # We pass a dummy argument so the sudoers glob ``*``
             # (which expects at least one arg after the script) matches.
             result = subprocess.run(
                 ["sudo", "-n", "-l", _PYTHON, _TAR_WORKER, "{}"],
@@ -1108,7 +1111,14 @@ class BackupEngine:
                 timeout=5,
             )
             cls._sudo_checked = result.returncode == 0
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+            if not cls._sudo_checked:
+                logger.warning(
+                    "sudo -l check failed (rc=%d): %s",
+                    result.returncode,
+                    (result.stderr or b"").decode(errors="replace").strip(),
+                )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            logger.warning("sudo -l probe raised %s: %s", type(exc).__name__, exc)
             cls._sudo_checked = False
         return cls._sudo_checked
 
