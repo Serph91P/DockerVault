@@ -110,7 +110,7 @@ RUN groupadd --gid 1000 dockervault && \
 # Allow dockervault to run ONLY the tar-worker script as root (no password).
 # This is required because Docker volume files are owned by container-internal
 # UIDs (e.g. mongodb:999) that the dockervault user cannot read.
-RUN echo 'dockervault ALL=(root) NOPASSWD: /opt/venv/bin/python3 /app/app/tar_worker.py *' \
+RUN echo 'dockervault ALL=(root) NOPASSWD: /opt/venv/bin/python3 /app/app/tar_worker.py' \
     > /etc/sudoers.d/dockervault-tar && \
     chmod 0440 /etc/sudoers.d/dockervault-tar && \
     visudo -c

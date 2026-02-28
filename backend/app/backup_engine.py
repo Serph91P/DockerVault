@@ -1034,9 +1034,10 @@ class BackupEngine:
             return cls._sudo_checked
         try:
             # -n = non-interactive, -l = list allowed commands.
-            # We check that the specific command is allowed.
+            # We pass a dummy argument so the sudoers glob pattern
+            # (which expects at least one arg after the script) matches.
             result = subprocess.run(
-                ["sudo", "-n", "-l", _PYTHON, _TAR_WORKER],
+                ["sudo", "-n", "-l", _PYTHON, _TAR_WORKER, "{}"],
                 capture_output=True,
                 timeout=5,
             )
