@@ -2,7 +2,6 @@
 Tests for backups API endpoints.
 """
 
-import json
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -93,6 +92,7 @@ class TestBackupsAPI:
 
         mock_engine.create_backup = AsyncMock(return_value=mock_backup)
         mock_engine.run_backup = AsyncMock(return_value=True)
+        mock_engine.enqueue = AsyncMock()
 
         response = await async_client.post(
             "/api/v1/backups", json={"target_id": target.id, "backup_type": "full"}
@@ -171,6 +171,7 @@ class TestBackupsAPI:
 
         mock_engine.create_backup = AsyncMock(return_value=mock_backup)
         mock_engine.run_backup = AsyncMock(return_value=True)
+        mock_engine.enqueue = AsyncMock()
 
         # API currently allows backup of disabled targets
         response = await async_client.post(

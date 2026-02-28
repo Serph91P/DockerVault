@@ -393,6 +393,41 @@ async def trigger_backup(target_id: int, request: Request):
     return {"status": "triggered"}
 
 
+@router.post("/{schedule_id}/trigger-all")
+async def trigger_all_backups(schedule_id: int):
+    """Trigger a backup immediately for every enabled target assigned to a schedule."""
+    from app.backup_engine import BackupType
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(Schedule)
+            .where(Schedule.id == schedule_id)
+            .options(selectinload(Schedule.targets))
+        )
+        schedule = result.scalar_one_or_none()
+
+        if not schedule:
+            raise HTTPException(status_code=404, detail="Schedule not found")
+
+        triggered: list[int] = []
+        skipped: list[int] = []
+
+        for target in schedule.targets:
+            if not target.enabled:
+                skipped.append(target.id)
+                continue
+            backup = await backup_engine.create_backup(target, BackupType.FULL)
+            await backup_engine.enqueue(backup.id)
+            triggered.append(target.id)
+
+    return {
+        "status": "triggered",
+        "schedule_id": schedule_id,
+        "triggered_targets": triggered,
+        "skipped_targets": skipped,
+    }
+
+
 @router.post("/estimate")
 async def estimate_backup_window(request: EstimateRequest, app_request: Request):
     """Estimate backup window and check for conflicts."""

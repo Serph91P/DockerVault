@@ -130,9 +130,57 @@ class BackupEngine:
         self.progress_callbacks: List[Callable] = []
         self.metrics = BackupMetrics()
         self._backup_semaphore = asyncio.Semaphore(2)  # Max concurrent backups
+        self._target_locks: Dict[int, asyncio.Lock] = {}
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._queue_worker_task: Optional[asyncio.Task] = None
+
+    def _get_target_lock(self, target_id: int) -> asyncio.Lock:
+        """Get or create a per-target lock to prevent overlapping backups."""
+        if target_id not in self._target_locks:
+            self._target_locks[target_id] = asyncio.Lock()
+        return self._target_locks[target_id]
+
+    async def start_queue_worker(self) -> None:
+        """Start the background queue worker that processes backup jobs."""
+        if self._queue_worker_task is None or self._queue_worker_task.done():
+            self._queue_worker_task = asyncio.create_task(self._queue_loop())
+
+    async def _queue_loop(self) -> None:
+        """Process queued backup jobs.
+
+        Each job is spawned as a task so different targets can run
+        concurrently while the per-target lock and global semaphore
+        control overlap.
+        """
+        while True:
+            backup_id = await self._queue.get()
+            task = asyncio.create_task(self._run_queued_backup(backup_id))
+            self.active_backups[backup_id] = task
+
+    async def _run_queued_backup(self, backup_id: int) -> None:
+        """Run a single queued backup and clean up tracking state."""
+        try:
+            await self.run_backup(backup_id)
+        except Exception as exc:
+            logger.error("Queued backup %d failed: %s", backup_id, exc)
+        finally:
+            self.active_backups.pop(backup_id, None)
+            self._queue.task_done()
+
+    async def enqueue(self, backup_id: int) -> None:
+        """Add a backup to the processing queue."""
+        await self._queue.put(backup_id)
 
     async def shutdown(self, timeout: int = 30) -> None:
-        """Wait for in-progress backups to finish before shutdown."""
+        """Wait for in-progress backups to finish, then stop the queue worker."""
+        # Cancel the queue worker so no new jobs are picked up
+        if self._queue_worker_task and not self._queue_worker_task.done():
+            self._queue_worker_task.cancel()
+            try:
+                await self._queue_worker_task
+            except asyncio.CancelledError:
+                pass
+
         if not self.active_backups:
             return
 
@@ -321,8 +369,8 @@ class BackupEngine:
     async def run_backup(self, backup_id: int, skip_validation: bool = False) -> bool:
         """Run a backup by ID.
 
-        Uses a semaphore to limit concurrent backups based on
-        MAX_CONCURRENT_BACKUPS setting.
+        Acquires a per-target lock first (prevents overlapping backups for the
+        same target), then a global semaphore (limits total concurrency).
 
         Args:
             backup_id: ID of the backup to run
@@ -331,6 +379,24 @@ class BackupEngine:
         Returns:
             True if backup succeeded, False otherwise
         """
+        # Determine target_id to acquire per-target lock
+        async with async_session() as session:
+            result = await session.execute(select(Backup).where(Backup.id == backup_id))
+            backup_peek = result.scalar_one_or_none()
+            if not backup_peek:
+                logger.error("Backup %d not found", backup_id)
+                return False
+            peek_target_id = backup_peek.target_id
+
+        target_lock = self._get_target_lock(peek_target_id)
+
+        async with target_lock:
+            return await self._run_backup_inner(backup_id, skip_validation)
+
+    async def _run_backup_inner(
+        self, backup_id: int, skip_validation: bool = False
+    ) -> bool:
+        """Inner backup logic, called with a per-target lock already held."""
         start_time = time.time()
         file_size = 0
         target_id = None
@@ -527,7 +593,7 @@ class BackupEngine:
                 await session.commit()
 
             # Sync to remote storage if configured
-            if target.sync_to_remote and target.remote_storage_ids:
+            if target.remote_storage_ids:
                 await self._sync_to_remote(backup_id, target, backup_path)
 
             # Record successful backup metrics
@@ -1029,12 +1095,15 @@ class BackupEngine:
         """Return True when ``sudo`` can invoke the tar worker as root.
 
         The result is cached on first call.
+
+        The sudoers rule uses a ``*`` glob that requires at least one
+        argument after the script path, so we pass a dummy ``{}`` here.
         """
         if cls._sudo_checked is not None:
             return cls._sudo_checked
         try:
             # -n = non-interactive, -l = list allowed commands.
-            # We pass a dummy argument so the sudoers glob pattern
+            # We pass a dummy argument so the sudoers glob ``*``
             # (which expects at least one arg after the script) matches.
             result = subprocess.run(
                 ["sudo", "-n", "-l", _PYTHON, _TAR_WORKER, "{}"],
@@ -1042,7 +1111,14 @@ class BackupEngine:
                 timeout=5,
             )
             cls._sudo_checked = result.returncode == 0
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+            if not cls._sudo_checked:
+                logger.warning(
+                    "sudo -l check failed (rc=%d): %s",
+                    result.returncode,
+                    (result.stderr or b"").decode(errors="replace").strip(),
+                )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            logger.warning("sudo -l probe raised %s: %s", type(exc).__name__, exc)
             cls._sudo_checked = False
         return cls._sudo_checked
 

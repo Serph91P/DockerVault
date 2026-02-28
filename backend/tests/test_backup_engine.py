@@ -5,8 +5,6 @@ Tests for backup_engine module.
 import asyncio
 import io
 import tarfile
-from datetime import datetime
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -498,7 +496,6 @@ class TestBackupConcurrency:
         mock_session_instance.execute.return_value = mock_result
 
         engine = BackupEngine()
-        initial_total = engine.metrics.total_backups
 
         # Run backup (will fail due to no backup found)
         result = await engine.run_backup(99999)

@@ -6,7 +6,6 @@ from datetime import datetime
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 
 from app.database import (
     Backup,
@@ -123,7 +122,7 @@ class TestDatabaseModels:
         result = await db_session.execute(
             select(BackupTarget).where(BackupTarget.id == target.id)
         )
-        loaded_target = result.scalar_one()
+        result.scalar_one()
 
         # Note: In real app, you'd use relationship loading
         # This tests the foreign key relationship exists

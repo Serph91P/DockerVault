@@ -222,6 +222,7 @@ export const schedulesApi = {
   // Scheduler management
   getJobs: () => api.get('/schedules/jobs'),
   trigger: (targetId: number) => api.post(`/schedules/target/${targetId}/trigger`),
+  triggerAll: (scheduleId: number) => api.post(`/schedules/${scheduleId}/trigger-all`),
   estimate: (target_id: number, cron_expression: string) =>
     api.post('/schedules/estimate', { target_id, cron_expression }),
   getCronHelp: () => api.get('/schedules/cron-help'),

@@ -2,7 +2,6 @@
 Backup scheduler using APScheduler.
 """
 
-import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
@@ -264,9 +263,9 @@ class BackupScheduler:
             if not target:
                 return False
 
-        # Create and run backup in background
+        # Create and enqueue backup (per-target lock prevents overlaps)
         backup = await backup_engine.create_backup(target, BackupType.FULL)
-        asyncio.create_task(backup_engine.run_backup(backup.id))
+        await backup_engine.enqueue(backup.id)
 
         return True
 

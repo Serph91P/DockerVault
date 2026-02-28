@@ -75,12 +75,12 @@ async def request_container_action(request: ContainerActionRequest):
     if request.action == "stop":
         success = await komodo_client.request_container_stop(
             request.container_name,
-            request.reason or "backup",
+            reason=request.reason or "backup",
         )
     else:
         success = await komodo_client.request_container_start(
             request.container_name,
-            request.reason or "backup_complete",
+            reason=request.reason or "backup_complete",
         )
 
     if not success:

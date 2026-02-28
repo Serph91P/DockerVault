@@ -279,6 +279,7 @@ class TestBackupScheduler:
         mock_backup.id = 123
         mock_backup_engine.create_backup = AsyncMock(return_value=mock_backup)
         mock_backup_engine.run_backup = AsyncMock(return_value=True)
+        mock_backup_engine.enqueue = AsyncMock()
 
         scheduler = BackupScheduler()
 
