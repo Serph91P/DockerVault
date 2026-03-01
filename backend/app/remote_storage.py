@@ -330,7 +330,8 @@ class SSHStorage(StorageBackend):
             full_path = f"{self.config.base_path}/{remote_path}".replace("//", "/")
             # Sanitize the path to prevent command injection
             safe_path = shlex.quote(full_path)
-            cmd = self._build_ssh_command(f"ls -la {safe_path}")
+            # Use --time-style=+%s to get epoch timestamps as a single field
+            cmd = self._build_ssh_command(f"ls -la --time-style=+%s {safe_path}")
 
             process = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -339,16 +340,29 @@ class SSHStorage(StorageBackend):
 
             files = []
             for line in stdout.decode().split("\n")[1:]:  # Skip total line
-                parts = line.split()
-                if len(parts) >= 9:
-                    files.append(
-                        {
-                            "name": parts[-1],
-                            "size": int(parts[4]) if parts[4].isdigit() else 0,
-                            "is_dir": parts[0].startswith("d"),
-                            "permissions": parts[0],
-                        }
-                    )
+                # Split into max 7 parts so filenames with spaces stay intact
+                parts = line.split(None, 6)
+                if len(parts) < 7:
+                    continue
+                name = parts[6]
+                if name in (".", ".."):
+                    continue
+                try:
+                    size = int(parts[4])
+                except (ValueError, IndexError):
+                    size = 0
+                try:
+                    modified = float(parts[5])
+                except (ValueError, IndexError):
+                    modified = 0
+                files.append(
+                    {
+                        "name": name,
+                        "size": size,
+                        "is_dir": parts[0].startswith("d"),
+                        "modified": modified,
+                    }
+                )
             return files
         except Exception as e:
             logger.error(f"SSH list error: {e}")
@@ -540,15 +554,15 @@ class WebDAVStorage(StorageBackend):
                     except ValueError:
                         size = 0
 
-                # Get modified date
+                # Get modified date as Unix timestamp
                 modified_el = prop.find("d:getlastmodified", ns)
-                modified = ""
+                modified: float = 0
                 if modified_el is not None and modified_el.text:
                     try:
                         dt = parsedate_to_datetime(modified_el.text)
-                        modified = dt.isoformat()
+                        modified = dt.timestamp()
                     except (ValueError, TypeError):
-                        modified = modified_el.text
+                        modified = 0
 
                 files.append(
                     {
@@ -689,12 +703,18 @@ class S3Storage(StorageBackend):
 
             files = []
             for obj in response.get("Contents", []):
+                modified = 0
+                if obj.get("LastModified"):
+                    try:
+                        modified = obj["LastModified"].timestamp()
+                    except (AttributeError, TypeError):
+                        modified = 0
                 files.append(
                     {
                         "name": obj["Key"].split("/")[-1],
                         "size": obj["Size"],
                         "is_dir": False,
-                        "modified": obj["LastModified"].isoformat(),
+                        "modified": modified,
                     }
                 )
             return files
@@ -786,17 +806,28 @@ class RcloneStorage(StorageBackend):
 
             if code == 0:
                 import json
+                from datetime import datetime as _dt
 
                 items = json.loads(stdout)
-                return [
-                    {
-                        "name": item["Name"],
-                        "size": item.get("Size", 0),
-                        "is_dir": item["IsDir"],
-                        "modified": item.get("ModTime", ""),
-                    }
-                    for item in items
-                ]
+                result = []
+                for item in items:
+                    modified = 0
+                    mod_time = item.get("ModTime", "")
+                    if mod_time:
+                        try:
+                            dt = _dt.fromisoformat(mod_time.replace("Z", "+00:00"))
+                            modified = dt.timestamp()
+                        except (ValueError, TypeError):
+                            modified = 0
+                    result.append(
+                        {
+                            "name": item["Name"],
+                            "size": item.get("Size", 0),
+                            "is_dir": item["IsDir"],
+                            "modified": modified,
+                        }
+                    )
+                return result
             return []
         except Exception as e:
             logger.error(f"Rclone list error: {e}")
@@ -898,15 +929,31 @@ class FTPStorage(StorageBackend):
             client = await self._connect()
 
             try:
+                from datetime import datetime as _dt
+
                 full_path = f"{self.config.base_path}/{remote_path}"
                 files = []
                 async for path, info in client.list(full_path):
+                    modified = 0
+                    modify_str = info.get("modify", "")
+                    if modify_str:
+                        try:
+                            # aioftp MDTM format: YYYYMMDDHHMMSS[.sss]
+                            dt = _dt.strptime(str(modify_str)[:14], "%Y%m%d%H%M%S")
+                            modified = dt.timestamp()
+                        except (ValueError, TypeError):
+                            modified = 0
+                    size = info.get("size", 0)
+                    try:
+                        size = int(size)
+                    except (ValueError, TypeError):
+                        size = 0
                     files.append(
                         {
                             "name": path.name,
-                            "size": info.get("size", 0),
+                            "size": size,
                             "is_dir": info.get("type") == "dir",
-                            "modified": info.get("modify", ""),
+                            "modified": modified,
                         }
                     )
                 return files

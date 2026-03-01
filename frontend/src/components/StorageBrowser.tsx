@@ -23,7 +23,7 @@ interface StorageFile {
   name: string
   size: number
   is_dir: boolean
-  modified: number
+  modified: number | string
 }
 
 interface StorageBrowserProps {
@@ -32,15 +32,24 @@ interface StorageBrowserProps {
 }
 
 function formatSize(bytes: number): string {
-  if (bytes === 0) return '—'
+  if (!bytes || bytes <= 0) return '—'
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.floor(Math.log(bytes) / Math.log(1024))
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`
 }
 
-function formatDate(timestamp: number): string {
+function formatDate(timestamp: number | string): string {
   if (!timestamp) return '—'
-  return new Date(timestamp * 1000).toLocaleString()
+  // Handle both Unix timestamps (number) and ISO strings
+  let date: Date
+  if (typeof timestamp === 'number') {
+    // Detect seconds vs milliseconds: timestamps before year 2100 in seconds are < 4.1e9
+    date = timestamp > 1e12 ? new Date(timestamp) : new Date(timestamp * 1000)
+  } else {
+    date = new Date(timestamp)
+  }
+  if (isNaN(date.getTime())) return '—'
+  return date.toLocaleString()
 }
 
 function getFileIcon(name: string, isDir: boolean) {
