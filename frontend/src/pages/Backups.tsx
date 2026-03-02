@@ -25,9 +25,11 @@ import {
   backupsApi,
   targetsApi,
   schedulesApi,
+  storageApi,
   Backup,
   BackupTarget,
   ScheduleEntity,
+  RemoteStorage,
 } from '../api'
 import { format, formatDistanceToNowStrict } from 'date-fns'
 import toast from 'react-hot-toast'
@@ -39,6 +41,7 @@ import BackupEditDialog from '../components/BackupEditDialog'
 import ConfirmDialog from '../components/ConfirmDialog'
 import EmptyState from '../components/EmptyState'
 import LoadingSkeleton from '../components/LoadingSkeleton'
+import StorageBrowser from '../components/StorageBrowser'
 
 // Backup Row Component with browser option
 function BackupRow({
@@ -432,7 +435,12 @@ export default function Backups() {
     id: number
     title: string
     message: string
+    hasRemote?: boolean
+    hasLocal?: boolean
   } | null>(null)
+  const [deleteLocal, setDeleteLocal] = useState(true)
+  const [deleteRemote, setDeleteRemote] = useState(true)
+  const [browsingStorage, setBrowsingStorage] = useState<RemoteStorage | null>(null)
 
   const { data: targets, isLoading: targetsLoading } = useQuery({
     queryKey: ['targets'],
@@ -450,8 +458,14 @@ export default function Backups() {
     queryFn: () => schedulesApi.list().then((r) => r.data),
   })
 
+  const { data: storages = [] } = useQuery({
+    queryKey: ['storages'],
+    queryFn: () => storageApi.list().then((r) => r.data),
+  })
+
   const deleteBackupMutation = useMutation({
-    mutationFn: (backupId: number) => backupsApi.delete(backupId),
+    mutationFn: ({ backupId, local, remote }: { backupId: number; local: boolean; remote: boolean }) =>
+      backupsApi.delete(backupId, { deleteLocal: local, deleteRemote: remote }),
     onSuccess: () => {
       toast.success('Backup deleted')
       queryClient.invalidateQueries({ queryKey: ['backups'] })
@@ -471,7 +485,8 @@ export default function Backups() {
   })
 
   const deleteAllBackupsMutation = useMutation({
-    mutationFn: (targetId: number) => backupsApi.deleteAll(targetId),
+    mutationFn: ({ targetId, local, remote }: { targetId: number; local: boolean; remote: boolean }) =>
+      backupsApi.deleteAll(targetId, { deleteLocal: local, deleteRemote: remote }),
     onSuccess: (res) => {
       const count = res.data?.deleted_count ?? 0
       toast.success(`${count} backup(s) deleted`)
@@ -541,11 +556,17 @@ export default function Backups() {
   }
 
   const handleDeleteBackup = (backup: Backup) => {
+    const hasLocal = backup.local_available !== false
+    const hasRemote = backup.remote_synced === true
+    setDeleteLocal(true)
+    setDeleteRemote(hasRemote)
     setConfirmDialog({
       type: 'backup',
       id: backup.id,
       title: 'Delete Backup',
       message: 'Are you sure you want to delete this backup? This action cannot be undone.',
+      hasLocal,
+      hasRemote,
     })
   }
 
@@ -559,21 +580,36 @@ export default function Backups() {
   }
 
   const handleDeleteAllBackups = (target: BackupTarget) => {
-    const count = getBackupsForTarget(target.id).length
+    const backups = getBackupsForTarget(target.id)
+    const count = backups.length
+    const anyRemote = backups.some((b) => b.remote_synced)
+    const anyLocal = backups.some((b) => b.local_available !== false)
+    setDeleteLocal(true)
+    setDeleteRemote(anyRemote)
     setConfirmDialog({
       type: 'all-backups',
       id: target.id,
       title: 'Delete All Backups',
       message: `Are you sure you want to delete all ${count} backup(s) for "${target.name}"? This action cannot be undone.`,
+      hasLocal: anyLocal,
+      hasRemote: anyRemote,
     })
   }
 
   const handleConfirmDelete = () => {
     if (!confirmDialog) return
     if (confirmDialog.type === 'backup') {
-      deleteBackupMutation.mutate(confirmDialog.id)
+      deleteBackupMutation.mutate({
+        backupId: confirmDialog.id,
+        local: deleteLocal,
+        remote: deleteRemote,
+      })
     } else if (confirmDialog.type === 'all-backups') {
-      deleteAllBackupsMutation.mutate(confirmDialog.id)
+      deleteAllBackupsMutation.mutate({
+        targetId: confirmDialog.id,
+        local: deleteLocal,
+        remote: deleteRemote,
+      })
     } else {
       deleteTargetMutation.mutate(confirmDialog.id)
     }
@@ -587,13 +623,46 @@ export default function Backups() {
           <h1 className="text-2xl font-bold text-dark-100">Backups</h1>
           <p className="text-dark-400 mt-1">Manage your backup configurations and history</p>
         </div>
-        <button
-          onClick={() => setWizardOpen(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          New Backup
-        </button>
+        <div className="flex items-center gap-2">
+          {storages.length > 0 && (
+            <div className="relative group">
+              <button
+                className="flex items-center gap-2 px-3 py-2 bg-dark-800 border border-dark-700 text-dark-200 rounded-lg hover:bg-dark-700 transition-colors"
+                onClick={() => {
+                  if (storages.length === 1) {
+                    setBrowsingStorage(storages[0])
+                  }
+                }}
+              >
+                <Cloud className="w-4 h-4" />
+                Remote Storage
+                {storages.length > 1 && <ChevronDown className="w-3 h-3" />}
+              </button>
+              {storages.length > 1 && (
+                <div className="absolute right-0 mt-1 w-56 bg-dark-800 border border-dark-700 rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-20">
+                  {storages.map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() => setBrowsingStorage(s)}
+                      className="w-full text-left px-4 py-2.5 text-sm text-dark-200 hover:bg-dark-700 first:rounded-t-lg last:rounded-b-lg transition-colors flex items-center gap-2"
+                    >
+                      <Cloud className="w-3.5 h-3.5 text-dark-400" />
+                      {s.name}
+                      <span className="text-xs text-dark-500 ml-auto capitalize">{s.storage_type}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          <button
+            onClick={() => setWizardOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            New Backup
+          </button>
+        </div>
       </div>
 
       {/* Stats */}
@@ -753,8 +822,45 @@ export default function Backups() {
         message={confirmDialog?.message || ''}
         confirmLabel="Delete"
         confirmVariant="danger"
+        confirmDisabled={confirmDialog?.type !== 'target' && !deleteLocal && !deleteRemote}
         isLoading={deleteBackupMutation.isPending || deleteTargetMutation.isPending || deleteAllBackupsMutation.isPending}
-      />
+      >
+        {confirmDialog && confirmDialog.type !== 'target' && (confirmDialog.hasLocal || confirmDialog.hasRemote) && (
+          <div className="space-y-2 mt-2">
+            <p className="text-xs font-medium text-dark-300 uppercase tracking-wide">Delete from:</p>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={deleteLocal}
+                onChange={(e) => setDeleteLocal(e.target.checked)}
+                className="rounded border-dark-600 bg-dark-900 text-primary-500 focus:ring-primary-500"
+              />
+              <HardDrive className="w-3.5 h-3.5 text-dark-400" />
+              <span className="text-sm text-dark-200">Local storage</span>
+            </label>
+            {confirmDialog.hasRemote && (
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={deleteRemote}
+                  onChange={(e) => setDeleteRemote(e.target.checked)}
+                  className="rounded border-dark-600 bg-dark-900 text-primary-500 focus:ring-primary-500"
+                />
+                <Cloud className="w-3.5 h-3.5 text-green-500" />
+                <span className="text-sm text-dark-200">Remote storage</span>
+              </label>
+            )}
+            {!deleteLocal && !deleteRemote && (
+              <p className="text-xs text-red-400">Select at least one option.</p>
+            )}
+          </div>
+        )}
+      </ConfirmDialog>
+
+      {/* Remote Storage Browser */}
+      {browsingStorage && (
+        <StorageBrowser storage={browsingStorage} onClose={() => setBrowsingStorage(null)} />
+      )}
     </div>
   )
 }

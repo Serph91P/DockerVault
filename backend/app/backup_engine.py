@@ -609,7 +609,9 @@ class BackupEngine:
 
             # Sync to remote storage if configured
             if target.remote_storage_ids:
-                await self._sync_to_remote(backup_id, target, backup_path)
+                await self._sync_to_remote(
+                    backup_id, target, backup_path, encrypted, encryption_key_path
+                )
 
             # Record successful backup metrics
             duration = time.time() - start_time
@@ -684,6 +686,8 @@ class BackupEngine:
         backup_id: int,
         target: BackupTarget,
         backup_path: str,
+        encrypted: bool = False,
+        encryption_key_path: str | None = None,
     ) -> None:
         """Sync a completed backup to configured remote storage backends.
 
@@ -754,6 +758,28 @@ class BackupEngine:
                 local_path.name,
                 target.remote_storage_ids,
             )
+
+            # Also upload .key sidecar for encrypted backups
+            if encrypted and encryption_key_path:
+                key_local = Path(encryption_key_path)
+                if key_local.exists():
+                    try:
+                        await storage_manager.sync_backup(
+                            key_local,
+                            safe_name,
+                            key_local.name,
+                            target.remote_storage_ids,
+                        )
+                        logger.info(
+                            "Uploaded .key sidecar for backup %s",
+                            backup_id,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to upload .key sidecar for backup %s: %s",
+                            backup_id,
+                            e,
+                        )
 
             # Record sync results in BackupStorageSync table
             remote_path = f"{safe_name}/{local_path.name}"

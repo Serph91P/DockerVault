@@ -9,6 +9,8 @@ interface ConfirmDialogProps {
   confirmLabel?: string
   confirmVariant?: 'danger' | 'primary'
   isLoading?: boolean
+  confirmDisabled?: boolean
+  children?: React.ReactNode
 }
 
 export default function ConfirmDialog({
@@ -20,6 +22,8 @@ export default function ConfirmDialog({
   confirmLabel = 'Confirm',
   confirmVariant = 'danger',
   isLoading = false,
+  confirmDisabled = false,
+  children,
 }: ConfirmDialogProps) {
   if (!isOpen) return null
 
@@ -39,6 +43,7 @@ export default function ConfirmDialog({
           <div className="flex-1">
             <h3 className="text-lg font-semibold text-dark-100">{title}</h3>
             <p className="text-sm text-dark-400 mt-2">{message}</p>
+            {children && <div className="mt-3">{children}</div>}
           </div>
         </div>
 
@@ -52,7 +57,7 @@ export default function ConfirmDialog({
           </button>
           <button
             onClick={onConfirm}
-            disabled={isLoading}
+            disabled={isLoading || confirmDisabled}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors disabled:opacity-50 ${confirmStyles}`}
           >
             {isLoading ? (
