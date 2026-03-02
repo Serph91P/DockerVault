@@ -519,8 +519,24 @@ async def restore_backup(
 
 @router.delete("/{backup_id}")
 @limiter.limit("20/minute")
-async def delete_backup(request: Request, backup_id: int):
-    """Delete a backup from local disk, remote storage, and database."""
+async def delete_backup(
+    request: Request,
+    backup_id: int,
+    delete_local: bool = Query(True, description="Delete local backup file"),
+    delete_remote: bool = Query(True, description="Delete remote copies"),
+):
+    """Delete a backup. Use query params to control what gets deleted.
+
+    - delete_local=true (default): Removes local file and DB record.
+    - delete_remote=true (default): Removes remote copies.
+    - Both false is rejected (nothing to do).
+    """
+    if not delete_local and not delete_remote:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one of delete_local or delete_remote must be true.",
+        )
+
     async with async_session() as session:
         result = await session.execute(select(Backup).where(Backup.id == backup_id))
         backup = result.scalar_one_or_none()
@@ -528,10 +544,10 @@ async def delete_backup(request: Request, backup_id: int):
         if not backup:
             raise HTTPException(status_code=404, detail="Backup not found")
 
-        # Delete file if exists – always remove the DB record even when
-        # the filesystem delete fails (e.g. network mount permissions).
         file_errors: list[str] = []
-        if backup.file_path:
+
+        # Delete local file if requested
+        if delete_local and backup.file_path:
             resolved = _resolve_backup_path(backup.file_path)
             if resolved:
                 try:
@@ -560,11 +576,18 @@ async def delete_backup(request: Request, backup_id: int):
                 except OSError:
                     pass  # non-critical
 
-        # Delete remote copies and sync records
-        remote_errors = await _delete_remote_copies(session, [backup.id])
-        file_errors.extend(remote_errors)
+        # Delete remote copies if requested
+        if delete_remote:
+            remote_errors = await _delete_remote_copies(session, [backup.id])
+            file_errors.extend(remote_errors)
 
-        await session.delete(backup)
+        # Only delete DB record when local is being removed (or already gone)
+        if delete_local:
+            await session.delete(backup)
+        elif delete_remote:
+            # Keep DB record but clear sync records (already done in _delete_remote_copies)
+            pass
+
         await session.commit()
 
         if file_errors:
@@ -585,11 +608,19 @@ async def delete_all_backups(
     target_id: int | None = Query(
         None, description="Delete only backups for this target"
     ),
+    delete_local: bool = Query(True, description="Delete local backup files"),
+    delete_remote: bool = Query(True, description="Delete remote copies"),
 ):
     """Delete all backups, optionally filtered by target_id.
 
-    Also deletes remote copies and sync records.
+    Use delete_local/delete_remote to control scope.
     """
+    if not delete_local and not delete_remote:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one of delete_local or delete_remote must be true.",
+        )
+
     async with async_session() as session:
         query = select(Backup)
         if target_id is not None:
@@ -605,13 +636,14 @@ async def delete_all_backups(
         file_errors: list[str] = []
         backup_ids = [b.id for b in backups]
 
-        # Delete remote copies for all backups in one pass
-        remote_errors = await _delete_remote_copies(session, backup_ids)
-        file_errors.extend(remote_errors)
+        # Delete remote copies if requested
+        if delete_remote:
+            remote_errors = await _delete_remote_copies(session, backup_ids)
+            file_errors.extend(remote_errors)
 
         for backup in backups:
-            # Delete file
-            if backup.file_path:
+            # Delete local file if requested
+            if delete_local and backup.file_path:
                 resolved = _resolve_backup_path(backup.file_path)
                 if resolved:
                     try:
@@ -636,28 +668,37 @@ async def delete_all_backups(
                             )
                             file_errors.append(str(resolved_key))
 
-            await session.delete(backup)
-            deleted_count += 1
+            if delete_local:
+                await session.delete(backup)
+                deleted_count += 1
 
         await session.commit()
 
         # Clean up empty target directories
-        for backup in backups:
-            if backup.file_path:
-                resolved = _resolve_backup_path(backup.file_path)
-                if resolved:
-                    parent = os.path.dirname(resolved)
-                    try:
-                        if parent and os.path.isdir(parent) and not os.listdir(parent):
-                            os.rmdir(parent)
-                    except OSError:
-                        pass
+        if delete_local:
+            for backup in backups:
+                if backup.file_path:
+                    resolved = _resolve_backup_path(backup.file_path)
+                    if resolved:
+                        parent = os.path.dirname(resolved)
+                        try:
+                            if (
+                                parent
+                                and os.path.isdir(parent)
+                                and not os.listdir(parent)
+                            ):
+                                os.rmdir(parent)
+                        except OSError:
+                            pass
+
+        if not delete_local:
+            deleted_count = len(backups)
 
         response: dict = {"status": "deleted", "deleted_count": deleted_count}
         if file_errors:
             response["warning"] = (
-                f"{deleted_count} DB records removed but {len(file_errors)} "
-                f"file(s) could not be deleted (permission denied)"
+                f"{deleted_count} record(s) processed but {len(file_errors)} "
+                f"file(s) could not be deleted: {file_errors}"
             )
         return response
 
@@ -818,10 +859,15 @@ async def _get_decrypted_archive_path(
 
     resolved_key = _resolve_backup_path(key_path)
     if not resolved_key:
-        raise HTTPException(
-            status_code=404,
-            detail="Encryption key file not found on disk.",
-        )
+        # Fallback: look for .key next to the resolved archive file
+        # (e.g. when the backup was downloaded from remote to a temp dir)
+        potential_key = archive_path.replace(".enc", ".key")
+        resolved_key = _resolve_backup_path(potential_key)
+        if not resolved_key:
+            raise HTTPException(
+                status_code=404,
+                detail="Encryption key file not found on disk.",
+            )
     key_path = resolved_key
 
     # Decrypt to temp file

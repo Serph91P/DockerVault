@@ -212,9 +212,21 @@ export const backupsApi = {
     api.post<Backup>('/backups', { target_id, backup_type }),
   restore: (id: number, target_path?: string) => 
     api.post(`/backups/${id}/restore`, { target_path }),
-  delete: (id: number) => api.delete(`/backups/${id}`),
-  deleteAll: (targetId?: number) => 
-    api.delete('/backups', { params: targetId ? { target_id: targetId } : undefined }),
+  delete: (id: number, opts?: { deleteLocal?: boolean; deleteRemote?: boolean }) => 
+    api.delete(`/backups/${id}`, { 
+      params: { 
+        delete_local: opts?.deleteLocal ?? true, 
+        delete_remote: opts?.deleteRemote ?? true 
+      } 
+    }),
+  deleteAll: (targetId?: number, opts?: { deleteLocal?: boolean; deleteRemote?: boolean }) => 
+    api.delete('/backups', { 
+      params: { 
+        ...(targetId ? { target_id: targetId } : undefined),
+        delete_local: opts?.deleteLocal ?? true,
+        delete_remote: opts?.deleteRemote ?? true,
+      } 
+    }),
   getStats: (id: number) => api.get(`/backups/${id}/stats`),
   listFiles: (id: number) => api.get(`/backups/${id}/files`),
   listFilesEncrypted: (id: number, privateKey: string) =>
