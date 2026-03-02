@@ -19,6 +19,7 @@ import {
   EyeOff,
   AlertTriangle,
   AlertCircle,
+  Cloud,
 } from 'lucide-react'
 import axios from 'axios'
 import { Backup, backupsApi } from '../api'
@@ -346,6 +347,12 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
               <p className="text-sm text-dark-400">
                 {backup.file_path?.split('/').pop() || `Backup #${backup.id}`}
               </p>
+              {backup.local_available === false && backup.remote_synced && (
+                <p className="text-xs text-blue-400 flex items-center gap-1 mt-0.5">
+                  <Cloud className="w-3 h-3" />
+                  Streaming from remote storage
+                </p>
+              )}
             </div>
           </div>
           <button

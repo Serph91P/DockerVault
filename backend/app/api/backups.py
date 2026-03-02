@@ -5,6 +5,7 @@ Backups API endpoints.
 import logging
 import os
 import re
+import shutil
 import tarfile
 import tempfile
 from datetime import datetime, timezone
@@ -18,6 +19,7 @@ from sqlalchemy import select
 
 from app.backup_engine import backup_engine
 from app.config import settings
+from app.credential_encryption import decrypt_value
 from app.database import (
     Backup,
     BackupStatus,
@@ -29,6 +31,7 @@ from app.database import (
 )
 from app.encryption import DecryptionError, decrypt_backup
 from app.rate_limit import limiter
+from app.remote_storage import StorageConfig, StorageType, storage_manager
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +70,110 @@ def _resolve_backup_path(file_path: str | None) -> str | None:
         return sanitized
 
     return None
+
+
+def _db_to_storage_config(storage: RemoteStorage) -> StorageConfig:
+    """Convert a RemoteStorage DB model to a StorageConfig for backend init."""
+    return StorageConfig(
+        id=storage.id,
+        name=storage.name,
+        storage_type=StorageType(storage.storage_type),
+        enabled=storage.enabled,
+        host=storage.host,
+        port=storage.port,
+        username=storage.username,
+        password=decrypt_value(storage.password)
+        if storage.password
+        else storage.password,
+        base_path=storage.base_path,
+        ssh_key_path=storage.ssh_key_path,
+        s3_bucket=storage.s3_bucket,
+        s3_region=storage.s3_region,
+        s3_access_key=decrypt_value(storage.s3_access_key)
+        if storage.s3_access_key
+        else storage.s3_access_key,
+        s3_secret_key=decrypt_value(storage.s3_secret_key)
+        if storage.s3_secret_key
+        else storage.s3_secret_key,
+        s3_endpoint_url=storage.s3_endpoint_url,
+        webdav_url=storage.webdav_url,
+        rclone_remote=storage.rclone_remote,
+    )
+
+
+async def _ensure_backup_locally(
+    backup: Backup,
+) -> tuple[str, Path | None]:
+    """Ensure backup file is available locally, downloading from remote if needed.
+
+    Returns (local_path, temp_dir) where temp_dir is not None when a remote
+    download was performed and must be cleaned up by the caller.
+    """
+    resolved = _resolve_backup_path(backup.file_path)
+    if resolved:
+        return resolved, None
+
+    # Local file missing – try downloading from a remote storage that has it
+    async with async_session() as session:
+        result = await session.execute(
+            select(BackupStorageSync)
+            .where(
+                BackupStorageSync.backup_id == backup.id,
+                BackupStorageSync.sync_status == "completed",
+            )
+            .order_by(BackupStorageSync.synced_at.desc())
+        )
+        syncs = result.scalars().all()
+
+        if not syncs:
+            return None, None
+
+        for sync in syncs:
+            backend = storage_manager.get_backend(sync.storage_id)
+            if not backend:
+                storage = await session.get(RemoteStorage, sync.storage_id)
+                if not storage or not storage.enabled:
+                    continue
+                config = _db_to_storage_config(storage)
+                backend = storage_manager.add_storage(config)
+
+            temp_dir = Path(tempfile.mkdtemp(prefix="dockervault_remote_"))
+            filename = os.path.basename(sync.remote_path)
+            local_path = temp_dir / filename
+
+            try:
+                success = await backend.download(sync.remote_path, local_path)
+                if success and local_path.exists():
+                    logger.info(
+                        "Downloaded backup %s from remote storage %s",
+                        backup.id,
+                        sync.storage_id,
+                    )
+
+                    # Also download .key sidecar file for encrypted backups
+                    if backup.encrypted:
+                        key_remote = sync.remote_path.replace(".enc", ".key")
+                        key_local = temp_dir / filename.replace(".enc", ".key")
+                        try:
+                            await backend.download(key_remote, key_local)
+                        except Exception:
+                            logger.debug(
+                                "No .key sidecar found on remote for backup %s",
+                                backup.id,
+                            )
+
+                    return str(local_path), temp_dir
+            except Exception as e:
+                logger.warning(
+                    "Failed to download backup %s from storage %s: %s",
+                    backup.id,
+                    sync.storage_id,
+                    e,
+                )
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                continue
+
+    return None, None
 
 
 def _to_utc_isoformat(dt: Optional[datetime]) -> Optional[str]:
@@ -775,28 +882,23 @@ async def list_encrypted_backup_files(backup_id: int, body: BrowseEncryptedReque
         if backup.status != BackupStatus.COMPLETED:
             raise HTTPException(status_code=400, detail="Backup is not completed")
 
-        resolved_path = _resolve_backup_path(backup.file_path)
-        if not resolved_path:
-            logger.warning(
-                "Backup file missing on disk for backup %s: %s",
-                backup.id,
-                backup.file_path,
-            )
-            raise HTTPException(
-                status_code=404,
-                detail="Backup file not found on disk. The file may have been moved or deleted.",
-            )
-        # Use the resolved (possibly sanitised) path for downstream operations
-        backup.file_path = resolved_path
-
         if not backup.encrypted:
             raise HTTPException(
                 status_code=400,
                 detail="Backup is not encrypted. Use GET endpoint instead.",
             )
 
+    remote_temp_dir: Path | None = None
     temp_path: Path | None = None
     try:
+        resolved_path, remote_temp_dir = await _ensure_backup_locally(backup)
+        if not resolved_path:
+            raise HTTPException(
+                status_code=404,
+                detail="Backup file not found locally or on any remote storage.",
+            )
+        backup.file_path = resolved_path
+
         archive_path, mode, temp_path = await _get_decrypted_archive_path(
             backup, body.private_key
         )
@@ -828,6 +930,8 @@ async def list_encrypted_backup_files(backup_id: int, body: BrowseEncryptedReque
     finally:
         if temp_path and temp_path.exists():
             temp_path.unlink(missing_ok=True)
+        if remote_temp_dir:
+            shutil.rmtree(remote_temp_dir, ignore_errors=True)
 
 
 @router.post("/{backup_id}/files/{file_path:path}")
@@ -845,28 +949,24 @@ async def download_encrypted_backup_file(
         if backup.status != BackupStatus.COMPLETED:
             raise HTTPException(status_code=400, detail="Backup is not completed")
 
-        resolved_path = _resolve_backup_path(backup.file_path)
-        if not resolved_path:
-            logger.warning(
-                "Backup file missing on disk for backup %s: %s",
-                backup.id,
-                backup.file_path,
-            )
-            raise HTTPException(
-                status_code=404,
-                detail="Backup file not found on disk. The file may have been moved or deleted.",
-            )
-        backup.file_path = resolved_path
-
         if not backup.encrypted:
             raise HTTPException(
                 status_code=400,
                 detail="Backup is not encrypted. Use GET endpoint instead.",
             )
 
+    remote_temp_dir: Path | None = None
     temp_path: Path | None = None
     tar = None
     try:
+        resolved_path, remote_temp_dir = await _ensure_backup_locally(backup)
+        if not resolved_path:
+            raise HTTPException(
+                status_code=404,
+                detail="Backup file not found locally or on any remote storage.",
+            )
+        backup.file_path = resolved_path
+
         archive_path, mode, temp_path = await _get_decrypted_archive_path(
             backup, body.private_key
         )
@@ -880,6 +980,8 @@ async def download_encrypted_backup_file(
             tar.close()
             if temp_path and temp_path.exists():
                 temp_path.unlink(missing_ok=True)
+            if remote_temp_dir:
+                shutil.rmtree(remote_temp_dir, ignore_errors=True)
             raise HTTPException(status_code=400, detail="Cannot download directories")
 
         file_obj = tar.extractfile(member)
@@ -887,10 +989,13 @@ async def download_encrypted_backup_file(
             tar.close()
             if temp_path and temp_path.exists():
                 temp_path.unlink(missing_ok=True)
+            if remote_temp_dir:
+                shutil.rmtree(remote_temp_dir, ignore_errors=True)
             raise HTTPException(status_code=500, detail="Failed to extract file")
 
         filename = _sanitize_filename(member.name)
         cleanup_temp = temp_path
+        cleanup_remote_dir = remote_temp_dir
 
         def iter_file():
             try:
@@ -901,6 +1006,8 @@ async def download_encrypted_backup_file(
                 tar.close()
                 if cleanup_temp and cleanup_temp.exists():
                     cleanup_temp.unlink(missing_ok=True)
+                if cleanup_remote_dir:
+                    shutil.rmtree(cleanup_remote_dir, ignore_errors=True)
 
         return StreamingResponse(
             iter_file(),
@@ -916,12 +1023,16 @@ async def download_encrypted_backup_file(
             tar.close()
         if temp_path and temp_path.exists():
             temp_path.unlink(missing_ok=True)
+        if remote_temp_dir:
+            shutil.rmtree(remote_temp_dir, ignore_errors=True)
         raise HTTPException(status_code=404, detail="File not found in archive")
     except tarfile.TarError as e:
         if tar:
             tar.close()
         if temp_path and temp_path.exists():
             temp_path.unlink(missing_ok=True)
+        if remote_temp_dir:
+            shutil.rmtree(remote_temp_dir, ignore_errors=True)
         logger.error("Failed to extract file from decrypted archive: %s", e)
         raise HTTPException(status_code=500, detail="Failed to read backup archive")
 
@@ -931,7 +1042,8 @@ async def list_backup_files(backup_id: int):
     """List all files in a backup archive.
 
     Returns a flat list of all files and directories in the backup
-    with their sizes and metadata.
+    with their sizes and metadata.  Falls back to remote storage when
+    the archive is not available locally.
     """
     async with async_session() as session:
         result = await session.execute(select(Backup).where(Backup.id == backup_id))
@@ -943,22 +1055,16 @@ async def list_backup_files(backup_id: int):
         if backup.status != BackupStatus.COMPLETED:
             raise HTTPException(status_code=400, detail="Backup is not completed")
 
-        resolved_path = _resolve_backup_path(backup.file_path)
+    remote_temp_dir: Path | None = None
+    try:
+        resolved_path, remote_temp_dir = await _ensure_backup_locally(backup)
         if not resolved_path:
-            logger.warning(
-                "Backup file missing on disk for backup %s: %s",
-                backup.id,
-                backup.file_path,
-            )
             raise HTTPException(
                 status_code=404,
-                detail="Backup file not found on disk. The file may have been moved or deleted.",
+                detail="Backup file not found locally or on any remote storage.",
             )
         backup.file_path = resolved_path
 
-    files: List[BackupFileInfo] = []
-
-    try:
         # Handle encrypted backups
         archive_path = backup.file_path
         if backup.encrypted and archive_path.endswith(".enc"):
@@ -968,6 +1074,7 @@ async def list_backup_files(backup_id: int):
             )
 
         mode = _get_tar_mode(archive_path)
+        files: List[BackupFileInfo] = []
 
         with tarfile.open(archive_path, mode) as tar:
             for member in tar.getmembers():
@@ -987,11 +1094,14 @@ async def list_backup_files(backup_id: int):
                     )
                 )
 
+        return files
+
     except tarfile.TarError as e:
         logger.error("Failed to read archive: %s", e)
         raise HTTPException(status_code=500, detail="Failed to read backup archive")
-
-    return files
+    finally:
+        if remote_temp_dir:
+            shutil.rmtree(remote_temp_dir, ignore_errors=True)
 
 
 @router.get("/{backup_id}/files/{file_path:path}")
@@ -999,6 +1109,7 @@ async def download_backup_file(backup_id: int, file_path: str):
     """Download a specific file from a backup archive.
 
     The file is extracted and streamed to the client.
+    Falls back to remote storage when the archive is not available locally.
     """
     async with async_session() as session:
         result = await session.execute(select(Backup).where(Backup.id == backup_id))
@@ -1010,31 +1121,27 @@ async def download_backup_file(backup_id: int, file_path: str):
         if backup.status != BackupStatus.COMPLETED:
             raise HTTPException(status_code=400, detail="Backup is not completed")
 
-        resolved_path = _resolve_backup_path(backup.file_path)
+    remote_temp_dir: Path | None = None
+    tar = None
+    try:
+        resolved_path, remote_temp_dir = await _ensure_backup_locally(backup)
         if not resolved_path:
-            logger.warning(
-                "Backup file missing on disk for backup %s: %s",
-                backup.id,
-                backup.file_path,
-            )
             raise HTTPException(
                 status_code=404,
-                detail="Backup file not found on disk. The file may have been moved or deleted.",
+                detail="Backup file not found locally or on any remote storage.",
             )
         backup.file_path = resolved_path
 
-    # Handle encrypted backups
-    archive_path = backup.file_path
-    if backup.encrypted and archive_path.endswith(".enc"):
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot download from encrypted backups without private key. Use POST endpoint with your private key.",
-        )
+        # Handle encrypted backups
+        archive_path = backup.file_path
+        if backup.encrypted and archive_path.endswith(".enc"):
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot download from encrypted backups without private key. Use POST endpoint with your private key.",
+            )
 
-    mode = _get_tar_mode(archive_path)
+        mode = _get_tar_mode(archive_path)
 
-    tar = None
-    try:
         tar = tarfile.open(archive_path, mode)
         normalized_path = _validate_archive_path(file_path)
 
@@ -1042,14 +1149,19 @@ async def download_backup_file(backup_id: int, file_path: str):
 
         if member.isdir():
             tar.close()
+            if remote_temp_dir:
+                shutil.rmtree(remote_temp_dir, ignore_errors=True)
             raise HTTPException(status_code=400, detail="Cannot download directories")
 
         file_obj = tar.extractfile(member)
         if file_obj is None:
             tar.close()
+            if remote_temp_dir:
+                shutil.rmtree(remote_temp_dir, ignore_errors=True)
             raise HTTPException(status_code=500, detail="Failed to extract file")
 
         filename = _sanitize_filename(member.name)
+        cleanup_remote_dir = remote_temp_dir
 
         def iter_file():
             try:
@@ -1058,6 +1170,8 @@ async def download_backup_file(backup_id: int, file_path: str):
             finally:
                 file_obj.close()
                 tar.close()
+                if cleanup_remote_dir:
+                    shutil.rmtree(cleanup_remote_dir, ignore_errors=True)
 
         return StreamingResponse(
             iter_file(),
@@ -1071,9 +1185,13 @@ async def download_backup_file(backup_id: int, file_path: str):
     except KeyError:
         if tar:
             tar.close()
+        if remote_temp_dir:
+            shutil.rmtree(remote_temp_dir, ignore_errors=True)
         raise HTTPException(status_code=404, detail="File not found in archive")
     except tarfile.TarError as e:
         if tar:
             tar.close()
+        if remote_temp_dir:
+            shutil.rmtree(remote_temp_dir, ignore_errors=True)
         logger.error("Failed to extract file from archive: %s", e)
         raise HTTPException(status_code=500, detail="Failed to read backup archive")
