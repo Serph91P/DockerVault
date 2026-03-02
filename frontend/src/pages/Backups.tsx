@@ -17,6 +17,9 @@ import {
   Pencil,
   Search,
   ArrowUpDown,
+  Cloud,
+  CloudOff,
+  HardDrive,
 } from 'lucide-react'
 import {
   backupsApi,
@@ -85,6 +88,35 @@ function BackupRow({
             {backup.file_size_human || '-'} •{' '}
             {backup.duration_seconds ? `${backup.duration_seconds}s` : '-'}
           </p>
+        </div>
+        {/* Storage location indicators */}
+        <div className="flex items-center gap-1 ml-2">
+          {backup.local_available && (
+            <span title="Available locally" className="text-dark-400">
+              <HardDrive className="w-3.5 h-3.5" />
+            </span>
+          )}
+          {backup.remote_synced && (
+            <span
+              title={
+                backup.remote_sync_details
+                  ?.filter((s) => s.status === 'completed')
+                  .map((s) => s.storage_name)
+                  .join(', ') || 'Synced to remote'
+              }
+              className="text-green-500"
+            >
+              <Cloud className="w-3.5 h-3.5" />
+            </span>
+          )}
+          {backup.remote_sync_details?.some((s) => s.status === 'failed') && (
+            <span
+              title="Remote sync failed"
+              className="text-red-400"
+            >
+              <CloudOff className="w-3.5 h-3.5" />
+            </span>
+          )}
         </div>
       </div>
 

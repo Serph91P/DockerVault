@@ -18,7 +18,15 @@ from sqlalchemy import select
 
 from app.backup_engine import backup_engine
 from app.config import settings
-from app.database import Backup, BackupStatus, BackupTarget, BackupType, async_session
+from app.database import (
+    Backup,
+    BackupStatus,
+    BackupStorageSync,
+    BackupTarget,
+    BackupType,
+    RemoteStorage,
+    async_session,
+)
 from app.encryption import DecryptionError, decrypt_backup
 from app.rate_limit import limiter
 
@@ -75,6 +83,16 @@ def _to_utc_isoformat(dt: Optional[datetime]) -> Optional[str]:
     return dt.astimezone(timezone.utc).isoformat()
 
 
+class RemoteSyncInfo(BaseModel):
+    """Remote sync status for a single storage backend."""
+
+    storage_id: int
+    storage_name: str
+    status: str  # completed, failed, pending
+    synced_at: Optional[str] = None
+    remote_path: Optional[str] = None
+
+
 class BackupResponse(BaseModel):
     """Backup response model."""
 
@@ -92,6 +110,9 @@ class BackupResponse(BaseModel):
     duration_seconds: Optional[int] = None
     error_message: Optional[str] = None
     encrypted: bool = False
+    local_available: bool = True
+    remote_synced: bool = False
+    remote_sync_details: List[RemoteSyncInfo] = []
     created_at: str
 
     class Config:
@@ -121,6 +142,100 @@ def format_size(size_bytes: Optional[int]) -> Optional[str]:
             return f"{size_bytes:.2f} {unit}"
         size_bytes /= 1024
     return f"{size_bytes:.2f} PB"
+
+
+async def _get_sync_details(
+    session, backup_ids: list[int]
+) -> dict[int, list[RemoteSyncInfo]]:
+    """Load remote sync details for a list of backup IDs.
+
+    Returns a dict mapping backup_id -> list[RemoteSyncInfo].
+    """
+    if not backup_ids:
+        return {}
+
+    result = await session.execute(
+        select(BackupStorageSync, RemoteStorage.name)
+        .join(RemoteStorage, BackupStorageSync.storage_id == RemoteStorage.id)
+        .where(BackupStorageSync.backup_id.in_(backup_ids))
+    )
+    rows = result.all()
+
+    details: dict[int, list[RemoteSyncInfo]] = {}
+    for sync, storage_name in rows:
+        info = RemoteSyncInfo(
+            storage_id=sync.storage_id,
+            storage_name=storage_name,
+            status=sync.sync_status or "unknown",
+            synced_at=_to_utc_isoformat(sync.synced_at),
+            remote_path=sync.remote_path,
+        )
+        details.setdefault(sync.backup_id, []).append(info)
+    return details
+
+
+def _build_backup_response(
+    b: Backup,
+    target_name: Optional[str],
+    sync_details: list[RemoteSyncInfo],
+) -> BackupResponse:
+    """Build a BackupResponse from a Backup record with sync info."""
+    local_available = _resolve_backup_path(b.file_path) is not None
+    any_completed = any(s.status == "completed" for s in sync_details)
+    return BackupResponse(
+        id=b.id,
+        target_id=b.target_id,
+        target_name=target_name,
+        backup_type=b.backup_type.value,
+        status=b.status.value,
+        file_path=b.file_path,
+        file_size=b.file_size,
+        file_size_human=format_size(b.file_size),
+        checksum=b.checksum,
+        started_at=_to_utc_isoformat(b.started_at),
+        completed_at=_to_utc_isoformat(b.completed_at),
+        duration_seconds=b.duration_seconds,
+        error_message=b.error_message,
+        encrypted=b.encrypted or False,
+        local_available=local_available,
+        remote_synced=any_completed,
+        remote_sync_details=sync_details,
+        created_at=_to_utc_isoformat(b.created_at) or "",
+    )
+
+
+async def _delete_remote_copies(session, backup_ids: list[int]) -> list[str]:
+    """Delete remote copies for the given backup IDs.
+
+    Returns a list of error messages for failed deletions.
+    """
+    from app.remote_storage import storage_manager
+
+    result = await session.execute(
+        select(BackupStorageSync).where(BackupStorageSync.backup_id.in_(backup_ids))
+    )
+    sync_records = result.scalars().all()
+
+    remote_errors: list[str] = []
+    for sync in sync_records:
+        if sync.remote_path and sync.sync_status == "completed":
+            backend = storage_manager.get_backend(sync.storage_id)
+            if backend:
+                try:
+                    await backend.delete(sync.remote_path)
+                except Exception as e:
+                    logger.warning(
+                        "Could not delete remote file %s from storage %s: %s",
+                        sync.remote_path,
+                        sync.storage_id,
+                        e,
+                    )
+                    remote_errors.append(
+                        f"storage:{sync.storage_id}/{sync.remote_path}"
+                    )
+        await session.delete(sync)
+
+    return remote_errors
 
 
 @router.get("", response_model=List[BackupResponse])
@@ -161,23 +276,15 @@ async def list_backups(
         )
         targets = {t.id: t.name for t in targets_result.scalars().all()}
 
+        # Get remote sync details
+        backup_ids = [b.id for b in backups]
+        sync_map = await _get_sync_details(session, backup_ids)
+
         return [
-            BackupResponse(
-                id=b.id,
-                target_id=b.target_id,
-                target_name=targets.get(b.target_id),
-                backup_type=b.backup_type.value,
-                status=b.status.value,
-                file_path=b.file_path,
-                file_size=b.file_size,
-                file_size_human=format_size(b.file_size),
-                checksum=b.checksum,
-                started_at=_to_utc_isoformat(b.started_at),
-                completed_at=_to_utc_isoformat(b.completed_at),
-                duration_seconds=b.duration_seconds,
-                error_message=b.error_message,
-                encrypted=b.encrypted or False,
-                created_at=_to_utc_isoformat(b.created_at) or "",
+            _build_backup_response(
+                b,
+                targets.get(b.target_id),
+                sync_map.get(b.id, []),
             )
             for b in backups
         ]
@@ -199,22 +306,13 @@ async def get_backup(backup_id: int):
         )
         target = target_result.scalar_one_or_none()
 
-        return BackupResponse(
-            id=backup.id,
-            target_id=backup.target_id,
-            target_name=target.name if target else None,
-            backup_type=backup.backup_type.value,
-            status=backup.status.value,
-            file_path=backup.file_path,
-            file_size=backup.file_size,
-            file_size_human=format_size(backup.file_size),
-            checksum=backup.checksum,
-            started_at=_to_utc_isoformat(backup.started_at),
-            completed_at=_to_utc_isoformat(backup.completed_at),
-            duration_seconds=backup.duration_seconds,
-            error_message=backup.error_message,
-            encrypted=backup.encrypted or False,
-            created_at=_to_utc_isoformat(backup.created_at) or "",
+        # Get remote sync details
+        sync_map = await _get_sync_details(session, [backup.id])
+
+        return _build_backup_response(
+            backup,
+            target.name if target else None,
+            sync_map.get(backup.id, []),
         )
 
 
@@ -315,7 +413,7 @@ async def restore_backup(
 @router.delete("/{backup_id}")
 @limiter.limit("20/minute")
 async def delete_backup(request: Request, backup_id: int):
-    """Delete a backup."""
+    """Delete a backup from local disk, remote storage, and database."""
     async with async_session() as session:
         result = await session.execute(select(Backup).where(Backup.id == backup_id))
         backup = result.scalar_one_or_none()
@@ -355,6 +453,10 @@ async def delete_backup(request: Request, backup_id: int):
                 except OSError:
                     pass  # non-critical
 
+        # Delete remote copies and sync records
+        remote_errors = await _delete_remote_copies(session, [backup.id])
+        file_errors.extend(remote_errors)
+
         await session.delete(backup)
         await session.commit()
 
@@ -377,7 +479,10 @@ async def delete_all_backups(
         None, description="Delete only backups for this target"
     ),
 ):
-    """Delete all backups, optionally filtered by target_id."""
+    """Delete all backups, optionally filtered by target_id.
+
+    Also deletes remote copies and sync records.
+    """
     async with async_session() as session:
         query = select(Backup)
         if target_id is not None:
@@ -391,6 +496,11 @@ async def delete_all_backups(
 
         deleted_count = 0
         file_errors: list[str] = []
+        backup_ids = [b.id for b in backups]
+
+        # Delete remote copies for all backups in one pass
+        remote_errors = await _delete_remote_copies(session, backup_ids)
+        file_errors.extend(remote_errors)
 
         for backup in backups:
             # Delete file
