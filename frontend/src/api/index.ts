@@ -87,6 +87,14 @@ export interface BackupTarget {
   updated_at: string
 }
 
+export interface RemoteSyncInfo {
+  storage_id: number
+  storage_name: string
+  status: 'completed' | 'failed' | 'pending' | string
+  synced_at?: string
+  remote_path?: string
+}
+
 export interface Backup {
   id: number
   target_id: number
@@ -102,6 +110,9 @@ export interface Backup {
   duration_seconds?: number
   error_message?: string
   encrypted?: boolean
+  local_available?: boolean
+  remote_synced?: boolean
+  remote_sync_details?: RemoteSyncInfo[]
   created_at: string
 }
 

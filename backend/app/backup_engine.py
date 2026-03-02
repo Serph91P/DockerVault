@@ -25,6 +25,7 @@ from app.config import settings
 from app.database import (
     Backup,
     BackupStatus,
+    BackupStorageSync,
     BackupTarget,
     BackupType,
     EncryptionConfig,
@@ -753,6 +754,21 @@ class BackupEngine:
                 local_path.name,
                 target.remote_storage_ids,
             )
+
+            # Record sync results in BackupStorageSync table
+            remote_path = f"{safe_name}/{local_path.name}"
+            async with async_session() as session:
+                for storage_id, success in results.items():
+                    sync_record = BackupStorageSync(
+                        backup_id=backup_id,
+                        storage_id=storage_id,
+                        remote_path=remote_path,
+                        synced_at=datetime.now(timezone.utc) if success else None,
+                        sync_status="completed" if success else "failed",
+                        error_message=None if success else "Upload failed",
+                    )
+                    session.add(sync_record)
+                await session.commit()
 
             succeeded = sum(1 for v in results.values() if v)
             failed = sum(1 for v in results.values() if not v)
