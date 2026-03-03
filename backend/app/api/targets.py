@@ -238,6 +238,7 @@ def _build_target_response(t: BackupTarget) -> TargetResponse:
         stop_container=t.stop_container,
         compression_enabled=t.compression_enabled,
         remote_storage_ids=t.remote_storage_ids or [],
+        delete_local_after_sync=t.delete_local_after_sync or False,
         created_at=_to_utc_isoformat(t.created_at) or "",
         updated_at=_to_utc_isoformat(t.updated_at) or "",
     )
