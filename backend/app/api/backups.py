@@ -1019,6 +1019,59 @@ def _validate_archive_path(file_path: str) -> str:
     return normalized
 
 
+async def _download_key_from_remote(
+    backup: Backup, resolved_archive: str
+) -> str | None:
+    """Try to download the .key sidecar from remote storage.
+
+    Returns the local path to the downloaded .key file, or None on failure.
+    The file is placed next to *resolved_archive* so that callers (and any
+    future local-path lookups) find it without extra work.
+    """
+    async with async_session() as session:
+        result = await session.execute(
+            select(BackupStorageSync).where(
+                BackupStorageSync.backup_id == backup.id,
+                BackupStorageSync.sync_status == "completed",
+            )
+        )
+        syncs = result.scalars().all()
+        if not syncs:
+            return None
+
+        archive_dir = os.path.dirname(resolved_archive)
+        archive_basename = os.path.basename(resolved_archive)
+        key_basename = archive_basename.replace(".enc", ".key")
+        key_local = os.path.join(archive_dir, key_basename)
+
+        for sync in syncs:
+            key_remote = sync.remote_path.replace(".enc", ".key")
+            backend = storage_manager.get_backend(sync.storage_id)
+            if not backend:
+                storage = await session.get(RemoteStorage, sync.storage_id)
+                if not storage or not storage.enabled:
+                    continue
+                config = _db_to_storage_config(storage)
+                backend = storage_manager.add_storage(config)
+
+            try:
+                success = await backend.download(key_remote, Path(key_local))
+                if success and os.path.exists(key_local):
+                    logger.info(
+                        "Downloaded .key sidecar from remote for backup %s",
+                        backup.id,
+                    )
+                    return key_local
+            except Exception as exc:
+                logger.debug(
+                    "Failed to download .key from storage %s for backup %s: %s",
+                    sync.storage_id,
+                    backup.id,
+                    exc,
+                )
+    return None
+
+
 async def _get_decrypted_archive_path(
     backup: Backup, private_key: str
 ) -> tuple[str, str, Path | None]:
@@ -1062,10 +1115,14 @@ async def _get_decrypted_archive_path(
         if os.path.exists(candidate):
             resolved_key = candidate
 
+    # 5. Download .key from remote storage as last resort
+    if not resolved_key:
+        resolved_key = await _download_key_from_remote(backup, resolved_archive)
+
     if not resolved_key:
         raise HTTPException(
             status_code=404,
-            detail="Encryption key file (.key) not found on disk.",
+            detail="Encryption key file (.key) not found on disk or remote storage.",
         )
 
     # Decrypt to temp file

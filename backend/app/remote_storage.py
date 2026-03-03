@@ -395,8 +395,6 @@ class SSHStorage(StorageBackend):
 class WebDAVStorage(StorageBackend):
     """WebDAV storage"""
 
-    # Chunk size for streaming uploads (5 MB)
-    UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024
     # Max retry attempts for uploads
     MAX_RETRIES = 3
 
@@ -413,16 +411,6 @@ class WebDAVStorage(StorageBackend):
         base = self.config.webdav_url.rstrip("/")
         path = f"{self.config.base_path}/{remote_path}".replace("//", "/")
         return f"{base}{path}"
-
-    @staticmethod
-    async def _file_sender(path: Path, chunk_size: int):
-        """Async generator that streams file in chunks to avoid loading into memory."""
-        async with aiofiles.open(path, "rb") as f:
-            while True:
-                chunk = await f.read(chunk_size)
-                if not chunk:
-                    break
-                yield chunk
 
     async def upload(self, local_path: Path, remote_path: str) -> bool:
         file_size = local_path.stat().st_size
@@ -444,42 +432,42 @@ class WebDAVStorage(StorageBackend):
 
                     url = self._get_url(remote_path)
 
-                    # Use a plain file object so aiohttp sends Content-Length
-                    # (not chunked transfer encoding). Hetzner Storage Box
-                    # nginx proxies reject chunked uploads with 413.
-                    fh = open(local_path, "rb")  # noqa: SIM115
-                    try:
-                        async with session.put(url, data=fh) as resp:
-                            if resp.status in (200, 201, 204):
-                                logger.info(
-                                    "WebDAV upload successful: %s (%.1f MB, attempt %d)",
-                                    remote_path,
-                                    file_size / (1024 * 1024),
-                                    attempt,
-                                )
-                                return True
-                            else:
-                                body = await resp.text()
-                                last_error = RuntimeError(
-                                    f"HTTP {resp.status}: {body[:200]}"
-                                )
-                                logger.warning(
-                                    "WebDAV upload HTTP %d for %s (attempt %d/%d): %s",
+                    # Read file into memory so aiohttp sends a known
+                    # Content-Length (never chunked transfer encoding).
+                    # Hetzner Storage Box nginx proxies reject chunked
+                    # uploads with 413.
+                    data = local_path.read_bytes()
+                    headers = {"Content-Length": str(len(data))}
+
+                    async with session.put(url, data=data, headers=headers) as resp:
+                        if resp.status in (200, 201, 204):
+                            logger.info(
+                                "WebDAV upload successful: %s (%.1f MB, attempt %d)",
+                                remote_path,
+                                file_size / (1024 * 1024),
+                                attempt,
+                            )
+                            return True
+                        else:
+                            body = await resp.text()
+                            last_error = RuntimeError(
+                                f"HTTP {resp.status}: {body[:200]}"
+                            )
+                            logger.warning(
+                                "WebDAV upload HTTP %d for %s (attempt %d/%d): %s",
+                                resp.status,
+                                remote_path,
+                                attempt,
+                                self.MAX_RETRIES,
+                                body[:200],
+                            )
+                            if resp.status in NON_RETRYABLE:
+                                logger.error(
+                                    "WebDAV upload permanently rejected (HTTP %d) for %s — not retrying",
                                     resp.status,
                                     remote_path,
-                                    attempt,
-                                    self.MAX_RETRIES,
-                                    body[:200],
                                 )
-                                if resp.status in NON_RETRYABLE:
-                                    logger.error(
-                                        "WebDAV upload permanently rejected (HTTP %d) for %s — not retrying",
-                                        resp.status,
-                                        remote_path,
-                                    )
-                                    return False
-                    finally:
-                        fh.close()
+                                return False
             except Exception as e:
                 last_error = e
                 logger.warning(
