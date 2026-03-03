@@ -212,14 +212,21 @@ export default function StepSummary({ data, schedules, storages, policies, isCre
         onEdit={onGoToStep ? () => onGoToStep(5) : undefined}
       >
         {selectedStorages.length > 0 ? (
-          <ul className="space-y-1">
-            {selectedStorages.map((storage) => (
-              <li key={storage.id} className="text-dark-300">
-                • {storage.name}{' '}
-                <span className="text-dark-500">({storage.storage_type})</span>
-              </li>
-            ))}
-          </ul>
+          <div className="space-y-2">
+            <ul className="space-y-1">
+              {selectedStorages.map((storage) => (
+                <li key={storage.id} className="text-dark-300">
+                  • {storage.name}{' '}
+                  <span className="text-dark-500">({storage.storage_type})</span>
+                </li>
+              ))}
+            </ul>
+            {data.deleteLocalAfterSync && (
+              <p className="text-amber-400 text-sm">
+                ⚠ Local files will be deleted after successful sync
+              </p>
+            )}
+          </div>
         ) : (
           <p className="text-dark-400">Local storage only</p>
         )}

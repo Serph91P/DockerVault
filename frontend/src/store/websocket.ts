@@ -28,6 +28,7 @@ export const useWebSocketStore = create<WebSocketStore>((set, get) => ({
 
   connect: () => {
     if (ws?.readyState === WebSocket.OPEN) return
+    if (typeof window === 'undefined' || !window.location) return
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.host
@@ -148,9 +149,18 @@ function handleMessage(
   }
 }
 
-// Auto-connect on import
+// Auto-connect on import (cancellable for test cleanup)
+let autoConnectTimer: ReturnType<typeof setTimeout> | null = null
 if (typeof window !== 'undefined') {
-  setTimeout(() => {
+  autoConnectTimer = setTimeout(() => {
     useWebSocketStore.getState().connect()
   }, 1000)
+}
+
+export function cleanupWebSocket() {
+  if (autoConnectTimer) {
+    clearTimeout(autoConnectTimer)
+    autoConnectTimer = null
+  }
+  useWebSocketStore.getState().disconnect()
 }
