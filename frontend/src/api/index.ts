@@ -116,6 +116,15 @@ export interface Backup {
   created_at: string
 }
 
+export interface BackupLogEntry {
+  id: number
+  level: 'debug' | 'info' | 'warning' | 'error'
+  step: string
+  message: string
+  details?: Record<string, unknown>
+  created_at: string
+}
+
 export interface RetentionPolicy {
   id: number
   name: string
@@ -232,6 +241,7 @@ export const backupsApi = {
   listFilesEncrypted: (id: number, privateKey: string) =>
     api.post(`/backups/${id}/files`, { private_key: privateKey }),
   retrySync: (id: number) => api.post(`/backups/${id}/retry-sync`),
+  getLogs: (id: number) => api.get<BackupLogEntry[]>(`/backups/${id}/logs`),
 }
 
 // Schedules API (NEW: CRUD for Schedule entities)
