@@ -22,6 +22,7 @@ from app.config import settings
 from app.credential_encryption import decrypt_value
 from app.database import (
     Backup,
+    BackupLog,
     BackupStatus,
     BackupStorageSync,
     BackupTarget,
@@ -885,6 +886,43 @@ async def delete_all_backups(
                 f"file(s) could not be deleted: {file_errors}"
             )
         return response
+
+
+class BackupLogEntry(BaseModel):
+    id: int
+    level: str
+    step: str
+    message: str
+    details: Optional[dict] = None
+    created_at: datetime
+
+
+@router.get("/{backup_id}/logs", response_model=List[BackupLogEntry])
+async def get_backup_logs(backup_id: int):
+    """Get structured log entries for a backup job."""
+    async with async_session() as session:
+        result = await session.execute(select(Backup).where(Backup.id == backup_id))
+        if not result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Backup not found")
+
+        result = await session.execute(
+            select(BackupLog)
+            .where(BackupLog.backup_id == backup_id)
+            .order_by(BackupLog.created_at.asc())
+        )
+        logs = result.scalars().all()
+
+        return [
+            BackupLogEntry(
+                id=log.id,
+                level=log.level.value,
+                step=log.step,
+                message=log.message,
+                details=log.details,
+                created_at=log.created_at,
+            )
+            for log in logs
+        ]
 
 
 @router.get("/{backup_id}/stats")

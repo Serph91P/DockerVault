@@ -24,11 +24,13 @@ from sqlalchemy import select, update
 from app.config import settings
 from app.database import (
     Backup,
+    BackupLog,
     BackupStatus,
     BackupStorageSync,
     BackupTarget,
     BackupType,
     EncryptionConfig,
+    LogLevel,
     async_session,
 )
 from app.docker_client import docker_client
@@ -234,6 +236,29 @@ class BackupEngine:
                 await callback(backup_id, progress, message)
             except Exception as e:
                 logger.error(f"Progress callback error: {e}")
+
+    async def _log(
+        self,
+        backup_id: int,
+        step: str,
+        message: str,
+        level: LogLevel = LogLevel.INFO,
+        details: Optional[Dict[str, Any]] = None,
+    ):
+        """Write a structured log entry for a backup job."""
+        try:
+            async with async_session() as session:
+                entry = BackupLog(
+                    backup_id=backup_id,
+                    level=level,
+                    step=step,
+                    message=message,
+                    details=details,
+                )
+                session.add(entry)
+                await session.commit()
+        except Exception as e:
+            logger.warning("Failed to write backup log entry: %s", e)
 
     async def validate_backup_prerequisites(
         self,
@@ -453,6 +478,13 @@ class BackupEngine:
                     validation_issues = await self.validate_backup_prerequisites(target)
                     if validation_issues:
                         error_msg = f"Validation failed: {'; '.join(validation_issues)}"
+                        await self._log(
+                            backup_id,
+                            "validation",
+                            error_msg,
+                            level=LogLevel.ERROR,
+                            details={"issues": validation_issues},
+                        )
                         logger.error(
                             f"Backup {backup_id} validation failed",
                             extra={
@@ -478,6 +510,12 @@ class BackupEngine:
                 backup.started_at = datetime.now(timezone.utc)
                 await session.commit()
 
+            await self._log(
+                backup_id,
+                "start",
+                f"Starting backup for target '{target.name}'",
+                details={"target_type": target.target_type, "target_id": target.id},
+            )
             await self._notify_progress(backup_id, 0, "Starting backup...")
 
         try:
@@ -519,6 +557,12 @@ class BackupEngine:
                     original_states[container_name] = state
 
                 # Stop containers in order
+                await self._log(
+                    backup_id,
+                    "stop_containers",
+                    f"Stopping {len(containers_to_stop)} container(s)",
+                    details={"containers": containers_to_stop},
+                )
                 await self._notify_progress(backup_id, 10, "Stopping containers...")
                 for i, container_name in enumerate(containers_to_stop):
                     if original_states.get(container_name) == "running":
@@ -530,10 +574,16 @@ class BackupEngine:
 
             # Run pre-backup hook
             if target.pre_backup_command:
+                await self._log(
+                    backup_id,
+                    "pre_hook",
+                    f"Running pre-backup hook: {target.pre_backup_command[:80]}",
+                )
                 await self._notify_progress(backup_id, 30, "Running pre-backup hook...")
                 await self._run_hook(target.pre_backup_command)
 
             # Perform the actual backup
+            await self._log(backup_id, "archive", "Creating backup archive...")
             await self._notify_progress(backup_id, 35, "Creating backup archive...")
 
             backup_path = await self._create_backup_archive(target, backup_id)
@@ -543,6 +593,12 @@ class BackupEngine:
             # Calculate file size and checksum
             file_size = os.path.getsize(backup_path)
             checksum = await self._calculate_checksum(backup_path)
+            await self._log(
+                backup_id,
+                "archive",
+                f"Archive created: {os.path.basename(backup_path)}",
+                details={"file_size": file_size, "checksum": checksum[:16]},
+            )
 
             # Encrypt backup if enabled
             encrypted = False
@@ -550,6 +606,7 @@ class BackupEngine:
 
             encryption_config = await self._get_encryption_config()
             if encryption_config and encryption_config.encryption_enabled:
+                await self._log(backup_id, "encrypt", "Encrypting backup...")
                 await self._notify_progress(backup_id, 82, "Encrypting backup...")
                 try:
                     result = await encrypt_backup(
@@ -561,8 +618,20 @@ class BackupEngine:
                     encrypted = True
                     # Recalculate size for encrypted file
                     file_size = os.path.getsize(backup_path)
+                    await self._log(
+                        backup_id,
+                        "encrypt",
+                        f"Backup encrypted ({file_size / (1024 * 1024):.1f} MB)",
+                        details={"encrypted_path": backup_path},
+                    )
                     logger.info(f"Backup encrypted: {backup_path}")
                 except EncryptionError as e:
+                    await self._log(
+                        backup_id,
+                        "encrypt",
+                        f"Encryption failed: {e}",
+                        level=LogLevel.ERROR,
+                    )
                     logger.error(f"Encryption failed: {e}")
                     # Continue with unencrypted backup
                     await self._notify_progress(
@@ -571,6 +640,11 @@ class BackupEngine:
 
             # Run post-backup hook
             if target.post_backup_command:
+                await self._log(
+                    backup_id,
+                    "post_hook",
+                    f"Running post-backup hook: {target.post_backup_command[:80]}",
+                )
                 await self._notify_progress(
                     backup_id, 85, "Running post-backup hook..."
                 )
@@ -578,6 +652,11 @@ class BackupEngine:
 
             # Restart containers in start order (respecting dependencies)
             if containers_to_stop:
+                await self._log(
+                    backup_id,
+                    "restart",
+                    f"Restarting {len(containers_to_stop)} container(s)",
+                )
                 await self._notify_progress(backup_id, 90, "Starting containers...")
                 restart_order = (
                     start_order if start_order else reversed(containers_to_stop)
@@ -609,6 +688,12 @@ class BackupEngine:
 
             # Sync to remote storage if configured
             if target.remote_storage_ids:
+                await self._log(
+                    backup_id,
+                    "upload",
+                    f"Syncing to {len(target.remote_storage_ids)} remote storage(s)",
+                    details={"storage_ids": target.remote_storage_ids},
+                )
                 await self._sync_to_remote(
                     backup_id, target, backup_path, encrypted, encryption_key_path
                 )
@@ -617,6 +702,16 @@ class BackupEngine:
             duration = time.time() - start_time
             self.metrics.record_backup(target_id, duration, file_size, True)
 
+            await self._log(
+                backup_id,
+                "complete",
+                f"Backup completed ({file_size / (1024 * 1024):.1f} MB in {duration_seconds}s)",
+                details={
+                    "file_size": file_size,
+                    "duration_seconds": duration_seconds,
+                    "encrypted": encrypted,
+                },
+            )
             await self._notify_progress(backup_id, 100, "Backup completed!")
             logger.info(
                 f"Backup {backup_id} completed successfully",
@@ -632,6 +727,13 @@ class BackupEngine:
             return True
 
         except Exception as e:
+            await self._log(
+                backup_id,
+                "error",
+                f"Backup failed: {e}",
+                level=LogLevel.ERROR,
+                details={"error_type": type(e).__name__, "error": str(e)},
+            )
             logger.error(
                 f"Backup {backup_id} failed: {e}",
                 extra={
@@ -800,6 +902,13 @@ class BackupEngine:
             failed = sum(1 for v in results.values() if not v)
 
             if failed:
+                await self._log(
+                    backup_id,
+                    "upload",
+                    f"Remote sync: {succeeded}/{succeeded + failed} succeeded",
+                    level=LogLevel.WARNING,
+                    details={"results": {str(k): v for k, v in results.items()}},
+                )
                 logger.warning(
                     "Remote sync partially failed for backup %s: %s/%s succeeded",
                     backup_id,
@@ -812,6 +921,11 @@ class BackupEngine:
                     f"Remote sync: {succeeded}/{succeeded + failed} succeeded",
                 )
             else:
+                await self._log(
+                    backup_id,
+                    "upload",
+                    f"Synced to {succeeded} remote storage(s)",
+                )
                 logger.info(
                     "Backup %s synced to %s remote storage(s)",
                     backup_id,
@@ -829,6 +943,12 @@ class BackupEngine:
                 )
 
         except Exception as e:
+            await self._log(
+                backup_id,
+                "upload",
+                f"Remote sync error: {e}",
+                level=LogLevel.ERROR,
+            )
             logger.error(
                 "Remote storage sync failed for backup %s: %s",
                 backup_id,
