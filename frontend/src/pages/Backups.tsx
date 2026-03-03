@@ -20,6 +20,7 @@ import {
   Cloud,
   CloudOff,
   HardDrive,
+  RefreshCw,
 } from 'lucide-react'
 import {
   backupsApi,
@@ -55,6 +56,7 @@ function BackupRow({
 }) {
   const backupProgress = useWebSocketStore((state) => state.backupProgress)
   const progress = backupProgress.get(backup.id)
+  const queryClient = useQueryClient()
 
   const restoreMutation = useMutation({
     mutationFn: () => backupsApi.restore(backup.id),
@@ -62,6 +64,20 @@ function BackupRow({
       toast.success('Restore started')
     },
     onError: () => toast.error('Failed to restore backup'),
+  })
+
+  const retrySyncMutation = useMutation({
+    mutationFn: () => backupsApi.retrySync(backup.id),
+    onSuccess: (res) => {
+      const data = res.data as { succeeded: number; failed: number }
+      if (data.failed === 0) {
+        toast.success(`Remote sync succeeded (${data.succeeded} storage(s))`)
+      } else {
+        toast.error(`Retry: ${data.succeeded} ok, ${data.failed} failed`)
+      }
+      queryClient.invalidateQueries({ queryKey: ['backups'] })
+    },
+    onError: () => toast.error('Failed to retry remote sync'),
   })
 
   const getStatusIcon = () => {
@@ -113,12 +129,27 @@ function BackupRow({
             </span>
           )}
           {backup.remote_sync_details?.some((s) => s.status === 'failed') && (
-            <span
-              title="Remote sync failed"
-              className="text-red-400"
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                retrySyncMutation.mutate()
+              }}
+              disabled={retrySyncMutation.isPending}
+              title={
+                backup.remote_sync_details
+                  ?.filter((s) => s.status === 'failed')
+                  .map((s) => `${s.storage_name}: failed`)
+                  .join('\n') || 'Retry remote sync'
+              }
+              className="flex items-center gap-0.5 text-red-400 hover:text-orange-400 transition-colors"
             >
               <CloudOff className="w-3.5 h-3.5" />
-            </span>
+              {retrySyncMutation.isPending ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <RefreshCw className="w-3 h-3" />
+              )}
+            </button>
           )}
         </div>
       </div>

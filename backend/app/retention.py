@@ -121,7 +121,11 @@ class RetentionManager:
         yearly: Dict[str, Backup] = {}  # YYYY -> newest backup
 
         for backup in backups:
-            if backup.created_at < max_age:
+            # SQLite stores datetimes without tzinfo; treat them as UTC
+            created_at = backup.created_at
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            if created_at < max_age:
                 continue
 
             created = backup.created_at

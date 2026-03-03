@@ -423,6 +423,126 @@ async def get_backup(backup_id: int):
         )
 
 
+@router.post("/{backup_id}/retry-sync")
+async def retry_remote_sync(backup_id: int):
+    """Retry remote sync for a backup that has failed storage uploads.
+
+    Re-runs the upload for every BackupStorageSync record with status 'failed'.
+    Returns updated sync details.
+    """
+    async with async_session() as session:
+        result = await session.execute(select(Backup).where(Backup.id == backup_id))
+        backup = result.scalar_one_or_none()
+        if not backup:
+            raise HTTPException(status_code=404, detail="Backup not found")
+        if backup.status != BackupStatus.COMPLETED:
+            raise HTTPException(
+                status_code=400,
+                detail="Only completed backups can be re-synced",
+            )
+
+        resolved = _resolve_backup_path(backup.file_path)
+        if not resolved:
+            raise HTTPException(
+                status_code=400,
+                detail="Local backup file not available for re-sync",
+            )
+
+        # Get target for path sanitisation
+        target_result = await session.execute(
+            select(BackupTarget).where(BackupTarget.id == backup.target_id)
+        )
+        target = target_result.scalar_one_or_none()
+        if not target:
+            raise HTTPException(status_code=404, detail="Backup target not found")
+
+        # Find failed sync records
+        failed_result = await session.execute(
+            select(BackupStorageSync).where(
+                BackupStorageSync.backup_id == backup_id,
+                BackupStorageSync.sync_status == "failed",
+            )
+        )
+        failed_syncs = failed_result.scalars().all()
+        if not failed_syncs:
+            raise HTTPException(
+                status_code=400,
+                detail="No failed sync records to retry",
+            )
+
+    # Re-upload to each failed storage
+    local_path = Path(resolved)
+    safe_name = backup_engine._sanitize_path_name(target.name)
+    retried: dict[int, bool] = {}
+
+    for sync in failed_syncs:
+        backend = storage_manager.get_backend(sync.storage_id)
+        if not backend:
+            async with async_session() as session:
+                storage = await session.get(RemoteStorage, sync.storage_id)
+                if not storage or not storage.enabled:
+                    retried[sync.storage_id] = False
+                    continue
+                config = _db_to_storage_config(storage)
+                backend = storage_manager.add_storage(config)
+
+        remote_path = sync.remote_path or f"{safe_name}/{local_path.name}"
+        try:
+            success = await backend.upload(local_path, remote_path)
+        except Exception as e:
+            logger.warning(
+                "Retry sync failed for backup %s -> storage %s: %s",
+                backup_id,
+                sync.storage_id,
+                e,
+            )
+            success = False
+
+        retried[sync.storage_id] = success
+
+        # Update sync record
+        async with async_session() as session:
+            result = await session.execute(
+                select(BackupStorageSync).where(
+                    BackupStorageSync.backup_id == backup_id,
+                    BackupStorageSync.storage_id == sync.storage_id,
+                )
+            )
+            record = result.scalar_one_or_none()
+            if record:
+                if success:
+                    record.sync_status = "completed"
+                    record.synced_at = datetime.now(timezone.utc)
+                    record.error_message = None
+                else:
+                    record.error_message = "Retry upload failed"
+                await session.commit()
+
+        # Also upload .key sidecar for encrypted backups on success
+        if success and backup.encrypted and backup.encryption_key_path:
+            key_path = Path(backup.encryption_key_path)
+            if key_path.exists():
+                key_remote = remote_path.replace(".enc", ".key")
+                try:
+                    await backend.upload(key_path, key_remote)
+                except Exception:
+                    pass
+
+    succeeded = sum(1 for v in retried.values() if v)
+    failed = sum(1 for v in retried.values() if not v)
+
+    # Return updated sync details
+    async with async_session() as session:
+        sync_map = await _get_sync_details(session, [backup_id])
+
+    return {
+        "message": f"Retry complete: {succeeded} succeeded, {failed} failed",
+        "succeeded": succeeded,
+        "failed": failed,
+        "sync_details": sync_map.get(backup_id, []),
+    }
+
+
 @router.post("", response_model=BackupResponse)
 @limiter.limit("10/minute")
 async def create_backup(request: Request, request_body: CreateBackupRequest):

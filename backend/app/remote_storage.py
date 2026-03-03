@@ -395,12 +395,17 @@ class SSHStorage(StorageBackend):
 class WebDAVStorage(StorageBackend):
     """WebDAV storage"""
 
-    def _get_session(self) -> aiohttp.ClientSession:
+    # Chunk size for streaming uploads (5 MB)
+    UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024
+    # Max retry attempts for uploads
+    MAX_RETRIES = 3
+
+    def _get_session(self, timeout_seconds: int = 300) -> aiohttp.ClientSession:
         """Create aiohttp session with auth"""
         auth = None
         if self.config.username and self.config.password:
             auth = aiohttp.BasicAuth(self.config.username, self.config.password)
-        timeout = aiohttp.ClientTimeout(total=300, connect=30)
+        timeout = aiohttp.ClientTimeout(total=timeout_seconds, connect=30)
         return aiohttp.ClientSession(auth=auth, timeout=timeout)
 
     def _get_url(self, remote_path: str) -> str:
@@ -409,28 +414,78 @@ class WebDAVStorage(StorageBackend):
         path = f"{self.config.base_path}/{remote_path}".replace("//", "/")
         return f"{base}{path}"
 
+    @staticmethod
+    async def _file_sender(path: Path, chunk_size: int):
+        """Async generator that streams file in chunks to avoid loading into memory."""
+        async with aiofiles.open(path, "rb") as f:
+            while True:
+                chunk = await f.read(chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+
     async def upload(self, local_path: Path, remote_path: str) -> bool:
-        try:
-            async with self._get_session() as session:
-                # Create parent directories (MKCOL)
-                parent_path = os.path.dirname(remote_path)
-                if parent_path:
-                    await self._create_dirs(session, parent_path)
+        file_size = local_path.stat().st_size
+        # Scale timeout: minimum 300s, or 60s per 100 MB
+        dynamic_timeout = max(300, int(file_size / (100 * 1024 * 1024)) * 60 + 120)
 
-                url = self._get_url(remote_path)
-                async with aiofiles.open(local_path, "rb") as f:
-                    data = await f.read()
+        last_error: Exception | None = None
+        for attempt in range(1, self.MAX_RETRIES + 1):
+            try:
+                async with self._get_session(
+                    timeout_seconds=dynamic_timeout
+                ) as session:
+                    parent_path = os.path.dirname(remote_path)
+                    if parent_path:
+                        await self._create_dirs(session, parent_path)
 
-                async with session.put(url, data=data) as resp:
-                    if resp.status in (200, 201, 204):
-                        logger.info(f"WebDAV upload successful: {remote_path}")
-                        return True
-                    else:
-                        logger.error(f"WebDAV upload failed: {resp.status}")
-                        return False
-        except Exception as e:
-            logger.error(f"WebDAV upload error: {e}")
-            return False
+                    url = self._get_url(remote_path)
+                    data = self._file_sender(local_path, self.UPLOAD_CHUNK_SIZE)
+
+                    async with session.put(url, data=data) as resp:
+                        if resp.status in (200, 201, 204):
+                            logger.info(
+                                "WebDAV upload successful: %s (%.1f MB, attempt %d)",
+                                remote_path,
+                                file_size / (1024 * 1024),
+                                attempt,
+                            )
+                            return True
+                        else:
+                            body = await resp.text()
+                            last_error = RuntimeError(
+                                f"HTTP {resp.status}: {body[:200]}"
+                            )
+                            logger.warning(
+                                "WebDAV upload HTTP %d for %s (attempt %d/%d): %s",
+                                resp.status,
+                                remote_path,
+                                attempt,
+                                self.MAX_RETRIES,
+                                body[:200],
+                            )
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "WebDAV upload error for %s (attempt %d/%d): %s",
+                    remote_path,
+                    attempt,
+                    self.MAX_RETRIES,
+                    e,
+                )
+
+            if attempt < self.MAX_RETRIES:
+                wait = 2**attempt
+                logger.info("Retrying WebDAV upload in %ds...", wait)
+                await asyncio.sleep(wait)
+
+        logger.error(
+            "WebDAV upload failed after %d attempts for %s: %s",
+            self.MAX_RETRIES,
+            remote_path,
+            last_error,
+        )
+        return False
 
     async def _create_dirs(self, session: aiohttp.ClientSession, path: str):
         """Create directories recursively via MKCOL"""
@@ -447,12 +502,15 @@ class WebDAVStorage(StorageBackend):
         try:
             local_path.parent.mkdir(parents=True, exist_ok=True)
 
-            async with self._get_session() as session:
+            async with self._get_session(timeout_seconds=600) as session:
                 url = self._get_url(remote_path)
                 async with session.get(url) as resp:
                     if resp.status == 200:
                         async with aiofiles.open(local_path, "wb") as f:
-                            await f.write(await resp.read())
+                            async for chunk in resp.content.iter_chunked(
+                                self.UPLOAD_CHUNK_SIZE
+                            ):
+                                await f.write(chunk)
                         return True
                     return False
         except Exception as e:
