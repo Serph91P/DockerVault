@@ -970,7 +970,7 @@ async def _get_decrypted_archive_path(
             detail="Backup archive file not found on disk.",
         )
 
-    # Find the encryption key file
+    # Find the encryption key file – try multiple strategies
     resolved_key: str | None = None
 
     # 1. Try the DB-stored key path
@@ -980,12 +980,23 @@ async def _get_decrypted_archive_path(
     # 2. Derive .key path from the resolved archive path (.enc -> .key)
     if not resolved_key:
         potential_key = resolved_archive.replace(".enc", ".key")
-        resolved_key = _resolve_backup_path(potential_key)
+        if os.path.exists(potential_key):
+            resolved_key = potential_key
 
     # 3. Derive from the original DB path (handles legacy naming)
     if not resolved_key:
         potential_key = backup.file_path.replace(".enc", ".key")
         resolved_key = _resolve_backup_path(potential_key)
+
+    # 4. Look for .key in the same directory as the resolved archive
+    #    (covers temp dirs from remote downloads)
+    if not resolved_key:
+        archive_dir = os.path.dirname(resolved_archive)
+        archive_basename = os.path.basename(resolved_archive)
+        key_basename = archive_basename.replace(".enc", ".key")
+        candidate = os.path.join(archive_dir, key_basename)
+        if os.path.exists(candidate):
+            resolved_key = candidate
 
     if not resolved_key:
         raise HTTPException(
