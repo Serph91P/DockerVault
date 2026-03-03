@@ -24,6 +24,7 @@ import {
   HardDrive,
   RefreshCw,
   MoreVertical,
+  FileText,
 } from 'lucide-react'
 import {
   backupsApi,
@@ -47,6 +48,7 @@ import EmptyState from '../components/EmptyState'
 import LoadingSkeleton from '../components/LoadingSkeleton'
 import StorageBrowser from '../components/StorageBrowser'
 import RestoreWizard from '../components/RestoreWizard'
+import BackupLogViewer from '../components/BackupLogViewer'
 
 // Backup Row Component with dropdown actions menu
 function BackupRow({
@@ -65,6 +67,7 @@ function BackupRow({
   const queryClient = useQueryClient()
   const [menuOpen, setMenuOpen] = useState(false)
   const [showRestore, setShowRestore] = useState(false)
+  const [showLogs, setShowLogs] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
@@ -292,6 +295,17 @@ function BackupRow({
                 {retrySyncMutation.isPending ? 'Syncing...' : 'Sync to remote'}
               </button>
             )}
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                setShowLogs(true)
+                setMenuOpen(false)
+              }}
+              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-dark-200 hover:bg-dark-600 transition-colors"
+            >
+              <FileText className="w-4 h-4" />
+              View Logs
+            </button>
             <div className="border-t border-dark-600 my-1" />
             <button
               onClick={(e) => {
@@ -311,6 +325,10 @@ function BackupRow({
 
       {showRestore && (
         <RestoreWizard backupId={backup.id} onClose={() => setShowRestore(false)} />
+      )}
+
+      {showLogs && (
+        <BackupLogViewer backupId={backup.id} onClose={() => setShowLogs(false)} />
       )}
     </div>
   )

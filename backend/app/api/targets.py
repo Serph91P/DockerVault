@@ -86,6 +86,7 @@ class TargetCreate(BaseModel):
     compression_enabled: bool = True
     # Remote storage sync
     remote_storage_ids: List[int] = []
+    delete_local_after_sync: bool = False
 
     @field_validator("schedule_cron")
     @classmethod
@@ -120,6 +121,7 @@ class TargetUpdate(BaseModel):
     compression_enabled: Optional[bool] = None
     # Remote storage sync
     remote_storage_ids: Optional[List[int]] = None
+    delete_local_after_sync: Optional[bool] = None
 
     @field_validator("schedule_cron")
     @classmethod
@@ -182,6 +184,7 @@ class TargetResponse(BaseModel):
     compression_enabled: bool
     # Remote storage sync
     remote_storage_ids: List[int]
+    delete_local_after_sync: bool
     created_at: str
     updated_at: str
 

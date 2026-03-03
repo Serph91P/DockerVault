@@ -31,6 +31,13 @@ class BackupType(enum.Enum):
     INCREMENTAL = "incremental"
 
 
+class LogLevel(enum.Enum):
+    DEBUG = "debug"
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+
+
 def _utcnow():
     return datetime.now(timezone.utc)
 
@@ -108,6 +115,9 @@ class BackupTarget(Base):
     # Remote storage sync
     sync_to_remote = Column(Boolean, default=False)
     remote_storage_ids = Column(JSON, default=list)  # List of storage IDs to sync to
+    delete_local_after_sync = Column(
+        Boolean, default=False
+    )  # Delete local files after successful remote sync
 
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
@@ -151,6 +161,31 @@ class Backup(Base):
     backup_metadata = Column(JSON, default=dict)
 
     created_at = Column(DateTime, default=_utcnow)
+
+
+class BackupLog(Base):
+    """Structured log entry for a backup job step."""
+
+    __tablename__ = "backup_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    backup_id = Column(
+        Integer,
+        ForeignKey("backups.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    level = Column(SQLEnum(LogLevel), default=LogLevel.INFO)
+    step = Column(
+        String(50), nullable=False
+    )  # e.g. start, stop_containers, archive, encrypt, upload, restart, cleanup, complete, error
+    message = Column(Text, nullable=False)
+    details = Column(
+        JSON, nullable=True
+    )  # Extra structured data (container names, file sizes, etc.)
+    created_at = Column(DateTime, default=_utcnow)
+
+    backup = relationship("Backup", backref="logs")
 
 
 class Schedule(Base):

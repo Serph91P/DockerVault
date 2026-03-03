@@ -1,5 +1,5 @@
 import { useRef, useEffect } from 'react'
-import { Cloud, HardDrive, Plus, Check, ExternalLink } from 'lucide-react'
+import { Cloud, HardDrive, Plus, Check, ExternalLink, Trash2 } from 'lucide-react'
 import { WizardData } from './index'
 import { RemoteStorage } from '../../api'
 
@@ -59,7 +59,11 @@ export default function StepStorage({ data, updateData, storages, isLoadingStora
     const newIds = data.remoteStorageIds.includes(storageId)
       ? data.remoteStorageIds.filter((id) => id !== storageId)
       : [...data.remoteStorageIds, storageId]
-    updateData({ remoteStorageIds: newIds })
+    const updates: Partial<WizardData> = { remoteStorageIds: newIds }
+    if (newIds.length === 0) {
+      updates.deleteLocalAfterSync = false
+    }
+    updateData(updates)
   }
 
   return (
@@ -186,6 +190,43 @@ export default function StepStorage({ data, updateData, storages, isLoadingStora
             </div>
           </div>
         </div>
+      )}
+
+      {/* Delete local after sync option */}
+      {data.remoteStorageIds.length > 0 && (
+        <button
+          type="button"
+          onClick={() => updateData({ deleteLocalAfterSync: !data.deleteLocalAfterSync })}
+          className={`w-full flex items-center gap-4 p-4 rounded-xl border transition-all text-left ${
+            data.deleteLocalAfterSync
+              ? 'border-amber-500/50 bg-amber-500/10'
+              : 'border-dark-700 hover:border-dark-600 bg-dark-800'
+          }`}
+        >
+          <div className={`p-2 rounded-lg ${data.deleteLocalAfterSync ? 'bg-amber-500/20' : 'bg-dark-700'}`}>
+            <Trash2 className={`w-5 h-5 ${data.deleteLocalAfterSync ? 'text-amber-400' : 'text-dark-400'}`} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h4 className={`font-medium ${data.deleteLocalAfterSync ? 'text-amber-300' : 'text-dark-200'}`}>
+              Delete Local After Sync
+            </h4>
+            <p className="text-sm text-dark-400 mt-0.5">
+              Remove local backup files after successful upload to free disk space.
+              Backups can still be browsed and restored from remote storage.
+            </p>
+          </div>
+          <div
+            className={`w-11 h-6 rounded-full transition-colors relative flex-shrink-0 ${
+              data.deleteLocalAfterSync ? 'bg-amber-500' : 'bg-dark-600'
+            }`}
+          >
+            <div
+              className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform ${
+                data.deleteLocalAfterSync ? 'translate-x-5' : 'translate-x-0.5'
+              }`}
+            />
+          </div>
+        </button>
       )}
     </div>
   )

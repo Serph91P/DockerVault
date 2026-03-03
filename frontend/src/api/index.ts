@@ -83,6 +83,7 @@ export interface BackupTarget {
   compression_enabled: boolean
   // Remote storage sync
   remote_storage_ids: number[]
+  delete_local_after_sync: boolean
   created_at: string
   updated_at: string
 }
@@ -135,6 +136,15 @@ export interface RestoreInfo {
   }
   containers_to_stop: string[]
   available_volumes: string[]
+}
+
+export interface BackupLogEntry {
+  id: number
+  level: 'debug' | 'info' | 'warning' | 'error'
+  step: string
+  message: string
+  details?: Record<string, unknown>
+  created_at: string
 }
 
 export interface RetentionPolicy {
@@ -258,6 +268,7 @@ export const backupsApi = {
   listFilesEncrypted: (id: number, privateKey: string) =>
     api.post(`/backups/${id}/files`, { private_key: privateKey }),
   retrySync: (id: number) => api.post(`/backups/${id}/retry-sync`),
+  getLogs: (id: number) => api.get<BackupLogEntry[]>(`/backups/${id}/logs`),
 }
 
 // Schedules API (NEW: CRUD for Schedule entities)
