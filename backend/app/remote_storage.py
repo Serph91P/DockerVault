@@ -443,41 +443,43 @@ class WebDAVStorage(StorageBackend):
                         await self._create_dirs(session, parent_path)
 
                     url = self._get_url(remote_path)
-                    data = self._file_sender(local_path, self.UPLOAD_CHUNK_SIZE)
 
-                    # Send Content-Length header so WebDAV servers (e.g. Hetzner Storage Box)
-                    # don't reject the request with 413 due to chunked transfer encoding.
-                    headers = {"Content-Length": str(file_size)}
-
-                    async with session.put(url, data=data, headers=headers) as resp:
-                        if resp.status in (200, 201, 204):
-                            logger.info(
-                                "WebDAV upload successful: %s (%.1f MB, attempt %d)",
-                                remote_path,
-                                file_size / (1024 * 1024),
-                                attempt,
-                            )
-                            return True
-                        else:
-                            body = await resp.text()
-                            last_error = RuntimeError(
-                                f"HTTP {resp.status}: {body[:200]}"
-                            )
-                            logger.warning(
-                                "WebDAV upload HTTP %d for %s (attempt %d/%d): %s",
-                                resp.status,
-                                remote_path,
-                                attempt,
-                                self.MAX_RETRIES,
-                                body[:200],
-                            )
-                            if resp.status in NON_RETRYABLE:
-                                logger.error(
-                                    "WebDAV upload permanently rejected (HTTP %d) for %s — not retrying",
+                    # Use a plain file object so aiohttp sends Content-Length
+                    # (not chunked transfer encoding). Hetzner Storage Box
+                    # nginx proxies reject chunked uploads with 413.
+                    fh = open(local_path, "rb")  # noqa: SIM115
+                    try:
+                        async with session.put(url, data=fh) as resp:
+                            if resp.status in (200, 201, 204):
+                                logger.info(
+                                    "WebDAV upload successful: %s (%.1f MB, attempt %d)",
+                                    remote_path,
+                                    file_size / (1024 * 1024),
+                                    attempt,
+                                )
+                                return True
+                            else:
+                                body = await resp.text()
+                                last_error = RuntimeError(
+                                    f"HTTP {resp.status}: {body[:200]}"
+                                )
+                                logger.warning(
+                                    "WebDAV upload HTTP %d for %s (attempt %d/%d): %s",
                                     resp.status,
                                     remote_path,
+                                    attempt,
+                                    self.MAX_RETRIES,
+                                    body[:200],
                                 )
-                                return False
+                                if resp.status in NON_RETRYABLE:
+                                    logger.error(
+                                        "WebDAV upload permanently rejected (HTTP %d) for %s — not retrying",
+                                        resp.status,
+                                        remote_path,
+                                    )
+                                    return False
+                    finally:
+                        fh.close()
             except Exception as e:
                 last_error = e
                 logger.warning(
