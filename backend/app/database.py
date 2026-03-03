@@ -470,6 +470,14 @@ async def run_migrations():
                 )
             )
 
+        if "delete_local_after_sync" not in targets_columns:
+            await conn.execute(
+                text(
+                    "ALTER TABLE backup_targets ADD COLUMN "
+                    "delete_local_after_sync BOOLEAN DEFAULT 0"
+                )
+            )
+
         # Data migration: fix rows where remote_storage_ids is set but
         # sync_to_remote is still False (can happen on older databases).
         await conn.execute(
