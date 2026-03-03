@@ -116,6 +116,27 @@ export interface Backup {
   created_at: string
 }
 
+export interface RestoreInfo {
+  backup: {
+    id: number
+    file_size_human?: string
+    encrypted: boolean
+    created_at: string
+    completed_at?: string
+    local_available: boolean
+  }
+  target: {
+    id: number | null
+    name: string
+    target_type: string | null
+    volume_name?: string
+    host_path?: string
+    container_name?: string
+  }
+  containers_to_stop: string[]
+  available_volumes: string[]
+}
+
 export interface RetentionPolicy {
   id: number
   name: string
@@ -210,8 +231,13 @@ export const backupsApi = {
   get: (id: number) => api.get<Backup>(`/backups/${id}`),
   create: (target_id: number, backup_type = 'full') => 
     api.post<Backup>('/backups', { target_id, backup_type }),
-  restore: (id: number, target_path?: string) => 
-    api.post(`/backups/${id}/restore`, { target_path }),
+  restore: (id: number, opts?: { target_path?: string; private_key?: string }) =>
+    api.post(`/backups/${id}/restore`, {
+      target_path: opts?.target_path,
+      private_key: opts?.private_key,
+    }),
+  getRestoreInfo: (id: number) =>
+    api.get<RestoreInfo>(`/backups/${id}/restore-info`),
   delete: (id: number, opts?: { deleteLocal?: boolean; deleteRemote?: boolean }) => 
     api.delete(`/backups/${id}`, { 
       params: { 
