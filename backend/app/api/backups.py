@@ -661,6 +661,71 @@ async def create_backup(request: Request, request_body: CreateBackupRequest):
     )
 
 
+@router.get("/{backup_id}/restore-info")
+async def get_restore_info(backup_id: int):
+    """Return metadata needed by the Restore Wizard.
+
+    Includes backup details, original target info, whether the backup is
+    encrypted, and for volume backups a list of available Docker volumes that
+    can serve as an alternative restore destination.
+    """
+    from app.docker_client import docker_client
+
+    async with async_session() as session:
+        result = await session.execute(select(Backup).where(Backup.id == backup_id))
+        backup = result.scalar_one_or_none()
+        if not backup:
+            raise HTTPException(status_code=404, detail="Backup not found")
+        if backup.status != BackupStatus.COMPLETED:
+            raise HTTPException(
+                status_code=400, detail="Only completed backups can be restored"
+            )
+
+        result = await session.execute(
+            select(BackupTarget).where(BackupTarget.id == backup.target_id)
+        )
+        target = result.scalar_one_or_none()
+
+    local_available = _resolve_backup_path(backup.file_path) is not None
+
+    # For volume backups list available volumes as alternative destinations
+    available_volumes: list[str] = []
+    if target and target.target_type == "volume":
+        try:
+            volumes = await docker_client.list_volumes()
+            available_volumes = sorted(v.name for v in volumes)
+        except Exception:
+            pass
+
+    containers_to_stop: list[str] = []
+    if target:
+        if target.stop_container and target.container_name:
+            containers_to_stop.append(target.container_name)
+        if target.dependencies:
+            containers_to_stop.extend(target.dependencies)
+
+    return {
+        "backup": {
+            "id": backup.id,
+            "file_size_human": format_size(backup.file_size),
+            "encrypted": backup.encrypted or False,
+            "created_at": _to_utc_isoformat(backup.created_at),
+            "completed_at": _to_utc_isoformat(backup.completed_at),
+            "local_available": local_available,
+        },
+        "target": {
+            "id": target.id if target else None,
+            "name": target.name if target else "Unknown",
+            "target_type": target.target_type if target else None,
+            "volume_name": target.volume_name if target else None,
+            "host_path": target.host_path if target else None,
+            "container_name": target.container_name if target else None,
+        },
+        "containers_to_stop": containers_to_stop,
+        "available_volumes": available_volumes,
+    }
+
+
 @router.post("/{backup_id}/restore")
 @limiter.limit("10/minute")
 async def restore_backup(

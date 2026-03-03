@@ -47,6 +47,7 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import EmptyState from '../components/EmptyState'
 import LoadingSkeleton from '../components/LoadingSkeleton'
 import StorageBrowser from '../components/StorageBrowser'
+import RestoreWizard from '../components/RestoreWizard'
 import BackupLogViewer from '../components/BackupLogViewer'
 
 // Backup Row Component with dropdown actions menu
@@ -65,6 +66,7 @@ function BackupRow({
   const progress = backupProgress.get(backup.id)
   const queryClient = useQueryClient()
   const [menuOpen, setMenuOpen] = useState(false)
+  const [showRestore, setShowRestore] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
@@ -96,15 +98,6 @@ function BackupRow({
       window.removeEventListener('scroll', handleScroll, true)
     }
   }, [menuOpen])
-
-  const restoreMutation = useMutation({
-    mutationFn: () => backupsApi.restore(backup.id),
-    onSuccess: () => {
-      toast.success('Restore started')
-      setMenuOpen(false)
-    },
-    onError: () => toast.error('Failed to restore backup'),
-  })
 
   const retrySyncMutation = useMutation({
     mutationFn: () => backupsApi.retrySync(backup.id),
@@ -266,13 +259,13 @@ function BackupRow({
                 <button
                   onClick={(e) => {
                     e.stopPropagation()
-                    restoreMutation.mutate()
+                    setShowRestore(true)
+                    setMenuOpen(false)
                   }}
-                  disabled={restoreMutation.isPending}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-dark-200 hover:bg-dark-600 transition-colors disabled:opacity-50"
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-dark-200 hover:bg-dark-600 transition-colors"
                 >
                   <RotateCcw className="w-4 h-4" />
-                  {restoreMutation.isPending ? 'Restoring...' : 'Restore'}
+                  Restore
                 </button>
               </>
             )}
@@ -329,6 +322,10 @@ function BackupRow({
           document.body
         )}
       </div>
+
+      {showRestore && (
+        <RestoreWizard backupId={backup.id} onClose={() => setShowRestore(false)} />
+      )}
 
       {showLogs && (
         <BackupLogViewer backupId={backup.id} onClose={() => setShowLogs(false)} />
