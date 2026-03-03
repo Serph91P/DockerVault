@@ -148,8 +148,9 @@ async def get_komodo_settings():
         try:
             _validate_komodo_url(api_url)
             async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(
-                    f"{api_url.rstrip('/')}/api/version",
+                response = await client.post(
+                    f"{api_url.rstrip('/')}/read",
+                    json={"type": "GetVersion"},
                     headers={
                         "x-api-key": api_key,
                         "x-api-secret": api_secret,
@@ -220,8 +221,9 @@ async def test_komodo_connection():
     try:
         _validate_komodo_url(api_url)
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(
-                f"{api_url.rstrip('/')}/api/version",
+            response = await client.post(
+                f"{api_url.rstrip('/')}/read",
+                json={"type": "GetVersion"},
                 headers={
                     "x-api-key": api_key,
                     "x-api-secret": api_secret,
