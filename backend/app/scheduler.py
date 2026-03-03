@@ -232,7 +232,7 @@ class BackupScheduler:
         self, cron_expr: str, base_time: Optional[datetime] = None
     ) -> datetime:
         """Get next run time for a cron expression."""
-        base = base_time or datetime.now()
+        base = base_time or datetime.now(timezone.utc)
         cron = croniter(cron_expr, base)
         return cron.get_next(datetime)
 

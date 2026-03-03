@@ -231,6 +231,7 @@ export const backupsApi = {
   listFiles: (id: number) => api.get(`/backups/${id}/files`),
   listFilesEncrypted: (id: number, privateKey: string) =>
     api.post(`/backups/${id}/files`, { private_key: privateKey }),
+  retrySync: (id: number) => api.post(`/backups/${id}/retry-sync`),
 }
 
 // Schedules API (NEW: CRUD for Schedule entities)
