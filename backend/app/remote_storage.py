@@ -397,6 +397,8 @@ class WebDAVStorage(StorageBackend):
 
     # Max retry attempts for uploads
     MAX_RETRIES = 3
+    # Chunk size for streaming downloads (64 KB)
+    DOWNLOAD_CHUNK_SIZE = 64 * 1024
 
     def _get_session(self, timeout_seconds: int = 300) -> aiohttp.ClientSession:
         """Create aiohttp session with auth"""
@@ -512,7 +514,7 @@ class WebDAVStorage(StorageBackend):
                     if resp.status == 200:
                         async with aiofiles.open(local_path, "wb") as f:
                             async for chunk in resp.content.iter_chunked(
-                                self.UPLOAD_CHUNK_SIZE
+                                self.DOWNLOAD_CHUNK_SIZE
                             ):
                                 await f.write(chunk)
                         return True
