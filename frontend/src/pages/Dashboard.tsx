@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Archive, Container, HardDrive, Clock, AlertCircle, CheckCircle, AlertTriangle, ShieldCheck, Plus, ArrowRight, Cloud, Shield } from 'lucide-react'
+import { Archive, Container, HardDrive, Clock, AlertCircle, CheckCircle, AlertTriangle, ShieldCheck, Plus, ArrowRight, Cloud, Shield, Layers, FolderOpen } from 'lucide-react'
 import { dockerApi, backupsApi, targetsApi, schedulesApi, settingsApi } from '../api'
 import { formatDistanceToNowStrict } from 'date-fns'
 import { Link } from 'react-router-dom'
@@ -63,6 +63,11 @@ export default function Dashboard() {
     queryFn: () => schedulesApi.list().then((r) => r.data),
   })
 
+  const { data: stacks } = useQuery({
+    queryKey: ['stacks'],
+    queryFn: () => dockerApi.listStacks().then((r) => r.data),
+  })
+
   // DA5: Fetch system info for disk usage
   const { data: systemInfo } = useQuery({
     queryKey: ['system-info'],
@@ -87,6 +92,15 @@ export default function Dashboard() {
     if (t.selected_volumes) t.selected_volumes.forEach((v) => backedUpVolumeNames.add(v))
   })
   const backedUpVolumes = volumes?.filter((v) => backedUpVolumeNames.has(v.name)).length ?? 0
+
+  // Stacks backed up (target_type === 'stack')
+  const backedUpStackNames = new Set(
+    targets?.filter((t) => t.target_type === 'stack' && t.enabled).map((t) => t.stack_name) ?? []
+  )
+  const backedUpStacks = stacks?.filter((s) => backedUpStackNames.has(s.name)).length ?? 0
+
+  // Path targets
+  const pathTargets = targets?.filter((t) => t.target_type === 'path' && t.enabled).length ?? 0
 
   // DA4: Detect recent failures from the latest backups
   const recentFailures = backups?.filter((b) => b.status === 'failed') ?? []
@@ -175,22 +189,36 @@ export default function Dashboard() {
       )}
 
       {/* Stats Grid - DA1: Actionable Insights */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         <StatCard
-          title="Containers Backed Up"
+          title="Containers"
           value={`${backedUpContainers}/${containers?.length ?? 0}`}
           icon={Container}
           color="bg-blue-500"
         />
         <StatCard
-          title="Volumes Backed Up"
+          title="Volumes"
           value={`${backedUpVolumes}/${volumes?.length ?? 0}`}
           icon={HardDrive}
           color="bg-purple-500"
         />
         <StatCard
-          title="Backup Targets"
-          value={`${activeTargets}${targets ? `/${targets.length}` : ''} active`}
+          title="Stacks"
+          value={`${backedUpStacks}/${stacks?.length ?? 0}`}
+          icon={Layers}
+          color="bg-cyan-500"
+        />
+        {pathTargets > 0 && (
+          <StatCard
+            title="Host Paths"
+            value={pathTargets}
+            icon={FolderOpen}
+            color="bg-amber-500"
+          />
+        )}
+        <StatCard
+          title="Targets"
+          value={`${activeTargets}${targets ? `/${targets.length}` : ''}`}
           icon={Archive}
           color="bg-green-500"
         />

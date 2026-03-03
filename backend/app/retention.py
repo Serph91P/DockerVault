@@ -82,10 +82,18 @@ class RetentionManager:
             deleted_count = 0
             for backup in to_delete:
                 try:
-                    # Delete file
+                    # Delete backup file and encryption key sidecar
                     if backup.file_path and os.path.exists(backup.file_path):
                         os.remove(backup.file_path)
                         logger.info(f"Deleted backup file: {backup.file_path}")
+                    # Clean up .key sidecar for encrypted backups
+                    if backup.encryption_key_path and os.path.exists(
+                        backup.encryption_key_path
+                    ):
+                        os.remove(backup.encryption_key_path)
+                        logger.info(
+                            f"Deleted encryption key: {backup.encryption_key_path}"
+                        )
 
                     # Delete record
                     await session.execute(delete(Backup).where(Backup.id == backup.id))

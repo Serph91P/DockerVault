@@ -38,13 +38,11 @@ describe('Dashboard Page', () => {
     render(<Dashboard />, { wrapper: createWrapper() })
     
     await waitFor(() => {
-      // Container stat card
-      expect(screen.getByText('Containers Backed Up')).toBeInTheDocument()
-      // Volumes stat card
-      expect(screen.getByText('Volumes Backed Up')).toBeInTheDocument()
-      // Backup Targets stat card
-      expect(screen.getByText('Backup Targets')).toBeInTheDocument()
-      // Scheduled stat card
+      // Stat cards (some labels may appear in Status Summary too, so use getAllByText)
+      expect(screen.getAllByText('Containers').length).toBeGreaterThanOrEqual(1)
+      expect(screen.getAllByText('Volumes').length).toBeGreaterThanOrEqual(1)
+      expect(screen.getByText('Stacks')).toBeInTheDocument()
+      expect(screen.getByText('Targets')).toBeInTheDocument()
       expect(screen.getByText('Scheduled')).toBeInTheDocument()
     })
   })

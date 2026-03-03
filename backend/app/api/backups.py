@@ -962,33 +962,47 @@ async def _get_decrypted_archive_path(
 
     The caller is responsible for cleaning up temp_path if not None.
     """
-    archive_path = backup.file_path
-    key_path = backup.encryption_key_path
+    # Resolve archive path on disk first (handles legacy/sanitized path differences)
+    resolved_archive = _resolve_backup_path(backup.file_path)
+    if not resolved_archive:
+        raise HTTPException(
+            status_code=404,
+            detail="Backup archive file not found on disk.",
+        )
 
-    if not key_path:
-        # Try to find key file next to the backup
-        potential_key = archive_path.replace(".enc", ".key")
-        resolved_key = _resolve_backup_path(potential_key)
-        if resolved_key:
-            key_path = resolved_key
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="Encryption key file (.key) not found for this backup.",
-            )
+    # Find the encryption key file – try multiple strategies
+    resolved_key: str | None = None
 
-    resolved_key = _resolve_backup_path(key_path)
+    # 1. Try the DB-stored key path
+    if backup.encryption_key_path:
+        resolved_key = _resolve_backup_path(backup.encryption_key_path)
+
+    # 2. Derive .key path from the resolved archive path (.enc -> .key)
     if not resolved_key:
-        # Fallback: look for .key next to the resolved archive file
-        # (e.g. when the backup was downloaded from remote to a temp dir)
-        potential_key = archive_path.replace(".enc", ".key")
+        potential_key = resolved_archive.replace(".enc", ".key")
+        if os.path.exists(potential_key):
+            resolved_key = potential_key
+
+    # 3. Derive from the original DB path (handles legacy naming)
+    if not resolved_key:
+        potential_key = backup.file_path.replace(".enc", ".key")
         resolved_key = _resolve_backup_path(potential_key)
-        if not resolved_key:
-            raise HTTPException(
-                status_code=404,
-                detail="Encryption key file not found on disk.",
-            )
-    key_path = resolved_key
+
+    # 4. Look for .key in the same directory as the resolved archive
+    #    (covers temp dirs from remote downloads)
+    if not resolved_key:
+        archive_dir = os.path.dirname(resolved_archive)
+        archive_basename = os.path.basename(resolved_archive)
+        key_basename = archive_basename.replace(".enc", ".key")
+        candidate = os.path.join(archive_dir, key_basename)
+        if os.path.exists(candidate):
+            resolved_key = candidate
+
+    if not resolved_key:
+        raise HTTPException(
+            status_code=404,
+            detail="Encryption key file (.key) not found on disk.",
+        )
 
     # Decrypt to temp file
     temp_fd, temp_name = tempfile.mkstemp(suffix=".tar.gz")
@@ -997,8 +1011,8 @@ async def _get_decrypted_archive_path(
 
     try:
         await decrypt_backup(
-            encrypted_path=Path(archive_path),
-            key_path=Path(key_path),
+            encrypted_path=Path(resolved_archive),
+            key_path=Path(resolved_key),
             private_key=private_key,
             output_path=temp_path,
         )

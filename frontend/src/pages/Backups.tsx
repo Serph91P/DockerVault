@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Archive,
@@ -19,8 +19,10 @@ import {
   ArrowUpDown,
   Cloud,
   CloudOff,
+  CloudCog,
   HardDrive,
   RefreshCw,
+  MoreVertical,
 } from 'lucide-react'
 import {
   backupsApi,
@@ -44,24 +46,41 @@ import EmptyState from '../components/EmptyState'
 import LoadingSkeleton from '../components/LoadingSkeleton'
 import StorageBrowser from '../components/StorageBrowser'
 
-// Backup Row Component with browser option
+// Backup Row Component with dropdown actions menu
 function BackupRow({
   backup,
+  target,
   onBrowse,
   onDelete,
 }: {
   backup: Backup
+  target: BackupTarget
   onBrowse: (backup: Backup) => void
   onDelete: (backup: Backup) => void
 }) {
   const backupProgress = useWebSocketStore((state) => state.backupProgress)
   const progress = backupProgress.get(backup.id)
   const queryClient = useQueryClient()
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  // Close menu on outside click
+  useEffect(() => {
+    if (!menuOpen) return
+    const handleClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [menuOpen])
 
   const restoreMutation = useMutation({
     mutationFn: () => backupsApi.restore(backup.id),
     onSuccess: () => {
       toast.success('Restore started')
+      setMenuOpen(false)
     },
     onError: () => toast.error('Failed to restore backup'),
   })
@@ -76,6 +95,7 @@ function BackupRow({
         toast.error(`Retry: ${data.succeeded} ok, ${data.failed} failed`)
       }
       queryClient.invalidateQueries({ queryKey: ['backups'] })
+      setMenuOpen(false)
     },
     onError: () => toast.error('Failed to retry remote sync'),
   })
@@ -95,6 +115,61 @@ function BackupRow({
     }
   }
 
+  // Determine remote sync status for display
+  const remoteConfigured = target.remote_storage_ids && target.remote_storage_ids.length > 0
+  const syncDetails = backup.remote_sync_details || []
+  const syncCompleted = syncDetails.filter((s) => s.status === 'completed')
+  const syncFailed = syncDetails.filter((s) => s.status === 'failed')
+  const syncPending = syncDetails.filter((s) => s.status === 'pending')
+  const allSynced = remoteConfigured && syncCompleted.length > 0 && syncFailed.length === 0 && syncPending.length === 0
+  const hasSyncFailures = syncFailed.length > 0
+  const hasSyncPending = syncPending.length > 0
+  // Remote configured on target but no sync records yet for this backup
+  const syncNotStarted = remoteConfigured && syncDetails.length === 0 && backup.status === 'completed'
+
+  const getSyncStatusIndicator = () => {
+    if (!remoteConfigured) return null
+
+    if (allSynced) {
+      return (
+        <span
+          title={syncCompleted.map((s) => `✓ ${s.storage_name}`).join('\n')}
+          className="flex items-center gap-0.5 text-green-500"
+        >
+          <Cloud className="w-3.5 h-3.5" />
+        </span>
+      )
+    }
+
+    if (hasSyncFailures) {
+      const failedNames = syncFailed.map((s) => s.storage_name).join(', ')
+      const completedCount = syncCompleted.length
+      const totalCount = syncDetails.length
+      return (
+        <span
+          title={`Sync failed: ${failedNames}\n${completedCount}/${totalCount} succeeded`}
+          className="flex items-center gap-0.5 text-red-400"
+        >
+          <CloudOff className="w-3.5 h-3.5" />
+          <span className="text-[10px] font-medium">{syncFailed.length}</span>
+        </span>
+      )
+    }
+
+    if (hasSyncPending || syncNotStarted) {
+      return (
+        <span
+          title="Remote sync pending"
+          className="flex items-center gap-0.5 text-yellow-500"
+        >
+          <CloudCog className="w-3.5 h-3.5 animate-pulse" />
+        </span>
+      )
+    }
+
+    return null
+  }
+
   return (
     <div className="flex items-center justify-between py-3 px-4 bg-dark-750 rounded-lg hover:bg-dark-700 transition-colors">
       <div className="flex items-center gap-3">
@@ -109,48 +184,17 @@ function BackupRow({
           </p>
         </div>
         {/* Storage location indicators */}
-        <div className="flex items-center gap-1 ml-2">
-          {backup.local_available && (
-            <span title="Available locally" className="text-dark-400">
+        <div className="flex items-center gap-1.5 ml-2">
+          {backup.local_available ? (
+            <span title="Available locally" className="text-green-500">
               <HardDrive className="w-3.5 h-3.5" />
             </span>
-          )}
-          {backup.remote_synced && (
-            <span
-              title={
-                backup.remote_sync_details
-                  ?.filter((s) => s.status === 'completed')
-                  .map((s) => s.storage_name)
-                  .join(', ') || 'Synced to remote'
-              }
-              className="text-green-500"
-            >
-              <Cloud className="w-3.5 h-3.5" />
+          ) : backup.status === 'completed' ? (
+            <span title="Not available locally (remote only)" className="text-dark-500">
+              <HardDrive className="w-3.5 h-3.5" />
             </span>
-          )}
-          {backup.remote_sync_details?.some((s) => s.status === 'failed') && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                retrySyncMutation.mutate()
-              }}
-              disabled={retrySyncMutation.isPending}
-              title={
-                backup.remote_sync_details
-                  ?.filter((s) => s.status === 'failed')
-                  .map((s) => `${s.storage_name}: failed`)
-                  .join('\n') || 'Retry remote sync'
-              }
-              className="flex items-center gap-0.5 text-red-400 hover:text-orange-400 transition-colors"
-            >
-              <CloudOff className="w-3.5 h-3.5" />
-              {retrySyncMutation.isPending ? (
-                <Loader2 className="w-3 h-3 animate-spin" />
-              ) : (
-                <RefreshCw className="w-3 h-3" />
-              )}
-            </button>
-          )}
+          ) : null}
+          {getSyncStatusIndicator()}
         </div>
       </div>
 
@@ -166,33 +210,86 @@ function BackupRow({
         </div>
       )}
 
-      <div className="flex items-center gap-1">
-        {backup.status === 'completed' && (
-          <>
-            <button
-              onClick={() => onBrowse(backup)}
-              className="p-1.5 text-dark-400 hover:text-primary-400 hover:bg-dark-600 rounded transition-colors"
-              title="Browse files"
-            >
-              <FolderOpen className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => restoreMutation.mutate()}
-              disabled={restoreMutation.isPending}
-              className="p-1.5 text-dark-400 hover:text-green-400 hover:bg-dark-600 rounded transition-colors"
-              title="Restore backup"
-            >
-              <RotateCcw className="w-4 h-4" />
-            </button>
-          </>
-        )}
+      {/* Action menu */}
+      <div className="relative" ref={menuRef}>
         <button
-          onClick={() => onDelete(backup)}
-          className="p-1.5 text-dark-400 hover:text-red-400 hover:bg-dark-600 rounded transition-colors"
-          title="Delete backup"
+          onClick={(e) => {
+            e.stopPropagation()
+            setMenuOpen(!menuOpen)
+          }}
+          className="p-1.5 text-dark-400 hover:text-dark-200 hover:bg-dark-600 rounded transition-colors"
+          title="Actions"
         >
-          <Trash2 className="w-4 h-4" />
+          <MoreVertical className="w-4 h-4" />
         </button>
+        {menuOpen && (
+          <div className="absolute right-0 top-full mt-1 w-44 bg-dark-700 border border-dark-600 rounded-lg shadow-xl z-20 py-1">
+            {backup.status === 'completed' && (
+              <>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onBrowse(backup)
+                    setMenuOpen(false)
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-dark-200 hover:bg-dark-600 transition-colors"
+                >
+                  <FolderOpen className="w-4 h-4" />
+                  Browse files
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    restoreMutation.mutate()
+                  }}
+                  disabled={restoreMutation.isPending}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-dark-200 hover:bg-dark-600 transition-colors disabled:opacity-50"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  {restoreMutation.isPending ? 'Restoring...' : 'Restore'}
+                </button>
+              </>
+            )}
+            {hasSyncFailures && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  retrySyncMutation.mutate()
+                }}
+                disabled={retrySyncMutation.isPending}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-orange-400 hover:bg-dark-600 transition-colors disabled:opacity-50"
+              >
+                <RefreshCw className={clsx('w-4 h-4', retrySyncMutation.isPending && 'animate-spin')} />
+                {retrySyncMutation.isPending ? 'Retrying...' : 'Retry sync'}
+              </button>
+            )}
+            {syncNotStarted && backup.status === 'completed' && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  retrySyncMutation.mutate()
+                }}
+                disabled={retrySyncMutation.isPending}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-yellow-400 hover:bg-dark-600 transition-colors disabled:opacity-50"
+              >
+                <Cloud className={clsx('w-4 h-4', retrySyncMutation.isPending && 'animate-spin')} />
+                {retrySyncMutation.isPending ? 'Syncing...' : 'Sync to remote'}
+              </button>
+            )}
+            <div className="border-t border-dark-600 my-1" />
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                onDelete(backup)
+                setMenuOpen(false)
+              }}
+              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-400 hover:bg-dark-600 transition-colors"
+            >
+              <Trash2 className="w-4 h-4" />
+              Delete
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -432,7 +529,7 @@ function TargetBackupCard({
             {backups.length > 0 ? (
               <div className="space-y-2 max-h-64 overflow-y-auto">
                 {backups.slice(0, 10).map((backup) => (
-                  <BackupRow key={backup.id} backup={backup} onBrowse={onBrowseBackup} onDelete={onDeleteBackup} />
+                  <BackupRow key={backup.id} backup={backup} target={target} onBrowse={onBrowseBackup} onDelete={onDeleteBackup} />
                 ))}
                 {backups.length > 10 && (
                   <p className="text-xs text-dark-500 text-center py-2">
