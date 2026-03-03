@@ -4,12 +4,9 @@ Tests for docker_client module.
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from app.docker_client import ContainerInfo, DockerClientWrapper, VolumeInfo
 
 
-@pytest.mark.asyncio
 class TestDockerClientWrapper:
     """Test Docker client wrapper functionality."""
 

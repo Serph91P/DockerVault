@@ -157,7 +157,17 @@ async def _ensure_backup_locally(
                         key_local = temp_dir / filename.replace(".enc", ".key")
                         try:
                             await backend.download(key_remote, key_local)
+                            # Validate that the downloaded key file is non-empty
+                            if key_local.exists() and key_local.stat().st_size == 0:
+                                logger.warning(
+                                    "Downloaded .key sidecar is empty for backup %s, removing",
+                                    backup.id,
+                                )
+                                key_local.unlink(missing_ok=True)
                         except Exception:
+                            # Clean up potentially empty/partial file from failed download
+                            if isinstance(key_local, Path) and key_local.exists():
+                                key_local.unlink(missing_ok=True)
                             logger.debug(
                                 "No .key sidecar found on remote for backup %s",
                                 backup.id,
@@ -1228,6 +1238,23 @@ async def _get_decrypted_archive_path(
             detail="Encryption key file (.key) not found on disk or remote storage.",
         )
 
+    # Validate that the resolved key file is non-empty
+    try:
+        key_size = os.path.getsize(resolved_key)
+    except OSError:
+        key_size = 0
+    if key_size == 0:
+        logger.error(
+            "Encryption key file is empty for backup %s: %s",
+            backup.id,
+            resolved_key,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Encryption key file (.key) is empty or corrupted. "
+            "The backup may need to be re-encrypted or the key file restored from a remote storage.",
+        )
+
     # Decrypt to temp file
     temp_fd, temp_name = tempfile.mkstemp(suffix=".tar.gz")
     os.close(temp_fd)
@@ -1243,10 +1270,12 @@ async def _get_decrypted_archive_path(
     except DecryptionError as e:
         logger.error("Backup decryption failed for backup %s: %s", backup.id, e)
         temp_path.unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=400,
-            detail="Decryption failed. Is the private key correct?",
-        )
+        error_msg = str(e)
+        if "empty" in error_msg.lower() or "corrupted" in error_msg.lower():
+            detail = f"Decryption failed: {error_msg}"
+        else:
+            detail = "Decryption failed. Is the private key correct?"
+        raise HTTPException(status_code=400, detail=detail)
 
     decrypted_path = str(temp_path)
     mode = _get_tar_mode(decrypted_path)

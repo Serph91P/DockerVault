@@ -187,6 +187,11 @@ async def decrypt_dek(encrypted_dek: bytes, private_key: str) -> bytes:
     if not _check_age_installed():
         raise DecryptionError("age not installed")
 
+    if not encrypted_dek or not encrypted_dek.strip():
+        raise DecryptionError(
+            "Encrypted DEK is empty. The .key file may be missing or corrupted."
+        )
+
     # Strip whitespace from key (clipboard/textarea may add extra chars)
     private_key = private_key.strip()
 
@@ -208,6 +213,7 @@ async def decrypt_dek(encrypted_dek: bytes, private_key: str) -> bytes:
         process = await asyncio.create_subprocess_exec(
             "age",
             "-d",
+            "-a",
             "-i",
             key_file,
             stdin=asyncio.subprocess.PIPE,
@@ -405,6 +411,9 @@ async def decrypt_backup(
     # Read encrypted DEK
     async with aiofiles.open(key_path, "rb") as f:
         encrypted_dek = await f.read()
+
+    if not encrypted_dek or not encrypted_dek.strip():
+        raise DecryptionError(f"Encryption key file is empty or corrupted: {key_path}")
 
     # Decrypt DEK
     dek = await decrypt_dek(encrypted_dek, private_key)
