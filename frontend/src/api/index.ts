@@ -83,6 +83,7 @@ export interface BackupTarget {
   compression_enabled: boolean
   // Remote storage sync
   remote_storage_ids: number[]
+  delete_local_after_sync: boolean
   created_at: string
   updated_at: string
 }

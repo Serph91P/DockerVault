@@ -48,6 +48,7 @@ export interface WizardData {
 
   // Step 5: Storage
   remoteStorageIds: number[]
+  deleteLocalAfterSync: boolean
 
   // Step 6: Retention
   retentionPolicyId: number | null
@@ -82,6 +83,7 @@ const initialData: WizardData = {
   scheduleId: null,
   newSchedule: null,
   remoteStorageIds: [],
+  deleteLocalAfterSync: false,
   retentionPolicyId: null,
   newRetentionPolicy: null,
   compression: 'gzip',
@@ -167,6 +169,7 @@ function targetToWizardData(target: import('../../api').BackupTarget): WizardDat
     scheduleId: target.schedule_id || null,
     newSchedule: null,
     remoteStorageIds: target.remote_storage_ids || [],
+    deleteLocalAfterSync: target.delete_local_after_sync || false,
     retentionPolicyId: target.retention_policy_id || null,
     newRetentionPolicy: null,
     compression: target.compression_enabled ? 'gzip' : 'none',
@@ -494,6 +497,7 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
         post_backup_command: data.postCommand || undefined,
         retention_policy_id: retentionPolicyId || undefined,
         remote_storage_ids: data.remoteStorageIds,
+        delete_local_after_sync: data.deleteLocalAfterSync,
       }
 
       if (isEditing) {

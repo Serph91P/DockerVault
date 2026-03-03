@@ -821,6 +821,13 @@ class BackupEngine:
                     backup_id, 97, f"Synced to {succeeded} remote storage(s)"
                 )
 
+            # Delete local files after successful sync if configured
+            all_succeeded = all(results.values()) and len(results) > 0
+            if all_succeeded and getattr(target, "delete_local_after_sync", False):
+                await self._delete_local_after_sync(
+                    backup_id, backup_path, encryption_key_path
+                )
+
         except Exception as e:
             logger.error(
                 "Remote storage sync failed for backup %s: %s",
@@ -829,6 +836,47 @@ class BackupEngine:
                 exc_info=True,
             )
             await self._notify_progress(backup_id, 97, f"Remote sync failed: {e}")
+
+    async def _delete_local_after_sync(
+        self,
+        backup_id: int,
+        backup_path: str,
+        encryption_key_path: str | None,
+    ) -> None:
+        """Delete local backup files after all remote syncs succeeded."""
+        try:
+            local_file = Path(backup_path)
+            if local_file.exists():
+                local_file.unlink()
+                logger.info(
+                    "Deleted local backup file after remote sync: %s", backup_path
+                )
+
+            if encryption_key_path:
+                key_file = Path(encryption_key_path)
+                if key_file.exists():
+                    key_file.unlink()
+                    logger.info(
+                        "Deleted local .key file after remote sync: %s",
+                        encryption_key_path,
+                    )
+
+            # Clean up empty parent directory
+            parent = local_file.parent
+            if parent.exists() and not any(parent.iterdir()):
+                parent.rmdir()
+
+            await self._notify_progress(
+                backup_id,
+                98,
+                "Local files deleted (remote-only backup)",
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to delete local files after sync for backup %s: %s",
+                backup_id,
+                e,
+            )
 
     @staticmethod
     def _sanitize_path_name(name: str) -> str:

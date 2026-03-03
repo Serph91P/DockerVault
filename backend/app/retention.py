@@ -226,11 +226,18 @@ class RetentionManager:
             return {"deleted": 0, "freed_bytes": 0}
 
         async with async_session() as session:
-            # Get all known backup file paths
+            # Get all known backup file paths AND encryption key paths
             result = await session.execute(
                 select(Backup.file_path).where(Backup.file_path.isnot(None))
             )
             known_paths = set(row[0] for row in result.fetchall())
+
+            key_result = await session.execute(
+                select(Backup.encryption_key_path).where(
+                    Backup.encryption_key_path.isnot(None)
+                )
+            )
+            known_paths.update(row[0] for row in key_result.fetchall())
 
         deleted = 0
         freed_bytes = 0

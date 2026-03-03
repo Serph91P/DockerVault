@@ -108,6 +108,9 @@ class BackupTarget(Base):
     # Remote storage sync
     sync_to_remote = Column(Boolean, default=False)
     remote_storage_ids = Column(JSON, default=list)  # List of storage IDs to sync to
+    delete_local_after_sync = Column(
+        Boolean, default=False
+    )  # Delete local files after successful remote sync
 
     created_at = Column(DateTime, default=_utcnow)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
