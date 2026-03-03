@@ -59,7 +59,7 @@ export default function BackupLogViewer({ backupId, onClose }: Props) {
           setLogs(res.data)
           setError(null)
         }
-      } catch (err) {
+      } catch {
         if (!cancelled) setError('Failed to load logs')
       } finally {
         if (!cancelled) setLoading(false)
