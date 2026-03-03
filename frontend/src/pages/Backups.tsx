@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Archive,
@@ -63,17 +64,34 @@ function BackupRow({
   const queryClient = useQueryClient()
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
 
-  // Close menu on outside click
+  // Position dropdown via portal when opened
+  useEffect(() => {
+    if (!menuOpen || !btnRef.current) return
+    const rect = btnRef.current.getBoundingClientRect()
+    setMenuPos({ top: rect.bottom + 4, left: rect.right - 176 })
+  }, [menuOpen])
+
+  // Close menu on outside click or scroll
   useEffect(() => {
     if (!menuOpen) return
     const handleClick = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+      if (
+        menuRef.current && !menuRef.current.contains(e.target as Node) &&
+        btnRef.current && !btnRef.current.contains(e.target as Node)
+      ) {
         setMenuOpen(false)
       }
     }
+    const handleScroll = () => setMenuOpen(false)
     document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
+    window.addEventListener('scroll', handleScroll, true)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      window.removeEventListener('scroll', handleScroll, true)
+    }
   }, [menuOpen])
 
   const restoreMutation = useMutation({
@@ -211,8 +229,9 @@ function BackupRow({
       )}
 
       {/* Action menu */}
-      <div className="relative" ref={menuRef}>
+      <div className="relative">
         <button
+          ref={btnRef}
           onClick={(e) => {
             e.stopPropagation()
             setMenuOpen(!menuOpen)
@@ -222,8 +241,12 @@ function BackupRow({
         >
           <MoreVertical className="w-4 h-4" />
         </button>
-        {menuOpen && (
-          <div className="absolute right-0 top-full mt-1 w-44 bg-dark-700 border border-dark-600 rounded-lg shadow-xl z-20 py-1">
+        {menuOpen && createPortal(
+          <div
+            ref={menuRef}
+            className="fixed w-44 bg-dark-700 border border-dark-600 rounded-lg shadow-xl z-50 py-1"
+            style={{ top: menuPos.top, left: menuPos.left }}
+          >
             {backup.status === 'completed' && (
               <>
                 <button
@@ -288,7 +311,8 @@ function BackupRow({
               <Trash2 className="w-4 h-4" />
               Delete
             </button>
-          </div>
+          </div>,
+          document.body
         )}
       </div>
     </div>
