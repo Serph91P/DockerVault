@@ -11,7 +11,6 @@ from app.database import BackupTarget
 from app.scheduler import BackupScheduler
 
 
-@pytest.mark.asyncio
 class TestBackupScheduler:
     """Test backup scheduler functionality."""
 
@@ -412,7 +411,6 @@ class TestBackupScheduler:
         await scheduler._run_scheduled_backup(1)
 
 
-@pytest.mark.asyncio
 class TestSchedulerEdgeCases:
     """Test scheduler edge cases."""
 

@@ -2,9 +2,8 @@
 Tests for database module.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
-import pytest
 from sqlalchemy import select
 
 from app.database import (
@@ -17,7 +16,6 @@ from app.database import (
 )
 
 
-@pytest.mark.asyncio
 class TestDatabaseModels:
     """Test database models and relationships."""
 
@@ -210,12 +208,12 @@ class TestDatabaseModels:
 
         # Update status to running
         backup.status = BackupStatus.RUNNING
-        backup.started_at = datetime.utcnow()
+        backup.started_at = datetime.now(timezone.utc)
         await db_session.commit()
 
         # Update status to completed
         backup.status = BackupStatus.COMPLETED
-        backup.completed_at = datetime.utcnow()
+        backup.completed_at = datetime.now(timezone.utc)
         backup.file_size = 2048
         backup.checksum = "def456"
         await db_session.commit()

@@ -13,7 +13,6 @@ from app.backup_engine import BackupEngine, BackupMetrics
 from app.database import Backup, BackupStatus, BackupTarget, BackupType
 
 
-@pytest.mark.asyncio
 class TestBackupEngine:
     """Test backup engine functionality."""
 
@@ -265,7 +264,6 @@ class TestBackupEngine:
         )
 
 
-@pytest.mark.asyncio
 class TestBackupMetrics:
     """Test BackupMetrics functionality."""
 
@@ -402,7 +400,6 @@ class TestBackupMetrics:
         assert len(metrics.target_sizes[1]) == 100
 
 
-@pytest.mark.asyncio
 class TestTarSecurityValidation:
     """Test tar archive security validation."""
 
@@ -473,7 +470,6 @@ class TestTarSecurityValidation:
         assert (extract_dir / "data" / "file.txt").exists()
 
 
-@pytest.mark.asyncio
 class TestBackupConcurrency:
     """Test backup concurrency functionality."""
 
