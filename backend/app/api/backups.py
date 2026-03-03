@@ -463,11 +463,26 @@ async def retry_remote_sync(backup_id: int):
                 BackupStorageSync.sync_status == "failed",
             )
         )
-        failed_syncs = failed_result.scalars().all()
-        if not failed_syncs:
+        failed_syncs = list(failed_result.scalars().all())
+
+        # Also find storage IDs that have no sync record at all
+        # (remote was configured after backup, or initial sync never ran)
+        missing_storage_ids: list[int] = []
+        if target.remote_storage_ids:
+            existing_result = await session.execute(
+                select(BackupStorageSync.storage_id).where(
+                    BackupStorageSync.backup_id == backup_id
+                )
+            )
+            existing_ids = {row[0] for row in existing_result}
+            missing_storage_ids = [
+                sid for sid in target.remote_storage_ids if sid not in existing_ids
+            ]
+
+        if not failed_syncs and not missing_storage_ids:
             raise HTTPException(
                 status_code=400,
-                detail="No failed sync records to retry",
+                detail="No failed or missing sync records to retry",
             )
 
     # Re-upload to each failed storage
@@ -517,6 +532,55 @@ async def retry_remote_sync(backup_id: int):
                 else:
                     record.error_message = "Retry upload failed"
                 await session.commit()
+
+        # Also upload .key sidecar for encrypted backups on success
+        if success and backup.encrypted and backup.encryption_key_path:
+            key_path = Path(backup.encryption_key_path)
+            if key_path.exists():
+                key_remote = remote_path.replace(".enc", ".key")
+                try:
+                    await backend.upload(key_path, key_remote)
+                except Exception:
+                    pass
+
+    # Handle storages with no sync record yet (remote configured after backup)
+    for storage_id in missing_storage_ids:
+        backend = storage_manager.get_backend(storage_id)
+        if not backend:
+            async with async_session() as session:
+                storage = await session.get(RemoteStorage, storage_id)
+                if not storage or not storage.enabled:
+                    retried[storage_id] = False
+                    continue
+                config = _db_to_storage_config(storage)
+                backend = storage_manager.add_storage(config)
+
+        remote_path = f"{safe_name}/{local_path.name}"
+        try:
+            success = await backend.upload(local_path, remote_path)
+        except Exception as e:
+            logger.warning(
+                "Initial sync failed for backup %s -> storage %s: %s",
+                backup_id,
+                storage_id,
+                e,
+            )
+            success = False
+
+        retried[storage_id] = success
+
+        # Create new sync record
+        async with async_session() as session:
+            sync_record = BackupStorageSync(
+                backup_id=backup_id,
+                storage_id=storage_id,
+                remote_path=remote_path,
+                synced_at=datetime.now(timezone.utc) if success else None,
+                sync_status="completed" if success else "failed",
+                error_message=None if success else "Upload failed",
+            )
+            session.add(sync_record)
+            await session.commit()
 
         # Also upload .key sidecar for encrypted backups on success
         if success and backup.encrypted and backup.encryption_key_path:
