@@ -445,7 +445,11 @@ class WebDAVStorage(StorageBackend):
                     url = self._get_url(remote_path)
                     data = self._file_sender(local_path, self.UPLOAD_CHUNK_SIZE)
 
-                    async with session.put(url, data=data) as resp:
+                    # Send Content-Length header so WebDAV servers (e.g. Hetzner Storage Box)
+                    # don't reject the request with 413 due to chunked transfer encoding.
+                    headers = {"Content-Length": str(file_size)}
+
+                    async with session.put(url, data=data, headers=headers) as resp:
                         if resp.status in (200, 201, 204):
                             logger.info(
                                 "WebDAV upload successful: %s (%.1f MB, attempt %d)",
