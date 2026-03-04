@@ -1170,12 +1170,27 @@ async def _download_key_from_remote(
             try:
                 success = await backend.download(key_remote, Path(key_local))
                 if success and os.path.exists(key_local):
+                    # Validate the downloaded key is non-empty
+                    if os.path.getsize(key_local) == 0:
+                        logger.warning(
+                            "Downloaded .key sidecar is empty from storage %s for backup %s, removing",
+                            sync.storage_id,
+                            backup.id,
+                        )
+                        os.unlink(key_local)
+                        continue
                     logger.info(
                         "Downloaded .key sidecar from remote for backup %s",
                         backup.id,
                     )
                     return key_local
             except Exception as exc:
+                # Clean up potentially empty/partial file from failed download
+                if os.path.exists(key_local):
+                    try:
+                        os.unlink(key_local)
+                    except OSError:
+                        pass
                 logger.debug(
                     "Failed to download .key from storage %s for backup %s: %s",
                     sync.storage_id,
@@ -1183,6 +1198,16 @@ async def _download_key_from_remote(
                     exc,
                 )
     return None
+
+
+def _is_valid_key_file(path: str | None) -> bool:
+    """Return True if *path* points to a non-empty file (a plausible .key)."""
+    if not path:
+        return False
+    try:
+        return os.path.getsize(path) > 0
+    except OSError:
+        return False
 
 
 async def _get_decrypted_archive_path(
@@ -1200,23 +1225,43 @@ async def _get_decrypted_archive_path(
             detail="Backup archive file not found on disk.",
         )
 
-    # Find the encryption key file – try multiple strategies
+    # Find the encryption key file – try multiple strategies.
+    # Each step validates the candidate is a non-empty file; empty files left
+    # behind by failed downloads are removed so the remote fallback can run.
     resolved_key: str | None = None
+
+    def _try_key_candidate(candidate: str | None) -> str | None:
+        """Return *candidate* if it is a valid key file, else clean up & return None."""
+        if not candidate or not os.path.exists(candidate):
+            return None
+        if _is_valid_key_file(candidate):
+            return candidate
+        # Empty / corrupt – remove so it does not block future lookups
+        logger.warning(
+            "Removing empty/corrupt .key file for backup %s: %s",
+            backup.id,
+            candidate,
+        )
+        try:
+            os.unlink(candidate)
+        except OSError:
+            pass
+        return None
 
     # 1. Try the DB-stored key path
     if backup.encryption_key_path:
-        resolved_key = _resolve_backup_path(backup.encryption_key_path)
+        resolved_key = _try_key_candidate(
+            _resolve_backup_path(backup.encryption_key_path)
+        )
 
     # 2. Derive .key path from the resolved archive path (.enc -> .key)
     if not resolved_key:
-        potential_key = resolved_archive.replace(".enc", ".key")
-        if os.path.exists(potential_key):
-            resolved_key = potential_key
+        resolved_key = _try_key_candidate(resolved_archive.replace(".enc", ".key"))
 
     # 3. Derive from the original DB path (handles legacy naming)
     if not resolved_key:
         potential_key = backup.file_path.replace(".enc", ".key")
-        resolved_key = _resolve_backup_path(potential_key)
+        resolved_key = _try_key_candidate(_resolve_backup_path(potential_key))
 
     # 4. Look for .key in the same directory as the resolved archive
     #    (covers temp dirs from remote downloads)
@@ -1224,9 +1269,7 @@ async def _get_decrypted_archive_path(
         archive_dir = os.path.dirname(resolved_archive)
         archive_basename = os.path.basename(resolved_archive)
         key_basename = archive_basename.replace(".enc", ".key")
-        candidate = os.path.join(archive_dir, key_basename)
-        if os.path.exists(candidate):
-            resolved_key = candidate
+        resolved_key = _try_key_candidate(os.path.join(archive_dir, key_basename))
 
     # 5. Download .key from remote storage as last resort
     if not resolved_key:
@@ -1236,23 +1279,6 @@ async def _get_decrypted_archive_path(
         raise HTTPException(
             status_code=404,
             detail="Encryption key file (.key) not found on disk or remote storage.",
-        )
-
-    # Validate that the resolved key file is non-empty
-    try:
-        key_size = os.path.getsize(resolved_key)
-    except OSError:
-        key_size = 0
-    if key_size == 0:
-        logger.error(
-            "Encryption key file is empty for backup %s: %s",
-            backup.id,
-            resolved_key,
-        )
-        raise HTTPException(
-            status_code=400,
-            detail="Encryption key file (.key) is empty or corrupted. "
-            "The backup may need to be re-encrypted or the key file restored from a remote storage.",
         )
 
     # Decrypt to temp file
