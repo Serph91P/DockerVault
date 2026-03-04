@@ -127,7 +127,7 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-sm" onClick={onClose}>
       <div
-        className="bg-dark-800 border-l border-dark-700 shadow-2xl w-full max-w-xl h-full flex flex-col animate-slide-in-right"
+        className="bg-dark-800 border-l border-dark-700 shadow-2xl w-full max-w-3xl h-full flex flex-col animate-slide-in-right"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
