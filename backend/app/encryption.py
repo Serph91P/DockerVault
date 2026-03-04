@@ -375,10 +375,23 @@ async def encrypt_backup(
     # Encrypt the DEK with public key
     encrypted_dek = await encrypt_dek(dek, public_key)
 
-    # Save encrypted DEK alongside backup
+    # Save encrypted DEK alongside backup – use synchronous write with
+    # explicit fsync so the key survives unexpected container restarts.
     key_path = backup_path.with_suffix(backup_path.suffix + ".key")
-    async with aiofiles.open(key_path, "wb") as f:
-        await f.write(encrypted_dek)
+    fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, encrypted_dek)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+    # Verify the .key was written correctly before removing the plain backup
+    actual_size = os.path.getsize(key_path)
+    if actual_size == 0 or actual_size != len(encrypted_dek):
+        raise EncryptionError(
+            f"Key file verification failed: expected {len(encrypted_dek)} bytes, "
+            f"got {actual_size} at {key_path}"
+        )
 
     # Remove unencrypted backup
     backup_path.unlink()

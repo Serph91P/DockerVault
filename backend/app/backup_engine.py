@@ -862,20 +862,31 @@ class BackupEngine:
             )
 
             # Also upload .key sidecar for encrypted backups
+            key_sidecar_synced = False
             if encrypted and encryption_key_path:
                 key_local = Path(encryption_key_path)
                 if key_local.exists():
                     try:
-                        await storage_manager.sync_backup(
+                        key_results = await storage_manager.sync_backup(
                             key_local,
                             safe_name,
                             key_local.name,
                             target.remote_storage_ids,
                         )
-                        logger.info(
-                            "Uploaded .key sidecar for backup %s",
-                            backup_id,
+                        key_sidecar_synced = (
+                            all(key_results.values()) and len(key_results) > 0
                         )
+                        if key_sidecar_synced:
+                            logger.info(
+                                "Uploaded .key sidecar for backup %s",
+                                backup_id,
+                            )
+                        else:
+                            logger.warning(
+                                "Partial .key sidecar upload for backup %s: %s",
+                                backup_id,
+                                {str(k): v for k, v in key_results.items()},
+                            )
                     except Exception as e:
                         logger.warning(
                             "Failed to upload .key sidecar for backup %s: %s",
@@ -935,12 +946,27 @@ class BackupEngine:
                     backup_id, 97, f"Synced to {succeeded} remote storage(s)"
                 )
 
-            # Delete local files after successful sync if configured
+            # Delete local files after successful sync if configured.
+            # The .key sidecar MUST also be synced before we delete it
+            # locally – otherwise the DEK is lost and the backup becomes
+            # unrecoverable.
             all_succeeded = all(results.values()) and len(results) > 0
             if all_succeeded and getattr(target, "delete_local_after_sync", False):
-                await self._delete_local_after_sync(
-                    backup_id, backup_path, encryption_key_path
+                # Only allow .key deletion if it was actually synced
+                safe_key_path = (
+                    encryption_key_path
+                    if (not encrypted or key_sidecar_synced)
+                    else None
                 )
+                await self._delete_local_after_sync(
+                    backup_id, backup_path, safe_key_path
+                )
+                if encrypted and not key_sidecar_synced:
+                    logger.warning(
+                        "Kept local .key file for backup %s – sidecar was "
+                        "NOT synced to remote storage",
+                        backup_id,
+                    )
 
         except Exception as e:
             await self._log(
