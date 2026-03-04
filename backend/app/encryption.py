@@ -213,7 +213,6 @@ async def decrypt_dek(encrypted_dek: bytes, private_key: str) -> bytes:
         process = await asyncio.create_subprocess_exec(
             "age",
             "-d",
-            "-a",
             "-i",
             key_file,
             stdin=asyncio.subprocess.PIPE,
