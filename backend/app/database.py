@@ -9,7 +9,7 @@ from sqlalchemy import JSON, Boolean, Column, DateTime
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import ForeignKey, Integer, String, Text, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase, relationship
+from sqlalchemy.orm import DeclarativeBase, backref, relationship
 
 from app.config import settings
 
@@ -185,7 +185,10 @@ class BackupLog(Base):
     )  # Extra structured data (container names, file sizes, etc.)
     created_at = Column(DateTime, default=_utcnow)
 
-    backup = relationship("Backup", backref="logs")
+    backup = relationship(
+        "Backup",
+        backref=backref("logs", cascade="all, delete-orphan", passive_deletes=True),
+    )
 
 
 class Schedule(Base):
@@ -271,7 +274,9 @@ class BackupStorageSync(Base):
     __tablename__ = "backup_storage_syncs"
 
     id = Column(Integer, primary_key=True, index=True)
-    backup_id = Column(Integer, ForeignKey("backups.id"), nullable=False)
+    backup_id = Column(
+        Integer, ForeignKey("backups.id", ondelete="CASCADE"), nullable=False
+    )
     storage_id = Column(Integer, ForeignKey("remote_storages.id"), nullable=False)
     remote_path = Column(String(1024), nullable=True)
     synced_at = Column(DateTime, nullable=True)
@@ -280,7 +285,12 @@ class BackupStorageSync(Base):
     )  # pending, syncing, completed, failed
     error_message = Column(Text, nullable=True)
 
-    backup = relationship("Backup")
+    backup = relationship(
+        "Backup",
+        backref=backref(
+            "storage_syncs", cascade="all, delete-orphan", passive_deletes=True
+        ),
+    )
     storage = relationship("RemoteStorage")
 
 
