@@ -7,6 +7,7 @@ import {
   Calendar,
   Archive,
   Cloud,
+  CloudOff,
   Zap,
   Terminal,
   ChevronDown,
@@ -16,6 +17,7 @@ import {
   Database,
   Link,
   Filter,
+  AlertTriangle,
 } from 'lucide-react'
 import {
   targetsApi,
@@ -54,6 +56,7 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
     schedule_id: target.schedule_id || null,
     retention_policy_id: target.retention_policy_id || null,
     remote_storage_ids: (target.remote_storage_ids || []) as number[],
+    delete_local_after_sync: target.delete_local_after_sync ?? false,
     compression: target.compression_enabled ? 'gzip' : 'none',
     include_paths: target.include_paths || [],
     exclude_paths: target.exclude_paths || [],
@@ -126,6 +129,8 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
       post_backup_command: formData.post_backup_command || undefined,
       stop_container: formData.stop_container,
       remote_storage_ids: formData.remote_storage_ids,
+      delete_local_after_sync:
+        formData.remote_storage_ids.length > 0 ? formData.delete_local_after_sync : false,
     })
   }
 
@@ -164,12 +169,17 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
   }
 
   const toggleStorage = (storageId: number) => {
-    setFormData((prev) => ({
-      ...prev,
-      remote_storage_ids: prev.remote_storage_ids.includes(storageId)
+    setFormData((prev) => {
+      const newIds = prev.remote_storage_ids.includes(storageId)
         ? prev.remote_storage_ids.filter((id) => id !== storageId)
-        : [...prev.remote_storage_ids, storageId],
-    }))
+        : [...prev.remote_storage_ids, storageId]
+      return {
+        ...prev,
+        remote_storage_ids: newIds,
+        // Clear delete_local_after_sync when no remote storage is selected
+        delete_local_after_sync: newIds.length > 0 ? prev.delete_local_after_sync : false,
+      }
+    })
   }
 
   if (!isOpen) return null
@@ -301,6 +311,41 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
                     </button>
                   ))}
               </div>
+            </div>
+          )}
+
+          {/* Delete Local After Sync */}
+          {formData.remote_storage_ids.length > 0 && (
+            <div className="p-3 bg-amber-500/5 border border-amber-500/20 rounded-lg">
+              <div className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  id="delete-local-after-sync"
+                  checked={formData.delete_local_after_sync}
+                  onChange={(e) =>
+                    setFormData((prev) => ({ ...prev, delete_local_after_sync: e.target.checked }))
+                  }
+                  className="w-4 h-4 rounded border-dark-600 text-amber-500 focus:ring-amber-500 bg-dark-700"
+                />
+                <label htmlFor="delete-local-after-sync" className="text-sm text-dark-200 cursor-pointer">
+                  <span className="flex items-center gap-1.5 font-medium">
+                    <CloudOff className="w-3.5 h-3.5 text-amber-400" />
+                    Keep only at remote storage
+                  </span>
+                  <span className="block text-xs text-dark-400 mt-0.5">
+                    Local backup files will be deleted after successful sync to all remote storages
+                  </span>
+                </label>
+              </div>
+              {formData.delete_local_after_sync && (
+                <div className="flex items-start gap-2 mt-2 ml-7 text-xs text-amber-400/80">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>
+                    Browsing and restoring will require downloading from remote storage. Ensure your
+                    remote connection is reliable.
+                  </span>
+                </div>
+              )}
             </div>
           )}
 

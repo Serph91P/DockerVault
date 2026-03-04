@@ -321,6 +321,9 @@ async def create_target(target: TargetCreate):
             compression_enabled=target.compression_enabled,
             remote_storage_ids=target.remote_storage_ids,
             sync_to_remote=len(target.remote_storage_ids) > 0,
+            delete_local_after_sync=target.delete_local_after_sync
+            if target.remote_storage_ids
+            else False,
         )
 
         session.add(db_target)
@@ -419,6 +422,16 @@ async def update_target(target_id: int, update: TargetUpdate):
         if update.remote_storage_ids is not None:
             target.remote_storage_ids = update.remote_storage_ids
             target.sync_to_remote = len(update.remote_storage_ids) > 0
+        if update.delete_local_after_sync is not None:
+            # Only allow delete_local_after_sync if remote storage is configured
+            has_remote = (
+                update.remote_storage_ids
+                if update.remote_storage_ids is not None
+                else target.remote_storage_ids
+            )
+            target.delete_local_after_sync = (
+                update.delete_local_after_sync if has_remote else False
+            )
 
         await session.commit()
 
