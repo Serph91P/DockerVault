@@ -271,6 +271,8 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
   const [keySubmitted, setKeySubmitted] = useState(false)
   const [showKey, setShowKey] = useState(false)
 
+  const isRemoteOnly = backup.local_available === false && backup.remote_synced
+
   const shouldFetch = isEncrypted ? keySubmitted : true
   const trimmedKey = privateKey.trim()
 
@@ -350,7 +352,7 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
               {backup.local_available === false && backup.remote_synced && (
                 <p className="text-xs text-blue-400 flex items-center gap-1 mt-0.5">
                   <Cloud className="w-3 h-3" />
-                  Streaming from remote storage
+                  Remote only — files will be downloaded on demand
                 </p>
               )}
             </div>
@@ -425,8 +427,19 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
           ) : isLoading ? (
             <div className="flex flex-col items-center justify-center py-12">
               <Loader2 className="w-8 h-8 text-primary-500 animate-spin mb-3" />
-              {isEncrypted && (
+              {isRemoteOnly ? (
+                <div className="text-center">
+                  <p className="text-sm text-dark-300 font-medium">Downloading from remote storage...</p>
+                  <p className="text-xs text-dark-500 mt-1">
+                    {isEncrypted
+                      ? 'Fetching and decrypting backup from remote'
+                      : 'This backup is stored remotely and will be fetched temporarily'}
+                  </p>
+                </div>
+              ) : isEncrypted ? (
                 <p className="text-sm text-dark-400">Decrypting backup...</p>
+              ) : (
+                <p className="text-sm text-dark-400">Loading backup contents...</p>
               )}
             </div>
           ) : error ? (
