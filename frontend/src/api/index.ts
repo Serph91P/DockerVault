@@ -5,6 +5,8 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  // Include credentials (cookies) for authentication
+  withCredentials: true,
 })
 
 // Types
@@ -57,16 +59,41 @@ export interface BackupTarget {
   volume_name?: string
   host_path?: string
   stack_name?: string
-  schedule_cron?: string
+  schedule_id?: number  // NEW: Reference to Schedule entity
+  schedule?: {  // NEW: Embedded schedule info
+    id: number
+    name: string
+    cron_expression: string
+  }
+  schedule_cron?: string  // DEPRECATED: Keep for backwards compatibility
   enabled: boolean
   retention_policy_id?: number
+  retention_policy?: RetentionPolicyInfo  // Embedded retention policy info
   dependencies: string[]
+  // Volume selection for container/stack backups
+  selected_volumes: string[]  // Empty = all volumes
+  // Path filtering
+  include_paths: string[]  // Include only these paths (empty = all)
+  exclude_paths: string[]  // Exclude these paths/patterns
+  // Per-volume path rules (overrides global for specific volumes)
+  per_volume_rules: Record<string, { include_paths: string[]; exclude_paths: string[] }>
   pre_backup_command?: string
   post_backup_command?: string
   stop_container: boolean
   compression_enabled: boolean
+  // Remote storage sync
+  remote_storage_ids: number[]
+  delete_local_after_sync: boolean
   created_at: string
   updated_at: string
+}
+
+export interface RemoteSyncInfo {
+  storage_id: number
+  storage_name: string
+  status: 'completed' | 'failed' | 'pending' | string
+  synced_at?: string
+  remote_path?: string
 }
 
 export interface Backup {
@@ -83,12 +110,47 @@ export interface Backup {
   completed_at?: string
   duration_seconds?: number
   error_message?: string
+  encrypted?: boolean
+  local_available?: boolean
+  remote_synced?: boolean
+  remote_sync_details?: RemoteSyncInfo[]
+  created_at: string
+}
+
+export interface RestoreInfo {
+  backup: {
+    id: number
+    file_size_human?: string
+    encrypted: boolean
+    created_at: string
+    completed_at?: string
+    local_available: boolean
+  }
+  target: {
+    id: number | null
+    name: string
+    target_type: string | null
+    volume_name?: string
+    host_path?: string
+    container_name?: string
+  }
+  containers_to_stop: string[]
+  available_volumes: string[]
+}
+
+export interface BackupLogEntry {
+  id: number
+  level: 'debug' | 'info' | 'warning' | 'error'
+  step: string
+  message: string
+  details?: Record<string, unknown>
   created_at: string
 }
 
 export interface RetentionPolicy {
   id: number
   name: string
+  keep_last: number
   keep_daily: number
   keep_weekly: number
   keep_monthly: number
@@ -96,6 +158,16 @@ export interface RetentionPolicy {
   max_age_days: number
   created_at: string
   updated_at: string
+}
+
+// Embedded retention policy info for targets
+export interface RetentionPolicyInfo {
+  id: number
+  name: string
+  keep_last: number
+  keep_daily: number
+  keep_weekly: number
+  keep_monthly: number
 }
 
 export interface Schedule {
@@ -108,13 +180,47 @@ export interface Schedule {
   enabled: boolean
 }
 
+// NEW: Schedule entity (standalone, reusable)
+export interface ScheduleEntity {
+  id: number
+  name: string
+  cron_expression: string
+  description?: string
+  enabled: boolean
+  target_count: number
+  next_run?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ScheduleWithTargets extends ScheduleEntity {
+  targets: Array<{
+    id: number
+    name: string
+    target_type: string
+    enabled: boolean
+  }>
+}
+
+export interface ScheduleCreate {
+  name: string
+  cron_expression: string
+  description?: string
+  enabled?: boolean
+}
+
+export interface ScheduleUpdate {
+  name?: string
+  cron_expression?: string
+  description?: string
+  enabled?: boolean
+}
+
 // Docker API
 export const dockerApi = {
   getHealth: () => api.get('/docker/health'),
   listContainers: () => api.get<Container[]>('/docker/containers'),
   getContainer: (id: string) => api.get<Container>(`/docker/containers/${id}`),
-  stopContainer: (id: string) => api.post(`/docker/containers/${id}/stop`),
-  startContainer: (id: string) => api.post(`/docker/containers/${id}/start`),
   listVolumes: () => api.get<Volume[]>('/docker/volumes'),
   listStacks: () => api.get<Stack[]>('/docker/stacks'),
 }
@@ -135,22 +241,55 @@ export const backupsApi = {
   get: (id: number) => api.get<Backup>(`/backups/${id}`),
   create: (target_id: number, backup_type = 'full') => 
     api.post<Backup>('/backups', { target_id, backup_type }),
-  restore: (id: number, target_path?: string) => 
-    api.post(`/backups/${id}/restore`, { target_path }),
-  delete: (id: number) => api.delete(`/backups/${id}`),
+  restore: (id: number, opts?: { target_path?: string; private_key?: string }) =>
+    api.post(`/backups/${id}/restore`, {
+      target_path: opts?.target_path,
+      private_key: opts?.private_key,
+    }),
+  getRestoreInfo: (id: number) =>
+    api.get<RestoreInfo>(`/backups/${id}/restore-info`),
+  delete: (id: number, opts?: { deleteLocal?: boolean; deleteRemote?: boolean }) => 
+    api.delete(`/backups/${id}`, { 
+      params: { 
+        delete_local: opts?.deleteLocal ?? true, 
+        delete_remote: opts?.deleteRemote ?? true 
+      } 
+    }),
+  deleteAll: (targetId?: number, opts?: { deleteLocal?: boolean; deleteRemote?: boolean }) => 
+    api.delete('/backups', { 
+      params: { 
+        ...(targetId ? { target_id: targetId } : undefined),
+        delete_local: opts?.deleteLocal ?? true,
+        delete_remote: opts?.deleteRemote ?? true,
+      } 
+    }),
   getStats: (id: number) => api.get(`/backups/${id}/stats`),
+  listFiles: (id: number) => api.get(`/backups/${id}/files`),
+  listFilesEncrypted: (id: number, privateKey: string) =>
+    api.post(`/backups/${id}/files`, { private_key: privateKey }),
+  retrySync: (id: number) => api.post(`/backups/${id}/retry-sync`),
+  getLogs: (id: number) => api.get<BackupLogEntry[]>(`/backups/${id}/logs`),
 }
 
-// Schedules API
+// Schedules API (NEW: CRUD for Schedule entities)
 export const schedulesApi = {
-  list: () => api.get<Schedule[]>('/schedules'),
+  // New Schedule entity CRUD
+  list: () => api.get<ScheduleEntity[]>('/schedules'),
+  get: (id: number) => api.get<ScheduleWithTargets>(`/schedules/${id}`),
+  create: (data: ScheduleCreate) => api.post<ScheduleEntity>('/schedules', data),
+  update: (id: number, data: ScheduleUpdate) => api.put<ScheduleEntity>(`/schedules/${id}`, data),
+  delete: (id: number) => api.delete(`/schedules/${id}`),
+  
+  // Scheduler management
   getJobs: () => api.get('/schedules/jobs'),
-  trigger: (targetId: number) => api.post(`/schedules/${targetId}/trigger`),
-  update: (targetId: number, data: { cron_expression?: string; enabled?: boolean }) =>
-    api.put(`/schedules/${targetId}`, data),
+  trigger: (targetId: number) => api.post(`/schedules/target/${targetId}/trigger`),
+  triggerAll: (scheduleId: number) => api.post(`/schedules/${scheduleId}/trigger-all`),
   estimate: (target_id: number, cron_expression: string) =>
     api.post('/schedules/estimate', { target_id, cron_expression }),
   getCronHelp: () => api.get('/schedules/cron-help'),
+  
+  // Legacy endpoint for backwards compatibility
+  listLegacy: () => api.get<Schedule[]>('/schedules/legacy/by-target'),
 }
 
 // Retention API
@@ -166,6 +305,39 @@ export const retentionApi = {
   cleanupOrphaned: () => api.post('/retention/cleanup-orphaned'),
 }
 
+// Remote Storage Types
+export interface RemoteStorage {
+  id: number
+  name: string
+  storage_type: 'local' | 'ssh' | 'webdav' | 's3' | 'ftp' | 'rclone'
+  enabled: boolean
+  host?: string
+  port?: number
+  username?: string
+  base_path: string
+  ssh_key_path?: string
+  s3_bucket?: string
+  s3_region?: string
+  s3_endpoint_url?: string
+  webdav_url?: string
+  rclone_remote?: string
+  created_at: string
+  updated_at: string
+}
+
+// Storage API
+export const storageApi = {
+  list: () => api.get<RemoteStorage[]>('/storage'),
+  get: (id: number) => api.get<RemoteStorage>(`/storage/${id}`),
+  create: (data: Partial<RemoteStorage>) => api.post<RemoteStorage>('/storage', data),
+  update: (id: number, data: Partial<RemoteStorage>) => api.put<RemoteStorage>(`/storage/${id}`, data),
+  delete: (id: number) => api.delete(`/storage/${id}`),
+  test: (id: number) => api.post(`/storage/${id}/test`),
+  getTypes: () => api.get('/storage/types'),
+  listFiles: (id: number, path?: string) => api.get(`/storage/${id}/files`, { params: { path: path || '' } }),
+  deleteFile: (id: number, path: string) => api.delete(`/storage/${id}/files`, { params: { path } }),
+}
+
 // Komodo API
 export const komodoApi = {
   getStatus: () => api.get('/komodo/status'),
@@ -174,6 +346,43 @@ export const komodoApi = {
     api.post('/komodo/container-action', { container_name, action, reason }),
   getContainerStatus: (container_name: string) => 
     api.get(`/komodo/container/${container_name}`),
+}
+
+// Settings API
+export interface KomodoSettings {
+  enabled: boolean
+  api_url: string | null
+  has_api_key: boolean
+  has_api_secret: boolean
+  connected: boolean
+}
+
+export interface KomodoTestResult {
+  success: boolean
+  message: string
+  version?: string
+}
+
+export interface SystemInfo {
+  backup_dir: string
+  database_path: string
+  timezone: string
+  disk_total: number
+  disk_used: number
+  disk_free: number
+  db_size: number
+  backup_count: number
+  target_count: number
+  uptime_seconds: number
+  app_version: string
+}
+
+export const settingsApi = {
+  getKomodo: () => api.get<KomodoSettings>('/settings/komodo'),
+  updateKomodo: (data: { enabled: boolean; api_url?: string; api_key?: string; api_secret?: string }) =>
+    api.put<KomodoSettings>('/settings/komodo', data),
+  testKomodo: () => api.post<KomodoTestResult>('/settings/komodo/test'),
+  getSystemInfo: () => api.get<SystemInfo>('/settings/system-info'),
 }
 
 export default api

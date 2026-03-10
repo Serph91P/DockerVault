@@ -1,8 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
-import { Archive, Container, HardDrive, Clock, AlertCircle, CheckCircle } from 'lucide-react'
-import { dockerApi, backupsApi, targetsApi, schedulesApi } from '../api'
-import { formatDistanceToNow } from 'date-fns'
-import { de } from 'date-fns/locale'
+import { Archive, Container, HardDrive, Clock, AlertCircle, CheckCircle, AlertTriangle, ShieldCheck, Plus, ArrowRight, Cloud, Shield, Layers, FolderOpen } from 'lucide-react'
+import { dockerApi, backupsApi, targetsApi, schedulesApi, settingsApi } from '../api'
+import { formatDistanceToNowStrict } from 'date-fns'
+import { Link } from 'react-router-dom'
 
 function StatCard({
   title,
@@ -28,6 +28,13 @@ function StatCard({
       </div>
     </div>
   )
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(1024))
+  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`
 }
 
 export default function Dashboard() {
@@ -56,52 +63,218 @@ export default function Dashboard() {
     queryFn: () => schedulesApi.list().then((r) => r.data),
   })
 
+  const { data: stacks } = useQuery({
+    queryKey: ['stacks'],
+    queryFn: () => dockerApi.listStacks().then((r) => r.data),
+  })
+
+  // DA5: Fetch system info for disk usage
+  const { data: systemInfo } = useQuery({
+    queryKey: ['system-info'],
+    queryFn: () => settingsApi.getSystemInfo().then((r) => r.data),
+    refetchInterval: 60000,
+  })
+
   const runningContainers = containers?.filter((c) => c.status === 'running').length ?? 0
   const activeTargets = targets?.filter((t) => t.enabled).length ?? 0
   const completedBackups = backups?.filter((b) => b.status === 'completed').length ?? 0
   const failedBackups = backups?.filter((b) => b.status === 'failed').length ?? 0
 
+  // DA1: Calculate actionable insights
+  const backedUpContainerNames = new Set(
+    targets?.filter((t) => t.target_type === 'container' && t.enabled).map((t) => t.container_name) ?? []
+  )
+  const backedUpContainers = containers?.filter((c) => backedUpContainerNames.has(c.name)).length ?? 0
+
+  const backedUpVolumeNames = new Set<string>()
+  targets?.filter((t) => t.enabled).forEach((t) => {
+    if (t.target_type === 'volume' && t.volume_name) backedUpVolumeNames.add(t.volume_name)
+    if (t.selected_volumes) t.selected_volumes.forEach((v) => backedUpVolumeNames.add(v))
+  })
+  const backedUpVolumes = volumes?.filter((v) => backedUpVolumeNames.has(v.name)).length ?? 0
+
+  // Stacks backed up (target_type === 'stack')
+  const backedUpStackNames = new Set(
+    targets?.filter((t) => t.target_type === 'stack' && t.enabled).map((t) => t.stack_name) ?? []
+  )
+  const backedUpStacks = stacks?.filter((s) => backedUpStackNames.has(s.name)).length ?? 0
+
+  // Path targets
+  const pathTargets = targets?.filter((t) => t.target_type === 'path' && t.enabled).length ?? 0
+
+  // DA4: Detect recent failures from the latest backups
+  const recentFailures = backups?.filter((b) => b.status === 'failed') ?? []
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-dark-100">Dashboard</h1>
-        <p className="text-dark-400 mt-1">Überblick über deine Docker Backups</p>
+      {/* DA2: Quick Actions */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-dark-100">Dashboard</h1>
+          <p className="text-dark-400 mt-1">Overview of your Docker backups</p>
+        </div>
+        <Link
+          to="/backups"
+          className="flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors text-sm"
+        >
+          <Plus className="w-4 h-4" />
+          New Backup
+        </Link>
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* DA4: Alert Banner */}
+      {recentFailures.length > 0 && (
+        <Link
+          to="/backups"
+          className="flex items-center gap-3 p-4 bg-red-500/10 border border-red-500/30 rounded-xl hover:bg-red-500/15 transition-colors"
+        >
+          <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0" />
+          <div className="flex-1">
+            <p className="text-sm font-medium text-red-300">
+              {recentFailures.length} backup{recentFailures.length !== 1 ? 's' : ''} failed in the last 24 hours
+            </p>
+            <p className="text-xs text-red-400/70 mt-0.5">Click to view details</p>
+          </div>
+        </Link>
+      )}
+
+      {/* GF4: Onboarding guide when no targets configured */}
+      {targets && targets.length === 0 && (
+        <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 bg-primary-500/20 rounded-lg flex items-center justify-center">
+              <ShieldCheck className="w-5 h-5 text-primary-400" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-dark-100">Welcome to DockerVault</h2>
+              <p className="text-sm text-dark-400">Get started in 3 easy steps</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <Link
+              to="/backups"
+              className="flex items-start gap-3 p-4 bg-primary-500/5 border border-primary-500/20 rounded-lg hover:bg-primary-500/10 transition-colors group"
+            >
+              <div className="w-7 h-7 rounded-full bg-primary-500 text-white flex items-center justify-center text-sm font-bold flex-shrink-0">1</div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-dark-200 group-hover:text-primary-400 transition-colors">Create a backup</p>
+                <p className="text-xs text-dark-500 mt-0.5">Select containers, volumes or stacks to protect</p>
+              </div>
+              <ArrowRight className="w-4 h-4 text-dark-600 group-hover:text-primary-400 flex-shrink-0 mt-0.5 transition-colors" />
+            </Link>
+            <Link
+              to="/storage"
+              className="flex items-start gap-3 p-4 bg-dark-750 border border-dark-700 rounded-lg hover:border-dark-600 transition-colors group"
+            >
+              <div className="w-7 h-7 rounded-full bg-dark-600 text-dark-300 flex items-center justify-center text-sm font-bold flex-shrink-0">2</div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-dark-300 group-hover:text-dark-100 transition-colors">Add remote storage</p>
+                <p className="text-xs text-dark-500 mt-0.5">S3, FTP, WebDAV or SSH for off-site copies</p>
+              </div>
+              <Cloud className="w-4 h-4 text-dark-600 flex-shrink-0 mt-0.5" />
+            </Link>
+            <Link
+              to="/settings"
+              className="flex items-start gap-3 p-4 bg-dark-750 border border-dark-700 rounded-lg hover:border-dark-600 transition-colors group"
+            >
+              <div className="w-7 h-7 rounded-full bg-dark-600 text-dark-300 flex items-center justify-center text-sm font-bold flex-shrink-0">3</div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-dark-300 group-hover:text-dark-100 transition-colors">Enable encryption</p>
+                <p className="text-xs text-dark-500 mt-0.5">Protect sensitive backup data at rest</p>
+              </div>
+              <Shield className="w-4 h-4 text-dark-600 flex-shrink-0 mt-0.5" />
+            </Link>
+          </div>
+        </div>
+      )}
+
+      {/* Stats Grid - DA1: Actionable Insights */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         <StatCard
-          title="Container"
-          value={`${runningContainers}/${containers?.length ?? 0}`}
+          title="Containers"
+          value={`${backedUpContainers}/${containers?.length ?? 0}`}
           icon={Container}
           color="bg-blue-500"
         />
         <StatCard
           title="Volumes"
-          value={volumes?.length ?? 0}
+          value={`${backedUpVolumes}/${volumes?.length ?? 0}`}
           icon={HardDrive}
           color="bg-purple-500"
         />
         <StatCard
-          title="Backup Targets"
-          value={activeTargets}
+          title="Stacks"
+          value={`${backedUpStacks}/${stacks?.length ?? 0}`}
+          icon={Layers}
+          color="bg-cyan-500"
+        />
+        {pathTargets > 0 && (
+          <StatCard
+            title="Host Paths"
+            value={pathTargets}
+            icon={FolderOpen}
+            color="bg-amber-500"
+          />
+        )}
+        <StatCard
+          title="Targets"
+          value={`${activeTargets}${targets ? `/${targets.length}` : ''}`}
           icon={Archive}
           color="bg-green-500"
         />
         <StatCard
-          title="Geplante Backups"
+          title="Scheduled"
           value={schedules?.filter((s) => s.enabled).length ?? 0}
           icon={Clock}
           color="bg-orange-500"
         />
       </div>
 
+      {/* DA5: Disk Usage */}
+      {systemInfo && (
+        <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-medium text-dark-400">Backup Storage</h2>
+            <span className="text-xs text-dark-500 font-mono">{systemInfo.backup_dir}</span>
+          </div>
+          <div className="flex items-end gap-4">
+            <div className="flex-1">
+              <div className="flex items-baseline gap-2 mb-2">
+                <span className="text-2xl font-bold text-dark-100">
+                  {formatBytes(systemInfo.disk_used)}
+                </span>
+                <span className="text-sm text-dark-500">
+                  of {formatBytes(systemInfo.disk_total)} used
+                </span>
+              </div>
+              <div className="h-2 bg-dark-700 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all ${
+                    systemInfo.disk_total > 0 && (systemInfo.disk_used / systemInfo.disk_total) > 0.9
+                      ? 'bg-red-500'
+                      : systemInfo.disk_total > 0 && (systemInfo.disk_used / systemInfo.disk_total) > 0.7
+                      ? 'bg-yellow-500'
+                      : 'bg-green-500'
+                  }`}
+                  style={{ width: `${systemInfo.disk_total > 0 ? Math.round((systemInfo.disk_used / systemInfo.disk_total) * 100) : 0}%` }}
+                />
+              </div>
+              <p className="text-xs text-dark-500 mt-1">
+                {formatBytes(systemInfo.disk_free)} free
+                {systemInfo.db_size > 0 && ` · DB: ${formatBytes(systemInfo.db_size)}`}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Recent Backups & Next Scheduled */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Recent Backups */}
         <div className="bg-dark-800 rounded-xl border border-dark-700">
-          <div className="px-6 py-4 border-b border-dark-700">
-            <h2 className="text-lg font-semibold text-dark-100">Letzte Backups</h2>
+          <div className="px-6 py-4 border-b border-dark-700 flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-dark-100">Recent Backups</h2>
+            <Link to="/backups" className="text-xs text-primary-400 hover:text-primary-300">View All</Link>
           </div>
           <div className="divide-y divide-dark-700">
             {backups?.slice(0, 5).map((backup) => (
@@ -119,9 +292,8 @@ export default function Dashboard() {
                       {backup.target_name || `Target #${backup.target_id}`}
                     </p>
                     <p className="text-xs text-dark-400">
-                      {formatDistanceToNow(new Date(backup.created_at), {
+                      {formatDistanceToNowStrict(new Date(backup.created_at), {
                         addSuffix: true,
-                        locale: de,
                       })}
                     </p>
                   </div>
@@ -136,7 +308,7 @@ export default function Dashboard() {
             ))}
             {(!backups || backups.length === 0) && (
               <div className="px-6 py-8 text-center text-dark-400">
-                Noch keine Backups vorhanden
+                No backups yet
               </div>
             )}
           </div>
@@ -144,8 +316,9 @@ export default function Dashboard() {
 
         {/* Next Scheduled Backups */}
         <div className="bg-dark-800 rounded-xl border border-dark-700">
-          <div className="px-6 py-4 border-b border-dark-700">
-            <h2 className="text-lg font-semibold text-dark-100">Nächste geplante Backups</h2>
+          <div className="px-6 py-4 border-b border-dark-700 flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-dark-100">Upcoming Scheduled Backups</h2>
+            <Link to="/schedules" className="text-xs text-primary-400 hover:text-primary-300">View All</Link>
           </div>
           <div className="divide-y divide-dark-700">
             {schedules
@@ -157,15 +330,17 @@ export default function Dashboard() {
               .map((schedule) => (
                 <div key={schedule.id} className="px-6 py-4 flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-medium text-dark-100">{schedule.target_name}</p>
+                    <p className="text-sm font-medium text-dark-100">{schedule.name}</p>
                     <p className="text-xs text-dark-400 font-mono">{schedule.cron_expression}</p>
+                    {schedule.target_count > 0 && (
+                      <p className="text-xs text-dark-500">{schedule.target_count} target(s)</p>
+                    )}
                   </div>
                   <div className="text-right">
                     <p className="text-sm text-dark-300">
                       {schedule.next_run &&
-                        formatDistanceToNow(new Date(schedule.next_run), {
+                        formatDistanceToNowStrict(new Date(schedule.next_run), {
                           addSuffix: true,
-                          locale: de,
                         })}
                     </p>
                   </div>
@@ -173,7 +348,7 @@ export default function Dashboard() {
               ))}
             {(!schedules || schedules.filter((s) => s.enabled).length === 0) && (
               <div className="px-6 py-8 text-center text-dark-400">
-                Keine geplanten Backups
+                No scheduled backups
               </div>
             )}
           </div>
@@ -182,19 +357,19 @@ export default function Dashboard() {
 
       {/* Status Summary */}
       <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
-        <h2 className="text-lg font-semibold text-dark-100 mb-4">Status Zusammenfassung</h2>
+        <h2 className="text-lg font-semibold text-dark-100 mb-4">Status Summary</h2>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="text-center">
             <p className="text-3xl font-bold text-green-500">{completedBackups}</p>
-            <p className="text-sm text-dark-400">Erfolgreich</p>
+            <p className="text-sm text-dark-400">Successful</p>
           </div>
           <div className="text-center">
             <p className="text-3xl font-bold text-red-500">{failedBackups}</p>
-            <p className="text-sm text-dark-400">Fehlgeschlagen</p>
+            <p className="text-sm text-dark-400">Failed</p>
           </div>
           <div className="text-center">
             <p className="text-3xl font-bold text-blue-500">{runningContainers}</p>
-            <p className="text-sm text-dark-400">Container aktiv</p>
+            <p className="text-sm text-dark-400">Active Containers</p>
           </div>
           <div className="text-center">
             <p className="text-3xl font-bold text-purple-500">{volumes?.length ?? 0}</p>

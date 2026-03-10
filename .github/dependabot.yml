@@ -6,6 +6,7 @@ updates:
   # Python dependencies (Backend)
   - package-ecosystem: "pip"
     directory: "/backend"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -29,6 +30,7 @@ updates:
   # Node.js dependencies (Frontend)
   - package-ecosystem: "npm"
     directory: "/frontend"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -52,6 +54,7 @@ updates:
   # GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -67,6 +70,7 @@ updates:
   # Docker dependencies
   - package-ecosystem: "docker"
     directory: "/backend"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -81,6 +85,7 @@ updates:
 
   - package-ecosystem: "docker"
     directory: "/frontend"
+    target-branch: "develop"
     schedule:
       interval: "weekly"
       day: "monday"

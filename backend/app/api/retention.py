@@ -3,8 +3,9 @@ Retention policy API endpoints.
 """
 
 from typing import List, Optional
+
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.database import RetentionPolicy, async_session
@@ -15,8 +16,10 @@ router = APIRouter()
 
 class RetentionPolicyResponse(BaseModel):
     """Retention policy response model."""
+
     id: int
     name: str
+    keep_last: int
     keep_daily: int
     keep_weekly: int
     keep_monthly: int
@@ -31,22 +34,26 @@ class RetentionPolicyResponse(BaseModel):
 
 class CreateRetentionPolicyRequest(BaseModel):
     """Create retention policy request."""
+
     name: str
-    keep_daily: int = 7
-    keep_weekly: int = 4
-    keep_monthly: int = 6
-    keep_yearly: int = 2
-    max_age_days: int = 365
+    keep_last: int = Field(default=3, ge=1, le=1000)
+    keep_daily: int = Field(default=7, ge=0, le=1000)
+    keep_weekly: int = Field(default=4, ge=0, le=1000)
+    keep_monthly: int = Field(default=6, ge=0, le=1000)
+    keep_yearly: int = Field(default=2, ge=0, le=1000)
+    max_age_days: int = Field(default=365, ge=1, le=36500)
 
 
 class UpdateRetentionPolicyRequest(BaseModel):
     """Update retention policy request."""
+
     name: Optional[str] = None
-    keep_daily: Optional[int] = None
-    keep_weekly: Optional[int] = None
-    keep_monthly: Optional[int] = None
-    keep_yearly: Optional[int] = None
-    max_age_days: Optional[int] = None
+    keep_last: Optional[int] = Field(default=None, ge=1, le=1000)
+    keep_daily: Optional[int] = Field(default=None, ge=0, le=1000)
+    keep_weekly: Optional[int] = Field(default=None, ge=0, le=1000)
+    keep_monthly: Optional[int] = Field(default=None, ge=0, le=1000)
+    keep_yearly: Optional[int] = Field(default=None, ge=0, le=1000)
+    max_age_days: Optional[int] = Field(default=None, ge=1, le=36500)
 
 
 @router.get("", response_model=List[RetentionPolicyResponse])
@@ -55,11 +62,12 @@ async def list_retention_policies():
     async with async_session() as session:
         result = await session.execute(select(RetentionPolicy))
         policies = result.scalars().all()
-        
+
         return [
             RetentionPolicyResponse(
                 id=p.id,
                 name=p.name,
+                keep_last=p.keep_last,
                 keep_daily=p.keep_daily,
                 keep_weekly=p.keep_weekly,
                 keep_monthly=p.keep_monthly,
@@ -84,23 +92,25 @@ async def create_retention_policy(request: CreateRetentionPolicyRequest):
             raise HTTPException(
                 status_code=400, detail="Policy with this name already exists"
             )
-        
+
         policy = RetentionPolicy(
             name=request.name,
+            keep_last=request.keep_last,
             keep_daily=request.keep_daily,
             keep_weekly=request.keep_weekly,
             keep_monthly=request.keep_monthly,
             keep_yearly=request.keep_yearly,
             max_age_days=request.max_age_days,
         )
-        
+
         session.add(policy)
         await session.commit()
         await session.refresh(policy)
-        
+
         return RetentionPolicyResponse(
             id=policy.id,
             name=policy.name,
+            keep_last=policy.keep_last,
             keep_daily=policy.keep_daily,
             keep_weekly=policy.keep_weekly,
             keep_monthly=policy.keep_monthly,
@@ -119,13 +129,14 @@ async def get_retention_policy(policy_id: int):
             select(RetentionPolicy).where(RetentionPolicy.id == policy_id)
         )
         policy = result.scalar_one_or_none()
-        
+
         if not policy:
             raise HTTPException(status_code=404, detail="Policy not found")
-        
+
         return RetentionPolicyResponse(
             id=policy.id,
             name=policy.name,
+            keep_last=policy.keep_last,
             keep_daily=policy.keep_daily,
             keep_weekly=policy.keep_weekly,
             keep_monthly=policy.keep_monthly,
@@ -137,19 +148,23 @@ async def get_retention_policy(policy_id: int):
 
 
 @router.put("/{policy_id}", response_model=RetentionPolicyResponse)
-async def update_retention_policy(policy_id: int, request: UpdateRetentionPolicyRequest):
+async def update_retention_policy(
+    policy_id: int, request: UpdateRetentionPolicyRequest
+):
     """Update a retention policy."""
     async with async_session() as session:
         result = await session.execute(
             select(RetentionPolicy).where(RetentionPolicy.id == policy_id)
         )
         policy = result.scalar_one_or_none()
-        
+
         if not policy:
             raise HTTPException(status_code=404, detail="Policy not found")
-        
+
         if request.name is not None:
             policy.name = request.name
+        if request.keep_last is not None:
+            policy.keep_last = request.keep_last
         if request.keep_daily is not None:
             policy.keep_daily = request.keep_daily
         if request.keep_weekly is not None:
@@ -160,13 +175,14 @@ async def update_retention_policy(policy_id: int, request: UpdateRetentionPolicy
             policy.keep_yearly = request.keep_yearly
         if request.max_age_days is not None:
             policy.max_age_days = request.max_age_days
-        
+
         await session.commit()
         await session.refresh(policy)
-        
+
         return RetentionPolicyResponse(
             id=policy.id,
             name=policy.name,
+            keep_last=policy.keep_last,
             keep_daily=policy.keep_daily,
             keep_weekly=policy.keep_weekly,
             keep_monthly=policy.keep_monthly,
@@ -185,18 +201,16 @@ async def delete_retention_policy(policy_id: int):
             select(RetentionPolicy).where(RetentionPolicy.id == policy_id)
         )
         policy = result.scalar_one_or_none()
-        
+
         if not policy:
             raise HTTPException(status_code=404, detail="Policy not found")
-        
+
         if policy.name == "default":
-            raise HTTPException(
-                status_code=400, detail="Cannot delete default policy"
-            )
-        
+            raise HTTPException(status_code=400, detail="Cannot delete default policy")
+
         await session.delete(policy)
         await session.commit()
-        
+
         return {"status": "deleted"}
 
 
@@ -204,10 +218,10 @@ async def delete_retention_policy(policy_id: int):
 async def apply_retention(target_id: int):
     """Apply retention policy to a target's backups."""
     stats = await retention_manager.apply_retention(target_id)
-    
+
     if "error" in stats:
         raise HTTPException(status_code=400, detail=stats["error"])
-    
+
     return stats
 
 

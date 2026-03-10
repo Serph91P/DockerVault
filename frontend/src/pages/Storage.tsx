@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import axios from 'axios';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Cloud,
@@ -16,26 +17,13 @@ import {
   FolderSync,
   Globe,
   Database,
+  FolderOpen,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
-import { api } from '../api';
-
-interface RemoteStorage {
-  id: number;
-  name: string;
-  storage_type: string;
-  enabled: boolean;
-  host?: string;
-  port?: number;
-  username?: string;
-  base_path: string;
-  s3_bucket?: string;
-  s3_region?: string;
-  s3_endpoint_url?: string;
-  webdav_url?: string;
-  rclone_remote?: string;
-  created_at: string;
-  updated_at: string;
-}
+import api, { RemoteStorage } from '../api';
+import StorageBrowser from '../components/StorageBrowser';
+import ConfirmDialog from '../components/ConfirmDialog';
 
 interface StorageFormData {
   name: string;
@@ -57,12 +45,12 @@ interface StorageFormData {
 }
 
 const STORAGE_TYPES = [
-  { value: 'local', label: 'Lokal / NFS', icon: HardDrive, description: 'Lokales Verzeichnis oder NFS-Mount' },
-  { value: 'ssh', label: 'SSH / SFTP', icon: Key, description: 'SSH-Server mit rsync oder SFTP' },
-  { value: 's3', label: 'S3 Kompatibel', icon: Cloud, description: 'AWS S3, MinIO, Backblaze B2' },
+  { value: 'local', label: 'Local / NFS', icon: HardDrive, description: 'Local directory or NFS mount' },
+  { value: 'ssh', label: 'SSH / SFTP', icon: Key, description: 'SSH server with rsync or SFTP' },
+  { value: 's3', label: 'S3 Compatible', icon: Cloud, description: 'AWS S3, MinIO, Backblaze B2' },
   { value: 'webdav', label: 'WebDAV', icon: Globe, description: 'Nextcloud, ownCloud, etc.' },
-  { value: 'ftp', label: 'FTP / FTPS', icon: Server, description: 'FTP oder FTPS Server' },
-  { value: 'rclone', label: 'Rclone', icon: FolderSync, description: '40+ Cloud-Provider (GDrive, Dropbox, ...)' },
+  { value: 'ftp', label: 'FTP / FTPS', icon: Server, description: 'FTP or FTPS server' },
+  { value: 'rclone', label: 'Rclone', icon: FolderSync, description: '40+ cloud providers (GDrive, Dropbox, ...)' },
 ];
 
 const getStorageIcon = (type: string) => {
@@ -75,7 +63,24 @@ export default function Storage() {
   const [showForm, setShowForm] = useState(false);
   const [editingStorage, setEditingStorage] = useState<RemoteStorage | null>(null);
   const [testingId, setTestingId] = useState<number | null>(null);
-  const [testResult, setTestResult] = useState<{ id: number; success: boolean; message: string } | null>(null);
+
+  // ST3: Persistent test results via localStorage
+  const [testResults, setTestResults] = useState<Record<number, { success: boolean; message: string; testedAt: string }>>(() => {
+    try {
+      const stored = localStorage.getItem('storage-test-results');
+      return stored ? JSON.parse(stored) : {};
+    } catch { return {}; }
+  });
+  const saveTestResult = (id: number, result: { success: boolean; message: string }) => {
+    setTestResults((prev) => {
+      const next = { ...prev, [id]: { ...result, testedAt: new Date().toISOString() } };
+      localStorage.setItem('storage-test-results', JSON.stringify(next));
+      return next;
+    });
+  };
+  const [browsingStorage, setBrowsingStorage] = useState<RemoteStorage | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{ id: number; name: string } | null>(null);
+  const [formStep, setFormStep] = useState(1); // ST1: 1=Name+Type, 2=Details, 3=Review
 
   const [formData, setFormData] = useState<StorageFormData>({
     name: '',
@@ -134,11 +139,16 @@ export default function Storage() {
       return { id, ...res.data };
     },
     onSuccess: (data) => {
-      setTestResult(data);
+      saveTestResult(data.id, { success: data.success ?? true, message: data.message || 'Connection successful' });
       setTestingId(null);
     },
     onError: (error: Error, id) => {
-      setTestResult({ id, success: false, message: error.message });
+      let message = error.message;
+      if (axios.isAxiosError(error)) {
+        const data = error.response?.data as { message?: string; detail?: string } | undefined;
+        message = data?.message || data?.detail || error.message;
+      }
+      saveTestResult(id, { success: false, message });
       setTestingId(null);
     },
   });
@@ -164,6 +174,7 @@ export default function Storage() {
     });
     setShowForm(false);
     setEditingStorage(null);
+    setFormStep(1);
   };
 
   const handleEdit = (storage: RemoteStorage) => {
@@ -177,7 +188,7 @@ export default function Storage() {
       username: storage.username || '',
       password: '',
       base_path: storage.base_path || '/backups',
-      ssh_key_path: '',
+      ssh_key_path: storage.ssh_key_path || '',
       s3_bucket: storage.s3_bucket || '',
       s3_region: storage.s3_region || 'eu-central-1',
       s3_access_key: '',
@@ -187,6 +198,7 @@ export default function Storage() {
       rclone_remote: storage.rclone_remote || '',
     });
     setShowForm(true);
+    setFormStep(2); // When editing, start at connection details
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -209,7 +221,7 @@ export default function Storage() {
         return (
           <div>
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-              Lokaler Pfad
+              Local Path
             </label>
             <input
               type="text"
@@ -253,7 +265,7 @@ export default function Storage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Benutzername
+                  Username
                 </label>
                 <input
                   type="text"
@@ -265,7 +277,7 @@ export default function Storage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Passwort / SSH-Key Pfad
+                  Password / SSH-Key Path
                 </label>
                 <input
                   type="password"
@@ -278,7 +290,7 @@ export default function Storage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                SSH-Key Pfad (optional)
+                SSH-Key Path (optional)
               </label>
               <input
                 type="text"
@@ -290,7 +302,7 @@ export default function Storage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Remote-Pfad
+                Remote Path
               </label>
               <input
                 type="text"
@@ -360,7 +372,7 @@ export default function Storage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Endpoint URL (für MinIO/Backblaze, optional)
+                Endpoint URL (for MinIO/Backblaze, optional)
               </label>
               <input
                 type="text"
@@ -372,7 +384,7 @@ export default function Storage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Pfad-Präfix
+                Path Prefix
               </label>
               <input
                 type="text"
@@ -403,7 +415,7 @@ export default function Storage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Benutzername
+                  Username
                 </label>
                 <input
                   type="text"
@@ -415,7 +427,7 @@ export default function Storage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Passwort / App-Passwort
+                  Password / App Password
                 </label>
                 <input
                   type="password"
@@ -428,7 +440,7 @@ export default function Storage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Backup-Ordner
+                Backup Folder
               </label>
               <input
                 type="text"
@@ -473,7 +485,7 @@ export default function Storage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Benutzername
+                  Username
                 </label>
                 <input
                   type="text"
@@ -485,7 +497,7 @@ export default function Storage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Passwort
+                  Password
                 </label>
                 <input
                   type="password"
@@ -498,7 +510,7 @@ export default function Storage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Pfad
+                Path
               </label>
               <input
                 type="text"
@@ -516,7 +528,7 @@ export default function Storage() {
           <>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Rclone Remote-Name
+                Rclone Remote Name
               </label>
               <input
                 type="text"
@@ -526,12 +538,12 @@ export default function Storage() {
                 className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
               />
               <p className="text-xs text-slate-500 mt-1">
-                Der Remote muss vorher mit `rclone config` erstellt werden
+                The remote must be created first with `rclone config`
               </p>
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Pfad
+                Path
               </label>
               <input
                 type="text"
@@ -556,7 +568,7 @@ export default function Storage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Remote Storage</h1>
           <p className="text-slate-600 dark:text-slate-400">
-            Konfiguriere externe Speicherorte für Off-Site Backups
+            Configure external storage locations for off-site backups
           </p>
         </div>
         <button
@@ -564,7 +576,7 @@ export default function Storage() {
           className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
         >
           <Plus className="w-5 h-5" />
-          Storage hinzufügen
+          Add Storage
         </button>
       </div>
 
@@ -591,12 +603,20 @@ export default function Storage() {
       {/* Storage List */}
       <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700">
-          <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Konfigurierte Speicherorte</h2>
+          <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Configured Storage Locations</h2>
         </div>
 
         {isLoading ? (
-          <div className="p-8 text-center">
-            <Loader2 className="w-8 h-8 animate-spin text-indigo-600 mx-auto" />
+          <div className="p-6 space-y-3">
+            {[...Array(2)].map((_, i) => (
+              <div key={i} className="flex items-center gap-4 animate-pulse">
+                <div className="w-12 h-12 bg-slate-200 dark:bg-slate-700 rounded-lg" />
+                <div className="flex-1">
+                  <div className="h-5 bg-slate-200 dark:bg-slate-700 rounded w-1/3 mb-2" />
+                  <div className="h-4 bg-slate-200 dark:bg-slate-700 rounded w-1/2" />
+                </div>
+              </div>
+            ))}
           </div>
         ) : storages && storages.length > 0 ? (
           <div className="divide-y divide-slate-200 dark:divide-slate-700">
@@ -626,7 +646,7 @@ export default function Storage() {
                         <h3 className="font-medium text-slate-900 dark:text-white">{storage.name}</h3>
                         {!storage.enabled && (
                           <span className="px-2 py-0.5 text-xs rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-400">
-                            Deaktiviert
+                            Disabled
                           </span>
                         )}
                       </div>
@@ -652,51 +672,66 @@ export default function Storage() {
                       </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    {testResult?.id === storage.id && (
-                      <span
-                        className={`flex items-center gap-1 text-sm ${
-                          testResult.success ? 'text-green-600' : 'text-red-600'
+                  <div className="flex flex-col items-end gap-1">
+                    <div className="flex items-center gap-2">
+                      {testResults[storage.id] && (
+                        <span
+                          className={`flex items-center gap-1 text-sm ${
+                            testResults[storage.id].success ? 'text-green-600' : 'text-red-600'
+                          }`}
+                          title={`${testResults[storage.id].message} — ${new Date(testResults[storage.id].testedAt).toLocaleString()}`}
+                        >
+                          {testResults[storage.id].success ? (
+                            <CheckCircle className="w-4 h-4" />
+                          ) : (
+                            <XCircle className="w-4 h-4" />
+                          )}
+                          {testResults[storage.id].success ? 'Connected' : 'Error'}
+                        </span>
+                      )}
+                      <button
+                        onClick={() => setBrowsingStorage(storage)}
+                        className="p-2 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
+                        title="Browse Files"
+                      >
+                        <FolderOpen className="w-5 h-5" />
+                      </button>
+                      <button
+                        onClick={() => testMutation.mutate(storage.id)}
+                        disabled={testingId === storage.id}
+                        className="p-2 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
+                        title="Test Connection"
+                      >
+                        {testingId === storage.id ? (
+                          <Loader2 className="w-5 h-5 animate-spin" />
+                        ) : (
+                          <TestTube className="w-5 h-5" />
+                        )}
+                      </button>
+                      <button
+                        onClick={() => handleEdit(storage)}
+                        className="p-2 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
+                        title="Edit"
+                      >
+                        <Edit className="w-5 h-5" />
+                      </button>
+                      <button
+                        onClick={() => setConfirmDialog({ id: storage.id, name: storage.name })}
+                        className="p-2 text-slate-600 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                        title="Delete"
+                      >
+                        <Trash2 className="w-5 h-5" />
+                      </button>
+                    </div>
+                    {testResults[storage.id]?.message && (
+                      <p
+                        className={`max-w-xs text-right text-xs ${
+                          testResults[storage.id].success ? 'text-green-600' : 'text-red-600'
                         }`}
                       >
-                        {testResult.success ? (
-                          <CheckCircle className="w-4 h-4" />
-                        ) : (
-                          <XCircle className="w-4 h-4" />
-                        )}
-                        {testResult.success ? 'Verbunden' : 'Fehler'}
-                      </span>
+                        {testResults[storage.id].message}
+                      </p>
                     )}
-                    <button
-                      onClick={() => testMutation.mutate(storage.id)}
-                      disabled={testingId === storage.id}
-                      className="p-2 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
-                      title="Verbindung testen"
-                    >
-                      {testingId === storage.id ? (
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                      ) : (
-                        <TestTube className="w-5 h-5" />
-                      )}
-                    </button>
-                    <button
-                      onClick={() => handleEdit(storage)}
-                      className="p-2 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
-                      title="Bearbeiten"
-                    >
-                      <Edit className="w-5 h-5" />
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (confirm(`Storage "${storage.name}" wirklich löschen?`)) {
-                          deleteMutation.mutate(storage.id);
-                        }
-                      }}
-                      className="p-2 text-slate-600 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
-                      title="Löschen"
-                    >
-                      <Trash2 className="w-5 h-5" />
-                    </button>
                   </div>
                 </div>
               );
@@ -705,105 +740,237 @@ export default function Storage() {
         ) : (
           <div className="p-8 text-center text-slate-500 dark:text-slate-400">
             <Wifi className="w-12 h-12 mx-auto mb-4 opacity-50" />
-            <p className="text-lg font-medium">Keine Remote Storages konfiguriert</p>
-            <p className="text-sm">Füge einen Speicherort hinzu, um Backups off-site zu sichern</p>
+            <p className="text-lg font-medium">No remote storages configured</p>
+            <p className="text-sm">Add a storage location to backup off-site</p>
           </div>
         )}
       </div>
 
-      {/* Add/Edit Form Modal */}
+      {/* Storage Browser Modal */}
+      {browsingStorage && (
+        <StorageBrowser
+          storage={browsingStorage}
+          onClose={() => setBrowsingStorage(null)}
+        />
+      )}
+
+      {/* Add/Edit Form Modal - ST1: Step-based */}
       {showForm && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white dark:bg-slate-800 rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            {/* Header with step indicator */}
             <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700">
               <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
-                {editingStorage ? 'Storage bearbeiten' : 'Neuen Storage hinzufügen'}
+                {editingStorage ? 'Edit Storage' : 'Add New Storage'}
               </h2>
+              <div className="flex items-center gap-2 mt-2">
+                {['Name & Type', 'Connection', 'Review'].map((label, i) => {
+                  const step = i + 1;
+                  return (
+                    <div key={step} className="flex items-center gap-2">
+                      <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
+                        step === formStep
+                          ? 'bg-indigo-500 text-white'
+                          : step < formStep
+                          ? 'bg-green-500/20 text-green-400'
+                          : 'bg-slate-200 dark:bg-slate-700 text-slate-500'
+                      }`}>
+                        <span>{step}</span>
+                        <span>{label}</span>
+                      </div>
+                      {i < 2 && <div className={`w-4 h-0.5 ${step < formStep ? 'bg-green-500' : 'bg-slate-300 dark:bg-slate-600'}`} />}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
+
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
-              {/* Name */}
-              <div>
-                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Name
-                </label>
-                <input
-                  type="text"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  placeholder="Mein Backup Storage"
-                  className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
-                  required
-                />
-              </div>
+              {/* Step 1: Name & Type */}
+              {formStep === 1 && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                      Name
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.name}
+                      onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                      placeholder="My Backup Storage"
+                      className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                      Storage Type
+                    </label>
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                      {STORAGE_TYPES.map(({ value, label, icon: Icon, description }) => (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => setFormData({ ...formData, storage_type: value })}
+                          className={`flex flex-col items-start gap-1 px-4 py-3 rounded-lg border-2 transition-colors text-left ${
+                            formData.storage_type === value
+                              ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/30'
+                              : 'border-slate-200 dark:border-slate-600 hover:border-slate-400'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <Icon className={`w-5 h-5 ${formData.storage_type === value ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-500'}`} />
+                            <span className={`text-sm font-medium ${formData.storage_type === value ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-300'}`}>{label}</span>
+                          </div>
+                          <span className="text-xs text-slate-500 dark:text-slate-400">{description}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
 
-              {/* Storage Type */}
-              <div>
-                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-                  Storage-Typ
-                </label>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                  {STORAGE_TYPES.map(({ value, label, icon: Icon }) => (
+              {/* Step 2: Connection Details */}
+              {formStep === 2 && (
+                <>
+                  <div className="flex items-center gap-2 mb-2 text-sm text-slate-500 dark:text-slate-400">
+                    {(() => { const Icon = getStorageIcon(formData.storage_type); return <Icon className="w-4 h-4" />; })()}
+                    <span>{STORAGE_TYPES.find(t => t.value === formData.storage_type)?.label} — {formData.name || 'Unnamed'}</span>
+                  </div>
+                  {renderTypeFields()}
+                </>
+              )}
+
+              {/* Step 3: Review & Confirm */}
+              {formStep === 3 && (
+                <>
+                  <div className="space-y-3 text-sm">
+                    <div className="flex justify-between py-2 border-b border-slate-200 dark:border-slate-700">
+                      <span className="text-slate-500">Name</span>
+                      <span className="font-medium text-slate-900 dark:text-white">{formData.name || '—'}</span>
+                    </div>
+                    <div className="flex justify-between py-2 border-b border-slate-200 dark:border-slate-700">
+                      <span className="text-slate-500">Type</span>
+                      <span className="font-medium text-slate-900 dark:text-white">{STORAGE_TYPES.find(t => t.value === formData.storage_type)?.label}</span>
+                    </div>
+                    {formData.storage_type === 'ssh' && formData.host && (
+                      <div className="flex justify-between py-2 border-b border-slate-200 dark:border-slate-700">
+                        <span className="text-slate-500">Host</span>
+                        <span className="font-mono text-slate-900 dark:text-white">{formData.username ? `${formData.username}@` : ''}{formData.host}{formData.port ? `:${formData.port}` : ''}</span>
+                      </div>
+                    )}
+                    {formData.storage_type === 's3' && formData.s3_bucket && (
+                      <div className="flex justify-between py-2 border-b border-slate-200 dark:border-slate-700">
+                        <span className="text-slate-500">Bucket</span>
+                        <span className="font-mono text-slate-900 dark:text-white">s3://{formData.s3_bucket}/{formData.base_path}</span>
+                      </div>
+                    )}
+                    {formData.storage_type === 'webdav' && formData.webdav_url && (
+                      <div className="flex justify-between py-2 border-b border-slate-200 dark:border-slate-700">
+                        <span className="text-slate-500">WebDAV</span>
+                        <span className="font-mono text-slate-900 dark:text-white text-right break-all">{formData.webdav_url}</span>
+                      </div>
+                    )}
+                    {formData.storage_type === 'rclone' && formData.rclone_remote && (
+                      <div className="flex justify-between py-2 border-b border-slate-200 dark:border-slate-700">
+                        <span className="text-slate-500">Remote</span>
+                        <span className="font-mono text-slate-900 dark:text-white">{formData.rclone_remote}:{formData.base_path}</span>
+                      </div>
+                    )}
+                    {(formData.storage_type === 'local' || formData.storage_type === 'ftp') && (
+                      <div className="flex justify-between py-2 border-b border-slate-200 dark:border-slate-700">
+                        <span className="text-slate-500">{formData.storage_type === 'ftp' ? 'Host' : 'Path'}</span>
+                        <span className="font-mono text-slate-900 dark:text-white">
+                          {formData.storage_type === 'ftp' && formData.host ? `${formData.host}:${formData.base_path}` : formData.base_path}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-2">
+                    <input
+                      type="checkbox"
+                      id="enabled"
+                      checked={formData.enabled}
+                      onChange={(e) => setFormData({ ...formData, enabled: e.target.checked })}
+                      className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <label htmlFor="enabled" className="text-sm text-slate-700 dark:text-slate-300">
+                      Storage enabled
+                    </label>
+                  </div>
+                </>
+              )}
+
+              {/* Navigation */}
+              <div className="flex justify-between pt-4 border-t border-slate-200 dark:border-slate-700">
+                <div>
+                  {formStep > 1 && (
                     <button
-                      key={value}
                       type="button"
-                      onClick={() => setFormData({ ...formData, storage_type: value })}
-                      className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-colors ${
-                        formData.storage_type === value
-                          ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300'
-                          : 'border-slate-300 dark:border-slate-600 hover:border-slate-400'
-                      }`}
+                      onClick={() => setFormStep(formStep - 1)}
+                      className="flex items-center gap-1 px-4 py-2 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
                     >
-                      <Icon className="w-4 h-4" />
-                      <span className="text-sm">{label}</span>
+                      <ChevronLeft className="w-4 h-4" />
+                      Back
                     </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Type-specific fields */}
-              {renderTypeFields()}
-
-              {/* Enabled */}
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  id="enabled"
-                  checked={formData.enabled}
-                  onChange={(e) => setFormData({ ...formData, enabled: e.target.checked })}
-                  className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                />
-                <label htmlFor="enabled" className="text-sm text-slate-700 dark:text-slate-300">
-                  Storage aktiviert
-                </label>
-              </div>
-
-              {/* Actions */}
-              <div className="flex justify-end gap-3 pt-4 border-t border-slate-200 dark:border-slate-700">
-                <button
-                  type="button"
-                  onClick={resetForm}
-                  className="px-4 py-2 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
-                >
-                  Abbrechen
-                </button>
-                <button
-                  type="submit"
-                  disabled={createMutation.isPending || updateMutation.isPending}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
-                >
-                  {createMutation.isPending || updateMutation.isPending ? (
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                  ) : editingStorage ? (
-                    'Speichern'
-                  ) : (
-                    'Hinzufügen'
                   )}
-                </button>
+                </div>
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={resetForm}
+                    className="px-4 py-2 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  {formStep < 3 ? (
+                    <button
+                      type="button"
+                      onClick={() => setFormStep(formStep + 1)}
+                      disabled={formStep === 1 && !formData.name}
+                      className="flex items-center gap-1 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                    >
+                      Next
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  ) : (
+                    <button
+                      type="submit"
+                      disabled={createMutation.isPending || updateMutation.isPending}
+                      className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                    >
+                      {createMutation.isPending || updateMutation.isPending ? (
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                      ) : editingStorage ? (
+                        'Save'
+                      ) : (
+                        'Add Storage'
+                      )}
+                    </button>
+                  )}
+                </div>
               </div>
             </form>
           </div>
         </div>
       )}
+
+      {/* Confirm Delete Dialog */}
+      <ConfirmDialog
+        isOpen={!!confirmDialog}
+        onClose={() => setConfirmDialog(null)}
+        onConfirm={() => {
+          if (confirmDialog) {
+            deleteMutation.mutate(confirmDialog.id);
+            setConfirmDialog(null);
+          }
+        }}
+        title="Delete Storage"
+        message={`Really delete storage "${confirmDialog?.name}"? This action cannot be undone.`}
+        confirmLabel="Delete"
+        confirmVariant="danger"
+        isLoading={deleteMutation.isPending}
+      />
     </div>
   );
 }

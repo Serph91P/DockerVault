@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { Backup } from '../api'
+import { useNotificationStore } from './notifications'
 
 interface BackupProgress {
   backup_id: number
@@ -18,7 +19,7 @@ interface WebSocketStore {
 }
 
 let ws: WebSocket | null = null
-let reconnectTimeout: NodeJS.Timeout | null = null
+let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
 
 export const useWebSocketStore = create<WebSocketStore>((set, get) => ({
   connected: false,
@@ -27,9 +28,14 @@ export const useWebSocketStore = create<WebSocketStore>((set, get) => ({
 
   connect: () => {
     if (ws?.readyState === WebSocket.OPEN) return
+    if (typeof window === 'undefined' || !window.location) return
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.host
+
+    // The session_token cookie is httpOnly, so it cannot be read from JS.
+    // Instead, the browser automatically sends cookies on same-origin
+    // WebSocket connections and the backend reads the cookie directly.
     ws = new WebSocket(`${protocol}//${host}/ws/updates`)
 
     ws.onopen = () => {
@@ -37,9 +43,15 @@ export const useWebSocketStore = create<WebSocketStore>((set, get) => ({
       set({ connected: true })
     }
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       console.log('WebSocket disconnected')
       set({ connected: false })
+
+      // 4001 = authentication failure — do not reconnect
+      if (event?.code === 4001) {
+        console.warn('WebSocket auth failed, not reconnecting')
+        return
+      }
       
       // Reconnect after 5 seconds
       reconnectTimeout = setTimeout(() => {
@@ -108,11 +120,28 @@ function handleMessage(
     case 'backup_completed':
     case 'backup_failed':
       // Remove from progress tracking
-      set((state) => {
-        const newProgress = new Map(state.backupProgress)
+      {
+        const currentState = get()
+        const newProgress = new Map(currentState.backupProgress)
         newProgress.delete(data.backup_id as number)
-        return { backupProgress: newProgress }
-      })
+        set({ backupProgress: newProgress })
+
+        // Add persistent notification
+        const addNotification = useNotificationStore.getState().addNotification
+        if (data.type === 'backup_completed') {
+          addNotification({
+            type: 'success',
+            title: 'Backup completed',
+            message: `Backup #${data.backup_id} finished successfully`,
+          })
+        } else {
+          addNotification({
+            type: 'error',
+            title: 'Backup failed',
+            message: `Backup #${data.backup_id} failed. Check logs for details.`,
+          })
+        }
+      }
       break
 
     default:
@@ -120,9 +149,18 @@ function handleMessage(
   }
 }
 
-// Auto-connect on import
+// Auto-connect on import (cancellable for test cleanup)
+let autoConnectTimer: ReturnType<typeof setTimeout> | null = null
 if (typeof window !== 'undefined') {
-  setTimeout(() => {
+  autoConnectTimer = setTimeout(() => {
     useWebSocketStore.getState().connect()
   }, 1000)
+}
+
+export function cleanupWebSocket() {
+  if (autoConnectTimer) {
+    clearTimeout(autoConnectTimer)
+    autoConnectTimer = null
+  }
+  useWebSocketStore.getState().disconnect()
 }
