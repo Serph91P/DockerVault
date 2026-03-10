@@ -1,42 +1,42 @@
 # FastAPI and server
-fastapi>=0.109.0
-uvicorn[standard]>=0.27.0
-python-multipart>=0.0.6
+fastapi>=0.135.1
+uvicorn[standard]>=0.41.0
+python-multipart>=0.0.22
 
 # Database
-sqlalchemy>=2.0.25
-aiosqlite>=0.19.0
+sqlalchemy>=2.0.48
+aiosqlite>=0.22.1
 
 # Docker
-docker>=7.0.0
+docker>=7.1.0
 
 # Configuration
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
+pydantic>=2.12.5
+pydantic-settings>=2.13.1
 
 # Scheduling
-apscheduler>=3.10.4
-croniter>=2.0.1
+apscheduler>=3.11.2
+croniter>=6.0.0
 
 # HTTP client
-aiohttp>=3.9.1
-httpx>=0.26.0
+aiohttp>=3.13.3
+httpx>=0.28.1
 
 # Remote Storage
-aiofiles>=23.2.1
-aioboto3>=12.3.0
-aioftp>=0.21.4
-webdavclient3>=3.14.6
+aiofiles>=25.1.0
+aioboto3>=15.5.0
+aioftp>=0.27.2
+webdavclient3>=3.14.7
 
 # Authentication
-bcrypt>=4.0.0
-python-jose[cryptography]>=3.3.0
+bcrypt>=5.0.0
+python-jose[cryptography]>=3.5.0
 
 # Encryption
-cryptography>=42.0.0
+cryptography>=46.0.5
 
 # Rate limiting
 slowapi>=0.1.9
 
 # Utilities
-python-dateutil>=2.8.2
+python-dateutil>=2.9.0
