@@ -1281,8 +1281,19 @@ async def _get_decrypted_archive_path(
             detail="Encryption key file (.key) not found on disk or remote storage.",
         )
 
-    # Decrypt to temp file
-    temp_fd, temp_name = tempfile.mkstemp(suffix=".tar.gz")
+    # Decrypt to temp file — derive suffix from the original archive name
+    # so _get_tar_mode picks the correct open mode (.tar vs .tar.gz etc.).
+    original_name = os.path.basename(backup.file_path or "")
+    if original_name.endswith(".enc"):
+        original_name = original_name[: -len(".enc")]
+    # Extract suffix(es) like .tar.gz, .tar, .tar.zst etc.
+    if ".tar." in original_name:
+        tar_suffix = original_name[original_name.index(".tar") :]
+    elif original_name.endswith(".tar"):
+        tar_suffix = ".tar"
+    else:
+        tar_suffix = ".tar.gz"  # safe fallback
+    temp_fd, temp_name = tempfile.mkstemp(suffix=tar_suffix)
     os.close(temp_fd)
     temp_path = Path(temp_name)
 
@@ -1309,17 +1320,22 @@ async def _get_decrypted_archive_path(
 
 
 def _get_tar_mode(archive_path: str) -> str:
-    """Determine tarfile open mode from file extension."""
+    """Determine tarfile open mode from file extension, with auto-detect fallback."""
     if archive_path.endswith(".tar.gz") or archive_path.endswith(".tgz"):
         return "r:gz"
     elif archive_path.endswith(".tar.bz2"):
         return "r:bz2"
     elif archive_path.endswith(".tar.xz"):
         return "r:xz"
+    elif archive_path.endswith(".tar.zst") or archive_path.endswith(".tar.zstd"):
+        # zstd is not natively supported by tarfile; fall through to raw tar
+        # after external decompression, or handle separately
+        return "r:"
     elif archive_path.endswith(".tar"):
         return "r:"
     else:
-        raise HTTPException(status_code=400, detail="Unsupported archive format")
+        # Auto-detect: let tarfile figure out the compression
+        return "r:*"
 
 
 class BrowseEncryptedRequest(BaseModel):

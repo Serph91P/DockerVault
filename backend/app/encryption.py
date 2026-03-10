@@ -453,18 +453,28 @@ async def list_backup_contents(
 
     Returns list of files with name, size, and type.
     """
-    # Create temp file for decrypted backup
-    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as f:
+    # Derive temp suffix from original archive name (strip .enc)
+    original_name = encrypted_path.name
+    if original_name.endswith(".enc"):
+        original_name = original_name[: -len(".enc")]
+    if ".tar." in original_name:
+        tar_suffix = original_name[original_name.index(".tar") :]
+    elif original_name.endswith(".tar"):
+        tar_suffix = ".tar"
+    else:
+        tar_suffix = ".tar.gz"
+
+    with tempfile.NamedTemporaryFile(suffix=tar_suffix, delete=False) as f:
         temp_path = Path(f.name)
 
     try:
         # Decrypt to temp
         await decrypt_backup(encrypted_path, key_path, private_key, temp_path)
 
-        # List tar contents
+        # List tar contents — use -tf (no gzip flag) and let tar auto-detect
         process = await asyncio.create_subprocess_exec(
             "tar",
-            "-tzf",
+            "-tf",
             str(temp_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
