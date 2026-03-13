@@ -11,21 +11,27 @@ Supported backends:
 """
 
 import asyncio
-import os
-import subprocess
-import shutil
-from abc import ABC, abstractmethod
-from pathlib import Path
-from typing import Optional, Dict, Any, List
-from dataclasses import dataclass
-from enum import Enum
-import aiofiles
-import aiohttp
-from urllib.parse import urljoin
 import hashlib
 import logging
+import os
+import shlex
+import shutil
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import aiofiles
+import aiohttp
 
 logger = logging.getLogger(__name__)
+
+
+def _format_exception_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    name = exc.__class__.__name__
+    return f"{name}: {message}" if message else name
 
 
 class StorageType(str, Enum):
@@ -41,40 +47,41 @@ class StorageType(str, Enum):
 @dataclass
 class StorageConfig:
     """Configuration for a remote storage backend"""
+
     id: int
     name: str
     storage_type: StorageType
     enabled: bool = True
-    
+
     # Connection settings
     host: Optional[str] = None
     port: Optional[int] = None
     username: Optional[str] = None
     password: Optional[str] = None
-    
+
     # Path settings
     base_path: str = "/backups"
-    
+
     # SSH/SFTP specific
     ssh_key_path: Optional[str] = None
     ssh_key_passphrase: Optional[str] = None
-    
+
     # S3 specific
     s3_bucket: Optional[str] = None
     s3_region: Optional[str] = None
     s3_access_key: Optional[str] = None
     s3_secret_key: Optional[str] = None
     s3_endpoint_url: Optional[str] = None  # For MinIO, Backblaze, etc.
-    
+
     # WebDAV specific
     webdav_url: Optional[str] = None
-    
+
     # Rclone specific
     rclone_remote: Optional[str] = None  # Name of rclone remote config
-    
+
     # Additional options
     extra_options: Dict[str, Any] = None
-    
+
     def __post_init__(self):
         if self.extra_options is None:
             self.extra_options = {}
@@ -82,35 +89,35 @@ class StorageConfig:
 
 class StorageBackend(ABC):
     """Abstract base class for storage backends"""
-    
+
     def __init__(self, config: StorageConfig):
         self.config = config
-    
+
     @abstractmethod
     async def upload(self, local_path: Path, remote_path: str) -> bool:
         """Upload a file to remote storage"""
         pass
-    
+
     @abstractmethod
     async def download(self, remote_path: str, local_path: Path) -> bool:
         """Download a file from remote storage"""
         pass
-    
+
     @abstractmethod
     async def delete(self, remote_path: str) -> bool:
         """Delete a file from remote storage"""
         pass
-    
+
     @abstractmethod
     async def list_files(self, remote_path: str = "") -> List[Dict[str, Any]]:
         """List files in remote directory"""
         pass
-    
+
     @abstractmethod
     async def test_connection(self) -> Dict[str, Any]:
         """Test the connection to remote storage"""
         pass
-    
+
     async def get_checksum(self, local_path: Path) -> str:
         """Calculate SHA256 checksum of local file"""
         sha256_hash = hashlib.sha256()
@@ -122,62 +129,72 @@ class StorageBackend(ABC):
 
 class LocalStorage(StorageBackend):
     """Local/Network storage (NFS, SMB mounted paths)"""
-    
+
+    def _safe_resolve(self, remote_path: str) -> Path:
+        """Resolve remote_path under base_path, rejecting traversal attempts."""
+        base = Path(self.config.base_path).resolve()
+        resolved = (base / remote_path).resolve()
+        if not str(resolved).startswith(str(base) + "/") and resolved != base:
+            raise ValueError("Path traversal detected")
+        return resolved
+
     async def upload(self, local_path: Path, remote_path: str) -> bool:
         try:
-            dest = Path(self.config.base_path) / remote_path
+            dest = self._safe_resolve(remote_path)
             dest.parent.mkdir(parents=True, exist_ok=True)
-            
+
             # Use async copy
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, shutil.copy2, str(local_path), str(dest))
-            
+
             logger.info(f"Copied {local_path} to {dest}")
             return True
         except Exception as e:
             logger.error(f"Local upload failed: {e}")
             return False
-    
+
     async def download(self, remote_path: str, local_path: Path) -> bool:
         try:
-            src = Path(self.config.base_path) / remote_path
+            src = self._safe_resolve(remote_path)
             local_path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, shutil.copy2, str(src), str(local_path))
-            
+
             return True
         except Exception as e:
             logger.error(f"Local download failed: {e}")
             return False
-    
+
     async def delete(self, remote_path: str) -> bool:
         try:
-            path = Path(self.config.base_path) / remote_path
+            path = self._safe_resolve(remote_path)
             if path.exists():
                 path.unlink()
             return True
         except Exception as e:
             logger.error(f"Local delete failed: {e}")
             return False
-    
+
     async def list_files(self, remote_path: str = "") -> List[Dict[str, Any]]:
         try:
-            path = Path(self.config.base_path) / remote_path
+            path = self._safe_resolve(remote_path)
             files = []
             if path.exists():
                 for f in path.iterdir():
-                    files.append({
-                        "name": f.name,
-                        "size": f.stat().st_size if f.is_file() else 0,
-                        "is_dir": f.is_dir(),
-                        "modified": f.stat().st_mtime
-                    })
+                    files.append(
+                        {
+                            "name": f.name,
+                            "size": f.stat().st_size if f.is_file() else 0,
+                            "is_dir": f.is_dir(),
+                            "modified": f.stat().st_mtime,
+                        }
+                    )
             return files
         except Exception as e:
             logger.error(f"Local list failed: {e}")
             return []
-    
+
     async def test_connection(self) -> Dict[str, Any]:
         path = Path(self.config.base_path)
         try:
@@ -187,53 +204,61 @@ class LocalStorage(StorageBackend):
             test_file.unlink()
             return {"success": True, "message": f"Path {path} is writable"}
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            message = _format_exception_message(e)
+            logger.warning("Local storage test failed: %s", message)
+            return {"success": False, "message": message}
 
 
 class SSHStorage(StorageBackend):
     """SSH/SFTP storage using rsync or scp"""
-    
+
     def _get_ssh_options(self) -> List[str]:
         """Build SSH options for commands"""
-        opts = []
+        ssh_parts = []
         if self.config.port:
-            opts.extend(["-e", f"ssh -p {self.config.port}"])
+            ssh_parts.append(f"-p {self.config.port}")
         if self.config.ssh_key_path:
-            opts.extend(["-e", f"ssh -i {self.config.ssh_key_path}"])
-        return opts
-    
+            ssh_parts.append(f"-i {self.config.ssh_key_path}")
+        if ssh_parts:
+            return ["-e", f"ssh {' '.join(ssh_parts)}"]
+        return []
+
     def _get_remote_path(self, remote_path: str) -> str:
         """Build full remote path with user@host prefix"""
-        user_host = f"{self.config.username}@{self.config.host}" if self.config.username else self.config.host
+        user_host = (
+            f"{self.config.username}@{self.config.host}"
+            if self.config.username
+            else self.config.host
+        )
         full_path = f"{self.config.base_path}/{remote_path}".replace("//", "/")
         return f"{user_host}:{full_path}"
-    
+
     async def upload(self, local_path: Path, remote_path: str) -> bool:
         try:
             # Create remote directory first
             remote_dir = os.path.dirname(f"{self.config.base_path}/{remote_path}")
-            mkdir_cmd = self._build_ssh_command(f"mkdir -p {remote_dir}")
-            
+            # Sanitize the path to prevent command injection
+            safe_dir = shlex.quote(remote_dir)
+            mkdir_cmd = self._build_ssh_command(f"mkdir -p {safe_dir}")
+
             process = await asyncio.create_subprocess_exec(
                 *mkdir_cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
             )
             await process.communicate()
-            
+
             # Use rsync for efficient transfer
             cmd = ["rsync", "-avz", "--progress"]
             cmd.extend(self._get_ssh_options())
             cmd.append(str(local_path))
             cmd.append(self._get_remote_path(remote_path))
-            
+
             process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
             stdout, stderr = await process.communicate()
-            
+
             if process.returncode == 0:
                 logger.info(f"SSH upload successful: {remote_path}")
                 return True
@@ -243,142 +268,231 @@ class SSHStorage(StorageBackend):
         except Exception as e:
             logger.error(f"SSH upload error: {e}")
             return False
-    
+
     async def download(self, remote_path: str, local_path: Path) -> bool:
         try:
             local_path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             cmd = ["rsync", "-avz", "--progress"]
             cmd.extend(self._get_ssh_options())
             cmd.append(self._get_remote_path(remote_path))
             cmd.append(str(local_path))
-            
+
             process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
             stdout, stderr = await process.communicate()
-            
+
             return process.returncode == 0
         except Exception as e:
             logger.error(f"SSH download error: {e}")
             return False
-    
+
     def _build_ssh_command(self, remote_cmd: str) -> List[str]:
-        """Build SSH command"""
-        cmd = ["ssh"]
+        """Build SSH command.
+
+        Note: The remote_cmd should already have paths sanitized with shlex.quote()
+        before being passed to this method.
+        """
+        cmd = ["ssh", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=15"]
         if self.config.port:
             cmd.extend(["-p", str(self.config.port)])
         if self.config.ssh_key_path:
             cmd.extend(["-i", self.config.ssh_key_path])
-        
-        user_host = f"{self.config.username}@{self.config.host}" if self.config.username else self.config.host
+
+        user_host = (
+            f"{self.config.username}@{self.config.host}"
+            if self.config.username
+            else self.config.host
+        )
         cmd.append(user_host)
         cmd.append(remote_cmd)
         return cmd
-    
+
     async def delete(self, remote_path: str) -> bool:
         try:
             full_path = f"{self.config.base_path}/{remote_path}"
-            cmd = self._build_ssh_command(f"rm -f {full_path}")
-            
+            # Sanitize the path to prevent command injection
+            safe_path = shlex.quote(full_path)
+            cmd = self._build_ssh_command(f"rm -f {safe_path}")
+
             process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
             await process.communicate()
             return process.returncode == 0
         except Exception as e:
             logger.error(f"SSH delete error: {e}")
             return False
-    
+
     async def list_files(self, remote_path: str = "") -> List[Dict[str, Any]]:
         try:
             full_path = f"{self.config.base_path}/{remote_path}".replace("//", "/")
-            cmd = self._build_ssh_command(f"ls -la {full_path}")
-            
+            # Sanitize the path to prevent command injection
+            safe_path = shlex.quote(full_path)
+            # Use --time-style=+%s to get epoch timestamps as a single field
+            cmd = self._build_ssh_command(f"ls -la --time-style=+%s {safe_path}")
+
             process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
             stdout, stderr = await process.communicate()
-            
+
             files = []
             for line in stdout.decode().split("\n")[1:]:  # Skip total line
-                parts = line.split()
-                if len(parts) >= 9:
-                    files.append({
-                        "name": parts[-1],
-                        "size": int(parts[4]) if parts[4].isdigit() else 0,
+                # Split into max 7 parts so filenames with spaces stay intact
+                parts = line.split(None, 6)
+                if len(parts) < 7:
+                    continue
+                name = parts[6]
+                if name in (".", ".."):
+                    continue
+                try:
+                    size = int(parts[4])
+                except (ValueError, IndexError):
+                    size = 0
+                try:
+                    modified = float(parts[5])
+                except (ValueError, IndexError):
+                    modified = 0
+                files.append(
+                    {
+                        "name": name,
+                        "size": size,
                         "is_dir": parts[0].startswith("d"),
-                        "permissions": parts[0]
-                    })
+                        "modified": modified,
+                    }
+                )
             return files
         except Exception as e:
             logger.error(f"SSH list error: {e}")
             return []
-    
+
     async def test_connection(self) -> Dict[str, Any]:
         try:
             cmd = self._build_ssh_command("echo 'Connection successful'")
-            
+
             process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
             stdout, stderr = await process.communicate()
-            
+
             if process.returncode == 0:
                 return {"success": True, "message": "SSH connection successful"}
             else:
-                return {"success": False, "message": stderr.decode()}
+                details = stderr.decode().strip() or stdout.decode().strip()
+                message = details or (
+                    f"SSH connection failed (exit code {process.returncode})"
+                )
+                logger.warning("SSH storage test failed: %s", message)
+                return {"success": False, "message": message}
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            message = _format_exception_message(e)
+            logger.warning("SSH storage test failed: %s", message)
+            return {"success": False, "message": message}
 
 
 class WebDAVStorage(StorageBackend):
     """WebDAV storage"""
-    
-    def _get_session(self) -> aiohttp.ClientSession:
+
+    # Max retry attempts for uploads
+    MAX_RETRIES = 3
+    # Chunk size for streaming downloads (64 KB)
+    DOWNLOAD_CHUNK_SIZE = 64 * 1024
+
+    def _get_session(self, timeout_seconds: int = 300) -> aiohttp.ClientSession:
         """Create aiohttp session with auth"""
         auth = None
         if self.config.username and self.config.password:
             auth = aiohttp.BasicAuth(self.config.username, self.config.password)
-        return aiohttp.ClientSession(auth=auth)
-    
+        timeout = aiohttp.ClientTimeout(total=timeout_seconds, connect=30)
+        return aiohttp.ClientSession(auth=auth, timeout=timeout)
+
     def _get_url(self, remote_path: str) -> str:
         """Build full WebDAV URL"""
         base = self.config.webdav_url.rstrip("/")
         path = f"{self.config.base_path}/{remote_path}".replace("//", "/")
         return f"{base}{path}"
-    
+
     async def upload(self, local_path: Path, remote_path: str) -> bool:
-        try:
-            async with self._get_session() as session:
-                # Create parent directories (MKCOL)
-                parent_path = os.path.dirname(remote_path)
-                if parent_path:
-                    await self._create_dirs(session, parent_path)
-                
-                url = self._get_url(remote_path)
-                async with aiofiles.open(local_path, "rb") as f:
-                    data = await f.read()
-                
-                async with session.put(url, data=data) as resp:
-                    if resp.status in (200, 201, 204):
-                        logger.info(f"WebDAV upload successful: {remote_path}")
-                        return True
-                    else:
-                        logger.error(f"WebDAV upload failed: {resp.status}")
-                        return False
-        except Exception as e:
-            logger.error(f"WebDAV upload error: {e}")
-            return False
-    
+        file_size = local_path.stat().st_size
+        # Scale timeout: minimum 300s, or 60s per 100 MB
+        dynamic_timeout = max(300, int(file_size / (100 * 1024 * 1024)) * 60 + 120)
+
+        # HTTP status codes that are permanent failures (no point retrying)
+        NON_RETRYABLE = {400, 401, 403, 405, 413, 422, 507}
+
+        last_error: Exception | None = None
+        for attempt in range(1, self.MAX_RETRIES + 1):
+            try:
+                async with self._get_session(
+                    timeout_seconds=dynamic_timeout
+                ) as session:
+                    parent_path = os.path.dirname(remote_path)
+                    if parent_path:
+                        await self._create_dirs(session, parent_path)
+
+                    url = self._get_url(remote_path)
+
+                    # Read file into memory so aiohttp sends a known
+                    # Content-Length (never chunked transfer encoding).
+                    # Hetzner Storage Box nginx proxies reject chunked
+                    # uploads with 413.
+                    data = local_path.read_bytes()
+                    headers = {"Content-Length": str(len(data))}
+
+                    async with session.put(url, data=data, headers=headers) as resp:
+                        if resp.status in (200, 201, 204):
+                            logger.info(
+                                "WebDAV upload successful: %s (%.1f MB, attempt %d)",
+                                remote_path,
+                                file_size / (1024 * 1024),
+                                attempt,
+                            )
+                            return True
+                        else:
+                            body = await resp.text()
+                            last_error = RuntimeError(
+                                f"HTTP {resp.status}: {body[:200]}"
+                            )
+                            logger.warning(
+                                "WebDAV upload HTTP %d for %s (attempt %d/%d): %s",
+                                resp.status,
+                                remote_path,
+                                attempt,
+                                self.MAX_RETRIES,
+                                body[:200],
+                            )
+                            if resp.status in NON_RETRYABLE:
+                                logger.error(
+                                    "WebDAV upload permanently rejected (HTTP %d) for %s — not retrying",
+                                    resp.status,
+                                    remote_path,
+                                )
+                                return False
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "WebDAV upload error for %s (attempt %d/%d): %s",
+                    remote_path,
+                    attempt,
+                    self.MAX_RETRIES,
+                    e,
+                )
+
+            if attempt < self.MAX_RETRIES:
+                wait = 2**attempt
+                logger.info("Retrying WebDAV upload in %ds...", wait)
+                await asyncio.sleep(wait)
+
+        logger.error(
+            "WebDAV upload failed after %d attempts for %s: %s",
+            self.MAX_RETRIES,
+            remote_path,
+            last_error,
+        )
+        return False
+
     async def _create_dirs(self, session: aiohttp.ClientSession, path: str):
         """Create directories recursively via MKCOL"""
         parts = path.split("/")
@@ -387,25 +501,28 @@ class WebDAVStorage(StorageBackend):
             if part:
                 current = f"{current}/{part}"
                 url = self._get_url(current)
-                async with session.request("MKCOL", url) as resp:
+                async with session.request("MKCOL", url):
                     pass  # Ignore errors (directory might exist)
-    
+
     async def download(self, remote_path: str, local_path: Path) -> bool:
         try:
             local_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            async with self._get_session() as session:
+
+            async with self._get_session(timeout_seconds=600) as session:
                 url = self._get_url(remote_path)
                 async with session.get(url) as resp:
                     if resp.status == 200:
                         async with aiofiles.open(local_path, "wb") as f:
-                            await f.write(await resp.read())
+                            async for chunk in resp.content.iter_chunked(
+                                self.DOWNLOAD_CHUNK_SIZE
+                            ):
+                                await f.write(chunk)
                         return True
                     return False
         except Exception as e:
             logger.error(f"WebDAV download error: {e}")
             return False
-    
+
     async def delete(self, remote_path: str) -> bool:
         try:
             async with self._get_session() as session:
@@ -415,101 +532,211 @@ class WebDAVStorage(StorageBackend):
         except Exception as e:
             logger.error(f"WebDAV delete error: {e}")
             return False
-    
+
     async def list_files(self, remote_path: str = "") -> List[Dict[str, Any]]:
         try:
+            import xml.etree.ElementTree as ET
+            from email.utils import parsedate_to_datetime
+
             async with self._get_session() as session:
                 url = self._get_url(remote_path)
-                headers = {"Depth": "1"}
-                body = """<?xml version="1.0"?>
-                <d:propfind xmlns:d="DAV:">
-                    <d:prop>
-                        <d:getcontentlength/>
-                        <d:resourcetype/>
-                        <d:getlastmodified/>
-                    </d:prop>
-                </d:propfind>"""
-                
-                async with session.request("PROPFIND", url, data=body, headers=headers) as resp:
-                    if resp.status == 207:
-                        # Parse XML response (simplified)
-                        text = await resp.text()
-                        # Would need proper XML parsing here
+                # Ensure trailing slash so the server treats it as a collection
+                if not url.endswith("/"):
+                    url += "/"
+                headers = {"Depth": "1", "Content-Type": "application/xml"}
+                body = (
+                    '<?xml version="1.0" encoding="utf-8"?>'
+                    '<d:propfind xmlns:d="DAV:">'
+                    "<d:prop>"
+                    "<d:getcontentlength/>"
+                    "<d:resourcetype/>"
+                    "<d:getlastmodified/>"
+                    "</d:prop>"
+                    "</d:propfind>"
+                )
+
+                async with session.request(
+                    "PROPFIND", url, data=body, headers=headers
+                ) as resp:
+                    if resp.status != 207:
+                        logger.warning(
+                            "WebDAV PROPFIND returned %s for %s", resp.status, url
+                        )
                         return []
-                    return []
+
+                    text = await resp.text()
+
+            # Parse the Multi-Status XML response
+            ns = {"d": "DAV:"}
+            root = ET.fromstring(text)
+            files: List[Dict[str, Any]] = []
+
+            # Build the "self" href so we can skip the collection itself
+            request_path = url.split("://", 1)[-1].split("/", 1)[-1].rstrip("/")
+
+            for response_el in root.findall("d:response", ns):
+                href_el = response_el.find("d:href", ns)
+                if href_el is None or href_el.text is None:
+                    continue
+
+                href = href_el.text.rstrip("/")
+                # Skip the collection entry itself (first entry is the queried dir)
+                href_decoded = href.rstrip("/")
+                if href_decoded == request_path or href_decoded == "/" + request_path:
+                    continue
+
+                # Extract the file/directory name from the href
+                name = href.rsplit("/", 1)[-1]
+                if not name:
+                    continue
+
+                # URL-decode the name
+                from urllib.parse import unquote
+
+                name = unquote(name)
+
+                propstat = response_el.find("d:propstat", ns)
+                if propstat is None:
+                    continue
+                prop = propstat.find("d:prop", ns)
+                if prop is None:
+                    continue
+
+                # Check if directory
+                resource_type = prop.find("d:resourcetype", ns)
+                is_dir = (
+                    resource_type is not None
+                    and resource_type.find("d:collection", ns) is not None
+                )
+
+                # Get size
+                size_el = prop.find("d:getcontentlength", ns)
+                size = 0
+                if size_el is not None and size_el.text:
+                    try:
+                        size = int(size_el.text)
+                    except ValueError:
+                        size = 0
+
+                # Get modified date as Unix timestamp
+                modified_el = prop.find("d:getlastmodified", ns)
+                modified: float = 0
+                if modified_el is not None and modified_el.text:
+                    try:
+                        dt = parsedate_to_datetime(modified_el.text)
+                        modified = dt.timestamp()
+                    except (ValueError, TypeError):
+                        modified = 0
+
+                files.append(
+                    {
+                        "name": name,
+                        "size": size,
+                        "is_dir": is_dir,
+                        "modified": modified,
+                    }
+                )
+
+            return files
         except Exception as e:
             logger.error(f"WebDAV list error: {e}")
             return []
-    
+
     async def test_connection(self) -> Dict[str, Any]:
         try:
             async with self._get_session() as session:
                 url = self._get_url("")
-                async with session.request("PROPFIND", url, headers={"Depth": "0"}) as resp:
+                async with session.request(
+                    "PROPFIND", url, headers={"Depth": "0"}
+                ) as resp:
                     if resp.status in (200, 207):
-                        return {"success": True, "message": "WebDAV connection successful"}
+                        return {
+                            "success": True,
+                            "message": "WebDAV connection successful",
+                        }
                     else:
-                        return {"success": False, "message": f"HTTP {resp.status}"}
+                        details = (await resp.text()).strip()
+                        if len(details) > 200:
+                            details = f"{details[:200]}…"
+                        hint = (
+                            " Check WebDAV URL and base_path."
+                            if resp.status == 404
+                            else ""
+                        )
+                        message = (
+                            f"HTTP {resp.status}: {details}{hint}"
+                            if details
+                            else f"HTTP {resp.status}.{hint}"
+                        )
+                        logger.warning("WebDAV storage test failed: %s", message)
+                        return {"success": False, "message": message}
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            message = _format_exception_message(e)
+            logger.warning("WebDAV storage test failed: %s", message)
+            return {"success": False, "message": message}
 
 
 class S3Storage(StorageBackend):
     """S3-compatible storage (AWS, MinIO, Backblaze B2, etc.)"""
-    
+
     def __init__(self, config: StorageConfig):
         super().__init__(config)
         self._client = None
-    
+
     async def _get_client(self):
         """Get or create S3 client"""
         if self._client is None:
             try:
                 import aioboto3
+                from botocore.config import Config as BotoConfig
+
                 session = aioboto3.Session()
-                
+
                 endpoint_url = self.config.s3_endpoint_url
                 if not endpoint_url and self.config.host:
                     endpoint_url = f"https://{self.config.host}"
-                
+
+                boto_config = BotoConfig(
+                    connect_timeout=30,
+                    read_timeout=300,
+                    retries={"max_attempts": 3},
+                )
+
                 self._client = await session.client(
                     "s3",
                     region_name=self.config.s3_region or "us-east-1",
                     aws_access_key_id=self.config.s3_access_key,
                     aws_secret_access_key=self.config.s3_secret_key,
-                    endpoint_url=endpoint_url
+                    endpoint_url=endpoint_url,
+                    config=boto_config,
                 ).__aenter__()
             except ImportError:
                 logger.error("aioboto3 not installed. Run: pip install aioboto3")
                 raise
         return self._client
-    
+
     async def upload(self, local_path: Path, remote_path: str) -> bool:
         try:
             client = await self._get_client()
             key = f"{self.config.base_path}/{remote_path}".lstrip("/")
-            
+
             async with aiofiles.open(local_path, "rb") as f:
                 data = await f.read()
-            
-            await client.put_object(
-                Bucket=self.config.s3_bucket,
-                Key=key,
-                Body=data
-            )
+
+            await client.put_object(Bucket=self.config.s3_bucket, Key=key, Body=data)
             logger.info(f"S3 upload successful: {key}")
             return True
         except Exception as e:
             logger.error(f"S3 upload error: {e}")
             return False
-    
+
     async def download(self, remote_path: str, local_path: Path) -> bool:
         try:
             client = await self._get_client()
             key = f"{self.config.base_path}/{remote_path}".lstrip("/")
-            
+
             local_path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             response = await client.get_object(Bucket=self.config.s3_bucket, Key=key)
             async with aiofiles.open(local_path, "wb") as f:
                 await f.write(await response["Body"].read())
@@ -517,83 +744,93 @@ class S3Storage(StorageBackend):
         except Exception as e:
             logger.error(f"S3 download error: {e}")
             return False
-    
+
     async def delete(self, remote_path: str) -> bool:
         try:
             client = await self._get_client()
             key = f"{self.config.base_path}/{remote_path}".lstrip("/")
-            
+
             await client.delete_object(Bucket=self.config.s3_bucket, Key=key)
             return True
         except Exception as e:
             logger.error(f"S3 delete error: {e}")
             return False
-    
+
     async def list_files(self, remote_path: str = "") -> List[Dict[str, Any]]:
         try:
             client = await self._get_client()
             prefix = f"{self.config.base_path}/{remote_path}".lstrip("/")
-            
+
             response = await client.list_objects_v2(
-                Bucket=self.config.s3_bucket,
-                Prefix=prefix
+                Bucket=self.config.s3_bucket, Prefix=prefix
             )
-            
+
             files = []
             for obj in response.get("Contents", []):
-                files.append({
-                    "name": obj["Key"].split("/")[-1],
-                    "size": obj["Size"],
-                    "is_dir": False,
-                    "modified": obj["LastModified"].isoformat()
-                })
+                modified = 0
+                if obj.get("LastModified"):
+                    try:
+                        modified = obj["LastModified"].timestamp()
+                    except (AttributeError, TypeError):
+                        modified = 0
+                files.append(
+                    {
+                        "name": obj["Key"].split("/")[-1],
+                        "size": obj["Size"],
+                        "is_dir": False,
+                        "modified": modified,
+                    }
+                )
             return files
         except Exception as e:
             logger.error(f"S3 list error: {e}")
             return []
-    
+
     async def test_connection(self) -> Dict[str, Any]:
         try:
             client = await self._get_client()
             await client.head_bucket(Bucket=self.config.s3_bucket)
-            return {"success": True, "message": f"S3 bucket '{self.config.s3_bucket}' accessible"}
+            return {
+                "success": True,
+                "message": f"S3 bucket '{self.config.s3_bucket}' accessible",
+            }
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            message = _format_exception_message(e)
+            logger.warning("S3 storage test failed: %s", message)
+            return {"success": False, "message": message}
 
 
 class RcloneStorage(StorageBackend):
     """Rclone storage - supports 40+ cloud providers"""
-    
+
     async def _run_rclone(self, args: List[str]) -> tuple[int, str, str]:
         """Run rclone command"""
-        cmd = ["rclone"] + args
-        
+        cmd = ["rclone", "--timeout", "300s", "--contimeout", "30s"] + args
+
         process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         stdout, stderr = await process.communicate()
         return process.returncode, stdout.decode(), stderr.decode()
-    
+
     def _get_remote_path(self, remote_path: str) -> str:
         """Build rclone remote path"""
         path = f"{self.config.base_path}/{remote_path}".replace("//", "/")
         return f"{self.config.rclone_remote}:{path}"
-    
+
     async def upload(self, local_path: Path, remote_path: str) -> bool:
         try:
             dest = self._get_remote_path(remote_path)
-            
+
             # Create parent directory
             parent = os.path.dirname(dest)
             await self._run_rclone(["mkdir", parent])
-            
+
             # Copy file
-            code, stdout, stderr = await self._run_rclone([
-                "copyto", str(local_path), dest, "--progress"
-            ])
-            
+            code, stdout, stderr = await self._run_rclone(
+                ["copyto", str(local_path), dest, "--progress"]
+            )
+
             if code == 0:
                 logger.info(f"Rclone upload successful: {remote_path}")
                 return True
@@ -603,20 +840,20 @@ class RcloneStorage(StorageBackend):
         except Exception as e:
             logger.error(f"Rclone upload error: {e}")
             return False
-    
+
     async def download(self, remote_path: str, local_path: Path) -> bool:
         try:
             local_path.parent.mkdir(parents=True, exist_ok=True)
             src = self._get_remote_path(remote_path)
-            
-            code, stdout, stderr = await self._run_rclone([
-                "copyto", src, str(local_path), "--progress"
-            ])
+
+            code, stdout, stderr = await self._run_rclone(
+                ["copyto", src, str(local_path), "--progress"]
+            )
             return code == 0
         except Exception as e:
             logger.error(f"Rclone download error: {e}")
             return False
-    
+
     async def delete(self, remote_path: str) -> bool:
         try:
             path = self._get_remote_path(remote_path)
@@ -625,75 +862,93 @@ class RcloneStorage(StorageBackend):
         except Exception as e:
             logger.error(f"Rclone delete error: {e}")
             return False
-    
+
     async def list_files(self, remote_path: str = "") -> List[Dict[str, Any]]:
         try:
             path = self._get_remote_path(remote_path)
-            code, stdout, stderr = await self._run_rclone([
-                "lsjson", path
-            ])
-            
+            code, stdout, stderr = await self._run_rclone(["lsjson", path])
+
             if code == 0:
                 import json
+                from datetime import datetime as _dt
+
                 items = json.loads(stdout)
-                return [{
-                    "name": item["Name"],
-                    "size": item.get("Size", 0),
-                    "is_dir": item["IsDir"],
-                    "modified": item.get("ModTime", "")
-                } for item in items]
+                result = []
+                for item in items:
+                    modified = 0
+                    mod_time = item.get("ModTime", "")
+                    if mod_time:
+                        try:
+                            dt = _dt.fromisoformat(mod_time.replace("Z", "+00:00"))
+                            modified = dt.timestamp()
+                        except (ValueError, TypeError):
+                            modified = 0
+                    result.append(
+                        {
+                            "name": item["Name"],
+                            "size": item.get("Size", 0),
+                            "is_dir": item["IsDir"],
+                            "modified": modified,
+                        }
+                    )
+                return result
             return []
         except Exception as e:
             logger.error(f"Rclone list error: {e}")
             return []
-    
+
     async def test_connection(self) -> Dict[str, Any]:
         try:
-            code, stdout, stderr = await self._run_rclone([
-                "lsd", f"{self.config.rclone_remote}:"
-            ])
+            code, stdout, stderr = await self._run_rclone(
+                ["lsd", f"{self.config.rclone_remote}:"]
+            )
             if code == 0:
-                return {"success": True, "message": f"Rclone remote '{self.config.rclone_remote}' accessible"}
+                return {
+                    "success": True,
+                    "message": (
+                        f"Rclone remote '{self.config.rclone_remote}' accessible"
+                    ),
+                }
             else:
-                return {"success": False, "message": stderr}
+                details = stderr.strip() or stdout.strip()
+                message = details or f"Rclone connection failed (exit code {code})"
+                logger.warning("Rclone storage test failed: %s", message)
+                return {"success": False, "message": message}
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            message = _format_exception_message(e)
+            logger.warning("Rclone storage test failed: %s", message)
+            return {"success": False, "message": message}
 
 
 class FTPStorage(StorageBackend):
     """FTP/FTPS storage"""
-    
+
     async def _connect(self):
         """Create FTP connection"""
         import aioftp
-        
+
         client = aioftp.Client()
-        await client.connect(
-            self.config.host,
-            port=self.config.port or 21
-        )
+        await client.connect(self.config.host, port=self.config.port or 21)
+        # Set socket timeout for data operations
+        client.socket.settimeout(60)
         if self.config.username:
-            await client.login(
-                self.config.username,
-                self.config.password or ""
-            )
+            await client.login(self.config.username, self.config.password or "")
         return client
-    
+
     async def upload(self, local_path: Path, remote_path: str) -> bool:
         try:
-            import aioftp
             client = await self._connect()
-            
+
             try:
                 full_path = f"{self.config.base_path}/{remote_path}"
-                
+
                 # Create directories
                 parent = os.path.dirname(full_path)
                 try:
                     await client.make_directory(parent)
-                except:
+                except Exception:
                     pass
-                
+
                 # Upload file
                 await client.upload(local_path, full_path)
                 logger.info(f"FTP upload successful: {remote_path}")
@@ -703,12 +958,11 @@ class FTPStorage(StorageBackend):
         except Exception as e:
             logger.error(f"FTP upload error: {e}")
             return False
-    
+
     async def download(self, remote_path: str, local_path: Path) -> bool:
         try:
-            import aioftp
             client = await self._connect()
-            
+
             try:
                 local_path.parent.mkdir(parents=True, exist_ok=True)
                 full_path = f"{self.config.base_path}/{remote_path}"
@@ -719,12 +973,11 @@ class FTPStorage(StorageBackend):
         except Exception as e:
             logger.error(f"FTP download error: {e}")
             return False
-    
+
     async def delete(self, remote_path: str) -> bool:
         try:
-            import aioftp
             client = await self._connect()
-            
+
             try:
                 full_path = f"{self.config.base_path}/{remote_path}"
                 await client.remove_file(full_path)
@@ -734,41 +987,60 @@ class FTPStorage(StorageBackend):
         except Exception as e:
             logger.error(f"FTP delete error: {e}")
             return False
-    
+
     async def list_files(self, remote_path: str = "") -> List[Dict[str, Any]]:
         try:
-            import aioftp
             client = await self._connect()
-            
+
             try:
+                from datetime import datetime as _dt
+
                 full_path = f"{self.config.base_path}/{remote_path}"
                 files = []
                 async for path, info in client.list(full_path):
-                    files.append({
-                        "name": path.name,
-                        "size": info.get("size", 0),
-                        "is_dir": info.get("type") == "dir",
-                        "modified": info.get("modify", "")
-                    })
+                    modified = 0
+                    modify_str = info.get("modify", "")
+                    if modify_str:
+                        try:
+                            # aioftp MDTM format: YYYYMMDDHHMMSS[.sss]
+                            dt = _dt.strptime(str(modify_str)[:14], "%Y%m%d%H%M%S")
+                            modified = dt.timestamp()
+                        except (ValueError, TypeError):
+                            modified = 0
+                    size = info.get("size", 0)
+                    try:
+                        size = int(size)
+                    except (ValueError, TypeError):
+                        size = 0
+                    files.append(
+                        {
+                            "name": path.name,
+                            "size": size,
+                            "is_dir": info.get("type") == "dir",
+                            "modified": modified,
+                        }
+                    )
                 return files
             finally:
                 await client.quit()
         except Exception as e:
             logger.error(f"FTP list error: {e}")
             return []
-    
+
     async def test_connection(self) -> Dict[str, Any]:
         try:
             client = await self._connect()
             await client.quit()
             return {"success": True, "message": "FTP connection successful"}
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            message = _format_exception_message(e)
+            logger.warning("FTP storage test failed: %s", message)
+            return {"success": False, "message": message}
 
 
 class RemoteStorageManager:
     """Manager for handling multiple remote storage backends"""
-    
+
     _backends = {
         StorageType.LOCAL: LocalStorage,
         StorageType.SSH: SSHStorage,
@@ -778,63 +1050,63 @@ class RemoteStorageManager:
         StorageType.FTP: FTPStorage,
         StorageType.RCLONE: RcloneStorage,
     }
-    
+
     def __init__(self):
         self.configs: Dict[int, StorageConfig] = {}
         self.backends: Dict[int, StorageBackend] = {}
-    
+
     def add_storage(self, config: StorageConfig) -> StorageBackend:
         """Add a storage backend"""
         backend_class = self._backends.get(config.storage_type)
         if not backend_class:
             raise ValueError(f"Unknown storage type: {config.storage_type}")
-        
+
         backend = backend_class(config)
         self.configs[config.id] = config
         self.backends[config.id] = backend
         return backend
-    
+
     def get_backend(self, storage_id: int) -> Optional[StorageBackend]:
         """Get a storage backend by ID"""
         return self.backends.get(storage_id)
-    
+
     def remove_storage(self, storage_id: int):
         """Remove a storage backend"""
         self.configs.pop(storage_id, None)
         self.backends.pop(storage_id, None)
-    
+
     async def upload_to_all(
         self,
         local_path: Path,
         remote_path: str,
-        storage_ids: Optional[List[int]] = None
+        storage_ids: Optional[List[int]] = None,
     ) -> Dict[int, bool]:
         """Upload a file to multiple storage backends"""
         results = {}
-        
+
         targets = storage_ids or list(self.backends.keys())
-        
+
         tasks = []
         for storage_id in targets:
             backend = self.backends.get(storage_id)
             if backend and self.configs[storage_id].enabled:
                 tasks.append((storage_id, backend.upload(local_path, remote_path)))
-        
+
         for storage_id, task in tasks:
             try:
                 results[storage_id] = await task
             except Exception as e:
                 logger.error(f"Upload to storage {storage_id} failed: {e}")
                 results[storage_id] = False
-        
+
         return results
-    
+
     async def sync_backup(
         self,
         local_backup_path: Path,
         target_name: str,
         backup_filename: str,
-        storage_ids: Optional[List[int]] = None
+        storage_ids: Optional[List[int]] = None,
     ) -> Dict[int, bool]:
         """Sync a backup file to remote storage(s)"""
         remote_path = f"{target_name}/{backup_filename}"

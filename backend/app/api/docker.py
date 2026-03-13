@@ -2,17 +2,23 @@
 Docker API endpoints.
 """
 
+import logging
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException
+
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from app.docker_client import docker_client, ContainerInfo, VolumeInfo, StackInfo
+from app.docker_client import docker_client
+from app.rate_limit import limiter
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
 class ContainerResponse(BaseModel):
     """Container response model."""
+
     id: str
     name: str
     image: str
@@ -32,6 +38,7 @@ class ContainerResponse(BaseModel):
 
 class VolumeResponse(BaseModel):
     """Volume response model."""
+
     name: str
     driver: str
     mountpoint: str
@@ -45,10 +52,23 @@ class VolumeResponse(BaseModel):
 
 class StackResponse(BaseModel):
     """Stack response model."""
+
     name: str
     containers: List[ContainerResponse]
     volumes: List[str]
     networks: List[str]
+    stop_order: List[str] = []
+    start_order: List[str] = []
+
+
+class StackDependencyResponse(BaseModel):
+    """Stack dependency analysis response."""
+
+    stack_name: str
+    containers: List[str]
+    stop_order: List[str]
+    start_order: List[str]
+    dependencies: dict  # service -> [depends_on services]
 
 
 @router.get("/health")
@@ -88,8 +108,7 @@ async def get_container(container_id: str):
     """Get a specific container."""
     containers = await docker_client.list_containers()
     container = next(
-        (c for c in containers if c.id == container_id or c.name == container_id),
-        None
+        (c for c in containers if c.id == container_id or c.name == container_id), None
     )
     if not container:
         raise HTTPException(status_code=404, detail="Container not found")
@@ -110,8 +129,14 @@ async def get_container(container_id: str):
 
 
 @router.post("/containers/{container_id}/stop")
-async def stop_container(container_id: str, timeout: int = 30):
+@limiter.limit("10/minute")
+async def stop_container(
+    request: Request,
+    container_id: str,
+    timeout: int = Query(default=30, ge=1, le=300),
+):
     """Stop a container."""
+    logger.info("Stopping container %s (timeout=%ds)", container_id, timeout)
     success = await docker_client.stop_container(container_id, timeout=timeout)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to stop container")
@@ -119,8 +144,10 @@ async def stop_container(container_id: str, timeout: int = 30):
 
 
 @router.post("/containers/{container_id}/start")
-async def start_container(container_id: str):
+@limiter.limit("10/minute")
+async def start_container(request: Request, container_id: str):
     """Start a container."""
+    logger.info("Starting container %s", container_id)
     success = await docker_client.start_container(container_id)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to start container")
@@ -170,6 +197,33 @@ async def list_stacks():
             ],
             volumes=s.volumes,
             networks=s.networks,
+            stop_order=s.stop_order,
+            start_order=s.start_order,
         )
         for s in stacks
     ]
+
+
+@router.get("/stacks/{stack_name}/dependencies", response_model=StackDependencyResponse)
+async def get_stack_dependencies(stack_name: str):
+    """Get dependency analysis for a specific stack."""
+    stacks = await docker_client.get_stacks()
+    stack = next((s for s in stacks if s.name == stack_name), None)
+
+    if not stack:
+        raise HTTPException(status_code=404, detail=f"Stack '{stack_name}' not found")
+
+    # Build dependencies dict: container_name -> [depends_on]
+    dependencies = {}
+    for container in stack.containers:
+        deps = list(set(container.compose_depends_on + container.depends_on))
+        if deps:
+            dependencies[container.name] = deps
+
+    return StackDependencyResponse(
+        stack_name=stack_name,
+        containers=[c.name for c in stack.containers],
+        stop_order=stack.stop_order,
+        start_order=stack.start_order,
+        dependencies=dependencies,
+    )
