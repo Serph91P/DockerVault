@@ -40,8 +40,8 @@ WORKDIR /app
 
 # Install build dependencies for Python packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential=12.12 \
-    libffi-dev=3.4.8-2 \
+    build-essential \
+    libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for caching
@@ -76,14 +76,14 @@ WORKDIR /app
 
 # Install only runtime dependencies (no build tools)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    nginx=1.26.3-3+deb13u2 \
-    supervisor=4.2.5-3 \
-    curl=8.14.1-2+deb13u2 \
-    rsync=3.4.1+ds1-5+deb13u1 \
-    openssh-client=1:10.0p1-7 \
-    tini=0.19.0-3+b5 \
-    openssl=3.5.4-1~deb13u2 \
-    sudo=1.9.16p2-3 \
+    nginx \
+    supervisor \
+    curl \
+    rsync \
+    openssh-client \
+    tini \
+    openssl \
+    sudo \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean \
     && rm -f /etc/nginx/sites-enabled/default
