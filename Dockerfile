@@ -163,3 +163,4 @@ VOLUME ["/app/data", "/backups"]
 
 # Entrypoint handles docker group setup and starts supervisord
 ENTRYPOINT ["/entrypoint.sh"]
+
