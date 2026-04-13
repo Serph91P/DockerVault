@@ -38,7 +38,7 @@ FROM python:3.14-slim AS python-deps
 
 WORKDIR /app
 
-# Install build dependencies for Python packages
+# Install build dependencies for Python packages (versions pinned for reproducibility)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential=12.12 \
     libffi-dev=3.4.8-2 \
@@ -74,7 +74,7 @@ LABEL org.opencontainers.image.title="DockerVault" \
 
 WORKDIR /app
 
-# Install only runtime dependencies (no build tools)
+# Install only runtime dependencies (no build tools, versions pinned for reproducibility)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nginx=1.26.3-3+deb13u2 \
     supervisor=4.2.5-3 \
