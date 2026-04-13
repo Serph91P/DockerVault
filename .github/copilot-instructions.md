@@ -104,3 +104,76 @@ When implementing new features, consider:
 3. User experience and workflow efficiency
 4. Error scenarios and recovery procedures
 5. Documentation and help text requirements
+
+## Commit Message Convention
+
+This project uses **Conventional Commits** for automatic versioning and changelog generation.
+Every commit message MUST follow this format:
+
+```
+<type>(<scope>): <description>
+
+[optional body]
+
+[optional footer(s)]
+```
+
+### Types
+
+| Type | Purpose | Version Impact |
+|------|---------|----------------|
+| `feat` | New feature or capability | **Minor** bump (0.X.0) |
+| `fix` | Bug fix | **Patch** bump (0.0.X) |
+| `docs` | Documentation only | Patch bump |
+| `style` | Formatting, whitespace, no code change | Patch bump |
+| `refactor` | Code restructuring, no behavior change | Patch bump |
+| `perf` | Performance improvement | Patch bump |
+| `test` | Adding or updating tests | Patch bump |
+| `chore` | Build, tooling, dependencies | Patch bump |
+| `ci` | CI/CD pipeline changes | Patch bump |
+
+### Breaking Changes → Major Bump
+
+A breaking change triggers a **Major** version bump (X.0.0). Mark it with either:
+
+- An `!` after the type/scope: `feat!: remove legacy API`
+- A `BREAKING CHANGE:` footer in the commit body
+
+### Scopes
+
+- `api` – Backend API routes/endpoints
+- `ui` – Frontend components/pages
+- `auth` – Authentication/security
+- `db` – Database/models/migrations
+- `docker` – Docker/deployment
+- `backup` – Backup engine/operations
+- `storage` – Remote storage (S3, FTP, WebDAV)
+- `scheduler` – APScheduler/task scheduling
+- `ws` – WebSocket connections
+
+### Rules
+
+- Type and description are **required**
+- Scope is optional but encouraged
+- Description must be lowercase, imperative mood ("add" not "added" or "adds")
+- No period at the end of the description
+- Body and footer are optional
+- Use `!` or `BREAKING CHANGE:` only for genuinely incompatible changes
+
+### Examples
+
+```
+feat(backup): add incremental backup support
+fix(ui): correct progress bar not updating
+refactor(storage): simplify S3 upload handler
+docs: update README with Docker Compose examples
+feat!: redesign backup scheduling API
+chore(deps): update FastAPI to 0.115
+ci: add ARM64 Docker build
+perf(db): add index on backup.created_at
+```
+
+## Language
+
+- Commit messages in **English**
+- Code comments in **English**
