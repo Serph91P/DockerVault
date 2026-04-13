@@ -50,7 +50,7 @@ COPY backend/requirements.txt .
 # Install Python dependencies to a virtual environment
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --no-cache-dir --upgrade pip && \
+RUN pip install --no-cache-dir --upgrade pip==25.3 && \
     pip install --no-cache-dir -r requirements.txt
 
 # =============================================================================
@@ -89,6 +89,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -f /etc/nginx/sites-enabled/default
 
 # Install age for encryption (not available in standard repos)
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN ARCH=$(dpkg --print-architecture) && \
     if [ "$ARCH" = "amd64" ]; then AGE_ARCH="amd64"; \
     elif [ "$ARCH" = "arm64" ]; then AGE_ARCH="arm64"; \

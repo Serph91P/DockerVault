@@ -24,7 +24,7 @@ jobs:
     steps:
       - name: Wait for Tests workflow
         id: check
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             // Wait up to 10 minutes for Tests workflow to complete
@@ -91,33 +91,98 @@ jobs:
       - name: Determine version
         id: version
         run: |
-          # Get commit count for consistent versioning across branches
-          COMMIT_COUNT=$(git rev-list --count HEAD)
-
           REF="${{ github.event_name == 'workflow_run' && format('refs/heads/{0}', github.event.workflow_run.head_branch) || github.ref }}"
           BRANCH="${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref_name }}"
           
-          if [[ "$REF" == refs/tags/vdev.* ]]; then
-            # Dev tag (e.g., vdev.0.0.103 -> dev.0.0.103)
+          if [[ "$REF" == refs/tags/v* ]]; then
+            # Manual tag push - use the tag version directly
             VERSION=${GITHUB_REF#refs/tags/v}
-            IS_PRERELEASE=true
-            BUILD_ENV=development
-          elif [[ "$REF" == refs/tags/v* ]]; then
-            # Stable tag (e.g., v1.2.3 -> 1.2.3)
-            VERSION=${GITHUB_REF#refs/tags/v}
-            IS_PRERELEASE=false
-            BUILD_ENV=production
-          elif [[ "$REF" == refs/heads/main ]]; then
-            # Main branch - stable release with same count as dev
-            VERSION="0.0.${COMMIT_COUNT}"
-            IS_PRERELEASE=false
-            BUILD_ENV=production
+            if [[ "$VERSION" == *-dev* ]] || [[ "$VERSION" == dev.* ]]; then
+              IS_PRERELEASE=true
+              BUILD_ENV=development
+            else
+              IS_PRERELEASE=false
+              BUILD_ENV=production
+            fi
           else
-            # Develop branch - prerelease with dev prefix
-            VERSION="dev.0.0.${COMMIT_COUNT}"
-            IS_PRERELEASE=true
-            BUILD_ENV=development
+            # Auto-version: find highest version across ALL tags (dev + stable)
+            HIGHEST_TAG=""
+            HIGHEST_MAJOR=0
+            HIGHEST_MINOR=0
+            HIGHEST_PATCH=0
+            
+            for tag in $(git tag -l 'v*'); do
+              ver="$tag"
+              ver="${ver#v}"
+              ver="${ver#dev.}"
+              ver="${ver%%-dev*}"
+              
+              M=$(echo "$ver" | cut -d. -f1)
+              m=$(echo "$ver" | cut -d. -f2)
+              P=$(echo "$ver" | cut -d. -f3)
+              
+              [[ "$M" =~ ^[0-9]+$ ]] || continue
+              [[ "$m" =~ ^[0-9]+$ ]] || continue
+              [[ "$P" =~ ^[0-9]+$ ]] || continue
+              
+              if (( M > HIGHEST_MAJOR )) || \
+                 (( M == HIGHEST_MAJOR && m > HIGHEST_MINOR )) || \
+                 (( M == HIGHEST_MAJOR && m == HIGHEST_MINOR && P > HIGHEST_PATCH )); then
+                HIGHEST_MAJOR=$M
+                HIGHEST_MINOR=$m
+                HIGHEST_PATCH=$P
+                HIGHEST_TAG="$tag"
+              fi
+            done
+            
+            echo "Highest existing version: ${HIGHEST_MAJOR}.${HIGHEST_MINOR}.${HIGHEST_PATCH} (tag: ${HIGHEST_TAG:-none})"
+            
+            # Analyze commits since last tag for conventional commit bump type
+            BUMP="patch"
+            if [ -n "$HIGHEST_TAG" ]; then
+              COMMITS=$(git log "${HIGHEST_TAG}..HEAD" --pretty=format:"%s%n%b" 2>/dev/null || echo "")
+            else
+              COMMITS=$(git log --pretty=format:"%s%n%b" 2>/dev/null || echo "")
+            fi
+            
+            if echo "$COMMITS" | grep -qiE '(^[a-z]+!:|BREAKING CHANGE)'; then
+              BUMP="major"
+            elif echo "$COMMITS" | grep -qiE '^feat(\(|:)'; then
+              BUMP="minor"
+            fi
+            
+            echo "Bump type: $BUMP"
+            
+            case "$BUMP" in
+              major)
+                NEXT_MAJOR=$((HIGHEST_MAJOR + 1))
+                NEXT_MINOR=0
+                NEXT_PATCH=0
+                ;;
+              minor)
+                NEXT_MAJOR=$HIGHEST_MAJOR
+                NEXT_MINOR=$((HIGHEST_MINOR + 1))
+                NEXT_PATCH=0
+                ;;
+              patch)
+                NEXT_MAJOR=$HIGHEST_MAJOR
+                NEXT_MINOR=$HIGHEST_MINOR
+                NEXT_PATCH=$((HIGHEST_PATCH + 1))
+                ;;
+            esac
+            
+            VERSION="${NEXT_MAJOR}.${NEXT_MINOR}.${NEXT_PATCH}"
+            
+            if [[ "$REF" == refs/heads/main ]]; then
+              IS_PRERELEASE=false
+              BUILD_ENV=production
+            else
+              VERSION="${VERSION}-dev"
+              IS_PRERELEASE=true
+              BUILD_ENV=development
+            fi
           fi
+          
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
           echo "build_env=${BUILD_ENV}" >> $GITHUB_OUTPUT
@@ -126,7 +191,7 @@ jobs:
 
       - name: Docker metadata
         id: docker_meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -158,17 +223,17 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
@@ -203,11 +268,11 @@ jobs:
           CURRENT_VERSION="${{ needs.prepare.outputs.version }}"
           BRANCH="${{ github.ref_name }}"
           
-          # Find the last tag based on branch
+          # Find the last tag for changelog comparison
           if [[ "$BRANCH" == "develop" ]]; then
-            LAST_TAG=$(git tag -l 'vdev.*' --sort=-version:refname | head -n1 || echo "")
+            LAST_TAG=$(git tag -l --sort=-creatordate | grep -E '(^vdev\.|.*-dev$)' | head -n1 || echo "")
           else
-            LAST_TAG=$(git tag -l 'v*' --sort=-version:refname | grep -v '^vdev\.' | head -n1 || echo "")
+            LAST_TAG=$(git tag -l 'v*' --sort=-version:refname | grep -vE '(^vdev\.|.*-dev$)' | head -n1 || echo "")
           fi
           
           echo "Branch: $BRANCH"
@@ -304,7 +369,7 @@ jobs:
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', needs.prepare.outputs.version) }}
           target_commitish: ${{ github.sha }}
-          name: ${{ needs.prepare.outputs.branch_name == 'develop' && format('Development Build {0}', needs.prepare.outputs.version) || format('Release {0}', needs.prepare.outputs.version) }}
+          name: ${{ needs.prepare.outputs.is_prerelease == 'true' && format('Development Build {0}', needs.prepare.outputs.version) || format('Release {0}', needs.prepare.outputs.version) }}
           body_path: release_notes.md
           draft: false
           prerelease: ${{ needs.prepare.outputs.is_prerelease }}
