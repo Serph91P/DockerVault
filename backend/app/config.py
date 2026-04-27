@@ -44,7 +44,12 @@ class Settings(BaseSettings):
     LOG_FORMAT: str = "text"
 
     # Shutdown
-    SHUTDOWN_TIMEOUT: int = 30
+    # How many seconds to wait for in-progress backups to finish on SIGTERM.
+    # 0 = wait indefinitely (recommended; backups can run for hours).
+    # NOTE: this only matters when supervisord/Docker also wait long enough.
+    # See ``docker/supervisord.conf`` (``stopwaitsecs``) and the compose
+    # file's ``stop_grace_period`` — *all three* must be aligned.
+    SHUTDOWN_TIMEOUT: int = 0
 
     # Backup engine — tar worker subprocess
     # 0 = no timeout (recommended for very large volumes); otherwise seconds.
