@@ -14,16 +14,19 @@ import asyncio
 import hashlib
 import logging
 import os
+import random
 import shlex
 import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 import aiofiles
 import aiohttp
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +35,24 @@ def _format_exception_message(exc: Exception) -> str:
     message = str(exc).strip()
     name = exc.__class__.__name__
     return f"{name}: {message}" if message else name
+
+
+async def _stream_file_chunks(path: Path, chunk_size: int) -> AsyncIterator[bytes]:
+    """Yield ``chunk_size``-byte blocks from ``path`` without loading all of it
+    into memory. Used for streaming uploads that need a known Content-Length.
+    """
+    async with aiofiles.open(path, "rb") as f:
+        while True:
+            chunk = await f.read(chunk_size)
+            if not chunk:
+                break
+            yield chunk
+
+
+def _retry_wait_seconds(attempt: int, base: float = 1.0, cap: float = 60.0) -> float:
+    """Exponential backoff with full jitter, capped at ``cap`` seconds."""
+    upper = min(cap, base * (2**attempt))
+    return random.uniform(0.0, upper)
 
 
 class StorageType(str, Enum):
@@ -395,10 +416,12 @@ class SSHStorage(StorageBackend):
 class WebDAVStorage(StorageBackend):
     """WebDAV storage"""
 
-    # Max retry attempts for uploads
-    MAX_RETRIES = 3
     # Chunk size for streaming downloads (64 KB)
     DOWNLOAD_CHUNK_SIZE = 64 * 1024
+
+    @property
+    def MAX_RETRIES(self) -> int:  # noqa: N802 — keep public name for tests
+        return max(1, settings.STORAGE_MAX_RETRIES)
 
     def _get_session(self, timeout_seconds: int = 300) -> aiohttp.ClientSession:
         """Create aiohttp session with auth"""
@@ -414,16 +437,51 @@ class WebDAVStorage(StorageBackend):
         path = f"{self.config.base_path}/{remote_path}".replace("//", "/")
         return f"{base}{path}"
 
+    async def _verify_remote_size(
+        self, session: aiohttp.ClientSession, remote_path: str, expected: int
+    ) -> bool:
+        """Best-effort post-upload verification via HEAD Content-Length.
+
+        Returns True if size matches OR if the server doesn't expose it
+        (we don't want to fail uploads on servers without Content-Length).
+        """
+        try:
+            url = self._get_url(remote_path)
+            async with session.head(url) as resp:
+                if resp.status not in (200, 204):
+                    logger.warning(
+                        "WebDAV verify HEAD %s for %s", resp.status, remote_path
+                    )
+                    return False
+                cl = resp.headers.get("Content-Length")
+                if cl is None:
+                    return True
+                actual = int(cl)
+                if actual != expected:
+                    logger.error(
+                        "WebDAV size mismatch for %s: expected %d, remote %d",
+                        remote_path,
+                        expected,
+                        actual,
+                    )
+                    return False
+                return True
+        except Exception as e:  # noqa: BLE001 — verification must not crash upload
+            logger.warning("WebDAV verify error for %s: %s", remote_path, e)
+            return True
+
     async def upload(self, local_path: Path, remote_path: str) -> bool:
         file_size = local_path.stat().st_size
         # Scale timeout: minimum 300s, or 60s per 100 MB
         dynamic_timeout = max(300, int(file_size / (100 * 1024 * 1024)) * 60 + 120)
+        chunk_size = max(64 * 1024, settings.STORAGE_UPLOAD_CHUNK_SIZE)
 
         # HTTP status codes that are permanent failures (no point retrying)
-        NON_RETRYABLE = {400, 401, 403, 405, 413, 422, 507}
+        NON_RETRYABLE = {400, 401, 403, 405, 409, 413, 422, 507}
 
+        max_retries = self.MAX_RETRIES
         last_error: Exception | None = None
-        for attempt in range(1, self.MAX_RETRIES + 1):
+        for attempt in range(1, max_retries + 1):
             try:
                 async with self._get_session(
                     timeout_seconds=dynamic_timeout
@@ -434,15 +492,33 @@ class WebDAVStorage(StorageBackend):
 
                     url = self._get_url(remote_path)
 
-                    # Read file into memory so aiohttp sends a known
-                    # Content-Length (never chunked transfer encoding).
-                    # Hetzner Storage Box nginx proxies reject chunked
-                    # uploads with 413.
-                    data = local_path.read_bytes()
-                    headers = {"Content-Length": str(len(data))}
+                    # Stream the file from disk in fixed-size chunks while
+                    # sending an explicit Content-Length header so aiohttp
+                    # never falls back to chunked transfer encoding (which
+                    # some WebDAV proxies, e.g. Hetzner Storage Box's nginx,
+                    # reject with HTTP 413). This avoids loading the entire
+                    # file into memory — the previous behaviour caused OOM
+                    # and "Broken pipe" errors on multi-GB encrypted backups.
+                    headers = {
+                        "Content-Length": str(file_size),
+                        "Content-Type": "application/octet-stream",
+                    }
 
-                    async with session.put(url, data=data, headers=headers) as resp:
+                    async with session.put(
+                        url,
+                        data=_stream_file_chunks(local_path, chunk_size),
+                        headers=headers,
+                    ) as resp:
                         if resp.status in (200, 201, 204):
+                            if settings.STORAGE_VERIFY_AFTER_UPLOAD:
+                                if not await self._verify_remote_size(
+                                    session, remote_path, file_size
+                                ):
+                                    last_error = RuntimeError(
+                                        "Remote size mismatch after upload"
+                                    )
+                                    # Mismatch → retry (could be transient).
+                                    raise last_error
                             logger.info(
                                 "WebDAV upload successful: %s (%.1f MB, attempt %d)",
                                 remote_path,
@@ -460,7 +536,7 @@ class WebDAVStorage(StorageBackend):
                                 resp.status,
                                 remote_path,
                                 attempt,
-                                self.MAX_RETRIES,
+                                max_retries,
                                 body[:200],
                             )
                             if resp.status in NON_RETRYABLE:
@@ -476,18 +552,18 @@ class WebDAVStorage(StorageBackend):
                     "WebDAV upload error for %s (attempt %d/%d): %s",
                     remote_path,
                     attempt,
-                    self.MAX_RETRIES,
+                    max_retries,
                     e,
                 )
 
-            if attempt < self.MAX_RETRIES:
-                wait = 2**attempt
-                logger.info("Retrying WebDAV upload in %ds...", wait)
+            if attempt < max_retries:
+                wait = _retry_wait_seconds(attempt)
+                logger.info("Retrying WebDAV upload in %.1fs...", wait)
                 await asyncio.sleep(wait)
 
         logger.error(
             "WebDAV upload failed after %d attempts for %s: %s",
-            self.MAX_RETRIES,
+            max_retries,
             remote_path,
             last_error,
         )
@@ -719,12 +795,74 @@ class S3Storage(StorageBackend):
         try:
             client = await self._get_client()
             key = f"{self.config.base_path}/{remote_path}".lstrip("/")
+            file_size = local_path.stat().st_size
+            bucket = self.config.s3_bucket
+            multipart_threshold = max(
+                5 * 1024 * 1024, settings.S3_MULTIPART_THRESHOLD_BYTES
+            )
+            chunk_size = max(5 * 1024 * 1024, settings.S3_MULTIPART_CHUNK_SIZE)
 
-            async with aiofiles.open(local_path, "rb") as f:
-                data = await f.read()
+            if file_size < multipart_threshold:
+                # Small file: stream the body via an aiofiles handle so the
+                # full payload is never materialised in memory.
+                async with aiofiles.open(local_path, "rb") as f:
+                    await client.put_object(Bucket=bucket, Key=key, Body=f)
+                logger.info(
+                    "S3 upload successful: %s (%.1f MB)",
+                    key,
+                    file_size / (1024 * 1024),
+                )
+                return True
 
-            await client.put_object(Bucket=self.config.s3_bucket, Key=key, Body=data)
-            logger.info(f"S3 upload successful: {key}")
+            # Large file: explicit multipart upload, streaming each part
+            # from disk. Aborts the upload on any failure so we don't leak
+            # incomplete multipart uploads (and storage costs).
+            create = await client.create_multipart_upload(Bucket=bucket, Key=key)
+            upload_id = create["UploadId"]
+            parts: list[dict] = []
+            try:
+                async with aiofiles.open(local_path, "rb") as f:
+                    part_number = 1
+                    while True:
+                        data = await f.read(chunk_size)
+                        if not data:
+                            break
+                        result = await client.upload_part(
+                            Bucket=bucket,
+                            Key=key,
+                            PartNumber=part_number,
+                            UploadId=upload_id,
+                            Body=data,
+                        )
+                        parts.append(
+                            {"ETag": result["ETag"], "PartNumber": part_number}
+                        )
+                        part_number += 1
+                await client.complete_multipart_upload(
+                    Bucket=bucket,
+                    Key=key,
+                    UploadId=upload_id,
+                    MultipartUpload={"Parts": parts},
+                )
+            except Exception:
+                try:
+                    await client.abort_multipart_upload(
+                        Bucket=bucket, Key=key, UploadId=upload_id
+                    )
+                except Exception as abort_exc:  # noqa: BLE001
+                    logger.warning(
+                        "S3 abort_multipart_upload failed for %s: %s",
+                        key,
+                        abort_exc,
+                    )
+                raise
+
+            logger.info(
+                "S3 multipart upload successful: %s (%.1f MB, %d parts)",
+                key,
+                file_size / (1024 * 1024),
+                len(parts),
+            )
             return True
         except Exception as e:
             logger.error(f"S3 upload error: {e}")

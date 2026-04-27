@@ -1376,12 +1376,17 @@ class BackupEngine:
         """Run tar_worker.py via sudo and return list of skipped files.
 
         Raises RuntimeError when the worker reports an error.
+
+        The wall-clock timeout is configurable via ``settings.TAR_WORKER_TIMEOUT``
+        (0 disables the timeout entirely — recommended for very large
+        volumes where a single archive can legitimately take many hours).
         """
+        timeout = settings.TAR_WORKER_TIMEOUT or None
         result = subprocess.run(
             ["sudo", "-n", _PYTHON, _TAR_WORKER, json.dumps(config)],
             capture_output=True,
             text=True,
-            timeout=3600,
+            timeout=timeout,
         )
         try:
             payload = json.loads(result.stdout)
