@@ -45,6 +45,26 @@ class Settings(BaseSettings):
 
     # Shutdown
     SHUTDOWN_TIMEOUT: int = 30
+
+    # Backup engine — tar worker subprocess
+    # 0 = no timeout (recommended for very large volumes); otherwise seconds.
+    TAR_WORKER_TIMEOUT: int = 0
+    # Idle timeout in seconds: kill worker only when no progress is reported.
+    # 0 = disabled (relies on TAR_WORKER_TIMEOUT only).
+    TAR_WORKER_IDLE_TIMEOUT: int = 1800
+
+    # Remote storage — uploads
+    # Number of upload attempts on transient errors (network, 5xx, etc.).
+    STORAGE_MAX_RETRIES: int = 6
+    # Verify remote checksum/size after upload (recommended).
+    STORAGE_VERIFY_AFTER_UPLOAD: bool = True
+    # Streaming chunk size for file uploads (1 MiB).
+    STORAGE_UPLOAD_CHUNK_SIZE: int = 1024 * 1024
+    # S3 multipart threshold (bytes). Files >= this size use multipart upload.
+    S3_MULTIPART_THRESHOLD_BYTES: int = 64 * 1024 * 1024  # 64 MiB
+    # S3 multipart chunk size (bytes).
+    S3_MULTIPART_CHUNK_SIZE: int = 16 * 1024 * 1024  # 16 MiB
+
     # Komodo Integration
     KOMODO_API_URL: str = ""
     KOMODO_API_KEY: str = ""
