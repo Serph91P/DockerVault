@@ -367,9 +367,25 @@ async def encrypt_backup(
     # Generate unique DEK for this backup
     dek = generate_dek()
 
-    # Encrypt the backup file
+    # Encrypt the backup file. Write to a temporary path first and atomically
+    # rename so a crash during encryption never leaves a half-written .enc
+    # file alongside the original (which would later be deleted).
     encrypted_path = backup_path.with_suffix(backup_path.suffix + ".enc")
-    await encrypt_file(backup_path, encrypted_path, dek)
+    encrypted_tmp = encrypted_path.with_suffix(encrypted_path.suffix + ".tmp")
+    if encrypted_tmp.exists():
+        try:
+            encrypted_tmp.unlink()
+        except OSError:
+            pass
+    await encrypt_file(backup_path, encrypted_tmp, dek)
+
+    # fsync the encrypted file before the rename so the bytes are durable.
+    fd = os.open(str(encrypted_tmp), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(str(encrypted_tmp), str(encrypted_path))
 
     # Encrypt the DEK with public key
     encrypted_dek = await encrypt_dek(dek, public_key)
@@ -392,7 +408,7 @@ async def encrypt_backup(
             f"got {actual_size} at {key_path}"
         )
 
-    # Remove unencrypted backup
+    # Remove unencrypted backup only after both .enc and .key are durable.
     backup_path.unlink()
 
     logger.info(f"Encrypted backup: {encrypted_path}")
