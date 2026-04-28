@@ -233,16 +233,53 @@ class LocalStorage(StorageBackend):
 class SSHStorage(StorageBackend):
     """SSH/SFTP storage using rsync or scp"""
 
+    # Persistent known_hosts file under the data volume so host key
+    # entries survive container restarts. The first connection to a
+    # new host is auto-accepted (TOFU) thanks to
+    # ``StrictHostKeyChecking=accept-new``; subsequent connections
+    # verify against the recorded fingerprint.
+    KNOWN_HOSTS_FILE = "/app/data/ssh_known_hosts"
+
+    def _common_ssh_options(self) -> List[str]:
+        """SSH ``-o`` options applied to every ssh/rsync invocation.
+
+        - ``StrictHostKeyChecking=accept-new``: trust-on-first-use.
+          Without this, the first connection to a new host fails with
+          ``Host key verification failed`` because the container has no
+          pre-populated known_hosts file.
+        - ``UserKnownHostsFile``: persistent path under ``/app/data`` so
+          accepted host keys survive container restarts.
+        - ``BatchMode=yes``: never prompt for a password — plain ``ssh``
+          can't read passwords from us anyway, and a prompt would hang
+          the test forever.
+        """
+        # Best-effort touch so ssh doesn't complain about the missing file
+        try:
+            Path(self.KNOWN_HOSTS_FILE).touch(exist_ok=True)
+        except OSError:
+            pass
+        return [
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            f"UserKnownHostsFile={self.KNOWN_HOSTS_FILE}",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=30",
+            "-o",
+            "ServerAliveInterval=15",
+        ]
+
     def _get_ssh_options(self) -> List[str]:
-        """Build SSH options for commands"""
-        ssh_parts = []
+        """Build SSH options for rsync's ``-e`` argument."""
+        ssh_parts = list(self._common_ssh_options())
         if self.config.port:
-            ssh_parts.append(f"-p {self.config.port}")
+            ssh_parts.extend(["-p", str(self.config.port)])
         if self.config.ssh_key_path:
-            ssh_parts.append(f"-i {self.config.ssh_key_path}")
-        if ssh_parts:
-            return ["-e", f"ssh {' '.join(ssh_parts)}"]
-        return []
+            ssh_parts.extend(["-i", self.config.ssh_key_path])
+        # rsync needs a single shell-quoted command string.
+        return ["-e", "ssh " + " ".join(shlex.quote(p) for p in ssh_parts)]
 
     def _get_remote_path(self, remote_path: str) -> str:
         """Build full remote path with user@host prefix"""
@@ -315,7 +352,7 @@ class SSHStorage(StorageBackend):
         Note: The remote_cmd should already have paths sanitized with shlex.quote()
         before being passed to this method.
         """
-        cmd = ["ssh", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=15"]
+        cmd = ["ssh", *self._common_ssh_options()]
         if self.config.port:
             cmd.extend(["-p", str(self.config.port)])
         if self.config.ssh_key_path:

@@ -24,6 +24,16 @@ fi
 mkdir -p /app/data /backups /var/log/supervisor /run/nginx
 chmod 755 /app/data /backups /var/log/supervisor /run/nginx 2>/dev/null || true
 
+# /app/data holds the SQLite database, ssh_known_hosts and ssh_keys.
+# Backend runs as ``dockervault``, so it must own this directory.
+chown -R dockervault:dockervault /app/data 2>/dev/null || true
+
+# Pre-create a persistent known_hosts file with safe perms so SSH
+# trust-on-first-use can write to it and OpenSSH stops complaining.
+touch /app/data/ssh_known_hosts
+chown dockervault:dockervault /app/data/ssh_known_hosts 2>/dev/null || true
+chmod 600 /app/data/ssh_known_hosts 2>/dev/null || true
+
 # Fix ownership of backup directory so the dockervault user can read,
 # browse, and delete all backup files (including ones previously created
 # as root or by containers with different UIDs).
