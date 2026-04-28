@@ -24,6 +24,7 @@ import {
 import api, { RemoteStorage } from '../api';
 import StorageBrowser from '../components/StorageBrowser';
 import ConfirmDialog from '../components/ConfirmDialog';
+import SSHKeyManager from '../components/SSHKeyManager';
 
 interface StorageFormData {
   name: string;
@@ -296,7 +297,7 @@ export default function Storage() {
                 type="text"
                 value={formData.ssh_key_path}
                 onChange={(e) => setFormData({ ...formData, ssh_key_path: e.target.value })}
-                placeholder="/app/ssh/id_rsa"
+                placeholder="/app/data/ssh_keys/hetzner_box"
                 className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
               />
             </div>
@@ -599,6 +600,9 @@ export default function Storage() {
           );
         })}
       </div>
+
+      {/* SSH Keys */}
+      <SSHKeyManager />
 
       {/* Storage List */}
       <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">

@@ -1,7 +1,9 @@
 """Remote Storage API endpoints"""
 
+import asyncio
 import logging
 import os
+import re
 import tempfile
 import shutil
 from pathlib import Path
@@ -9,7 +11,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
@@ -193,6 +195,294 @@ async def list_storage_types():
             "required": ["rclone_remote", "base_path"],
             "optional": [],
         },
+    }
+
+
+# ---------------------------------------------------------------------------
+# SSH key management
+# ---------------------------------------------------------------------------
+#
+# Generated keys live under ``/app/data/ssh_keys/`` (the first entry of the
+# ``ALLOWED_SSH_KEY_DIRS`` setting). Names are restricted to a safe charset
+# so the resulting paths cannot escape that directory.
+
+_SSH_KEYS_DIR = Path("/app/data/ssh_keys")
+_SSH_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+
+
+def _ssh_key_paths(name: str) -> tuple[Path, Path]:
+    if not _SSH_NAME_RE.match(name):
+        raise HTTPException(
+            status_code=400,
+            detail="Key name must be 1-40 chars: letters, digits, '_' or '-'.",
+        )
+    private = _SSH_KEYS_DIR / name
+    public = _SSH_KEYS_DIR / f"{name}.pub"
+    return private, public
+
+
+class SSHKeyGenerateRequest(BaseModel):
+    name: str = Field(..., description="Filename (no extension), e.g. 'hetzner_box'")
+    comment: Optional[str] = Field(None, description="Comment embedded in the key")
+    overwrite: bool = False
+
+
+class SSHKeyInfo(BaseModel):
+    name: str
+    private_path: str
+    public_path: str
+    public_key: str
+    fingerprint: Optional[str] = None
+    created_at: float
+
+
+class SSHKeyInstallRequest(BaseModel):
+    host: str
+    port: int = 22
+    username: str
+    password: str = Field(..., description="Password for the initial install")
+    method: str = Field(
+        "auto",
+        description=(
+            "How to install the key on the remote. "
+            "'hetzner' = pipe pubkey to 'install-ssh-key' (Storage Box, port 23). "
+            "'authorized_keys' = append to ~/.ssh/authorized_keys. "
+            "'auto' = pick hetzner if host ends in your-storagebox.de, else authorized_keys."
+        ),
+    )
+
+
+async def _run(
+    cmd: List[str], env: Optional[dict] = None, input_bytes: Optional[bytes] = None
+) -> tuple[int, str, str]:
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdin=asyncio.subprocess.PIPE if input_bytes is not None else None,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    stdout, stderr = await proc.communicate(input=input_bytes)
+    return (
+        proc.returncode if proc.returncode is not None else -1,
+        stdout.decode(errors="replace"),
+        stderr.decode(errors="replace"),
+    )
+
+
+async def _read_key_info(name: str) -> SSHKeyInfo:
+    private, public = _ssh_key_paths(name)
+    if not private.is_file() or not public.is_file():
+        raise HTTPException(status_code=404, detail="SSH key not found")
+    pub_text = public.read_text().strip()
+    rc, fp_out, _ = await _run(["ssh-keygen", "-lf", str(public)])
+    fingerprint = fp_out.strip() if rc == 0 else None
+    return SSHKeyInfo(
+        name=name,
+        private_path=str(private),
+        public_path=str(public),
+        public_key=pub_text,
+        fingerprint=fingerprint,
+        created_at=private.stat().st_mtime,
+    )
+
+
+@router.get("/ssh-keys", response_model=List[SSHKeyInfo])
+async def list_ssh_keys():
+    """List SSH keypairs generated under ``/app/data/ssh_keys``."""
+    if not _SSH_KEYS_DIR.is_dir():
+        return []
+    out: List[SSHKeyInfo] = []
+    for pub in sorted(_SSH_KEYS_DIR.glob("*.pub")):
+        name = pub.stem
+        if not _SSH_NAME_RE.match(name):
+            continue
+        priv = _SSH_KEYS_DIR / name
+        if not priv.is_file():
+            continue
+        try:
+            out.append(await _read_key_info(name))
+        except Exception as exc:  # noqa: BLE001 — skip broken entries
+            logger.warning("Skipping malformed key %s: %s", name, exc)
+    return out
+
+
+@router.post("/ssh-keys", response_model=SSHKeyInfo)
+async def generate_ssh_key(data: SSHKeyGenerateRequest):
+    """Generate a new ed25519 keypair and store it on disk.
+
+    The private key is created with mode 0600 under
+    ``/app/data/ssh_keys/<name>`` so OpenSSH accepts it. The public key
+    sits next to it as ``<name>.pub``. Use the install endpoint or
+    download the public key to register it on the remote.
+    """
+    private, public = _ssh_key_paths(data.name)
+    _SSH_KEYS_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(_SSH_KEYS_DIR, 0o700)
+    except OSError:
+        pass
+
+    if private.exists() or public.exists():
+        if not data.overwrite:
+            raise HTTPException(
+                status_code=409, detail="Key with this name already exists"
+            )
+        private.unlink(missing_ok=True)
+        public.unlink(missing_ok=True)
+
+    comment = data.comment or f"dockervault-{data.name}"
+    rc, _stdout, stderr = await _run(
+        [
+            "ssh-keygen",
+            "-t",
+            "ed25519",
+            "-N",
+            "",  # no passphrase
+            "-C",
+            comment,
+            "-f",
+            str(private),
+        ]
+    )
+    if rc != 0:
+        raise HTTPException(
+            status_code=500, detail=f"ssh-keygen failed: {stderr.strip()}"
+        )
+
+    # Belt-and-braces: enforce strict perms even if ssh-keygen didn't.
+    try:
+        os.chmod(private, 0o600)
+        os.chmod(public, 0o644)
+    except OSError as exc:
+        logger.warning("Could not set perms on %s: %s", private, exc)
+
+    return await _read_key_info(data.name)
+
+
+@router.get("/ssh-keys/{name}", response_model=SSHKeyInfo)
+async def get_ssh_key(name: str):
+    return await _read_key_info(name)
+
+
+@router.get("/ssh-keys/{name}/public")
+async def download_ssh_public_key(name: str):
+    _, public = _ssh_key_paths(name)
+    if not public.is_file():
+        raise HTTPException(status_code=404, detail="Public key not found")
+    return FileResponse(
+        path=str(public),
+        media_type="text/plain",
+        filename=f"{name}.pub",
+    )
+
+
+@router.delete("/ssh-keys/{name}")
+async def delete_ssh_key(name: str):
+    private, public = _ssh_key_paths(name)
+    if not private.exists() and not public.exists():
+        raise HTTPException(status_code=404, detail="SSH key not found")
+    private.unlink(missing_ok=True)
+    public.unlink(missing_ok=True)
+    return {"success": True}
+
+
+@router.post("/ssh-keys/{name}/install")
+async def install_ssh_key(name: str, data: SSHKeyInstallRequest):
+    """Install the public key on a remote SSH server using a one-time password.
+
+    Two strategies:
+
+    - ``hetzner`` — pipes the public key to Hetzner Storage Box's
+      ``install-ssh-key`` helper (only works on the SSH-enabled
+      port 23 of ``*.your-storagebox.de``).
+    - ``authorized_keys`` — generic fallback that appends the key to
+      ``~/.ssh/authorized_keys`` after creating ``~/.ssh`` with the
+      correct perms.
+
+    The password is consumed once via ``sshpass`` (env var, never
+    on the command line) and is not persisted anywhere.
+    """
+    _, public = _ssh_key_paths(name)
+    if not public.is_file():
+        raise HTTPException(status_code=404, detail="Public key not found")
+    pub_text = public.read_text().strip() + "\n"
+
+    method = data.method
+    if method == "auto":
+        method = (
+            "hetzner"
+            if data.host.endswith(".your-storagebox.de") and data.port == 23
+            else "authorized_keys"
+        )
+
+    base_ssh = [
+        "ssh",
+        "-p",
+        str(data.port),
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "UserKnownHostsFile=/app/data/ssh_known_hosts",
+        "-o",
+        "ConnectTimeout=30",
+        "-o",
+        "PreferredAuthentications=password",
+        "-o",
+        "PubkeyAuthentication=no",
+        "-o",
+        "NumberOfPasswordPrompts=1",
+        f"{data.username}@{data.host}",
+    ]
+    env = {**os.environ, "SSHPASS": data.password}
+
+    if method == "hetzner":
+        cmd = ["sshpass", "-e", *base_ssh, "install-ssh-key"]
+    elif method == "authorized_keys":
+        # Use a single remote shell pipeline; reads stdin and appends if
+        # the key isn't already present. POSIX-only utilities so it works
+        # on virtually any sshd target.
+        remote_script = (
+            "set -e; "
+            "umask 077; "
+            "mkdir -p ~/.ssh; "
+            "chmod 700 ~/.ssh; "
+            "touch ~/.ssh/authorized_keys; "
+            "chmod 600 ~/.ssh/authorized_keys; "
+            "key=$(cat); "
+            'grep -qxF "$key" ~/.ssh/authorized_keys || printf "%s\\n" "$key" >> ~/.ssh/authorized_keys'
+        )
+        cmd = ["sshpass", "-e", *base_ssh, "sh", "-c", remote_script]
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown install method: {method}")
+
+    rc, stdout, stderr = await _run(cmd, env=env, input_bytes=pub_text.encode())
+    if rc != 0:
+        msg = (stderr or stdout).strip() or f"ssh exit code {rc}"
+        # Strip noise like the password warning so users see the real error
+        msg_lines = [
+            line
+            for line in msg.splitlines()
+            if "warning" not in line.lower() and "permanently added" not in line.lower()
+        ]
+        clean = "\n".join(msg_lines).strip() or msg
+        logger.warning(
+            "install-ssh-key failed for %s@%s: %s", data.username, data.host, clean
+        )
+        raise HTTPException(status_code=400, detail=f"Install failed: {clean}")
+
+    logger.info(
+        "Installed key %s on %s@%s:%d via %s",
+        name,
+        data.username,
+        data.host,
+        data.port,
+        method,
+    )
+    return {
+        "success": True,
+        "method": method,
+        "message": (stdout or "Key installed").strip()[:500],
     }
 
 
