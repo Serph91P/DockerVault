@@ -474,14 +474,21 @@ class WebDAVStorage(StorageBackend):
         file_size = local_path.stat().st_size
         # Scale timeout: minimum 300s, or 60s per 100 MB
         dynamic_timeout = max(300, int(file_size / (100 * 1024 * 1024)) * 60 + 120)
-        chunk_size = max(64 * 1024, settings.STORAGE_UPLOAD_CHUNK_SIZE)
 
         # HTTP status codes that are permanent failures (no point retrying)
         NON_RETRYABLE = {400, 401, 403, 405, 409, 413, 422, 507}
 
+        # Threshold below which we read the whole file into memory.
+        # Avoids a known race in aiohttp where a retried request that
+        # passes an async generator as ``data`` can raise
+        # ``RuntimeError('anext(): asynchronous generator is already running')``
+        # — small ``.key`` sidecars hit this every single time.
+        SMALL_FILE_THRESHOLD = 4 * 1024 * 1024  # 4 MiB
+
         max_retries = self.MAX_RETRIES
         last_error: Exception | None = None
         for attempt in range(1, max_retries + 1):
+            file_handle = None  # ensure we can close it on exception
             try:
                 async with self._get_session(
                     timeout_seconds=dynamic_timeout
@@ -492,21 +499,31 @@ class WebDAVStorage(StorageBackend):
 
                     url = self._get_url(remote_path)
 
-                    # Stream the file from disk in fixed-size chunks while
-                    # sending an explicit Content-Length header so aiohttp
-                    # never falls back to chunked transfer encoding (which
-                    # some WebDAV proxies, e.g. Hetzner Storage Box's nginx,
-                    # reject with HTTP 413). This avoids loading the entire
-                    # file into memory — the previous behaviour caused OOM
-                    # and "Broken pipe" errors on multi-GB encrypted backups.
+                    # Always send an explicit Content-Length so aiohttp
+                    # cannot fall back to chunked transfer encoding (which
+                    # some WebDAV proxies — e.g. Hetzner Storage Box's
+                    # nginx — reject with HTTP 413).
                     headers = {
                         "Content-Length": str(file_size),
                         "Content-Type": "application/octet-stream",
                     }
 
+                    if file_size <= SMALL_FILE_THRESHOLD:
+                        # Read entirely into memory. Safe for tiny files
+                        # (sidecar keys are ~200 B) and avoids the async
+                        # generator retry race entirely.
+                        body = local_path.read_bytes()
+                    else:
+                        # Stream large files via a sync file handle; aiohttp
+                        # reads it in a thread executor without buffering
+                        # the entire content. Avoids the async-generator
+                        # ``anext()`` reentrancy bug seen on retries.
+                        file_handle = open(local_path, "rb")
+                        body = file_handle
+
                     async with session.put(
                         url,
-                        data=_stream_file_chunks(local_path, chunk_size),
+                        data=body,
                         headers=headers,
                     ) as resp:
                         if resp.status in (200, 201, 204):
@@ -540,11 +557,22 @@ class WebDAVStorage(StorageBackend):
                                 body[:200],
                             )
                             if resp.status in NON_RETRYABLE:
-                                logger.error(
-                                    "WebDAV upload permanently rejected (HTTP %d) for %s — not retrying",
-                                    resp.status,
-                                    remote_path,
-                                )
+                                if resp.status == 413:
+                                    logger.error(
+                                        "WebDAV upload permanently rejected (HTTP 413) "
+                                        "for %s — file is %.1f GiB; the WebDAV server "
+                                        "(typically Hetzner Storage Box / nginx) refuses "
+                                        "single PUTs of this size. Use SFTP/SSH for "
+                                        "this target, or split the backup.",
+                                        remote_path,
+                                        file_size / (1024 * 1024 * 1024),
+                                    )
+                                else:
+                                    logger.error(
+                                        "WebDAV upload permanently rejected (HTTP %d) for %s — not retrying",
+                                        resp.status,
+                                        remote_path,
+                                    )
                                 return False
             except Exception as e:
                 last_error = e
@@ -555,6 +583,12 @@ class WebDAVStorage(StorageBackend):
                     max_retries,
                     e,
                 )
+            finally:
+                if file_handle is not None:
+                    try:
+                        file_handle.close()
+                    except Exception:  # noqa: BLE001 — best-effort cleanup
+                        pass
 
             if attempt < max_retries:
                 wait = _retry_wait_seconds(attempt)
