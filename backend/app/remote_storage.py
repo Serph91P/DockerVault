@@ -321,23 +321,14 @@ class SSHStorage(StorageBackend):
 
     async def upload(self, local_path: Path, remote_path: str) -> bool:
         try:
-            # Create remote directory first
-            remote_dir = os.path.dirname(f"{self.config.base_path}/{remote_path}")
-            # Sanitize the path to prevent command injection
-            safe_dir = shlex.quote(remote_dir)
-            mkdir_cmd = self._build_ssh_command(f"mkdir -p {safe_dir}")
-            mkdir_cmd, mkdir_env = self._wrap_with_sshpass(mkdir_cmd)
-
-            process = await asyncio.create_subprocess_exec(
-                *mkdir_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=mkdir_env or None,
-            )
-            await process.communicate()
-
-            # Use rsync for efficient transfer
-            cmd = ["rsync", "-avz", "--progress"]
+            # Use rsync for efficient transfer. ``--mkpath`` (rsync 3.2.3+)
+            # makes the receiver create any missing path components on its
+            # own, so we no longer need an ``ssh mkdir -p`` round-trip.
+            # That prep step would silently fail on shell-restricted
+            # SSH endpoints like Hetzner Storage Box ("Command not
+            # found."), leaving rsync to error out with
+            # ``change_dir failed: No such file or directory``.
+            cmd = ["rsync", "-avz", "--mkpath", "--progress"]
             cmd.extend(self._get_ssh_options())
             cmd.append(str(local_path))
             cmd.append(self._get_remote_path(remote_path))
@@ -406,59 +397,68 @@ class SSHStorage(StorageBackend):
         return cmd
 
     async def delete(self, remote_path: str) -> bool:
+        # Use the SFTP subsystem so deletion works on shell-restricted
+        # SSH endpoints (Hetzner Storage Box, rssh, etc.) that reject
+        # arbitrary commands. ``rm`` in sftp batch mode targets a single
+        # remote file and is functionally equivalent to ``ssh ... rm -f``.
         try:
             full_path = f"{self.config.base_path}/{remote_path}"
-            # Sanitize the path to prevent command injection
-            safe_path = shlex.quote(full_path)
-            cmd = self._build_ssh_command(f"rm -f {safe_path}")
-            cmd, env = self._wrap_with_sshpass(cmd)
+            cmd, env = self._build_sftp_command()
+            # ``-`` after rm means: continue even if the file does not
+            # exist, mirroring ``rm -f`` semantics.
+            batch = f"-rm {self._sftp_quote(full_path)}\nbye\n".encode()
 
             process = await asyncio.create_subprocess_exec(
                 *cmd,
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env or None,
             )
-            await process.communicate()
+            await process.communicate(input=batch)
             return process.returncode == 0
         except Exception as e:
             logger.error(f"SSH delete error: {e}")
             return False
 
     async def list_files(self, remote_path: str = "") -> List[Dict[str, Any]]:
+        # Use SFTP ``ls -l`` instead of an ssh+ls shell command so this
+        # works on shell-restricted endpoints (Hetzner Storage Box).
+        # Trade-off: the timestamp format is the standard ``Mon DD HH:MM``
+        # (recent) or ``Mon DD  YYYY`` (older) — we parse both into epoch
+        # seconds. For files with spaces in the name, sftp returns them
+        # verbatim as the trailing field.
         try:
             full_path = f"{self.config.base_path}/{remote_path}".replace("//", "/")
-            # Sanitize the path to prevent command injection
-            safe_path = shlex.quote(full_path)
-            # Use --time-style=+%s to get epoch timestamps as a single field
-            cmd = self._build_ssh_command(f"ls -la --time-style=+%s {safe_path}")
-            cmd, env = self._wrap_with_sshpass(cmd)
+            cmd, env = self._build_sftp_command()
+            batch = f"ls -l {self._sftp_quote(full_path)}\nbye\n".encode()
 
             process = await asyncio.create_subprocess_exec(
                 *cmd,
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env or None,
             )
-            stdout, stderr = await process.communicate()
+            stdout, _stderr = await process.communicate(input=batch)
 
-            files = []
-            for line in stdout.decode().split("\n")[1:]:  # Skip total line
-                # Split into max 7 parts so filenames with spaces stay intact
-                parts = line.split(None, 6)
-                if len(parts) < 7:
+            files: List[Dict[str, Any]] = []
+            for raw_line in stdout.decode(errors="replace").splitlines():
+                line = raw_line.rstrip()
+                if not line or line.startswith("sftp>") or line.startswith("total "):
                     continue
-                name = parts[6]
-                if name in (".", ".."):
+                # Expected format: ``-rw-r--r--  1 owner group  1234 Mon DD HH:MM name``
+                parts = line.split(None, 8)
+                if len(parts) < 9 or len(parts[0]) < 1 or parts[0][0] not in "-dlbcps":
                     continue
                 try:
                     size = int(parts[4])
                 except (ValueError, IndexError):
                     size = 0
-                try:
-                    modified = float(parts[5])
-                except (ValueError, IndexError):
-                    modified = 0
+                name = parts[8]
+                if name in (".", ".."):
+                    continue
+                modified = self._parse_sftp_timestamp(parts[5], parts[6], parts[7])
                 files.append(
                     {
                         "name": name,
@@ -472,6 +472,57 @@ class SSHStorage(StorageBackend):
             logger.error(f"SSH list error: {e}")
             return []
 
+    @staticmethod
+    def _sftp_quote(path: str) -> str:
+        """Quote a path for an sftp batch line.
+
+        sftp's batch parser does not understand POSIX shell escaping; it
+        treats double-quoted strings as a single argument. Embedded
+        double quotes are escaped with a backslash.
+        """
+        return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    def _build_sftp_command(self) -> tuple[List[str], dict]:
+        """Assemble an ``sftp -b -`` invocation reusing the same auth /
+        host-key options as ssh, wrapped with sshpass when needed.
+        """
+        cmd = ["sftp", "-b", "-", *self._common_ssh_options()]
+        if self.config.port:
+            cmd.extend(["-P", str(self.config.port)])
+        if self.config.ssh_key_path:
+            cmd.extend(["-i", self.config.ssh_key_path])
+        user_host = (
+            f"{self.config.username}@{self.config.host}"
+            if self.config.username
+            else self.config.host
+        )
+        cmd.append(user_host)
+        return self._wrap_with_sshpass(cmd)
+
+    @staticmethod
+    def _parse_sftp_timestamp(month: str, day: str, time_or_year: str) -> float:
+        """Parse an ``ls -l`` timestamp triple into epoch seconds.
+
+        Returns 0.0 if the input cannot be interpreted (best-effort).
+        """
+        from datetime import datetime
+
+        now = datetime.now()
+        try:
+            if ":" in time_or_year:
+                # Recent file: year is omitted, assume current year but
+                # roll back if the result lies in the future.
+                dt = datetime.strptime(
+                    f"{now.year} {month} {day} {time_or_year}", "%Y %b %d %H:%M"
+                )
+                if dt > now:
+                    dt = dt.replace(year=now.year - 1)
+            else:
+                dt = datetime.strptime(f"{time_or_year} {month} {day}", "%Y %b %d")
+            return dt.timestamp()
+        except ValueError:
+            return 0.0
+
     async def test_connection(self) -> Dict[str, Any]:
         # Use sftp instead of `ssh ... echo` because shell-restricted
         # SSH endpoints (Hetzner Storage Box, rssh, etc.) reject
@@ -480,18 +531,7 @@ class SSHStorage(StorageBackend):
         # from stdin; a single `bye` exits cleanly after the auth +
         # subsystem handshake, which is exactly what we want to verify.
         try:
-            cmd = ["sftp", "-b", "-", *self._common_ssh_options()]
-            if self.config.port:
-                cmd.extend(["-P", str(self.config.port)])
-            if self.config.ssh_key_path:
-                cmd.extend(["-i", self.config.ssh_key_path])
-            user_host = (
-                f"{self.config.username}@{self.config.host}"
-                if self.config.username
-                else self.config.host
-            )
-            cmd.append(user_host)
-            cmd, env = self._wrap_with_sshpass(cmd)
+            cmd, env = self._build_sftp_command()
 
             process = await asyncio.create_subprocess_exec(
                 *cmd,
