@@ -22,6 +22,7 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import api, { RemoteStorage } from '../api';
+import { storageApi, type SSHKeyInfo } from '../api';
 import StorageBrowser from '../components/StorageBrowser';
 import ConfirmDialog from '../components/ConfirmDialog';
 import SSHKeyManager from '../components/SSHKeyManager';
@@ -108,6 +109,11 @@ export default function Storage() {
       const res = await api.get('/storage');
       return res.data;
     },
+  });
+
+  const { data: sshKeys } = useQuery<SSHKeyInfo[]>({
+    queryKey: ['ssh-keys'],
+    queryFn: async () => (await storageApi.listSSHKeys()).data,
   });
 
   const createMutation = useMutation({
@@ -291,15 +297,64 @@ export default function Storage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                SSH-Key Path (optional)
+                SSH Key (optional)
               </label>
-              <input
-                type="text"
-                value={formData.ssh_key_path}
-                onChange={(e) => setFormData({ ...formData, ssh_key_path: e.target.value })}
-                placeholder="/app/data/ssh_keys/hetzner_box"
-                className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
-              />
+              {(() => {
+                const keyPaths = (sshKeys || []).map((k) => k.private_path);
+                const isManagedKey =
+                  formData.ssh_key_path !== '' && keyPaths.includes(formData.ssh_key_path);
+                const isCustom = formData.ssh_key_path !== '' && !isManagedKey;
+                const selectValue = isCustom
+                  ? '__custom__'
+                  : isManagedKey
+                  ? formData.ssh_key_path
+                  : '';
+                return (
+                  <>
+                    <select
+                      value={selectValue}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (v === '__custom__') {
+                          // keep current text if any, otherwise blank to start fresh
+                          setFormData({
+                            ...formData,
+                            ssh_key_path: isCustom ? formData.ssh_key_path : '',
+                          });
+                        } else {
+                          setFormData({ ...formData, ssh_key_path: v });
+                        }
+                      }}
+                      className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                    >
+                      <option value="">— None (use password) —</option>
+                      {(sshKeys || []).map((k) => (
+                        <option key={k.name} value={k.private_path}>
+                          {k.name}
+                          {k.fingerprint ? ` — ${k.fingerprint.split(' ')[1] || ''}` : ''}
+                        </option>
+                      ))}
+                      <option value="__custom__">Custom path…</option>
+                    </select>
+                    {isCustom && (
+                      <input
+                        type="text"
+                        value={formData.ssh_key_path}
+                        onChange={(e) =>
+                          setFormData({ ...formData, ssh_key_path: e.target.value })
+                        }
+                        placeholder="/app/data/ssh_keys/hetzner_box"
+                        className="mt-2 w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                      />
+                    )}
+                    {(sshKeys || []).length === 0 && (
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                        Tip: generate a key in the “SSH Keys” panel above and it will appear here.
+                      </p>
+                    )}
+                  </>
+                );
+              })()}
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">

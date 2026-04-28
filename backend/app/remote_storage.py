@@ -473,24 +473,41 @@ class SSHStorage(StorageBackend):
             return []
 
     async def test_connection(self) -> Dict[str, Any]:
+        # Use sftp instead of `ssh ... echo` because shell-restricted
+        # SSH endpoints (Hetzner Storage Box, rssh, etc.) reject
+        # arbitrary commands with "Command not found." but still serve
+        # the SFTP subsystem just fine. `sftp -b -` reads a batch script
+        # from stdin; a single `bye` exits cleanly after the auth +
+        # subsystem handshake, which is exactly what we want to verify.
         try:
-            cmd = self._build_ssh_command("echo 'Connection successful'")
+            cmd = ["sftp", "-b", "-", *self._common_ssh_options()]
+            if self.config.port:
+                cmd.extend(["-P", str(self.config.port)])
+            if self.config.ssh_key_path:
+                cmd.extend(["-i", self.config.ssh_key_path])
+            user_host = (
+                f"{self.config.username}@{self.config.host}"
+                if self.config.username
+                else self.config.host
+            )
+            cmd.append(user_host)
             cmd, env = self._wrap_with_sshpass(cmd)
 
             process = await asyncio.create_subprocess_exec(
                 *cmd,
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env or None,
             )
-            stdout, stderr = await process.communicate()
+            stdout, stderr = await process.communicate(input=b"bye\n")
 
             if process.returncode == 0:
-                return {"success": True, "message": "SSH connection successful"}
+                return {"success": True, "message": "SSH/SFTP connection successful"}
             else:
                 details = stderr.decode().strip() or stdout.decode().strip()
                 message = details or (
-                    f"SSH connection failed (exit code {process.returncode})"
+                    f"SSH/SFTP connection failed (exit code {process.returncode})"
                 )
                 logger.warning("SSH storage test failed: %s", message)
                 return {"success": False, "message": message}
