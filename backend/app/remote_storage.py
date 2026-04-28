@@ -309,6 +309,42 @@ class SSHStorage(StorageBackend):
         # rsync needs a single shell-quoted command string.
         return ["-e", "ssh " + " ".join(shlex.quote(p) for p in ssh_parts)]
 
+    def _is_hetzner_storage_box(self) -> bool:
+        host = (self.config.host or "").lower()
+        return host.endswith(".your-storagebox.de") and (self.config.port == 23)
+
+    def _normalize_ssh_base_path(self) -> str:
+        """Return the base path as expected by rsync/sftp for this host.
+
+        Hetzner Storage Box sub-accounts on port 23 often expose a virtual
+        account root where absolute paths like ``/`` or ``/backups`` behave
+        differently than in WebDAV. To avoid writing to a read-only absolute
+        root, we map common UI values to a relative path for SSH/SFTP.
+        """
+        base_path = (self.config.base_path or "").strip()
+        if not self._is_hetzner_storage_box():
+            return base_path
+
+        normalized = base_path.rstrip("/")
+        if normalized in ("", "/", "/home", "home", "/backups", "backups"):
+            return "."
+        if normalized.startswith("/home/"):
+            return normalized[len("/home/") :]
+        return normalized.lstrip("/")
+
+    def _join_remote_path(self, remote_path: str = "") -> str:
+        """Join configured base path and a relative child path.
+
+        Returns a path string suitable for rsync/sftp commands.
+        """
+        base = self._normalize_ssh_base_path()
+        rel = (remote_path or "").lstrip("/")
+        if not rel:
+            return base or "."
+        if not base or base == ".":
+            return rel
+        return f"{base.rstrip('/')}/{rel}"
+
     def _get_remote_path(self, remote_path: str) -> str:
         """Build full remote path with user@host prefix"""
         user_host = (
@@ -316,7 +352,7 @@ class SSHStorage(StorageBackend):
             if self.config.username
             else self.config.host
         )
-        full_path = f"{self.config.base_path}/{remote_path}".replace("//", "/")
+        full_path = self._join_remote_path(remote_path)
         return f"{user_host}:{full_path}"
 
     async def upload(self, local_path: Path, remote_path: str) -> bool:
@@ -402,7 +438,7 @@ class SSHStorage(StorageBackend):
         # arbitrary commands. ``rm`` in sftp batch mode targets a single
         # remote file and is functionally equivalent to ``ssh ... rm -f``.
         try:
-            full_path = f"{self.config.base_path}/{remote_path}"
+            full_path = self._join_remote_path(remote_path)
             cmd, env = self._build_sftp_command()
             # ``-`` after rm means: continue even if the file does not
             # exist, mirroring ``rm -f`` semantics.
@@ -429,7 +465,7 @@ class SSHStorage(StorageBackend):
         # seconds. For files with spaces in the name, sftp returns them
         # verbatim as the trailing field.
         try:
-            full_path = f"{self.config.base_path}/{remote_path}".replace("//", "/")
+            full_path = self._join_remote_path(remote_path)
             cmd, env = self._build_sftp_command()
             batch = f"ls -l {self._sftp_quote(full_path)}\nbye\n".encode()
 
