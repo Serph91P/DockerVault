@@ -34,6 +34,12 @@ touch /app/data/ssh_known_hosts
 chown dockervault:dockervault /app/data/ssh_known_hosts 2>/dev/null || true
 chmod 600 /app/data/ssh_known_hosts 2>/dev/null || true
 
+# Persistent directory for SSH keypairs generated via the UI. 0700 +
+# dockervault ownership so OpenSSH accepts the private keys.
+mkdir -p /app/data/ssh_keys
+chown dockervault:dockervault /app/data/ssh_keys 2>/dev/null || true
+chmod 700 /app/data/ssh_keys 2>/dev/null || true
+
 # Fix ownership of backup directory so the dockervault user can read,
 # browse, and delete all backup files (including ones previously created
 # as root or by containers with different UIDs).

@@ -249,27 +249,55 @@ class SSHStorage(StorageBackend):
           pre-populated known_hosts file.
         - ``UserKnownHostsFile``: persistent path under ``/app/data`` so
           accepted host keys survive container restarts.
-        - ``BatchMode=yes``: never prompt for a password — plain ``ssh``
-          can't read passwords from us anyway, and a prompt would hang
-          the test forever.
+        - ``BatchMode=yes``: never prompt for a password — only when we
+          authenticate with a key. With password auth we MUST allow
+          ``sshpass`` to feed the prompt, so BatchMode is omitted.
         """
-        # Best-effort touch so ssh doesn't complain about the missing file
         try:
             Path(self.KNOWN_HOSTS_FILE).touch(exist_ok=True)
         except OSError:
             pass
-        return [
+        opts = [
             "-o",
             "StrictHostKeyChecking=accept-new",
             "-o",
             f"UserKnownHostsFile={self.KNOWN_HOSTS_FILE}",
             "-o",
-            "BatchMode=yes",
-            "-o",
             "ConnectTimeout=30",
             "-o",
             "ServerAliveInterval=15",
         ]
+        # Only enforce BatchMode when we're using key auth. With a
+        # password we *need* the prompt so ``sshpass -e`` can answer it.
+        if not self._uses_password_auth():
+            opts.extend(["-o", "BatchMode=yes"])
+        # Useful when the box only allows password auth (Hetzner Storage
+        # Box subaccounts) — prevents OpenSSH from offering keys it
+        # cannot use, which would otherwise eat through MaxAuthTries.
+        if self._uses_password_auth():
+            opts.extend(
+                [
+                    "-o",
+                    "PreferredAuthentications=password",
+                    "-o",
+                    "PubkeyAuthentication=no",
+                ]
+            )
+        return opts
+
+    def _uses_password_auth(self) -> bool:
+        """True if the user configured a password and no explicit key."""
+        return bool(self.config.password) and not self.config.ssh_key_path
+
+    def _wrap_with_sshpass(self, cmd: List[str]) -> tuple[List[str], dict]:
+        """If using password auth, prepend ``sshpass -e`` and return the
+        environment carrying ``SSHPASS``. Avoids putting the password on
+        the command line where it would show up in ``ps``.
+        """
+        if not self._uses_password_auth():
+            return cmd, {}
+        env = {**os.environ, "SSHPASS": self.config.password or ""}
+        return ["sshpass", "-e", *cmd], env
 
     def _get_ssh_options(self) -> List[str]:
         """Build SSH options for rsync's ``-e`` argument."""
@@ -298,11 +326,13 @@ class SSHStorage(StorageBackend):
             # Sanitize the path to prevent command injection
             safe_dir = shlex.quote(remote_dir)
             mkdir_cmd = self._build_ssh_command(f"mkdir -p {safe_dir}")
+            mkdir_cmd, mkdir_env = self._wrap_with_sshpass(mkdir_cmd)
 
             process = await asyncio.create_subprocess_exec(
                 *mkdir_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=mkdir_env or None,
             )
             await process.communicate()
 
@@ -311,9 +341,13 @@ class SSHStorage(StorageBackend):
             cmd.extend(self._get_ssh_options())
             cmd.append(str(local_path))
             cmd.append(self._get_remote_path(remote_path))
+            cmd, env = self._wrap_with_sshpass(cmd)
 
             process = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env or None,
             )
             stdout, stderr = await process.communicate()
 
@@ -335,9 +369,13 @@ class SSHStorage(StorageBackend):
             cmd.extend(self._get_ssh_options())
             cmd.append(self._get_remote_path(remote_path))
             cmd.append(str(local_path))
+            cmd, env = self._wrap_with_sshpass(cmd)
 
             process = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env or None,
             )
             stdout, stderr = await process.communicate()
 
@@ -373,9 +411,13 @@ class SSHStorage(StorageBackend):
             # Sanitize the path to prevent command injection
             safe_path = shlex.quote(full_path)
             cmd = self._build_ssh_command(f"rm -f {safe_path}")
+            cmd, env = self._wrap_with_sshpass(cmd)
 
             process = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env or None,
             )
             await process.communicate()
             return process.returncode == 0
@@ -390,9 +432,13 @@ class SSHStorage(StorageBackend):
             safe_path = shlex.quote(full_path)
             # Use --time-style=+%s to get epoch timestamps as a single field
             cmd = self._build_ssh_command(f"ls -la --time-style=+%s {safe_path}")
+            cmd, env = self._wrap_with_sshpass(cmd)
 
             process = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env or None,
             )
             stdout, stderr = await process.communicate()
 
@@ -429,9 +475,13 @@ class SSHStorage(StorageBackend):
     async def test_connection(self) -> Dict[str, Any]:
         try:
             cmd = self._build_ssh_command("echo 'Connection successful'")
+            cmd, env = self._wrap_with_sshpass(cmd)
 
             process = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env or None,
             )
             stdout, stderr = await process.communicate()
 
