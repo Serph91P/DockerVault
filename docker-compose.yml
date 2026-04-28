@@ -3,6 +3,11 @@ services:
     image: ghcr.io/serph91p/dockervault:latest
     container_name: dockervault
     restart: unless-stopped
+    # Allow long-running backups to drain when the orchestrator stops the
+    # container (redeploy, host reboot, ...). Without this, Docker sends
+    # SIGKILL after 10s and any active backup is killed mid-tar.
+    # Tools like Komodo/Watchtower honour this value.
+    stop_grace_period: 24h
     # Run as root to access Docker volumes (required for backup functionality)
     # This is necessary because Docker volumes are owned by root
     user: root
@@ -27,7 +32,10 @@ services:
       - DEFAULT_KEEP_MONTHLY=${DEFAULT_KEEP_MONTHLY:-6}
       - DEFAULT_KEEP_YEARLY=${DEFAULT_KEEP_YEARLY:-2}
       # Advanced
-      - SHUTDOWN_TIMEOUT=${SHUTDOWN_TIMEOUT:-30}
+      # Wait for in-progress backups to finish on shutdown. 0 = wait
+      # indefinitely (default). Must be smaller than supervisord's
+      # stopwaitsecs and the compose stop_grace_period above.
+      - SHUTDOWN_TIMEOUT=${SHUTDOWN_TIMEOUT:-0}
       # Komodo Integration (optional)
       - KOMODO_ENABLED=${KOMODO_ENABLED:-false}
       - KOMODO_API_URL=${KOMODO_API_URL:-}

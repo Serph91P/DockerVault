@@ -336,6 +336,25 @@ export const storageApi = {
   getTypes: () => api.get('/storage/types'),
   listFiles: (id: number, path?: string) => api.get(`/storage/${id}/files`, { params: { path: path || '' } }),
   deleteFile: (id: number, path: string) => api.delete(`/storage/${id}/files`, { params: { path } }),
+  // SSH key management
+  listSSHKeys: () => api.get<SSHKeyInfo[]>('/storage/ssh-keys'),
+  generateSSHKey: (data: { name: string; comment?: string; overwrite?: boolean }) =>
+    api.post<SSHKeyInfo>('/storage/ssh-keys', data),
+  deleteSSHKey: (name: string) => api.delete(`/storage/ssh-keys/${name}`),
+  installSSHKey: (
+    name: string,
+    data: { host: string; port: number; username: string; password: string; method?: string },
+  ) => api.post(`/storage/ssh-keys/${name}/install`, data),
+  downloadSSHPublicKeyURL: (name: string) => `/api/v1/storage/ssh-keys/${name}/public`,
+}
+
+export interface SSHKeyInfo {
+  name: string
+  private_path: string
+  public_path: string
+  public_key: string
+  fingerprint?: string | null
+  created_at: number
 }
 
 // Komodo API

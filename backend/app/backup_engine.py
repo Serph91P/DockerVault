@@ -189,7 +189,15 @@ class BackupEngine:
                 logger.error("Batch backup %d failed: %s", backup_id, exc)
 
     async def shutdown(self, timeout: int = 30) -> None:
-        """Wait for in-progress backups to finish, then stop the queue worker."""
+        """Wait for in-progress backups to finish, then stop the queue worker.
+
+        ``timeout`` of ``0`` (or ``None``) waits indefinitely — important
+        for the typical case where a redeploy lands while a multi-hour
+        backup of media volumes is still streaming. The container manager
+        (Docker ``stop_grace_period``, supervisord ``stopwaitsecs``) needs
+        to be configured to allow the same wait, otherwise the process
+        will be SIGKILLed regardless of what we do here.
+        """
         # Cancel the queue worker so no new jobs are picked up
         if self._queue_worker_task and not self._queue_worker_task.done():
             self._queue_worker_task.cancel()
@@ -201,13 +209,20 @@ class BackupEngine:
         if not self.active_backups:
             return
 
-        logger.info(
-            "Waiting up to %ds for %d active backup(s) to finish...",
-            timeout,
-            len(self.active_backups),
-        )
+        wait_timeout: Optional[float] = None if not timeout else float(timeout)
+        if wait_timeout is None:
+            logger.info(
+                "Waiting indefinitely for %d active backup(s) to finish...",
+                len(self.active_backups),
+            )
+        else:
+            logger.info(
+                "Waiting up to %ds for %d active backup(s) to finish...",
+                int(wait_timeout),
+                len(self.active_backups),
+            )
         tasks = list(self.active_backups.values())
-        done, pending = await asyncio.wait(tasks, timeout=timeout)
+        done, pending = await asyncio.wait(tasks, timeout=wait_timeout)
 
         if pending:
             logger.warning(

@@ -233,16 +233,81 @@ class LocalStorage(StorageBackend):
 class SSHStorage(StorageBackend):
     """SSH/SFTP storage using rsync or scp"""
 
+    # Persistent known_hosts file under the data volume so host key
+    # entries survive container restarts. The first connection to a
+    # new host is auto-accepted (TOFU) thanks to
+    # ``StrictHostKeyChecking=accept-new``; subsequent connections
+    # verify against the recorded fingerprint.
+    KNOWN_HOSTS_FILE = "/app/data/ssh_known_hosts"
+
+    def _common_ssh_options(self) -> List[str]:
+        """SSH ``-o`` options applied to every ssh/rsync invocation.
+
+        - ``StrictHostKeyChecking=accept-new``: trust-on-first-use.
+          Without this, the first connection to a new host fails with
+          ``Host key verification failed`` because the container has no
+          pre-populated known_hosts file.
+        - ``UserKnownHostsFile``: persistent path under ``/app/data`` so
+          accepted host keys survive container restarts.
+        - ``BatchMode=yes``: never prompt for a password — only when we
+          authenticate with a key. With password auth we MUST allow
+          ``sshpass`` to feed the prompt, so BatchMode is omitted.
+        """
+        try:
+            Path(self.KNOWN_HOSTS_FILE).touch(exist_ok=True)
+        except OSError:
+            pass
+        opts = [
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            f"UserKnownHostsFile={self.KNOWN_HOSTS_FILE}",
+            "-o",
+            "ConnectTimeout=30",
+            "-o",
+            "ServerAliveInterval=15",
+        ]
+        # Only enforce BatchMode when we're using key auth. With a
+        # password we *need* the prompt so ``sshpass -e`` can answer it.
+        if not self._uses_password_auth():
+            opts.extend(["-o", "BatchMode=yes"])
+        # Useful when the box only allows password auth (Hetzner Storage
+        # Box subaccounts) — prevents OpenSSH from offering keys it
+        # cannot use, which would otherwise eat through MaxAuthTries.
+        if self._uses_password_auth():
+            opts.extend(
+                [
+                    "-o",
+                    "PreferredAuthentications=password",
+                    "-o",
+                    "PubkeyAuthentication=no",
+                ]
+            )
+        return opts
+
+    def _uses_password_auth(self) -> bool:
+        """True if the user configured a password and no explicit key."""
+        return bool(self.config.password) and not self.config.ssh_key_path
+
+    def _wrap_with_sshpass(self, cmd: List[str]) -> tuple[List[str], dict]:
+        """If using password auth, prepend ``sshpass -e`` and return the
+        environment carrying ``SSHPASS``. Avoids putting the password on
+        the command line where it would show up in ``ps``.
+        """
+        if not self._uses_password_auth():
+            return cmd, {}
+        env = {**os.environ, "SSHPASS": self.config.password or ""}
+        return ["sshpass", "-e", *cmd], env
+
     def _get_ssh_options(self) -> List[str]:
-        """Build SSH options for commands"""
-        ssh_parts = []
+        """Build SSH options for rsync's ``-e`` argument."""
+        ssh_parts = list(self._common_ssh_options())
         if self.config.port:
-            ssh_parts.append(f"-p {self.config.port}")
+            ssh_parts.extend(["-p", str(self.config.port)])
         if self.config.ssh_key_path:
-            ssh_parts.append(f"-i {self.config.ssh_key_path}")
-        if ssh_parts:
-            return ["-e", f"ssh {' '.join(ssh_parts)}"]
-        return []
+            ssh_parts.extend(["-i", self.config.ssh_key_path])
+        # rsync needs a single shell-quoted command string.
+        return ["-e", "ssh " + " ".join(shlex.quote(p) for p in ssh_parts)]
 
     def _get_remote_path(self, remote_path: str) -> str:
         """Build full remote path with user@host prefix"""
@@ -261,11 +326,13 @@ class SSHStorage(StorageBackend):
             # Sanitize the path to prevent command injection
             safe_dir = shlex.quote(remote_dir)
             mkdir_cmd = self._build_ssh_command(f"mkdir -p {safe_dir}")
+            mkdir_cmd, mkdir_env = self._wrap_with_sshpass(mkdir_cmd)
 
             process = await asyncio.create_subprocess_exec(
                 *mkdir_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=mkdir_env or None,
             )
             await process.communicate()
 
@@ -274,9 +341,13 @@ class SSHStorage(StorageBackend):
             cmd.extend(self._get_ssh_options())
             cmd.append(str(local_path))
             cmd.append(self._get_remote_path(remote_path))
+            cmd, env = self._wrap_with_sshpass(cmd)
 
             process = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env or None,
             )
             stdout, stderr = await process.communicate()
 
@@ -298,9 +369,13 @@ class SSHStorage(StorageBackend):
             cmd.extend(self._get_ssh_options())
             cmd.append(self._get_remote_path(remote_path))
             cmd.append(str(local_path))
+            cmd, env = self._wrap_with_sshpass(cmd)
 
             process = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env or None,
             )
             stdout, stderr = await process.communicate()
 
@@ -315,7 +390,7 @@ class SSHStorage(StorageBackend):
         Note: The remote_cmd should already have paths sanitized with shlex.quote()
         before being passed to this method.
         """
-        cmd = ["ssh", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=15"]
+        cmd = ["ssh", *self._common_ssh_options()]
         if self.config.port:
             cmd.extend(["-p", str(self.config.port)])
         if self.config.ssh_key_path:
@@ -336,9 +411,13 @@ class SSHStorage(StorageBackend):
             # Sanitize the path to prevent command injection
             safe_path = shlex.quote(full_path)
             cmd = self._build_ssh_command(f"rm -f {safe_path}")
+            cmd, env = self._wrap_with_sshpass(cmd)
 
             process = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env or None,
             )
             await process.communicate()
             return process.returncode == 0
@@ -353,9 +432,13 @@ class SSHStorage(StorageBackend):
             safe_path = shlex.quote(full_path)
             # Use --time-style=+%s to get epoch timestamps as a single field
             cmd = self._build_ssh_command(f"ls -la --time-style=+%s {safe_path}")
+            cmd, env = self._wrap_with_sshpass(cmd)
 
             process = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env or None,
             )
             stdout, stderr = await process.communicate()
 
@@ -392,9 +475,13 @@ class SSHStorage(StorageBackend):
     async def test_connection(self) -> Dict[str, Any]:
         try:
             cmd = self._build_ssh_command("echo 'Connection successful'")
+            cmd, env = self._wrap_with_sshpass(cmd)
 
             process = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env or None,
             )
             stdout, stderr = await process.communicate()
 
@@ -474,14 +561,21 @@ class WebDAVStorage(StorageBackend):
         file_size = local_path.stat().st_size
         # Scale timeout: minimum 300s, or 60s per 100 MB
         dynamic_timeout = max(300, int(file_size / (100 * 1024 * 1024)) * 60 + 120)
-        chunk_size = max(64 * 1024, settings.STORAGE_UPLOAD_CHUNK_SIZE)
 
         # HTTP status codes that are permanent failures (no point retrying)
         NON_RETRYABLE = {400, 401, 403, 405, 409, 413, 422, 507}
 
+        # Threshold below which we read the whole file into memory.
+        # Avoids a known race in aiohttp where a retried request that
+        # passes an async generator as ``data`` can raise
+        # ``RuntimeError('anext(): asynchronous generator is already running')``
+        # — small ``.key`` sidecars hit this every single time.
+        SMALL_FILE_THRESHOLD = 4 * 1024 * 1024  # 4 MiB
+
         max_retries = self.MAX_RETRIES
         last_error: Exception | None = None
         for attempt in range(1, max_retries + 1):
+            file_handle = None  # ensure we can close it on exception
             try:
                 async with self._get_session(
                     timeout_seconds=dynamic_timeout
@@ -492,21 +586,31 @@ class WebDAVStorage(StorageBackend):
 
                     url = self._get_url(remote_path)
 
-                    # Stream the file from disk in fixed-size chunks while
-                    # sending an explicit Content-Length header so aiohttp
-                    # never falls back to chunked transfer encoding (which
-                    # some WebDAV proxies, e.g. Hetzner Storage Box's nginx,
-                    # reject with HTTP 413). This avoids loading the entire
-                    # file into memory — the previous behaviour caused OOM
-                    # and "Broken pipe" errors on multi-GB encrypted backups.
+                    # Always send an explicit Content-Length so aiohttp
+                    # cannot fall back to chunked transfer encoding (which
+                    # some WebDAV proxies — e.g. Hetzner Storage Box's
+                    # nginx — reject with HTTP 413).
                     headers = {
                         "Content-Length": str(file_size),
                         "Content-Type": "application/octet-stream",
                     }
 
+                    if file_size <= SMALL_FILE_THRESHOLD:
+                        # Read entirely into memory. Safe for tiny files
+                        # (sidecar keys are ~200 B) and avoids the async
+                        # generator retry race entirely.
+                        body = local_path.read_bytes()
+                    else:
+                        # Stream large files via a sync file handle; aiohttp
+                        # reads it in a thread executor without buffering
+                        # the entire content. Avoids the async-generator
+                        # ``anext()`` reentrancy bug seen on retries.
+                        file_handle = open(local_path, "rb")
+                        body = file_handle
+
                     async with session.put(
                         url,
-                        data=_stream_file_chunks(local_path, chunk_size),
+                        data=body,
                         headers=headers,
                     ) as resp:
                         if resp.status in (200, 201, 204):
@@ -540,11 +644,22 @@ class WebDAVStorage(StorageBackend):
                                 body[:200],
                             )
                             if resp.status in NON_RETRYABLE:
-                                logger.error(
-                                    "WebDAV upload permanently rejected (HTTP %d) for %s — not retrying",
-                                    resp.status,
-                                    remote_path,
-                                )
+                                if resp.status == 413:
+                                    logger.error(
+                                        "WebDAV upload permanently rejected (HTTP 413) "
+                                        "for %s — file is %.1f GiB; the WebDAV server "
+                                        "(typically Hetzner Storage Box / nginx) refuses "
+                                        "single PUTs of this size. Use SFTP/SSH for "
+                                        "this target, or split the backup.",
+                                        remote_path,
+                                        file_size / (1024 * 1024 * 1024),
+                                    )
+                                else:
+                                    logger.error(
+                                        "WebDAV upload permanently rejected (HTTP %d) for %s — not retrying",
+                                        resp.status,
+                                        remote_path,
+                                    )
                                 return False
             except Exception as e:
                 last_error = e
@@ -555,6 +670,12 @@ class WebDAVStorage(StorageBackend):
                     max_retries,
                     e,
                 )
+            finally:
+                if file_handle is not None:
+                    try:
+                        file_handle.close()
+                    except Exception:  # noqa: BLE001 — best-effort cleanup
+                        pass
 
             if attempt < max_retries:
                 wait = _retry_wait_seconds(attempt)
