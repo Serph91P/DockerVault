@@ -24,7 +24,7 @@ jobs:
     steps:
       - name: Wait for Tests workflow
         id: check
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             // Wait up to 10 minutes for Tests workflow to complete
