@@ -664,6 +664,149 @@ def _validate_remote_path(path: str) -> str:
     return normalized
 
 
+def _get_local_backend():
+    """Create a LocalStorage backend for the backup directory."""
+    from ..remote_storage import LocalStorage, StorageConfig, StorageType
+
+    config = StorageConfig(
+        id=0,
+        name="Local Backups",
+        storage_type=StorageType.LOCAL,
+        base_path=settings.BACKUP_BASE_PATH,
+    )
+    return LocalStorage(config)
+
+
+class BulkDeleteRequest(BaseModel):
+    paths: list[str]
+
+
+class BulkDownloadRequest(BaseModel):
+    paths: list[str]
+
+
+@router.get("/local/files")
+async def list_local_files(path: str = ""):
+    """List files in the local backup directory."""
+    backend = _get_local_backend()
+    safe_path = _validate_remote_path(path) if path else ""
+    files = await backend.list_files(safe_path)
+    return {"files": files, "path": safe_path}
+
+
+@router.get("/local/files/download")
+async def download_local_file(path: str):
+    """Download a file from the local backup directory."""
+    backend = _get_local_backend()
+    safe_path = _validate_remote_path(path)
+    filename = os.path.basename(safe_path)
+
+    temp_dir = tempfile.mkdtemp()
+    local_path = Path(temp_dir) / filename
+
+    def cleanup():
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    try:
+        success = await backend.download(safe_path, local_path)
+        if not success or not local_path.exists():
+            cleanup()
+            raise HTTPException(status_code=500, detail="Download failed")
+
+        return FileResponse(
+            path=str(local_path),
+            filename=filename,
+            media_type="application/octet-stream",
+            background=BackgroundTask(cleanup),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        cleanup()
+        logger.error(f"Local download failed: {e}")
+        raise HTTPException(status_code=500, detail="Download failed")
+
+
+@router.delete("/local/files")
+async def delete_local_file(path: str):
+    """Delete a file from the local backup directory."""
+    backend = _get_local_backend()
+    safe_path = _validate_remote_path(path)
+
+    try:
+        success = await backend.delete(safe_path)
+        if not success:
+            raise HTTPException(status_code=500, detail="Delete failed")
+        return {"message": f"Deleted {safe_path}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Local delete failed: {e}")
+        raise HTTPException(status_code=500, detail="Delete failed")
+
+
+@router.post("/local/files/bulk-delete")
+async def bulk_delete_local_files(request: BulkDeleteRequest):
+    """Delete multiple files from local backup directory."""
+    backend = _get_local_backend()
+
+    results = []
+    for path in request.paths:
+        safe_path = _validate_remote_path(path)
+        try:
+            success = await backend.delete(safe_path)
+            results.append({"path": path, "success": success})
+        except Exception as e:
+            results.append({"path": path, "success": False, "error": str(e)})
+
+    succeeded = sum(1 for r in results if r["success"])
+    failed = len(results) - succeeded
+    return {"results": results, "succeeded": succeeded, "failed": failed}
+
+
+@router.post("/local/files/bulk-download")
+async def bulk_download_local_files(request: BulkDownloadRequest):
+    """Download multiple local files as a zip archive."""
+    import zipfile as zf_mod
+
+    if not request.paths:
+        raise HTTPException(status_code=400, detail="No files specified")
+
+    backend = _get_local_backend()
+    temp_dir = tempfile.mkdtemp()
+    zip_path = Path(temp_dir) / "download.zip"
+
+    def cleanup():
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    try:
+        first_path = request.paths[0]
+        folder_name = first_path.split("/")[0] if "/" in first_path else "download"
+
+        with zf_mod.ZipFile(zip_path, "w", zf_mod.ZIP_DEFLATED) as zf:
+            for path in request.paths:
+                safe_path = _validate_remote_path(path)
+                filename = os.path.basename(safe_path)
+                temp_file = Path(temp_dir) / filename
+                success = await backend.download(safe_path, temp_file)
+                if success and temp_file.exists():
+                    zf.write(temp_file, filename)
+                    temp_file.unlink()
+
+        return FileResponse(
+            path=str(zip_path),
+            filename=f"{folder_name}.zip",
+            media_type="application/zip",
+            background=BackgroundTask(cleanup),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        cleanup()
+        logger.error(f"Local bulk download failed: {e}")
+        raise HTTPException(status_code=500, detail="Bulk download failed")
+
+
 @router.get("/{storage_id}/files")
 async def list_files(
     storage_id: int, path: str = "", db: AsyncSession = Depends(get_db)
@@ -749,6 +892,91 @@ async def delete_file(storage_id: int, path: str, db: AsyncSession = Depends(get
     except Exception as e:
         logger.error(f"Remote storage delete failed: {e}")
         raise HTTPException(status_code=500, detail="Delete failed")
+
+
+@router.post("/{storage_id}/files/bulk-delete")
+async def bulk_delete_files(
+    storage_id: int,
+    request: BulkDeleteRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete multiple files from remote storage."""
+    storage = await db.get(RemoteStorageModel, storage_id)
+    if not storage:
+        raise HTTPException(status_code=404, detail="Storage not found")
+
+    backend = storage_manager.get_backend(storage_id)
+    if not backend:
+        config = _db_to_config(storage)
+        backend = storage_manager.add_storage(config)
+
+    results = []
+    for path in request.paths:
+        safe_path = _validate_remote_path(path)
+        try:
+            success = await backend.delete(safe_path)
+            results.append({"path": path, "success": success})
+        except Exception as e:
+            results.append({"path": path, "success": False, "error": str(e)})
+
+    succeeded = sum(1 for r in results if r["success"])
+    failed = len(results) - succeeded
+    return {"results": results, "succeeded": succeeded, "failed": failed}
+
+
+@router.post("/{storage_id}/files/bulk-download")
+async def bulk_download_files(
+    storage_id: int,
+    request: BulkDownloadRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Download multiple files as a zip archive."""
+    import zipfile as zf_mod
+
+    if not request.paths:
+        raise HTTPException(status_code=400, detail="No files specified")
+
+    storage = await db.get(RemoteStorageModel, storage_id)
+    if not storage:
+        raise HTTPException(status_code=404, detail="Storage not found")
+
+    backend = storage_manager.get_backend(storage_id)
+    if not backend:
+        config = _db_to_config(storage)
+        backend = storage_manager.add_storage(config)
+
+    temp_dir = tempfile.mkdtemp()
+    zip_path = Path(temp_dir) / "download.zip"
+
+    def cleanup():
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    try:
+        first_path = request.paths[0]
+        folder_name = first_path.split("/")[0] if "/" in first_path else "download"
+
+        with zf_mod.ZipFile(zip_path, "w", zf_mod.ZIP_DEFLATED) as zf:
+            for path in request.paths:
+                safe_path = _validate_remote_path(path)
+                filename = os.path.basename(safe_path)
+                temp_file = Path(temp_dir) / filename
+                success = await backend.download(safe_path, temp_file)
+                if success and temp_file.exists():
+                    zf.write(temp_file, filename)
+                    temp_file.unlink()
+
+        return FileResponse(
+            path=str(zip_path),
+            filename=f"{folder_name}.zip",
+            media_type="application/zip",
+            background=BackgroundTask(cleanup),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        cleanup()
+        logger.error(f"Bulk download failed: {e}")
+        raise HTTPException(status_code=500, detail="Bulk download failed")
 
 
 @router.post("/{storage_id}/sync/{backup_id}")

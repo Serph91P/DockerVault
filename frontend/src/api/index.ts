@@ -336,6 +336,19 @@ export const storageApi = {
   getTypes: () => api.get('/storage/types'),
   listFiles: (id: number, path?: string) => api.get(`/storage/${id}/files`, { params: { path: path || '' } }),
   deleteFile: (id: number, path: string) => api.delete(`/storage/${id}/files`, { params: { path } }),
+  bulkDeleteFiles: (id: number, paths: string[]) =>
+    api.post(`/storage/${id}/files/bulk-delete`, { paths }),
+  bulkDownloadFiles: (id: number, paths: string[]) =>
+    api.post(`/storage/${id}/files/bulk-download`, { paths }, { responseType: 'blob' }),
+  // Local backup files
+  listLocalFiles: (path?: string) =>
+    api.get('/storage/local/files', { params: { path: path || '' } }),
+  deleteLocalFile: (path: string) =>
+    api.delete('/storage/local/files', { params: { path } }),
+  bulkDeleteLocalFiles: (paths: string[]) =>
+    api.post('/storage/local/files/bulk-delete', { paths }),
+  bulkDownloadLocalFiles: (paths: string[]) =>
+    api.post('/storage/local/files/bulk-download', { paths }, { responseType: 'blob' }),
   // SSH key management
   listSSHKeys: () => api.get<SSHKeyInfo[]>('/storage/ssh-keys'),
   generateSSHKey: (data: { name: string; comment?: string; overwrite?: boolean }) =>
