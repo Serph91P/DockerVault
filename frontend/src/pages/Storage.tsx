@@ -81,6 +81,7 @@ export default function Storage() {
     });
   };
   const [browsingStorage, setBrowsingStorage] = useState<RemoteStorage | null>(null);
+  const [localBrowserOpen, setLocalBrowserOpen] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<{ id: number; name: string } | null>(null);
   const [formStep, setFormStep] = useState(1); // ST1: 1=Name+Type, 2=Details, 3=Review
 
@@ -622,9 +623,9 @@ export default function Storage() {
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Remote Storage</h1>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Local and Remote Storage</h1>
           <p className="text-slate-600 dark:text-slate-400">
-            Configure external storage locations for off-site backups
+            Browse local backups and configure external storage locations
           </p>
         </div>
         <button
@@ -654,6 +655,32 @@ export default function Storage() {
             </div>
           );
         })}
+      </div>
+
+      {/* Local Backups */}
+      <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 px-6 py-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="p-3 rounded-lg bg-green-100 dark:bg-green-900/30">
+              <HardDrive className="w-6 h-6 text-green-600 dark:text-green-400" />
+            </div>
+            <div>
+              <h3 className="font-medium text-slate-900 dark:text-white">
+                Local Backups
+              </h3>
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                Browse the local backup directory
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setLocalBrowserOpen(true)}
+            className="p-2 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
+            title="Browse Files"
+          >
+            <FolderOpen className="w-5 h-5" />
+          </button>
+        </div>
       </div>
 
       {/* SSH Keys */}
@@ -810,6 +837,19 @@ export default function Storage() {
         <StorageBrowser
           storage={browsingStorage}
           onClose={() => setBrowsingStorage(null)}
+        />
+      )}
+
+      {/* Local Backup Browser Modal */}
+      {localBrowserOpen && (
+        <StorageBrowser
+          storage={{
+            id: 'local' as const,
+            name: 'Local Backups',
+            storage_type: 'local',
+            base_path: '/backups',
+          }}
+          onClose={() => setLocalBrowserOpen(false)}
         />
       )}
 
