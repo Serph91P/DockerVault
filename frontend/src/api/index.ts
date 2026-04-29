@@ -396,12 +396,19 @@ export interface SystemInfo {
   app_version: string
 }
 
+export interface StorageSettings {
+  check_quota_before_upload: boolean
+}
+
 export const settingsApi = {
   getKomodo: () => api.get<KomodoSettings>('/settings/komodo'),
   updateKomodo: (data: { enabled: boolean; api_url?: string; api_key?: string; api_secret?: string }) =>
     api.put<KomodoSettings>('/settings/komodo', data),
   testKomodo: () => api.post<KomodoTestResult>('/settings/komodo/test'),
   getSystemInfo: () => api.get<SystemInfo>('/settings/system-info'),
+  getStorageSettings: () => api.get<StorageSettings>('/settings/storage'),
+  updateStorageSettings: (data: StorageSettings) =>
+    api.put<StorageSettings>('/settings/storage', data),
 }
 
 export default api
