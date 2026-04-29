@@ -805,9 +805,7 @@ class WebDAVStorage(StorageBackend):
                     # Pre-upload quota check (if enabled)
                     from app.api.settings import get_setting
 
-                    check_quota = await get_setting(
-                        "storage_check_quota_before_upload"
-                    )
+                    check_quota = await get_setting("storage_check_quota_before_upload")
                     if check_quota == "true" and attempt == 1:
                         can_proceed, quota_error = await self._check_remote_quota(
                             session, file_size
