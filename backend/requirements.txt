@@ -39,4 +39,4 @@ cryptography>=46.0.5
 slowapi>=0.1.9
 
 # Utilities
-python-dateutil>=2.9.0
+python-dateutil>=2.9.0.post0
