@@ -889,7 +889,8 @@ class BackupEngine:
                             target.remote_storage_ids,
                         )
                         key_sidecar_synced = (
-                            all(key_results.values()) and len(key_results) > 0
+                            all(v[0] for v in key_results.values())
+                            and len(key_results) > 0
                         )
                         if key_sidecar_synced:
                             logger.info(
@@ -912,20 +913,22 @@ class BackupEngine:
             # Record sync results in BackupStorageSync table
             remote_path = f"{safe_name}/{local_path.name}"
             async with async_session() as session:
-                for storage_id, success in results.items():
+                for storage_id, (success, error_msg) in results.items():
                     sync_record = BackupStorageSync(
                         backup_id=backup_id,
                         storage_id=storage_id,
                         remote_path=remote_path,
                         synced_at=datetime.now(timezone.utc) if success else None,
                         sync_status="completed" if success else "failed",
-                        error_message=None if success else "Upload failed",
+                        error_message=None
+                        if success
+                        else (error_msg[:500] if error_msg else "Upload failed"),
                     )
                     session.add(sync_record)
                 await session.commit()
 
-            succeeded = sum(1 for v in results.values() if v)
-            failed = sum(1 for v in results.values() if not v)
+            succeeded = sum(1 for v in results.values() if v[0])
+            failed = sum(1 for v in results.values() if not v[0])
 
             if failed:
                 await self._log(

@@ -115,8 +115,8 @@ class StorageBackend(ABC):
         self.config = config
 
     @abstractmethod
-    async def upload(self, local_path: Path, remote_path: str) -> bool:
-        """Upload a file to remote storage"""
+    async def upload(self, local_path: Path, remote_path: str) -> tuple[bool, str]:
+        """Upload a file to remote storage. Returns (success, error_message)."""
         pass
 
     @abstractmethod
@@ -159,7 +159,7 @@ class LocalStorage(StorageBackend):
             raise ValueError("Path traversal detected")
         return resolved
 
-    async def upload(self, local_path: Path, remote_path: str) -> bool:
+    async def upload(self, local_path: Path, remote_path: str) -> tuple[bool, str]:
         try:
             dest = self._safe_resolve(remote_path)
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -169,10 +169,10 @@ class LocalStorage(StorageBackend):
             await loop.run_in_executor(None, shutil.copy2, str(local_path), str(dest))
 
             logger.info(f"Copied {local_path} to {dest}")
-            return True
+            return True, ""
         except Exception as e:
             logger.error(f"Local upload failed: {e}")
-            return False
+            return False, str(e)
 
     async def download(self, remote_path: str, local_path: Path) -> bool:
         try:
@@ -355,8 +355,67 @@ class SSHStorage(StorageBackend):
         full_path = self._join_remote_path(remote_path)
         return f"{user_host}:{full_path}"
 
-    async def upload(self, local_path: Path, remote_path: str) -> bool:
+    async def _check_remote_quota(self, file_size: int) -> tuple[bool, str]:
+        """Pre-upload disk space check via SSH df command.
+
+        Only works on SSH endpoints with full shell access (not Hetzner Storage Box).
+        Returns (can_proceed, error_message).
+        """
+        if self._is_hetzner_storage_box():
+            return True, ""
+
         try:
+            base_path = self._normalize_ssh_base_path()
+            check_path = base_path if base_path and base_path != "." else "."
+
+            cmd = ["ssh"]
+            cmd.extend(self._common_ssh_options())
+            if self.config.port:
+                cmd.extend(["-p", str(self.config.port)])
+            if self.config.ssh_key_path:
+                cmd.extend(["-i", self.config.ssh_key_path])
+            cmd.append(f"{self.config.username}@{self.config.host}")
+            cmd.append(f"df -B1 {check_path} | tail -1 | awk '{{print $4}}'")
+
+            cmd, env = self._wrap_with_sshpass(cmd)
+
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env or None,
+            )
+            stdout, stderr = await process.communicate()
+
+            if process.returncode == 0:
+                output = stdout.decode().strip()
+                if output.isdigit():
+                    available = int(output)
+                    if available < file_size:
+                        return False, (
+                            f"Insufficient remote storage: {available / (1024**3):.2f} GB "
+                            f"available, {file_size / (1024**3):.2f} GB required"
+                        )
+            return True, ""
+        except Exception:
+            return True, ""  # Don't block upload on quota check failure
+
+    async def upload(self, local_path: Path, remote_path: str) -> tuple[bool, str]:
+        try:
+            file_size = local_path.stat().st_size
+
+            # Pre-upload quota check (if enabled)
+            from app.api.settings import get_setting
+
+            check_quota = await get_setting("storage_check_quota_before_upload")
+            if check_quota == "true":
+                can_proceed, quota_error = await self._check_remote_quota(file_size)
+                if not can_proceed:
+                    logger.error(
+                        "SSH upload aborted for %s: %s", remote_path, quota_error
+                    )
+                    return False, quota_error
+
             # Use rsync for efficient transfer. ``--mkpath`` (rsync 3.2.3+)
             # makes the receiver create any missing path components on its
             # own, so we no longer need an ``ssh mkdir -p`` round-trip.
@@ -380,13 +439,36 @@ class SSHStorage(StorageBackend):
 
             if process.returncode == 0:
                 logger.info(f"SSH upload successful: {remote_path}")
-                return True
+                return True, ""
             else:
-                logger.error(f"SSH upload failed: {stderr.decode()}")
-                return False
+                stderr_text = stderr.decode()
+                if (
+                    "Disk quota exceeded" in stderr_text
+                    or "No space left on device" in stderr_text
+                ):
+                    error_msg = (
+                        "Remote storage full (disk quota exceeded). "
+                        "Free up space on the remote server or increase the quota."
+                    )
+                    logger.error(
+                        "SSH upload failed for %s — %s", remote_path, error_msg
+                    )
+                    return False, error_msg
+                elif "Broken pipe" in stderr_text:
+                    error_msg = (
+                        "Connection lost during transfer. "
+                        "The file may be too large for the current timeout or network conditions."
+                    )
+                    logger.error(
+                        "SSH upload failed for %s — %s", remote_path, error_msg
+                    )
+                    return False, error_msg
+                else:
+                    logger.error(f"SSH upload failed: {stderr_text}")
+                    return False, stderr_text.strip()[:500]
         except Exception as e:
             logger.error(f"SSH upload error: {e}")
-            return False
+            return False, str(e)[:500]
 
     async def download(self, remote_path: str, local_path: Path) -> bool:
         try:
@@ -627,10 +709,13 @@ class WebDAVStorage(StorageBackend):
         """
         try:
             url = self._get_url(remote_path)
-            async with session.head(url) as resp:
+            async with session.head(url, allow_redirects=True) as resp:
                 if resp.status not in (200, 204):
                     logger.warning(
-                        "WebDAV verify HEAD %s for %s", resp.status, remote_path
+                        "WebDAV verify HEAD %s for %s (url: %s)",
+                        resp.status,
+                        remote_path,
+                        resp.url,
                     )
                     return False
                 cl = resp.headers.get("Content-Length")
@@ -650,7 +735,46 @@ class WebDAVStorage(StorageBackend):
             logger.warning("WebDAV verify error for %s: %s", remote_path, e)
             return True
 
-    async def upload(self, local_path: Path, remote_path: str) -> bool:
+    async def _check_remote_quota(
+        self, session: aiohttp.ClientSession, file_size: int
+    ) -> tuple[bool, str]:
+        """Pre-upload quota check via WebDAV PROPFIND (RFC 4331).
+
+        Returns (can_proceed, error_message).
+        If server doesn't report quota, returns (True, "") — don't block upload.
+        """
+        try:
+            url = self._get_url("")
+            body = (
+                '<?xml version="1.0" encoding="utf-8"?>'
+                '<d:propfind xmlns:d="DAV:">'
+                "<d:prop><d:quota-available-bytes/></d:prop>"
+                "</d:propfind>"
+            )
+            headers = {"Depth": "0", "Content-Type": "application/xml"}
+            async with session.request(
+                "PROPFIND", url, data=body, headers=headers
+            ) as resp:
+                if resp.status != 207:
+                    return True, ""  # Server doesn't support quota query
+                text = await resp.text()
+                import xml.etree.ElementTree as ET
+
+                root = ET.fromstring(text)
+                for elem in root.iter("{DAV:}quota-available-bytes"):
+                    if elem.text and elem.text.strip().lstrip("-").isdigit():
+                        available = int(elem.text.strip())
+                        if available >= 0 and available < file_size:
+                            return False, (
+                                f"Insufficient remote storage: "
+                                f"{available / (1024**3):.2f} GB available, "
+                                f"{file_size / (1024**3):.2f} GB required"
+                            )
+                return True, ""
+        except Exception:
+            return True, ""  # Don't block upload on quota check failure
+
+    async def upload(self, local_path: Path, remote_path: str) -> tuple[bool, str]:
         file_size = local_path.stat().st_size
         # Scale timeout: minimum 300s, or 60s per 100 MB
         dynamic_timeout = max(300, int(file_size / (100 * 1024 * 1024)) * 60 + 120)
@@ -667,6 +791,7 @@ class WebDAVStorage(StorageBackend):
 
         max_retries = self.MAX_RETRIES
         last_error: Exception | None = None
+        last_error_msg = ""
         for attempt in range(1, max_retries + 1):
             file_handle = None  # ensure we can close it on exception
             try:
@@ -676,6 +801,22 @@ class WebDAVStorage(StorageBackend):
                     parent_path = os.path.dirname(remote_path)
                     if parent_path:
                         await self._create_dirs(session, parent_path)
+
+                    # Pre-upload quota check (if enabled)
+                    from app.api.settings import get_setting
+
+                    check_quota = await get_setting("storage_check_quota_before_upload")
+                    if check_quota == "true" and attempt == 1:
+                        can_proceed, quota_error = await self._check_remote_quota(
+                            session, file_size
+                        )
+                        if not can_proceed:
+                            logger.error(
+                                "WebDAV upload aborted for %s: %s",
+                                remote_path,
+                                quota_error,
+                            )
+                            return False, quota_error
 
                     url = self._get_url(remote_path)
 
@@ -714,6 +855,7 @@ class WebDAVStorage(StorageBackend):
                                     last_error = RuntimeError(
                                         "Remote size mismatch after upload"
                                     )
+                                    last_error_msg = "Remote size mismatch after upload"
                                     # Mismatch → retry (could be transient).
                                     raise last_error
                             logger.info(
@@ -722,12 +864,13 @@ class WebDAVStorage(StorageBackend):
                                 file_size / (1024 * 1024),
                                 attempt,
                             )
-                            return True
+                            return True, ""
                         else:
                             body = await resp.text()
                             last_error = RuntimeError(
                                 f"HTTP {resp.status}: {body[:200]}"
                             )
+                            last_error_msg = f"HTTP {resp.status}: {body[:200]}"
                             logger.warning(
                                 "WebDAV upload HTTP %d for %s (attempt %d/%d): %s",
                                 resp.status,
@@ -738,6 +881,11 @@ class WebDAVStorage(StorageBackend):
                             )
                             if resp.status in NON_RETRYABLE:
                                 if resp.status == 413:
+                                    error_msg = (
+                                        f"HTTP 413: File too large ({file_size / (1024**3):.1f} GiB). "
+                                        "The WebDAV server refuses single PUTs of this size. "
+                                        "Use SFTP/SSH for this target, or split the backup."
+                                    )
                                     logger.error(
                                         "WebDAV upload permanently rejected (HTTP 413) "
                                         "for %s — file is %.1f GiB; the WebDAV server "
@@ -748,14 +896,16 @@ class WebDAVStorage(StorageBackend):
                                         file_size / (1024 * 1024 * 1024),
                                     )
                                 else:
+                                    error_msg = f"HTTP {resp.status}: Permanent failure, not retrying"
                                     logger.error(
                                         "WebDAV upload permanently rejected (HTTP %d) for %s — not retrying",
                                         resp.status,
                                         remote_path,
                                     )
-                                return False
+                                return False, error_msg
             except Exception as e:
                 last_error = e
+                last_error_msg = str(e)[:500]
                 logger.warning(
                     "WebDAV upload error for %s (attempt %d/%d): %s",
                     remote_path,
@@ -781,7 +931,7 @@ class WebDAVStorage(StorageBackend):
             remote_path,
             last_error,
         )
-        return False
+        return False, last_error_msg[:500] if last_error_msg else "Upload failed"
 
     async def _create_dirs(self, session: aiohttp.ClientSession, path: str):
         """Create directories recursively via MKCOL"""
@@ -1005,7 +1155,7 @@ class S3Storage(StorageBackend):
                 raise
         return self._client
 
-    async def upload(self, local_path: Path, remote_path: str) -> bool:
+    async def upload(self, local_path: Path, remote_path: str) -> tuple[bool, str]:
         try:
             client = await self._get_client()
             key = f"{self.config.base_path}/{remote_path}".lstrip("/")
@@ -1026,7 +1176,7 @@ class S3Storage(StorageBackend):
                     key,
                     file_size / (1024 * 1024),
                 )
-                return True
+                return True, ""
 
             # Large file: explicit multipart upload, streaming each part
             # from disk. Aborts the upload on any failure so we don't leak
@@ -1077,10 +1227,10 @@ class S3Storage(StorageBackend):
                 file_size / (1024 * 1024),
                 len(parts),
             )
-            return True
+            return True, ""
         except Exception as e:
             logger.error(f"S3 upload error: {e}")
-            return False
+            return False, str(e)[:500]
 
     async def download(self, remote_path: str, local_path: Path) -> bool:
         try:
@@ -1170,7 +1320,7 @@ class RcloneStorage(StorageBackend):
         path = f"{self.config.base_path}/{remote_path}".replace("//", "/")
         return f"{self.config.rclone_remote}:{path}"
 
-    async def upload(self, local_path: Path, remote_path: str) -> bool:
+    async def upload(self, local_path: Path, remote_path: str) -> tuple[bool, str]:
         try:
             dest = self._get_remote_path(remote_path)
 
@@ -1185,13 +1335,13 @@ class RcloneStorage(StorageBackend):
 
             if code == 0:
                 logger.info(f"Rclone upload successful: {remote_path}")
-                return True
+                return True, ""
             else:
                 logger.error(f"Rclone upload failed: {stderr}")
-                return False
+                return False, stderr.strip()[:500]
         except Exception as e:
             logger.error(f"Rclone upload error: {e}")
-            return False
+            return False, str(e)[:500]
 
     async def download(self, remote_path: str, local_path: Path) -> bool:
         try:
@@ -1432,9 +1582,11 @@ class RemoteStorageManager:
         local_path: Path,
         remote_path: str,
         storage_ids: Optional[List[int]] = None,
-    ) -> Dict[int, bool]:
-        """Upload a file to multiple storage backends"""
-        results = {}
+    ) -> Dict[int, tuple[bool, str]]:
+        """Upload a file to multiple storage backends.
+        Returns {storage_id: (success, error_message)}.
+        """
+        results: Dict[int, tuple[bool, str]] = {}
 
         targets = storage_ids or list(self.backends.keys())
 
@@ -1449,7 +1601,7 @@ class RemoteStorageManager:
                 results[storage_id] = await task
             except Exception as e:
                 logger.error(f"Upload to storage {storage_id} failed: {e}")
-                results[storage_id] = False
+                results[storage_id] = (False, str(e)[:500])
 
         return results
 
@@ -1459,8 +1611,10 @@ class RemoteStorageManager:
         target_name: str,
         backup_filename: str,
         storage_ids: Optional[List[int]] = None,
-    ) -> Dict[int, bool]:
-        """Sync a backup file to remote storage(s)"""
+    ) -> Dict[int, tuple[bool, str]]:
+        """Sync a backup file to remote storage(s).
+        Returns {storage_id: (success, error_message)}.
+        """
         remote_path = f"{target_name}/{backup_filename}"
         return await self.upload_to_all(local_backup_path, remote_path, storage_ids)
 

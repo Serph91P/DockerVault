@@ -1,9 +1,83 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link2, Check, X, RefreshCw, Save, Eye, EyeOff, TestTube, HardDrive, Shield, Clock, Database, Archive } from 'lucide-react'
+import { Link2, Check, X, RefreshCw, Save, Eye, EyeOff, TestTube, HardDrive, Shield, Clock, Database, Archive, Upload } from 'lucide-react'
 import { dockerApi, settingsApi } from '../api'
 import toast from 'react-hot-toast'
 import EncryptionSetup from '../components/EncryptionSetup'
 import { useState, useMemo } from 'react'
+
+function StorageSettingsCard() {
+  const queryClient = useQueryClient()
+  const { data: storageSettings, isLoading } = useQuery({
+    queryKey: ['storage-settings'],
+    queryFn: () => settingsApi.getStorageSettings().then((r) => r.data),
+  })
+
+  const updateMutation = useMutation({
+    mutationFn: (data: { check_quota_before_upload: boolean }) =>
+      settingsApi.updateStorageSettings(data),
+    onSuccess: () => {
+      toast.success('Storage settings saved')
+      queryClient.invalidateQueries({ queryKey: ['storage-settings'] })
+    },
+    onError: () => toast.error('Failed to save storage settings'),
+  })
+
+  if (isLoading) {
+    return (
+      <div className="bg-dark-800 rounded-xl border border-dark-700 p-6 animate-pulse">
+        <div className="h-6 bg-dark-700 rounded w-1/3 mb-4" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
+      <div className="flex items-center gap-3 mb-4">
+        <div className="w-10 h-10 bg-orange-500/10 rounded-lg flex items-center justify-center">
+          <Upload className="w-5 h-5 text-orange-400" />
+        </div>
+        <div>
+          <h2 className="text-lg font-semibold text-dark-100">Storage & Upload</h2>
+          <p className="text-sm text-dark-400">Upload behavior settings</p>
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="text-sm text-dark-300">Check quota before upload</label>
+            <p className="text-xs text-dark-500">
+              Verify available space on remote storage before uploading.
+              Disable if your storage server doesn't support quota queries.
+            </p>
+          </div>
+          <button
+            onClick={() =>
+              updateMutation.mutate({
+                check_quota_before_upload: !(
+                  storageSettings?.check_quota_before_upload ?? false
+                ),
+              })
+            }
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+              storageSettings?.check_quota_before_upload ?? false
+                ? 'bg-primary-500'
+                : 'bg-dark-600'
+            }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                storageSettings?.check_quota_before_upload ?? false
+                  ? 'translate-x-6'
+                  : 'translate-x-1'
+              }`}
+            />
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function KomodoSettingsCard() {
   const queryClient = useQueryClient()
@@ -478,6 +552,9 @@ export default function Settings() {
 
       {/* Encryption Settings */}
       <EncryptionSetup />
+
+      {/* Storage & Upload Settings */}
+      <StorageSettingsCard />
 
       {/* Komodo Integration */}
       <KomodoSettingsCard />
