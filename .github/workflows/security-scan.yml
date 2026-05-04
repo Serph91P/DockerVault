@@ -147,7 +147,7 @@ jobs:
         run: docker build -t dockervault:scan .
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: 'dockervault:scan'
           format: 'sarif'
@@ -164,7 +164,7 @@ jobs:
 
       - name: Run Trivy (table output for logs)
         if: always()
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: 'dockervault:scan'
           format: 'table'
