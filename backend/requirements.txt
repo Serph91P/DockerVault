@@ -16,7 +16,7 @@ pydantic-settings>=2.14.0
 
 # Scheduling
 apscheduler>=3.11.2
-croniter>=6.0.0
+croniter>=6.2.2
 
 # HTTP client
 aiohttp>=3.13.3
