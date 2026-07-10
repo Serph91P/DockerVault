@@ -5,6 +5,7 @@ Tests for backup_engine module.
 import asyncio
 import io
 import tarfile
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,6 +16,7 @@ from sqlalchemy import select
 
 from app.database import (
     Backup,
+    BackupLog,
     BackupStatus,
     BackupStorageSync,
     BackupTarget,
@@ -316,6 +318,106 @@ class TestBackupEngine:
 
 
 class TestBackupSafety:
+    async def test_executor_worker_finishes_before_cancellation_propagates(self):
+        engine = BackupEngine()
+        worker_started = threading.Event()
+        worker_release = threading.Event()
+        worker_finished = threading.Event()
+
+        def worker():
+            worker_started.set()
+            worker_release.wait()
+            worker_finished.set()
+
+        task = asyncio.create_task(engine._run_executor_cancellation_safe(worker))
+        await asyncio.to_thread(worker_started.wait)
+        task.cancel()
+        worker_release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert worker_finished.is_set()
+
+    async def test_archive_worker_finishes_before_backup_cancellation_propagates(
+        self, temp_backup_dir
+    ):
+        engine = BackupEngine()
+        worker_started = threading.Event()
+        worker_release = threading.Event()
+        worker_finished = threading.Event()
+        source_path = temp_backup_dir / "source"
+        source_path.mkdir()
+        target = BackupTarget(
+            name="archive-cancellation",
+            target_type="path",
+            host_path=str(source_path),
+            compression_enabled=False,
+        )
+
+        def create_tar(*_args):
+            worker_started.set()
+            worker_release.wait()
+            worker_finished.set()
+
+        with (
+            patch("app.backup_engine.settings.BACKUP_BASE_PATH", str(temp_backup_dir)),
+            patch.object(engine, "_create_tar", side_effect=create_tar),
+        ):
+            task = asyncio.create_task(engine._create_backup_archive(target, 1))
+            await asyncio.to_thread(worker_started.wait)
+            task.cancel()
+            await asyncio.sleep(0)
+
+            cancellation_propagated_early = task.done()
+            worker_release.set()
+
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert not cancellation_propagated_early
+        assert worker_finished.is_set()
+
+    async def test_restore_worker_finishes_before_container_restart(
+        self, test_db, temp_backup_dir
+    ):
+        archive_path = temp_backup_dir / "restore.tar"
+        archive_path.write_bytes(b"archive")
+        _, backup_id = await _create_backup_record(test_db, archive_path)
+        engine = BackupEngine()
+        worker_started = threading.Event()
+        worker_release = threading.Event()
+        worker_finished = threading.Event()
+
+        def extract_tar(*_args):
+            worker_started.set()
+            worker_release.wait()
+            worker_finished.set()
+
+        with (
+            patch("app.backup_engine.async_session", test_db),
+            patch("app.backup_engine.docker_client") as mock_docker,
+            patch.object(engine, "_extract_tar", side_effect=extract_tar),
+        ):
+            _configure_stopped_container(mock_docker)
+            task = asyncio.create_task(
+                engine.restore_backup(
+                    backup_id, target_path=str(temp_backup_dir / "restore")
+                )
+            )
+            await asyncio.to_thread(worker_started.wait)
+            task.cancel()
+            await asyncio.sleep(0)
+
+            mock_docker.start_container.assert_not_awaited()
+            worker_release.set()
+
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert worker_finished.is_set()
+        mock_docker.start_container.assert_awaited_once_with("test-container")
+
     async def test_backup_stop_failure_aborts_before_archive(
         self, test_db, temp_backup_dir
     ):
@@ -640,6 +742,8 @@ class TestRemoteSyncSafety:
 
         engine = BackupEngine()
         delete_local = AsyncMock()
+        progress = AsyncMock()
+        engine.add_progress_callback(progress)
         with (
             patch("app.backup_engine.async_session", test_db),
             patch("app.remote_storage.storage_manager") as storage_manager,
@@ -655,10 +759,10 @@ class TestRemoteSyncSafety:
                 str(key_path) if encrypted else None,
             )
 
-        return backup_id, delete_local
+        return backup_id, delete_local, progress
 
     async def test_tuple_failure_is_recorded_as_failed(self, test_db, temp_backup_dir):
-        backup_id, _ = await self._sync(
+        backup_id, _, _ = await self._sync(
             test_db,
             temp_backup_dir,
             [{1: (False, "archive upload failed")}],
@@ -679,7 +783,7 @@ class TestRemoteSyncSafety:
     async def test_archive_upload_failure_prevents_local_deletion(
         self, test_db, temp_backup_dir
     ):
-        _, delete_local = await self._sync(
+        _, delete_local, _ = await self._sync(
             test_db,
             temp_backup_dir,
             [{1: (False, "archive upload failed")}],
@@ -690,7 +794,7 @@ class TestRemoteSyncSafety:
     async def test_key_upload_failure_prevents_all_local_deletion(
         self, test_db, temp_backup_dir
     ):
-        _, delete_local = await self._sync(
+        _, delete_local, _ = await self._sync(
             test_db,
             temp_backup_dir,
             [
@@ -705,7 +809,7 @@ class TestRemoteSyncSafety:
     async def test_missing_required_archive_result_prevents_local_deletion(
         self, test_db, temp_backup_dir
     ):
-        _, delete_local = await self._sync(
+        _, delete_local, _ = await self._sync(
             test_db,
             temp_backup_dir,
             [{1: (True, None)}],
@@ -714,10 +818,42 @@ class TestRemoteSyncSafety:
 
         delete_local.assert_not_awaited()
 
+    async def test_missing_required_archive_result_is_recorded_and_counted(
+        self, test_db, temp_backup_dir
+    ):
+        backup_id, _, progress = await self._sync(
+            test_db,
+            temp_backup_dir,
+            [{1: (True, None)}],
+            storage_ids=[1, 2],
+        )
+
+        async with test_db() as session:
+            result = await session.execute(
+                select(BackupStorageSync)
+                .where(BackupStorageSync.backup_id == backup_id)
+                .order_by(BackupStorageSync.storage_id)
+            )
+            sync_records = result.scalars().all()
+
+        assert [record.storage_id for record in sync_records] == [1, 2]
+        assert sync_records[1].sync_status == "failed"
+        assert sync_records[1].error_message == "Upload result missing"
+        assert len(sync_records[1].error_message) <= 500
+        assert any("1/2 succeeded" in str(call) for call in progress.await_args_list)
+
+        async with test_db() as session:
+            result = await session.execute(
+                select(BackupLog).where(BackupLog.backup_id == backup_id)
+            )
+            backup_logs = result.scalars().all()
+
+        assert any("1/2 succeeded" in log.message for log in backup_logs)
+
     async def test_missing_required_key_result_prevents_local_deletion(
         self, test_db, temp_backup_dir
     ):
-        _, delete_local = await self._sync(
+        backup_id, delete_local, _ = await self._sync(
             test_db,
             temp_backup_dir,
             [
@@ -729,6 +865,74 @@ class TestRemoteSyncSafety:
         )
 
         delete_local.assert_not_awaited()
+        async with test_db() as session:
+            result = await session.execute(
+                select(BackupStorageSync)
+                .where(BackupStorageSync.backup_id == backup_id)
+                .order_by(BackupStorageSync.storage_id)
+            )
+            sync_records = result.scalars().all()
+
+        assert [record.sync_status for record in sync_records] == [
+            "completed",
+            "failed",
+        ]
+        assert sync_records[1].error_message == "Key upload result missing"
+
+
+class TestHookRedaction:
+    async def test_hook_failure_redacts_command_and_output(self, caplog):
+        marker = "HOOKMARK"
+        process = MagicMock(returncode=7)
+        process.communicate = AsyncMock(return_value=(marker.encode(), marker.encode()))
+        engine = BackupEngine()
+
+        with patch(
+            "app.backup_engine.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=process),
+        ):
+            with pytest.raises(Exception) as exc_info:
+                await engine._run_hook(f"pg_dump --label={marker}")
+
+        assert marker not in str(exc_info.value)
+        assert marker not in caplog.text
+        assert str(exc_info.value) == "Hook 'pg_dump' exited with status 7"
+
+    async def test_hook_marker_never_reaches_backup_logs_or_progress(
+        self, test_db, caplog
+    ):
+        marker = "HOOKMARK"
+        _, backup_id = await _create_backup_record(
+            test_db,
+            stop_container=False,
+            container_name=None,
+            pre_backup_command=f"pg_dump --label={marker}",
+        )
+        process = MagicMock(returncode=7)
+        process.communicate = AsyncMock(return_value=(marker.encode(), marker.encode()))
+        progress = AsyncMock()
+        engine = BackupEngine()
+        engine.add_progress_callback(progress)
+
+        with (
+            patch("app.backup_engine.async_session", test_db),
+            patch(
+                "app.backup_engine.asyncio.create_subprocess_exec",
+                new=AsyncMock(return_value=process),
+            ),
+        ):
+            result = await engine.run_backup(backup_id, skip_validation=True)
+
+        async with test_db() as session:
+            query = await session.execute(
+                select(BackupLog).where(BackupLog.backup_id == backup_id)
+            )
+            backup_logs = query.scalars().all()
+
+        assert result is False
+        assert marker not in caplog.text
+        assert marker not in str([(log.message, log.details) for log in backup_logs])
+        assert marker not in str(progress.await_args_list)
 
 
 class TestBackupMetrics:

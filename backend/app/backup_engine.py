@@ -228,6 +228,22 @@ class BackupEngine:
             raise cancellation
         return failures
 
+    @staticmethod
+    async def _run_executor_cancellation_safe(func: Callable[[], Any]) -> Any:
+        """Wait for an executor worker to finish before propagating cancellation."""
+        future = asyncio.get_running_loop().run_in_executor(None, func)
+        cancellation = None
+        while not future.done():
+            try:
+                await asyncio.shield(future)
+            except asyncio.CancelledError as exc:
+                cancellation = exc
+
+        if cancellation is not None:
+            future.exception()
+            raise cancellation
+        return future.result()
+
     def _get_target_lock(self, target_id: int) -> asyncio.Lock:
         """Get or create a per-target lock to prevent overlapping backups."""
         if target_id not in self._target_locks:
@@ -691,7 +707,7 @@ class BackupEngine:
                     await self._log(
                         backup_id,
                         "pre_hook",
-                        f"Running pre-backup hook: {target.pre_backup_command[:80]}",
+                        "Running pre-backup hook",
                     )
                     await self._notify_progress(
                         backup_id, 30, "Running pre-backup hook..."
@@ -800,7 +816,7 @@ class BackupEngine:
                     await self._log(
                         backup_id,
                         "post_hook",
-                        f"Running post-backup hook: {target.post_backup_command[:80]}",
+                        "Running post-backup hook",
                     )
                     await self._notify_progress(
                         backup_id, 85, "Running post-backup hook..."
@@ -1047,14 +1063,21 @@ class BackupEngine:
                 local_path.name,
                 target.remote_storage_ids,
             )
-            normalized_results = {
-                storage_id: self._remote_sync_result(result)
-                for storage_id, result in results.items()
-            }
             required_storage_ids = set(target.remote_storage_ids)
+            normalized_results = {
+                storage_id: (
+                    self._remote_sync_result(results[storage_id])
+                    if storage_id in results
+                    else (False, "Upload result missing")
+                )
+                for storage_id in required_storage_ids
+            }
 
             # Also upload .key sidecar for encrypted backups
-            key_sidecar_synced = False
+            normalized_key_results = {
+                storage_id: (False, "Key upload result missing")
+                for storage_id in required_storage_ids
+            }
             if encrypted and encryption_key_path:
                 key_local = Path(encryption_key_path)
                 if key_local.exists():
@@ -1066,16 +1089,17 @@ class BackupEngine:
                             target.remote_storage_ids,
                         )
                         normalized_key_results = {
-                            storage_id: self._remote_sync_result(result)
-                            for storage_id, result in key_results.items()
+                            storage_id: (
+                                self._remote_sync_result(key_results[storage_id])
+                                if storage_id in key_results
+                                else (False, "Key upload result missing")
+                            )
+                            for storage_id in required_storage_ids
                         }
-                        key_sidecar_synced = required_storage_ids.issubset(
-                            normalized_key_results
-                        ) and all(
+                        if all(
                             normalized_key_results[storage_id][0]
                             for storage_id in required_storage_ids
-                        )
-                        if key_sidecar_synced:
+                        ):
                             logger.info(
                                 "Uploaded .key sidecar for backup %s",
                                 backup_id,
@@ -1092,6 +1116,20 @@ class BackupEngine:
                             backup_id,
                             e,
                         )
+
+            if encrypted:
+                normalized_results = {
+                    storage_id: (
+                        (True, None)
+                        if archive_result[0] and normalized_key_results[storage_id][0]
+                        else (
+                            archive_result
+                            if not archive_result[0]
+                            else normalized_key_results[storage_id]
+                        )
+                    )
+                    for storage_id, archive_result in normalized_results.items()
+                }
 
             # Record sync results in BackupStorageSync table
             remote_path = f"{safe_name}/{local_path.name}"
@@ -1153,16 +1191,9 @@ class BackupEngine:
             # The .key sidecar MUST also be synced before we delete it
             # locally. Otherwise the DEK is lost and the backup becomes
             # unrecoverable.
-            all_succeeded = (
-                bool(required_storage_ids)
-                and required_storage_ids.issubset(normalized_results)
-                and all(
-                    normalized_results[storage_id][0]
-                    for storage_id in required_storage_ids
-                )
+            all_succeeded = bool(required_storage_ids) and all(
+                normalized_results[storage_id][0] for storage_id in required_storage_ids
             )
-            if encrypted:
-                all_succeeded = all_succeeded and key_sidecar_synced
             if all_succeeded and getattr(target, "delete_local_after_sync", False):
                 await self._delete_local_after_sync(
                     backup_id, backup_path, encryption_key_path
@@ -1354,12 +1385,9 @@ class BackupEngine:
         per_volume_rules = target.per_volume_rules or {}
 
         # Create tarball
-        loop = asyncio.get_event_loop()
-
         try:
             if target.target_type in ("container", "stack") and source_paths:
-                await loop.run_in_executor(
-                    None,
+                await self._run_executor_cancellation_safe(
                     lambda: self._create_multi_source_tar(
                         source_paths,
                         str(backup_path),
@@ -1370,8 +1398,7 @@ class BackupEngine:
                     ),
                 )
             else:
-                await loop.run_in_executor(
-                    None,
+                await self._run_executor_cancellation_safe(
                     lambda: self._create_tar(
                         source_path,
                         str(backup_path),
@@ -1758,19 +1785,18 @@ class BackupEngine:
         try:
             # Parse command into safe argument list
             args = shlex.split(command)
-        except ValueError as e:
-            raise Exception(f"Invalid hook command syntax: {e}")
+        except ValueError:
+            raise Exception("Invalid hook command syntax")
 
         if not args:
             raise Exception("Empty hook command")
 
         allowed = settings.ALLOWED_HOOK_COMMANDS.split(",")
         if args[0] not in allowed:
-            raise Exception(
-                f"Hook command '{args[0]}' is not in the allowed commands list: {allowed}"
-            )
+            raise Exception("Hook command is not allowed")
 
-        logger.info(f"Executing hook command: {args[0]} (full: {command})")
+        executable = args[0]
+        logger.info("Executing hook command: %s", executable)
 
         process = await asyncio.create_subprocess_exec(
             *args,
@@ -1778,21 +1804,21 @@ class BackupEngine:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(
+            _stdout, _stderr = await asyncio.wait_for(
                 process.communicate(),
                 timeout=settings.HOOK_COMMAND_TIMEOUT,
             )
         except asyncio.TimeoutError:
             process.kill()
             await process.wait()
-            raise Exception(
-                f"Hook command timed out after {settings.HOOK_COMMAND_TIMEOUT}s"
-            )
+            raise Exception(f"Hook '{executable}' timed out")
 
         if process.returncode != 0:
-            raise Exception(f"Hook command failed: {stderr.decode()}")
+            raise Exception(
+                f"Hook '{executable}' exited with status {process.returncode}"
+            )
 
-        logger.info(f"Hook output: {stdout.decode()}")
+        logger.info("Hook command completed: %s", executable)
 
     async def restore_backup(
         self,
@@ -1908,13 +1934,10 @@ class BackupEngine:
                         raise ValueError(f"Failed to decrypt backup: {e}")
 
                 # Extract backup
-                loop = asyncio.get_event_loop()
-
                 is_compressed = backup_file_to_extract.endswith(".gz")
                 mode = "r:gz" if is_compressed else "r"
 
-                await loop.run_in_executor(
-                    None,
+                await self._run_executor_cancellation_safe(
                     lambda: self._extract_tar(
                         backup_file_to_extract, restore_path, mode
                     ),
