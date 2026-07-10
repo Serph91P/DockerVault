@@ -12,7 +12,7 @@ WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json* ./
 
 # Install the package-manager version declared by the project, then dependencies
-RUN npm install --global "$(node -p "require('./package.json').packageManager")" && \
+RUN npm install --global npm@11.6.2 && \
     npm ci --prefer-offline --no-audit
 
 # =============================================================================
