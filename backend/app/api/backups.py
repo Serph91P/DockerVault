@@ -637,6 +637,9 @@ async def create_backup(request: Request, request_body: CreateBackupRequest):
             logger.error("Target %s not found", request_body.target_id)
             raise HTTPException(status_code=404, detail="Target not found")
 
+        if not target.enabled:
+            raise HTTPException(status_code=409, detail="Target is disabled")
+
         logger.info(f"Found target: {target.name} (type: {target.target_type})")
 
     # Create backup

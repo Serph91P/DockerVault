@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.database import BackupTarget
-from app.scheduler import BackupScheduler
+from app.scheduler import BackupScheduler, DisabledBackupTargetError
 
 
 class TestBackupScheduler:
@@ -307,6 +307,36 @@ class TestBackupScheduler:
         assert success is False
 
         mock_backup_engine.create_backup.assert_not_called()
+
+    @patch("app.scheduler.async_session")
+    @patch("app.scheduler.backup_engine")
+    async def test_trigger_backup_now_disabled_target(
+        self, mock_backup_engine, mock_session
+    ):
+        """Test immediate backup rejects a disabled target."""
+        mock_session_instance = AsyncMock()
+        mock_session.return_value.__aenter__.return_value = mock_session_instance
+
+        target = MagicMock(spec=BackupTarget)
+        target.id = 1
+        target.enabled = False
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = target
+        mock_session_instance.execute.return_value = mock_result
+
+        mock_backup = MagicMock()
+        mock_backup.id = 123
+        mock_backup_engine.create_backup = AsyncMock(return_value=mock_backup)
+        mock_backup_engine.enqueue = AsyncMock()
+
+        scheduler = BackupScheduler()
+
+        with pytest.raises(DisabledBackupTargetError, match="Target is disabled"):
+            await scheduler.trigger_backup_now(target.id)
+
+        mock_backup_engine.create_backup.assert_not_called()
+        mock_backup_engine.enqueue.assert_not_called()
 
     @patch("app.scheduler.async_session")
     async def test_estimate_backup_window(self, mock_session):
