@@ -266,6 +266,35 @@ async def test_komodo_connection():
         return KomodoTestResponse(success=False, message=str(e))
 
 
+class StorageSettingsResponse(BaseModel):
+    """Storage settings response."""
+
+    check_quota_before_upload: bool
+
+
+@router.get("/storage", response_model=StorageSettingsResponse)
+async def get_storage_settings():
+    """Get storage and upload settings."""
+    check_quota = await get_setting("storage_check_quota_before_upload")
+    return StorageSettingsResponse(
+        check_quota_before_upload=check_quota == "true"  # Default: false (opt-in)
+    )
+
+
+@router.put("/storage", response_model=StorageSettingsResponse)
+async def update_storage_settings(request: StorageSettingsResponse):
+    """Update storage and upload settings."""
+    await set_setting(
+        "storage_check_quota_before_upload",
+        "true" if request.check_quota_before_upload else "false",
+    )
+    logger.info(
+        "Storage settings updated: check_quota=%s",
+        request.check_quota_before_upload,
+    )
+    return request
+
+
 class SystemInfoResponse(BaseModel):
     """System information response."""
 

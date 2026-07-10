@@ -189,7 +189,15 @@ class BackupEngine:
                 logger.error("Batch backup %d failed: %s", backup_id, exc)
 
     async def shutdown(self, timeout: int = 30) -> None:
-        """Wait for in-progress backups to finish, then stop the queue worker."""
+        """Wait for in-progress backups to finish, then stop the queue worker.
+
+        ``timeout`` of ``0`` (or ``None``) waits indefinitely — important
+        for the typical case where a redeploy lands while a multi-hour
+        backup of media volumes is still streaming. The container manager
+        (Docker ``stop_grace_period``, supervisord ``stopwaitsecs``) needs
+        to be configured to allow the same wait, otherwise the process
+        will be SIGKILLed regardless of what we do here.
+        """
         # Cancel the queue worker so no new jobs are picked up
         if self._queue_worker_task and not self._queue_worker_task.done():
             self._queue_worker_task.cancel()
@@ -201,13 +209,20 @@ class BackupEngine:
         if not self.active_backups:
             return
 
-        logger.info(
-            "Waiting up to %ds for %d active backup(s) to finish...",
-            timeout,
-            len(self.active_backups),
-        )
+        wait_timeout: Optional[float] = None if not timeout else float(timeout)
+        if wait_timeout is None:
+            logger.info(
+                "Waiting indefinitely for %d active backup(s) to finish...",
+                len(self.active_backups),
+            )
+        else:
+            logger.info(
+                "Waiting up to %ds for %d active backup(s) to finish...",
+                int(wait_timeout),
+                len(self.active_backups),
+            )
         tasks = list(self.active_backups.values())
-        done, pending = await asyncio.wait(tasks, timeout=timeout)
+        done, pending = await asyncio.wait(tasks, timeout=wait_timeout)
 
         if pending:
             logger.warning(
@@ -874,7 +889,8 @@ class BackupEngine:
                             target.remote_storage_ids,
                         )
                         key_sidecar_synced = (
-                            all(key_results.values()) and len(key_results) > 0
+                            all(v[0] for v in key_results.values())
+                            and len(key_results) > 0
                         )
                         if key_sidecar_synced:
                             logger.info(
@@ -897,20 +913,22 @@ class BackupEngine:
             # Record sync results in BackupStorageSync table
             remote_path = f"{safe_name}/{local_path.name}"
             async with async_session() as session:
-                for storage_id, success in results.items():
+                for storage_id, (success, error_msg) in results.items():
                     sync_record = BackupStorageSync(
                         backup_id=backup_id,
                         storage_id=storage_id,
                         remote_path=remote_path,
                         synced_at=datetime.now(timezone.utc) if success else None,
                         sync_status="completed" if success else "failed",
-                        error_message=None if success else "Upload failed",
+                        error_message=None
+                        if success
+                        else (error_msg[:500] if error_msg else "Upload failed"),
                     )
                     session.add(sync_record)
                 await session.commit()
 
-            succeeded = sum(1 for v in results.values() if v)
-            failed = sum(1 for v in results.values() if not v)
+            succeeded = sum(1 for v in results.values() if v[0])
+            failed = sum(1 for v in results.values() if not v[0])
 
             if failed:
                 await self._log(
@@ -1376,12 +1394,17 @@ class BackupEngine:
         """Run tar_worker.py via sudo and return list of skipped files.
 
         Raises RuntimeError when the worker reports an error.
+
+        The wall-clock timeout is configurable via ``settings.TAR_WORKER_TIMEOUT``
+        (0 disables the timeout entirely — recommended for very large
+        volumes where a single archive can legitimately take many hours).
         """
+        timeout = settings.TAR_WORKER_TIMEOUT or None
         result = subprocess.run(
             ["sudo", "-n", _PYTHON, _TAR_WORKER, json.dumps(config)],
             capture_output=True,
             text=True,
-            timeout=3600,
+            timeout=timeout,
         )
         try:
             payload = json.loads(result.stdout)

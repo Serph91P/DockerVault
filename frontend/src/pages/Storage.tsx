@@ -22,8 +22,10 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import api, { RemoteStorage } from '../api';
+import { storageApi, type SSHKeyInfo } from '../api';
 import StorageBrowser from '../components/StorageBrowser';
 import ConfirmDialog from '../components/ConfirmDialog';
+import SSHKeyManager from '../components/SSHKeyManager';
 
 interface StorageFormData {
   name: string;
@@ -79,6 +81,7 @@ export default function Storage() {
     });
   };
   const [browsingStorage, setBrowsingStorage] = useState<RemoteStorage | null>(null);
+  const [localBrowserOpen, setLocalBrowserOpen] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<{ id: number; name: string } | null>(null);
   const [formStep, setFormStep] = useState(1); // ST1: 1=Name+Type, 2=Details, 3=Review
 
@@ -107,6 +110,11 @@ export default function Storage() {
       const res = await api.get('/storage');
       return res.data;
     },
+  });
+
+  const { data: sshKeys } = useQuery<SSHKeyInfo[]>({
+    queryKey: ['ssh-keys'],
+    queryFn: async () => (await storageApi.listSSHKeys()).data,
   });
 
   const createMutation = useMutation({
@@ -290,15 +298,64 @@ export default function Storage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                SSH-Key Path (optional)
+                SSH Key (optional)
               </label>
-              <input
-                type="text"
-                value={formData.ssh_key_path}
-                onChange={(e) => setFormData({ ...formData, ssh_key_path: e.target.value })}
-                placeholder="/app/ssh/id_rsa"
-                className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
-              />
+              {(() => {
+                const keyPaths = (sshKeys || []).map((k) => k.private_path);
+                const isManagedKey =
+                  formData.ssh_key_path !== '' && keyPaths.includes(formData.ssh_key_path);
+                const isCustom = formData.ssh_key_path !== '' && !isManagedKey;
+                const selectValue = isCustom
+                  ? '__custom__'
+                  : isManagedKey
+                  ? formData.ssh_key_path
+                  : '';
+                return (
+                  <>
+                    <select
+                      value={selectValue}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (v === '__custom__') {
+                          // keep current text if any, otherwise blank to start fresh
+                          setFormData({
+                            ...formData,
+                            ssh_key_path: isCustom ? formData.ssh_key_path : '',
+                          });
+                        } else {
+                          setFormData({ ...formData, ssh_key_path: v });
+                        }
+                      }}
+                      className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                    >
+                      <option value="">— None (use password) —</option>
+                      {(sshKeys || []).map((k) => (
+                        <option key={k.name} value={k.private_path}>
+                          {k.name}
+                          {k.fingerprint ? ` — ${k.fingerprint.split(' ')[1] || ''}` : ''}
+                        </option>
+                      ))}
+                      <option value="__custom__">Custom path…</option>
+                    </select>
+                    {isCustom && (
+                      <input
+                        type="text"
+                        value={formData.ssh_key_path}
+                        onChange={(e) =>
+                          setFormData({ ...formData, ssh_key_path: e.target.value })
+                        }
+                        placeholder="/app/data/ssh_keys/hetzner_box"
+                        className="mt-2 w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                      />
+                    )}
+                    {(sshKeys || []).length === 0 && (
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                        Tip: generate a key in the “SSH Keys” panel above and it will appear here.
+                      </p>
+                    )}
+                  </>
+                );
+              })()}
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
@@ -566,9 +623,9 @@ export default function Storage() {
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Remote Storage</h1>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Local and Remote Storage</h1>
           <p className="text-slate-600 dark:text-slate-400">
-            Configure external storage locations for off-site backups
+            Browse local backups and configure external storage locations
           </p>
         </div>
         <button
@@ -599,6 +656,35 @@ export default function Storage() {
           );
         })}
       </div>
+
+      {/* Local Backups */}
+      <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 px-6 py-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="p-3 rounded-lg bg-green-100 dark:bg-green-900/30">
+              <HardDrive className="w-6 h-6 text-green-600 dark:text-green-400" />
+            </div>
+            <div>
+              <h3 className="font-medium text-slate-900 dark:text-white">
+                Local Backups
+              </h3>
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                Browse the local backup directory
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setLocalBrowserOpen(true)}
+            className="p-2 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
+            title="Browse Files"
+          >
+            <FolderOpen className="w-5 h-5" />
+          </button>
+        </div>
+      </div>
+
+      {/* SSH Keys */}
+      <SSHKeyManager />
 
       {/* Storage List */}
       <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
@@ -751,6 +837,19 @@ export default function Storage() {
         <StorageBrowser
           storage={browsingStorage}
           onClose={() => setBrowsingStorage(null)}
+        />
+      )}
+
+      {/* Local Backup Browser Modal */}
+      {localBrowserOpen && (
+        <StorageBrowser
+          storage={{
+            id: 'local' as const,
+            name: 'Local Backups',
+            storage_type: 'local',
+            base_path: '/backups',
+          }}
+          onClose={() => setLocalBrowserOpen(false)}
         />
       )}
 

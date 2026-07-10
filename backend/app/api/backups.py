@@ -513,8 +513,9 @@ async def retry_remote_sync(backup_id: int):
                 backend = storage_manager.add_storage(config)
 
         remote_path = sync.remote_path or f"{safe_name}/{local_path.name}"
+        error_msg = ""
         try:
-            success = await backend.upload(local_path, remote_path)
+            success, error_msg = await backend.upload(local_path, remote_path)
         except Exception as e:
             logger.warning(
                 "Retry sync failed for backup %s -> storage %s: %s",
@@ -523,6 +524,7 @@ async def retry_remote_sync(backup_id: int):
                 e,
             )
             success = False
+            error_msg = str(e)[:500]
 
         retried[sync.storage_id] = success
 
@@ -541,7 +543,9 @@ async def retry_remote_sync(backup_id: int):
                     record.synced_at = datetime.now(timezone.utc)
                     record.error_message = None
                 else:
-                    record.error_message = "Retry upload failed"
+                    record.error_message = (
+                        error_msg[:500] if error_msg else "Retry upload failed"
+                    )
                 await session.commit()
 
         # Also upload .key sidecar for encrypted backups on success
@@ -567,8 +571,9 @@ async def retry_remote_sync(backup_id: int):
                 backend = storage_manager.add_storage(config)
 
         remote_path = f"{safe_name}/{local_path.name}"
+        error_msg = ""
         try:
-            success = await backend.upload(local_path, remote_path)
+            success, error_msg = await backend.upload(local_path, remote_path)
         except Exception as e:
             logger.warning(
                 "Initial sync failed for backup %s -> storage %s: %s",
@@ -577,6 +582,7 @@ async def retry_remote_sync(backup_id: int):
                 e,
             )
             success = False
+            error_msg = str(e)[:500]
 
         retried[storage_id] = success
 
@@ -588,7 +594,9 @@ async def retry_remote_sync(backup_id: int):
                 remote_path=remote_path,
                 synced_at=datetime.now(timezone.utc) if success else None,
                 sync_status="completed" if success else "failed",
-                error_message=None if success else "Upload failed",
+                error_message=None
+                if success
+                else (error_msg[:500] if error_msg else "Upload failed"),
             )
             session.add(sync_record)
             await session.commit()
