@@ -13,7 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from app.backup_engine import backup_engine
 from app.database import BackupTarget, Schedule, async_session
-from app.scheduler import BackupScheduler
+from app.scheduler import BackupScheduler, DisabledBackupTargetError
 
 router = APIRouter()
 
@@ -385,7 +385,10 @@ async def list_scheduled_jobs(request: Request):
 async def trigger_backup(target_id: int, request: Request):
     """Trigger a backup immediately for a target."""
     scheduler: BackupScheduler = request.app.state.scheduler
-    success = await scheduler.trigger_backup_now(target_id)
+    try:
+        success = await scheduler.trigger_backup_now(target_id)
+    except DisabledBackupTargetError as e:
+        raise HTTPException(status_code=409, detail="Target is disabled") from e
 
     if not success:
         raise HTTPException(status_code=404, detail="Target not found")
