@@ -4,15 +4,16 @@
 # =============================================================================
 # Stage 1: Frontend Dependencies
 # =============================================================================
-FROM node:24-alpine AS frontend-deps
+FROM node:24.11-alpine AS frontend-deps
 
 WORKDIR /app
 
 # Copy only package files for dependency caching
 COPY frontend/package.json frontend/package-lock.json* ./
 
-# Install dependencies (cached if package files unchanged)
-RUN npm ci --prefer-offline --no-audit
+# Install the package-manager version declared by the project, then dependencies
+RUN npm install --global npm@11.6.2 && \
+    npm ci --prefer-offline --no-audit
 
 # =============================================================================
 # Stage 2: Build Frontend
@@ -99,6 +100,27 @@ RUN ARCH=$(dpkg --print-architecture) && \
     tar -xz -C /usr/local/bin --strip-components=1 age/age age/age-keygen && \
     chmod +x /usr/local/bin/age /usr/local/bin/age-keygen
 
+# Install rclone from a pinned release using checksums published by rclone.org
+ARG RCLONE_VERSION=1.72.1
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "amd64" ]; then \
+        RCLONE_ARCH="amd64"; \
+        RCLONE_SHA256="b5c9b2fb6ada8a400c5fc5d48cd112dc1adea21a3b73b03857059374dd8a78d0"; \
+    elif [ "$ARCH" = "arm64" ]; then \
+        RCLONE_ARCH="arm64"; \
+        RCLONE_SHA256="66ce9c7fbdf6ba38991fa2ac193ed051bd6d04aeec693900c848154bf549484f"; \
+    else \
+        echo "Unsupported architecture: $ARCH" && exit 1; \
+    fi && \
+    RCLONE_ARCHIVE="rclone-v${RCLONE_VERSION}-linux-${RCLONE_ARCH}.zip" && \
+    curl -fsSLo "/tmp/${RCLONE_ARCHIVE}" \
+        "https://downloads.rclone.org/v${RCLONE_VERSION}/${RCLONE_ARCHIVE}" && \
+    echo "${RCLONE_SHA256}  /tmp/${RCLONE_ARCHIVE}" | sha256sum --check - && \
+    python -m zipfile -e "/tmp/${RCLONE_ARCHIVE}" /tmp/rclone && \
+    install -m 0755 "/tmp/rclone/rclone-v${RCLONE_VERSION}-linux-${RCLONE_ARCH}/rclone" \
+        /usr/local/bin/rclone && \
+    rm -rf "/tmp/${RCLONE_ARCHIVE}" /tmp/rclone
+
 # Copy Python virtual environment from builder
 COPY --from=python-deps /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH" \
@@ -157,11 +179,10 @@ EXPOSE 80
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD curl -sf http://localhost:8000/health || exit 1
+    CMD curl -sf http://localhost/health || exit 1
 
 # Declare volumes
 VOLUME ["/app/data", "/backups"]
 
 # Entrypoint handles docker group setup and starts supervisord
 ENTRYPOINT ["/entrypoint.sh"]
-

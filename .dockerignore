@@ -1,0 +1,65 @@
+# Source control and worktrees
+.git
+.git/**
+.worktrees/
+
+# Graphify artifacts
+.graphify/
+.graphifyignore
+graphify-out/
+
+# Dependency environments
+**/.venv/
+**/venv/
+**/env/
+**/ENV/
+**/node_modules/
+
+# Coverage, caches, and generated Python files
+**/.coverage
+**/.coverage.*
+**/coverage/
+**/htmlcov/
+**/.cache/
+**/.npm/
+**/.nox/
+**/.tox/
+**/.mypy_cache/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.vite/
+**/.eslintcache
+**/__pycache__/
+**/*.py[cod]
+
+# Build outputs
+**/build/
+**/dist/
+**/out/
+**/.next/
+**/*.egg-info/
+**/wheels/
+
+# Secrets and local configuration
+**/.env
+**/.env.*
+!**/.env.example
+**/.npmrc
+**/.pypirc
+**/.secrets/
+**/secrets/
+**/*credentials*.json
+**/*.key
+**/*.pem
+**/id_ed25519*
+**/id_rsa*
+
+# Local application data and logs
+/backups/
+/data/
+/backend/data/
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.log
+**/logs/
