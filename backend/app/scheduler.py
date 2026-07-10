@@ -22,6 +22,10 @@ from app.auth import cleanup_expired_sessions
 logger = logging.getLogger(__name__)
 
 
+class DisabledBackupTargetError(RuntimeError):
+    """Raised when an immediate backup targets a disabled target."""
+
+
 class BackupScheduler:
     """Manages scheduled backup jobs."""
 
@@ -262,6 +266,9 @@ class BackupScheduler:
 
             if not target:
                 return False
+
+            if not target.enabled:
+                raise DisabledBackupTargetError("Target is disabled")
 
         # Create and enqueue backup (per-target lock prevents overlaps)
         backup = await backup_engine.create_backup(target, BackupType.FULL)
