@@ -141,44 +141,30 @@ class TestBackupsAPI:
     async def test_create_backup_with_disabled_target(
         self, mock_engine, async_client: AsyncClient, db_session
     ):
-        """Test backup creation with disabled target - API still allows it."""
-        # Create disabled target
+        """Test backup creation rejects a disabled target."""
         target = BackupTarget(
             name="disabled-target",
             target_type="volume",
             volume_name="test-volume",
-            enabled=False,  # Disabled
+            enabled=False,
         )
         db_session.add(target)
         await db_session.commit()
         await db_session.refresh(target)
 
-        # Mock backup engine
-        mock_backup = MagicMock()
-        mock_backup.id = 1
-        mock_backup.target_id = target.id
-        mock_backup.backup_type = BackupType.FULL
-        mock_backup.status = BackupStatus.PENDING
-        mock_backup.file_path = None
-        mock_backup.file_size = None
-        mock_backup.checksum = None
-        mock_backup.started_at = None
-        mock_backup.completed_at = None
-        mock_backup.duration_seconds = None
-        mock_backup.error_message = None
-        mock_backup.encrypted = False
-        mock_backup.created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
-
-        mock_engine.create_backup = AsyncMock(return_value=mock_backup)
-        mock_engine.run_backup = AsyncMock(return_value=True)
+        mock_engine.create_backup = AsyncMock(
+            side_effect=AssertionError("create_backup called for disabled target")
+        )
         mock_engine.enqueue = AsyncMock()
 
-        # API currently allows backup of disabled targets
         response = await async_client.post(
             "/api/v1/backups", json={"target_id": target.id, "backup_type": "full"}
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 409
+        assert response.json() == {"detail": "Target is disabled"}
+        mock_engine.create_backup.assert_not_called()
+        mock_engine.enqueue.assert_not_called()
 
     async def test_get_backup_by_id(self, async_client: AsyncClient, db_session):
         """Test getting backup by ID."""

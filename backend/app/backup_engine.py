@@ -128,6 +128,10 @@ class BackupMetrics:
 class BackupEngine:
     """Handles backup operations."""
 
+    _START_ATTEMPTS = 3
+    _START_BACKOFF_SECONDS = 0.1
+    _START_STATE_CHECKS = 3
+
     def __init__(self):
         self.active_backups: Dict[int, asyncio.Task] = {}
         self.progress_callbacks: List[Callable] = []
@@ -136,6 +140,109 @@ class BackupEngine:
         self._target_locks: Dict[int, asyncio.Lock] = {}
         self._queue: asyncio.Queue = asyncio.Queue()
         self._queue_worker_task: Optional[asyncio.Task] = None
+
+    async def _start_container_with_retry(self, container_name: str) -> bool:
+        """Start a container and verify that Docker reports it as running."""
+        for attempt in range(self._START_ATTEMPTS):
+            if await docker_client.get_container_state(container_name) == "running":
+                return True
+
+            started = await docker_client.start_container(container_name)
+            if started:
+                for state_check in range(self._START_STATE_CHECKS):
+                    if (
+                        await docker_client.get_container_state(container_name)
+                        == "running"
+                    ):
+                        return True
+                    if state_check < self._START_STATE_CHECKS - 1:
+                        await asyncio.sleep(self._START_BACKOFF_SECONDS * (attempt + 1))
+
+            if attempt < self._START_ATTEMPTS - 1:
+                await asyncio.sleep(self._START_BACKOFF_SECONDS * (attempt + 1))
+
+        return False
+
+    async def _restart_containers(
+        self,
+        containers: List[str],
+        original_states: Dict[str, Optional[str]],
+        backup_id: Optional[int] = None,
+    ) -> List[str]:
+        """Restart each originally-running container once and return failures."""
+        failures = []
+        restarted = set()
+        for container_name in containers:
+            if container_name in restarted:
+                continue
+            restarted.add(container_name)
+            if original_states.get(container_name) != "running":
+                continue
+
+            try:
+                restarted_successfully = await self._start_container_with_retry(
+                    container_name
+                )
+            except Exception as restart_error:
+                restarted_successfully = False
+                logger.error(
+                    "Error restarting container %s: %s",
+                    container_name,
+                    restart_error,
+                )
+
+            if restarted_successfully:
+                continue
+
+            failures.append(container_name)
+            logger.error("Failed to restart container %s", container_name)
+            if backup_id is not None:
+                await self._log(
+                    backup_id,
+                    "restart",
+                    f"Failed to restart container '{container_name}'",
+                    level=LogLevel.ERROR,
+                    details={"container_name": container_name},
+                )
+        return failures
+
+    async def _restart_containers_cancellation_safe(
+        self,
+        containers: List[str],
+        original_states: Dict[str, Optional[str]],
+        backup_id: Optional[int] = None,
+    ) -> List[str]:
+        """Finish restart cleanup even if this task is cancelled while waiting."""
+        cleanup_task = asyncio.create_task(
+            self._restart_containers(containers, original_states, backup_id)
+        )
+        cancellation = None
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError as exc:
+                cancellation = exc
+
+        failures = cleanup_task.result()
+        if cancellation is not None:
+            raise cancellation
+        return failures
+
+    @staticmethod
+    async def _run_executor_cancellation_safe(func: Callable[[], Any]) -> Any:
+        """Wait for an executor worker to finish before propagating cancellation."""
+        future = asyncio.get_running_loop().run_in_executor(None, func)
+        cancellation = None
+        while not future.done():
+            try:
+                await asyncio.shield(future)
+            except asyncio.CancelledError as exc:
+                cancellation = exc
+
+        if cancellation is not None:
+            future.exception()
+            raise cancellation
+        return future.result()
 
     def _get_target_lock(self, target_id: int) -> asyncio.Lock:
         """Get or create a per-target lock to prevent overlapping backups."""
@@ -189,7 +296,15 @@ class BackupEngine:
                 logger.error("Batch backup %d failed: %s", backup_id, exc)
 
     async def shutdown(self, timeout: int = 30) -> None:
-        """Wait for in-progress backups to finish, then stop the queue worker."""
+        """Wait for in-progress backups to finish, then stop the queue worker.
+
+        ``timeout`` of ``0`` (or ``None``) waits indefinitely. This is important
+        for the typical case where a redeploy lands while a multi-hour
+        backup of media volumes is still streaming. The container manager
+        (Docker ``stop_grace_period``, supervisord ``stopwaitsecs``) needs
+        to be configured to allow the same wait, otherwise the process
+        will be SIGKILLed regardless of what we do here.
+        """
         # Cancel the queue worker so no new jobs are picked up
         if self._queue_worker_task and not self._queue_worker_task.done():
             self._queue_worker_task.cancel()
@@ -201,13 +316,20 @@ class BackupEngine:
         if not self.active_backups:
             return
 
-        logger.info(
-            "Waiting up to %ds for %d active backup(s) to finish...",
-            timeout,
-            len(self.active_backups),
-        )
+        wait_timeout: Optional[float] = None if not timeout else float(timeout)
+        if wait_timeout is None:
+            logger.info(
+                "Waiting indefinitely for %d active backup(s) to finish...",
+                len(self.active_backups),
+            )
+        else:
+            logger.info(
+                "Waiting up to %ds for %d active backup(s) to finish...",
+                int(wait_timeout),
+                len(self.active_backups),
+            )
         tasks = list(self.active_backups.values())
-        done, pending = await asyncio.wait(tasks, timeout=timeout)
+        done, pending = await asyncio.wait(tasks, timeout=wait_timeout)
 
         if pending:
             logger.warning(
@@ -523,100 +645,163 @@ class BackupEngine:
             containers_to_stop = []
             original_states = {}
             start_order = []  # Order for restarting containers
+            operation_error = None
 
-            if target.target_type == "stack" and target.stack_name:
-                # For stack backups, stop all stack containers in dependency order
-                stacks = await docker_client.get_stacks()
-                stack = next((s for s in stacks if s.name == target.stack_name), None)
-                if stack and stack.stop_order:
-                    containers_to_stop = stack.stop_order
-                    start_order = stack.start_order
-                    logger.info(
-                        f"Stack backup will stop containers: {containers_to_stop}"
+            try:
+                if target.target_type == "stack" and target.stack_name:
+                    # For stack backups, stop all stack containers in dependency order
+                    stacks = await docker_client.get_stacks()
+                    stack = next(
+                        (s for s in stacks if s.name == target.stack_name), None
                     )
-            elif target.stop_container and target.container_name:
-                containers_to_stop.append(target.container_name)
+                    if stack and stack.stop_order:
+                        containers_to_stop = stack.stop_order
+                        start_order = stack.start_order
+                        logger.info(
+                            f"Stack backup will stop containers: {containers_to_stop}"
+                        )
+                elif target.stop_container and target.container_name:
+                    containers_to_stop.append(target.container_name)
 
-            # Add manual dependencies
-            if target.dependencies:
-                for dep in target.dependencies:
-                    if dep not in containers_to_stop:
-                        containers_to_stop.append(dep)
+                # Add manual dependencies
+                if target.dependencies:
+                    for dep in target.dependencies:
+                        if dep not in containers_to_stop:
+                            containers_to_stop.append(dep)
 
-            # Get dependency order for safe stopping (if not already ordered from stack)
-            if containers_to_stop and not start_order:
-                containers_to_stop = await docker_client.get_dependency_order(
-                    containers_to_stop
+                # Get dependency order for safe stopping (if not from a stack)
+                if containers_to_stop and not start_order:
+                    containers_to_stop = await docker_client.get_dependency_order(
+                        containers_to_stop
+                    )
+                    start_order = list(reversed(containers_to_stop))
+
+                if containers_to_stop:
+                    # Store original states
+                    for container_name in containers_to_stop:
+                        state = await docker_client.get_container_state(container_name)
+                        original_states[container_name] = state
+
+                    # Stop containers in order
+                    await self._log(
+                        backup_id,
+                        "stop_containers",
+                        f"Stopping {len(containers_to_stop)} container(s)",
+                        details={"containers": containers_to_stop},
+                    )
+                    await self._notify_progress(backup_id, 10, "Stopping containers...")
+                    for i, container_name in enumerate(containers_to_stop):
+                        if original_states.get(container_name) == "running":
+                            stopped = await docker_client.stop_container(container_name)
+                            if not stopped:
+                                raise RuntimeError(
+                                    f"Failed to stop container '{container_name}'"
+                                )
+                            progress = 10 + (20 * (i + 1) / len(containers_to_stop))
+                            await self._notify_progress(
+                                backup_id, progress, f"Stopped {container_name}"
+                            )
+
+                # Run pre-backup hook
+                if target.pre_backup_command:
+                    await self._log(
+                        backup_id,
+                        "pre_hook",
+                        "Running pre-backup hook",
+                    )
+                    await self._notify_progress(
+                        backup_id, 30, "Running pre-backup hook..."
+                    )
+                    await self._run_hook(target.pre_backup_command)
+
+                # Perform the actual backup
+                await self._log(backup_id, "archive", "Creating backup archive...")
+                await self._notify_progress(backup_id, 35, "Creating backup archive...")
+
+                backup_dir = Path(settings.BACKUP_BASE_PATH) / self._sanitize_path_name(
+                    target.name
                 )
-                start_order = list(reversed(containers_to_stop))
+                preexisting_files = (
+                    set(backup_dir.iterdir()) if backup_dir.exists() else set()
+                )
+                backup_path = await self._create_backup_archive(target, backup_id)
+                plaintext_path = Path(backup_path)
+                plaintext_created = plaintext_path not in preexisting_files
 
-            if containers_to_stop:
-                # Store original states
-                for container_name in containers_to_stop:
-                    state = await docker_client.get_container_state(container_name)
-                    original_states[container_name] = state
+                await self._notify_progress(backup_id, 80, "Calculating checksum...")
 
-                # Stop containers in order
+                # Calculate file size and checksum
+                file_size = os.path.getsize(backup_path)
+                checksum = await self._calculate_checksum(backup_path)
                 await self._log(
                     backup_id,
-                    "stop_containers",
-                    f"Stopping {len(containers_to_stop)} container(s)",
-                    details={"containers": containers_to_stop},
+                    "archive",
+                    f"Archive created: {os.path.basename(backup_path)}",
+                    details={"file_size": file_size, "checksum": checksum[:16]},
                 )
-                await self._notify_progress(backup_id, 10, "Stopping containers...")
-                for i, container_name in enumerate(containers_to_stop):
-                    if original_states.get(container_name) == "running":
-                        await docker_client.stop_container(container_name)
-                        progress = 10 + (20 * (i + 1) / len(containers_to_stop))
-                        await self._notify_progress(
-                            backup_id, progress, f"Stopped {container_name}"
+
+                # Encrypt backup if enabled
+                encrypted = False
+                encryption_key_path = None
+
+                encryption_config = await self._get_encryption_config()
+                if encryption_config and encryption_config.encryption_enabled:
+                    await self._log(backup_id, "encrypt", "Encrypting backup...")
+                    await self._notify_progress(backup_id, 82, "Encrypting backup...")
+                    encrypted_path = plaintext_path.with_suffix(
+                        plaintext_path.suffix + ".enc"
+                    )
+                    key_path = plaintext_path.with_suffix(
+                        plaintext_path.suffix + ".key"
+                    )
+                    if encrypted_path.exists() or key_path.exists():
+                        if plaintext_created and plaintext_path.exists():
+                            plaintext_path.unlink()
+                        raise EncryptionError(
+                            "Encryption output path already exists; refusing to overwrite"
                         )
 
-            # Run pre-backup hook
-            if target.pre_backup_command:
-                await self._log(
-                    backup_id,
-                    "pre_hook",
-                    f"Running pre-backup hook: {target.pre_backup_command[:80]}",
-                )
-                await self._notify_progress(backup_id, 30, "Running pre-backup hook...")
-                await self._run_hook(target.pre_backup_command)
+                    try:
+                        result = await encrypt_backup(
+                            plaintext_path,
+                            encryption_config.public_key,
+                        )
+                        if (
+                            Path(result.encrypted_path) != encrypted_path
+                            or Path(result.key_path) != key_path
+                            or not encrypted_path.is_file()
+                            or encrypted_path.stat().st_size == 0
+                            or not key_path.is_file()
+                            or key_path.stat().st_size == 0
+                            or plaintext_path.exists()
+                        ):
+                            raise EncryptionError("Encryption output is incomplete")
+                    except BaseException as encryption_error:
+                        for path in (plaintext_path, encrypted_path, key_path):
+                            if path == plaintext_path and not plaintext_created:
+                                continue
+                            try:
+                                if path.exists():
+                                    path.unlink()
+                            except OSError as cleanup_error:
+                                logger.warning(
+                                    "Failed to remove incomplete encryption artifact %s: %s",
+                                    path,
+                                    cleanup_error,
+                                )
+                        if isinstance(encryption_error, EncryptionError):
+                            await self._log(
+                                backup_id,
+                                "encrypt",
+                                f"Encryption failed: {encryption_error}",
+                                level=LogLevel.ERROR,
+                            )
+                            logger.error("Encryption failed: %s", encryption_error)
+                        raise
 
-            # Perform the actual backup
-            await self._log(backup_id, "archive", "Creating backup archive...")
-            await self._notify_progress(backup_id, 35, "Creating backup archive...")
-
-            backup_path = await self._create_backup_archive(target, backup_id)
-
-            await self._notify_progress(backup_id, 80, "Calculating checksum...")
-
-            # Calculate file size and checksum
-            file_size = os.path.getsize(backup_path)
-            checksum = await self._calculate_checksum(backup_path)
-            await self._log(
-                backup_id,
-                "archive",
-                f"Archive created: {os.path.basename(backup_path)}",
-                details={"file_size": file_size, "checksum": checksum[:16]},
-            )
-
-            # Encrypt backup if enabled
-            encrypted = False
-            encryption_key_path = None
-
-            encryption_config = await self._get_encryption_config()
-            if encryption_config and encryption_config.encryption_enabled:
-                await self._log(backup_id, "encrypt", "Encrypting backup...")
-                await self._notify_progress(backup_id, 82, "Encrypting backup...")
-                try:
-                    result = await encrypt_backup(
-                        Path(backup_path),
-                        encryption_config.public_key,
-                    )
-                    backup_path = str(result.encrypted_path)
-                    encryption_key_path = str(result.key_path)
+                    backup_path = str(encrypted_path)
+                    encryption_key_path = str(key_path)
                     encrypted = True
-                    # Recalculate size for encrypted file
                     file_size = os.path.getsize(backup_path)
                     await self._log(
                         backup_id,
@@ -625,45 +810,37 @@ class BackupEngine:
                         details={"encrypted_path": backup_path},
                     )
                     logger.info(f"Backup encrypted: {backup_path}")
-                except EncryptionError as e:
+
+                # Run post-backup hook
+                if target.post_backup_command:
                     await self._log(
                         backup_id,
-                        "encrypt",
-                        f"Encryption failed: {e}",
-                        level=LogLevel.ERROR,
+                        "post_hook",
+                        "Running post-backup hook",
                     )
-                    logger.error(f"Encryption failed: {e}")
-                    # Continue with unencrypted backup
                     await self._notify_progress(
-                        backup_id, 83, f"Encryption failed, backup unencrypted: {e}"
+                        backup_id, 85, "Running post-backup hook..."
                     )
-
-            # Run post-backup hook
-            if target.post_backup_command:
-                await self._log(
-                    backup_id,
-                    "post_hook",
-                    f"Running post-backup hook: {target.post_backup_command[:80]}",
+                    await self._run_hook(target.post_backup_command)
+            except BaseException as exc:
+                operation_error = exc
+                raise
+            finally:
+                restart_order = list(start_order)
+                restart_order.extend(
+                    container_name
+                    for container_name in reversed(containers_to_stop)
+                    if container_name not in restart_order
                 )
-                await self._notify_progress(
-                    backup_id, 85, "Running post-backup hook..."
+                restart_failures = await self._restart_containers_cancellation_safe(
+                    restart_order, original_states, backup_id
                 )
-                await self._run_hook(target.post_backup_command)
+                if restart_failures and operation_error is None:
+                    names = ", ".join(restart_failures)
+                    raise RuntimeError(f"Failed to restart container(s): {names}")
 
-            # Restart containers in start order (respecting dependencies)
             if containers_to_stop:
-                await self._log(
-                    backup_id,
-                    "restart",
-                    f"Restarting {len(containers_to_stop)} container(s)",
-                )
-                await self._notify_progress(backup_id, 90, "Starting containers...")
-                restart_order = (
-                    start_order if start_order else reversed(containers_to_stop)
-                )
-                for container_name in restart_order:
-                    if original_states.get(container_name) == "running":
-                        await docker_client.start_container(container_name)
+                await self._notify_progress(backup_id, 90, "Containers restarted")
 
             # Update backup record
             async with async_session() as session:
@@ -726,6 +903,40 @@ class BackupEngine:
             )
             return True
 
+        except asyncio.CancelledError:
+            cancellation_message = "Backup cancelled"
+            try:
+                await self._log(
+                    backup_id,
+                    "error",
+                    cancellation_message,
+                    level=LogLevel.ERROR,
+                    details={"error_type": "CancelledError"},
+                )
+                async with async_session() as session:
+                    await session.execute(
+                        update(Backup)
+                        .where(Backup.id == backup_id)
+                        .values(
+                            status=BackupStatus.FAILED,
+                            error_message=cancellation_message,
+                            completed_at=datetime.now(timezone.utc),
+                        )
+                    )
+                    await session.commit()
+
+                duration = time.time() - start_time
+                if target_id:
+                    self.metrics.record_backup(target_id, duration, 0, False)
+                await self._notify_progress(backup_id, -1, cancellation_message)
+            except Exception as status_error:
+                logger.error(
+                    "Failed to persist cancellation for backup %s: %s",
+                    backup_id,
+                    status_error,
+                )
+            raise
+
         except Exception as e:
             await self._log(
                 backup_id,
@@ -744,23 +955,6 @@ class BackupEngine:
                     "error": str(e),
                 },
             )
-
-            # Try to restart containers on failure (use start_order if available)
-            restart_order = (
-                start_order if start_order else list(reversed(containers_to_stop))
-            )
-            for container_name in restart_order:
-                if original_states.get(container_name) == "running":
-                    try:
-                        await docker_client.start_container(container_name)
-                    except Exception as restart_error:
-                        logger.error(
-                            f"Failed to restart {container_name}: {restart_error}",
-                            extra={
-                                "container_name": container_name,
-                                "error": str(restart_error),
-                            },
-                        )
 
             # Update backup record with error
             async with async_session() as session:
@@ -783,6 +977,15 @@ class BackupEngine:
             await self._notify_progress(backup_id, -1, f"Backup failed: {e}")
             return False
 
+    @staticmethod
+    def _remote_sync_result(result: Any) -> tuple[bool, Optional[str]]:
+        """Normalize a remote sync result without relying on tuple truthiness."""
+        if isinstance(result, tuple):
+            success = result[0] is True if result else False
+            error = result[1] if len(result) > 1 else None
+            return success, str(error) if error else None
+        return result is True, None if result is True else "Upload failed"
+
     async def _sync_to_remote(
         self,
         backup_id: int,
@@ -793,7 +996,7 @@ class BackupEngine:
     ) -> None:
         """Sync a completed backup to configured remote storage backends.
 
-        Failures are logged but do NOT mark the backup as failed — the
+        Failures are logged but do NOT mark the backup as failed. The
         local backup is still valid.
         """
         from app.remote_storage import StorageConfig, StorageType, storage_manager
@@ -860,9 +1063,21 @@ class BackupEngine:
                 local_path.name,
                 target.remote_storage_ids,
             )
+            required_storage_ids = set(target.remote_storage_ids)
+            normalized_results = {
+                storage_id: (
+                    self._remote_sync_result(results[storage_id])
+                    if storage_id in results
+                    else (False, "Upload result missing")
+                )
+                for storage_id in required_storage_ids
+            }
 
             # Also upload .key sidecar for encrypted backups
-            key_sidecar_synced = False
+            normalized_key_results = {
+                storage_id: (False, "Key upload result missing")
+                for storage_id in required_storage_ids
+            }
             if encrypted and encryption_key_path:
                 key_local = Path(encryption_key_path)
                 if key_local.exists():
@@ -873,10 +1088,18 @@ class BackupEngine:
                             key_local.name,
                             target.remote_storage_ids,
                         )
-                        key_sidecar_synced = (
-                            all(key_results.values()) and len(key_results) > 0
-                        )
-                        if key_sidecar_synced:
+                        normalized_key_results = {
+                            storage_id: (
+                                self._remote_sync_result(key_results[storage_id])
+                                if storage_id in key_results
+                                else (False, "Key upload result missing")
+                            )
+                            for storage_id in required_storage_ids
+                        }
+                        if all(
+                            normalized_key_results[storage_id][0]
+                            for storage_id in required_storage_ids
+                        ):
                             logger.info(
                                 "Uploaded .key sidecar for backup %s",
                                 backup_id,
@@ -894,23 +1117,41 @@ class BackupEngine:
                             e,
                         )
 
+            if encrypted:
+                normalized_results = {
+                    storage_id: (
+                        (True, None)
+                        if archive_result[0] and normalized_key_results[storage_id][0]
+                        else (
+                            archive_result
+                            if not archive_result[0]
+                            else normalized_key_results[storage_id]
+                        )
+                    )
+                    for storage_id, archive_result in normalized_results.items()
+                }
+
             # Record sync results in BackupStorageSync table
             remote_path = f"{safe_name}/{local_path.name}"
             async with async_session() as session:
-                for storage_id, success in results.items():
+                for storage_id, (success, error) in normalized_results.items():
                     sync_record = BackupStorageSync(
                         backup_id=backup_id,
                         storage_id=storage_id,
                         remote_path=remote_path,
                         synced_at=datetime.now(timezone.utc) if success else None,
                         sync_status="completed" if success else "failed",
-                        error_message=None if success else "Upload failed",
+                        error_message=None
+                        if success
+                        else (error[:500] if error else "Upload failed"),
                     )
                     session.add(sync_record)
                 await session.commit()
 
-            succeeded = sum(1 for v in results.values() if v)
-            failed = sum(1 for v in results.values() if not v)
+            succeeded = sum(
+                1 for success, _error in normalized_results.values() if success
+            )
+            failed = len(normalized_results) - succeeded
 
             if failed:
                 await self._log(
@@ -948,25 +1189,15 @@ class BackupEngine:
 
             # Delete local files after successful sync if configured.
             # The .key sidecar MUST also be synced before we delete it
-            # locally – otherwise the DEK is lost and the backup becomes
+            # locally. Otherwise the DEK is lost and the backup becomes
             # unrecoverable.
-            all_succeeded = all(results.values()) and len(results) > 0
+            all_succeeded = bool(required_storage_ids) and all(
+                normalized_results[storage_id][0] for storage_id in required_storage_ids
+            )
             if all_succeeded and getattr(target, "delete_local_after_sync", False):
-                # Only allow .key deletion if it was actually synced
-                safe_key_path = (
-                    encryption_key_path
-                    if (not encrypted or key_sidecar_synced)
-                    else None
-                )
                 await self._delete_local_after_sync(
-                    backup_id, backup_path, safe_key_path
+                    backup_id, backup_path, encryption_key_path
                 )
-                if encrypted and not key_sidecar_synced:
-                    logger.warning(
-                        "Kept local .key file for backup %s – sidecar was "
-                        "NOT synced to remote storage",
-                        backup_id,
-                    )
 
         except Exception as e:
             await self._log(
@@ -1145,6 +1376,8 @@ class BackupEngine:
             filename += ".gz"
 
         backup_path = backup_dir / filename
+        if backup_path.exists():
+            raise FileExistsError(f"Backup archive already exists: {backup_path}")
 
         # Get path filters
         include_paths = target.include_paths or []
@@ -1152,31 +1385,39 @@ class BackupEngine:
         per_volume_rules = target.per_volume_rules or {}
 
         # Create tarball
-        loop = asyncio.get_event_loop()
-
-        if target.target_type in ("container", "stack") and source_paths:
-            await loop.run_in_executor(
-                None,
-                lambda: self._create_multi_source_tar(
-                    source_paths,
-                    str(backup_path),
-                    target.compression_enabled,
-                    include_paths,
-                    exclude_paths,
-                    per_volume_rules,
-                ),
-            )
-        else:
-            await loop.run_in_executor(
-                None,
-                lambda: self._create_tar(
-                    source_path,
-                    str(backup_path),
-                    target.compression_enabled,
-                    include_paths,
-                    exclude_paths,
-                ),
-            )
+        try:
+            if target.target_type in ("container", "stack") and source_paths:
+                await self._run_executor_cancellation_safe(
+                    lambda: self._create_multi_source_tar(
+                        source_paths,
+                        str(backup_path),
+                        target.compression_enabled,
+                        include_paths,
+                        exclude_paths,
+                        per_volume_rules,
+                    ),
+                )
+            else:
+                await self._run_executor_cancellation_safe(
+                    lambda: self._create_tar(
+                        source_path,
+                        str(backup_path),
+                        target.compression_enabled,
+                        include_paths,
+                        exclude_paths,
+                    ),
+                )
+        except BaseException:
+            try:
+                if backup_path.exists():
+                    backup_path.unlink()
+            except OSError as cleanup_error:
+                logger.warning(
+                    "Failed to remove partial backup archive %s: %s",
+                    backup_path,
+                    cleanup_error,
+                )
+            raise
 
         return str(backup_path)
 
@@ -1376,12 +1617,17 @@ class BackupEngine:
         """Run tar_worker.py via sudo and return list of skipped files.
 
         Raises RuntimeError when the worker reports an error.
+
+        The wall-clock timeout is configurable via ``settings.TAR_WORKER_TIMEOUT``
+        (0 disables the timeout entirely and is recommended for very large
+        volumes where a single archive can legitimately take many hours).
         """
+        timeout = settings.TAR_WORKER_TIMEOUT or None
         result = subprocess.run(
             ["sudo", "-n", _PYTHON, _TAR_WORKER, json.dumps(config)],
             capture_output=True,
             text=True,
-            timeout=3600,
+            timeout=timeout,
         )
         try:
             payload = json.loads(result.stdout)
@@ -1425,13 +1671,13 @@ class BackupEngine:
                 "exclude_paths": exclude_paths,
                 "per_volume_rules": {},
                 # For host-path targets the source is outside Docker
-                # volume dirs — tell tar_worker to allow it.
+                # volume dirs, so tell tar_worker to allow it.
                 "allowed_sources": [source],
             }
             skipped = self._run_tar_worker(config)
         else:
             logger.warning(
-                "sudo not available — falling back to in-process tar "
+                "sudo not available, falling back to in-process tar "
                 "(files owned by other UIDs may be skipped)"
             )
             mode = "w:gz" if compress else "w"
@@ -1477,7 +1723,7 @@ class BackupEngine:
             skipped = self._run_tar_worker(config)
         else:
             logger.warning(
-                "sudo not available — falling back to in-process tar "
+                "sudo not available, falling back to in-process tar "
                 "(files owned by other UIDs may be skipped)"
             )
             skipped = []
@@ -1539,19 +1785,18 @@ class BackupEngine:
         try:
             # Parse command into safe argument list
             args = shlex.split(command)
-        except ValueError as e:
-            raise Exception(f"Invalid hook command syntax: {e}")
+        except ValueError:
+            raise Exception("Invalid hook command syntax")
 
         if not args:
             raise Exception("Empty hook command")
 
         allowed = settings.ALLOWED_HOOK_COMMANDS.split(",")
         if args[0] not in allowed:
-            raise Exception(
-                f"Hook command '{args[0]}' is not in the allowed commands list: {allowed}"
-            )
+            raise Exception("Hook command is not allowed")
 
-        logger.info(f"Executing hook command: {args[0]} (full: {command})")
+        executable = args[0]
+        logger.info("Executing hook command: %s", executable)
 
         process = await asyncio.create_subprocess_exec(
             *args,
@@ -1559,21 +1804,21 @@ class BackupEngine:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(
+            _stdout, _stderr = await asyncio.wait_for(
                 process.communicate(),
                 timeout=settings.HOOK_COMMAND_TIMEOUT,
             )
         except asyncio.TimeoutError:
             process.kill()
             await process.wait()
-            raise Exception(
-                f"Hook command timed out after {settings.HOOK_COMMAND_TIMEOUT}s"
-            )
+            raise Exception(f"Hook '{executable}' timed out")
 
         if process.returncode != 0:
-            raise Exception(f"Hook command failed: {stderr.decode()}")
+            raise Exception(
+                f"Hook '{executable}' exited with status {process.returncode}"
+            )
 
-        logger.info(f"Hook output: {stdout.decode()}")
+        logger.info("Hook command completed: %s", executable)
 
     async def restore_backup(
         self,
@@ -1650,76 +1895,79 @@ class BackupEngine:
             containers_to_stop.append(target.container_name)
 
         if target.dependencies:
-            containers_to_stop.extend(target.dependencies)
+            for dependency in target.dependencies:
+                if dependency not in containers_to_stop:
+                    containers_to_stop.append(dependency)
 
+        temp_decrypted_file = None
+        operation_error = None
         try:
-            # Stop containers
-            for container_name in containers_to_stop:
-                state = await docker_client.get_container_state(container_name)
-                original_states[container_name] = state
-                if state == "running":
-                    await docker_client.stop_container(container_name)
+            try:
+                # Stop containers
+                for container_name in containers_to_stop:
+                    state = await docker_client.get_container_state(container_name)
+                    original_states[container_name] = state
+                    if state == "running":
+                        stopped = await docker_client.stop_container(container_name)
+                        if not stopped:
+                            raise RuntimeError(
+                                f"Failed to stop container '{container_name}'"
+                            )
 
-            # Handle encrypted backups
-            backup_file_to_extract = backup_file
-            temp_decrypted_file = None
+                # Handle encrypted backups
+                backup_file_to_extract = backup_file
 
-            if is_encrypted:
-                try:
-                    encrypted_path = Path(backup_file)
-                    key_path = Path(encryption_key_path)
+                if is_encrypted:
+                    try:
+                        encrypted_path = Path(backup_file)
+                        key_path = Path(encryption_key_path)
 
-                    # Decrypt to temp file
-                    decrypted_path = await decrypt_backup(
-                        encrypted_path, key_path, private_key
-                    )
-                    backup_file_to_extract = str(decrypted_path)
-                    temp_decrypted_file = decrypted_path
-                    logger.info(f"Decrypted backup to {decrypted_path}")
-                except DecryptionError as e:
-                    logger.error(f"Decryption failed: {e}")
-                    raise ValueError(f"Failed to decrypt backup: {e}")
+                        # Decrypt to temp file
+                        decrypted_path = await decrypt_backup(
+                            encrypted_path, key_path, private_key
+                        )
+                        backup_file_to_extract = str(decrypted_path)
+                        temp_decrypted_file = decrypted_path
+                        logger.info(f"Decrypted backup to {decrypted_path}")
+                    except DecryptionError as e:
+                        logger.error(f"Decryption failed: {e}")
+                        raise ValueError(f"Failed to decrypt backup: {e}")
 
-            # Extract backup
-            loop = asyncio.get_event_loop()
+                # Extract backup
+                is_compressed = backup_file_to_extract.endswith(".gz")
+                mode = "r:gz" if is_compressed else "r"
 
-            is_compressed = backup_file_to_extract.endswith(".gz")
-            mode = "r:gz" if is_compressed else "r"
+                await self._run_executor_cancellation_safe(
+                    lambda: self._extract_tar(
+                        backup_file_to_extract, restore_path, mode
+                    ),
+                )
+            except BaseException as exc:
+                operation_error = exc
+                raise
+            finally:
+                if temp_decrypted_file and temp_decrypted_file.exists():
+                    try:
+                        temp_decrypted_file.unlink()
+                    except OSError as cleanup_error:
+                        logger.warning(
+                            "Failed to remove temporary decrypted backup %s: %s",
+                            temp_decrypted_file,
+                            cleanup_error,
+                        )
 
-            await loop.run_in_executor(
-                None,
-                lambda: self._extract_tar(backup_file_to_extract, restore_path, mode),
-            )
-
-            # Clean up temp decrypted file
-            if temp_decrypted_file and temp_decrypted_file.exists():
-                temp_decrypted_file.unlink()
-
-            # Restart containers
-            for container_name in reversed(containers_to_stop):
-                if original_states.get(container_name) == "running":
-                    await docker_client.start_container(container_name)
+                restart_failures = await self._restart_containers_cancellation_safe(
+                    list(reversed(containers_to_stop)), original_states
+                )
+                if restart_failures and operation_error is None:
+                    names = ", ".join(restart_failures)
+                    raise RuntimeError(f"Failed to restart container(s): {names}")
 
             logger.info(f"Restored backup {backup_id} to {restore_path}")
             return True
 
         except Exception as e:
             logger.error(f"Restore failed: {e}")
-
-            # Clean up temp decrypted file on error
-            if temp_decrypted_file and temp_decrypted_file.exists():
-                try:
-                    temp_decrypted_file.unlink()
-                except Exception:
-                    pass
-
-            # Try to restart containers
-            for container_name in reversed(containers_to_stop):
-                if original_states.get(container_name) == "running":
-                    try:
-                        await docker_client.start_container(container_name)
-                    except Exception:
-                        pass
 
             return False
 

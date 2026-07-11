@@ -5,12 +5,65 @@ Tests for backup_engine module.
 import asyncio
 import io
 import tarfile
+import threading
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.backup_engine import BackupEngine, BackupMetrics
-from app.database import Backup, BackupStatus, BackupTarget, BackupType
+from sqlalchemy import select
+
+from app.database import (
+    Backup,
+    BackupLog,
+    BackupStatus,
+    BackupStorageSync,
+    BackupTarget,
+    BackupType,
+)
+from app.encryption import EncryptionError
+
+
+async def _create_backup_record(test_db, backup_path=None, **target_overrides):
+    target_values = {
+        "name": "safety-test",
+        "target_type": "path",
+        "host_path": str(backup_path.parent if backup_path else "/tmp"),
+        "container_name": "test-container",
+        "stop_container": True,
+        "compression_enabled": False,
+        "dependencies": [],
+        "remote_storage_ids": [],
+    }
+    target_values.update(target_overrides)
+
+    async with test_db() as session:
+        target = BackupTarget(**target_values)
+        backup = Backup(
+            target=target,
+            status=BackupStatus.COMPLETED if backup_path else BackupStatus.PENDING,
+            backup_type=BackupType.FULL,
+            file_path=str(backup_path) if backup_path else None,
+        )
+        session.add(backup)
+        await session.commit()
+        await session.refresh(target)
+        await session.refresh(backup)
+        return target.id, backup.id
+
+
+def _configure_stopped_container(mock_docker, start_result=True):
+    mock_docker.get_dependency_order = AsyncMock(return_value=["test-container"])
+    mock_docker.get_container_state = AsyncMock(
+        side_effect=lambda _name: (
+            "running"
+            if mock_docker.get_container_state.await_count in (1, 3)
+            else "exited"
+        )
+    )
+    mock_docker.stop_container = AsyncMock(return_value=True)
+    mock_docker.start_container = AsyncMock(return_value=start_result)
 
 
 class TestBackupEngine:
@@ -262,6 +315,624 @@ class TestBackupEngine:
             "container" in issue.lower() and "not found" in issue.lower()
             for issue in issues
         )
+
+
+class TestBackupSafety:
+    async def test_executor_worker_finishes_before_cancellation_propagates(self):
+        engine = BackupEngine()
+        worker_started = threading.Event()
+        worker_release = threading.Event()
+        worker_finished = threading.Event()
+
+        def worker():
+            worker_started.set()
+            worker_release.wait()
+            worker_finished.set()
+
+        task = asyncio.create_task(engine._run_executor_cancellation_safe(worker))
+        await asyncio.to_thread(worker_started.wait)
+        task.cancel()
+        worker_release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert worker_finished.is_set()
+
+    async def test_archive_worker_finishes_before_backup_cancellation_propagates(
+        self, temp_backup_dir
+    ):
+        engine = BackupEngine()
+        worker_started = threading.Event()
+        worker_release = threading.Event()
+        worker_finished = threading.Event()
+        source_path = temp_backup_dir / "source"
+        source_path.mkdir()
+        target = BackupTarget(
+            name="archive-cancellation",
+            target_type="path",
+            host_path=str(source_path),
+            compression_enabled=False,
+        )
+
+        def create_tar(*_args):
+            worker_started.set()
+            worker_release.wait()
+            worker_finished.set()
+
+        with (
+            patch("app.backup_engine.settings.BACKUP_BASE_PATH", str(temp_backup_dir)),
+            patch.object(engine, "_create_tar", side_effect=create_tar),
+        ):
+            task = asyncio.create_task(engine._create_backup_archive(target, 1))
+            await asyncio.to_thread(worker_started.wait)
+            task.cancel()
+            await asyncio.sleep(0)
+
+            cancellation_propagated_early = task.done()
+            worker_release.set()
+
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert not cancellation_propagated_early
+        assert worker_finished.is_set()
+
+    async def test_restore_worker_finishes_before_container_restart(
+        self, test_db, temp_backup_dir
+    ):
+        archive_path = temp_backup_dir / "restore.tar"
+        archive_path.write_bytes(b"archive")
+        _, backup_id = await _create_backup_record(test_db, archive_path)
+        engine = BackupEngine()
+        worker_started = threading.Event()
+        worker_release = threading.Event()
+        worker_finished = threading.Event()
+
+        def extract_tar(*_args):
+            worker_started.set()
+            worker_release.wait()
+            worker_finished.set()
+
+        with (
+            patch("app.backup_engine.async_session", test_db),
+            patch("app.backup_engine.docker_client") as mock_docker,
+            patch.object(engine, "_extract_tar", side_effect=extract_tar),
+        ):
+            _configure_stopped_container(mock_docker)
+            task = asyncio.create_task(
+                engine.restore_backup(
+                    backup_id, target_path=str(temp_backup_dir / "restore")
+                )
+            )
+            await asyncio.to_thread(worker_started.wait)
+            task.cancel()
+            await asyncio.sleep(0)
+
+            mock_docker.start_container.assert_not_awaited()
+            worker_release.set()
+
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert worker_finished.is_set()
+        mock_docker.start_container.assert_awaited_once_with("test-container")
+
+    async def test_backup_stop_failure_aborts_before_archive(
+        self, test_db, temp_backup_dir
+    ):
+        _, backup_id = await _create_backup_record(test_db)
+        engine = BackupEngine()
+        archive = AsyncMock()
+
+        with (
+            patch("app.backup_engine.async_session", test_db),
+            patch("app.backup_engine.docker_client") as mock_docker,
+            patch.object(engine, "_create_backup_archive", archive),
+        ):
+            mock_docker.get_dependency_order = AsyncMock(
+                return_value=["test-container"]
+            )
+            mock_docker.get_container_state = AsyncMock(return_value="running")
+            mock_docker.stop_container = AsyncMock(return_value=False)
+            mock_docker.start_container = AsyncMock(return_value=True)
+
+            result = await engine.run_backup(backup_id, skip_validation=True)
+
+        assert result is False
+        archive.assert_not_awaited()
+
+    async def test_restore_stop_failure_aborts_before_extraction(
+        self, test_db, temp_backup_dir
+    ):
+        archive_path = temp_backup_dir / "restore.tar"
+        archive_path.write_bytes(b"archive")
+        _, backup_id = await _create_backup_record(test_db, archive_path)
+        engine = BackupEngine()
+        extract = MagicMock()
+
+        with (
+            patch("app.backup_engine.async_session", test_db),
+            patch("app.backup_engine.docker_client") as mock_docker,
+            patch.object(engine, "_extract_tar", extract),
+        ):
+            mock_docker.get_container_state = AsyncMock(return_value="running")
+            mock_docker.stop_container = AsyncMock(return_value=False)
+            mock_docker.start_container = AsyncMock(return_value=True)
+
+            result = await engine.restore_backup(
+                backup_id, target_path=str(temp_backup_dir / "restore")
+            )
+
+        assert result is False
+        extract.assert_not_called()
+
+    async def test_backup_start_failure_fails_after_bounded_retries(
+        self, test_db, temp_backup_dir
+    ):
+        archive_path = temp_backup_dir / "backup.tar"
+        archive_path.write_bytes(b"archive")
+        _, backup_id = await _create_backup_record(test_db)
+        engine = BackupEngine()
+
+        with (
+            patch("app.backup_engine.async_session", test_db),
+            patch("app.backup_engine.docker_client") as mock_docker,
+            patch("app.backup_engine.asyncio.sleep", new=AsyncMock()),
+            patch.object(
+                engine,
+                "_create_backup_archive",
+                new=AsyncMock(return_value=str(archive_path)),
+            ),
+            patch.object(
+                engine,
+                "_get_encryption_config",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            mock_docker.get_dependency_order = AsyncMock(
+                return_value=["test-container"]
+            )
+            mock_docker.get_container_state = AsyncMock(
+                side_effect=["running"] + ["exited"] * 20
+            )
+            mock_docker.stop_container = AsyncMock(return_value=True)
+            mock_docker.start_container = AsyncMock(return_value=False)
+
+            result = await engine.run_backup(backup_id, skip_validation=True)
+
+        assert result is False
+        assert mock_docker.start_container.await_count == 3
+
+    async def test_restore_start_failure_fails_after_bounded_retries(
+        self, test_db, temp_backup_dir
+    ):
+        archive_path = temp_backup_dir / "restore.tar"
+        archive_path.write_bytes(b"archive")
+        _, backup_id = await _create_backup_record(test_db, archive_path)
+        engine = BackupEngine()
+
+        with (
+            patch("app.backup_engine.async_session", test_db),
+            patch("app.backup_engine.docker_client") as mock_docker,
+            patch("app.backup_engine.asyncio.sleep", new=AsyncMock()),
+            patch.object(engine, "_extract_tar", new=MagicMock()),
+        ):
+            mock_docker.get_container_state = AsyncMock(
+                side_effect=["running"] + ["exited"] * 20
+            )
+            mock_docker.stop_container = AsyncMock(return_value=True)
+            mock_docker.start_container = AsyncMock(return_value=False)
+
+            result = await engine.restore_backup(
+                backup_id, target_path=str(temp_backup_dir / "restore")
+            )
+
+        assert result is False
+        assert mock_docker.start_container.await_count == 3
+
+    async def test_backup_cancellation_restarts_container_and_propagates(self, test_db):
+        _, backup_id = await _create_backup_record(test_db)
+        engine = BackupEngine()
+
+        with (
+            patch("app.backup_engine.async_session", test_db),
+            patch("app.backup_engine.docker_client") as mock_docker,
+            patch.object(
+                engine,
+                "_create_backup_archive",
+                new=AsyncMock(side_effect=asyncio.CancelledError),
+            ),
+        ):
+            _configure_stopped_container(mock_docker)
+
+            with pytest.raises(asyncio.CancelledError):
+                await engine.run_backup(backup_id, skip_validation=True)
+
+        mock_docker.start_container.assert_awaited_once_with("test-container")
+
+        async with test_db() as session:
+            backup = await session.get(Backup, backup_id)
+
+        assert backup.status == BackupStatus.FAILED
+        assert "cancelled" in backup.error_message.lower()
+
+    async def test_backup_cancellation_preserves_cancellation_on_restart_failure(
+        self, test_db, caplog
+    ):
+        _, backup_id = await _create_backup_record(test_db)
+        engine = BackupEngine()
+
+        with (
+            patch("app.backup_engine.async_session", test_db),
+            patch("app.backup_engine.docker_client") as mock_docker,
+            patch("app.backup_engine.asyncio.sleep", new=AsyncMock()),
+            patch.object(
+                engine,
+                "_create_backup_archive",
+                new=AsyncMock(side_effect=asyncio.CancelledError),
+            ),
+        ):
+            mock_docker.get_dependency_order = AsyncMock(
+                return_value=["test-container"]
+            )
+            mock_docker.get_container_state = AsyncMock(
+                side_effect=["running"] + ["exited"] * 20
+            )
+            mock_docker.stop_container = AsyncMock(return_value=True)
+            mock_docker.start_container = AsyncMock(return_value=False)
+
+            with pytest.raises(asyncio.CancelledError):
+                await engine.run_backup(backup_id, skip_validation=True)
+
+        assert mock_docker.start_container.await_count == 3
+        assert "Failed to restart container test-container" in caplog.text
+
+    async def test_encryption_error_fails_closed_and_removes_partial_files(
+        self, test_db, temp_backup_dir
+    ):
+        archive_path = temp_backup_dir / "backup.tar"
+        encrypted_path = temp_backup_dir / "backup.tar.enc"
+        key_path = temp_backup_dir / "backup.tar.key"
+        archive_path.write_bytes(b"plaintext")
+        _, backup_id = await _create_backup_record(
+            test_db, stop_container=False, container_name=None
+        )
+        engine = BackupEngine()
+
+        async def fail_encryption(*_args):
+            encrypted_path.write_bytes(b"partial encrypted data")
+            key_path.write_bytes(b"partial key")
+            raise EncryptionError("encryption failed")
+
+        encryption_config = SimpleNamespace(
+            encryption_enabled=True, public_key="age1test"
+        )
+        with (
+            patch("app.backup_engine.async_session", test_db),
+            patch.object(
+                engine,
+                "_create_backup_archive",
+                new=AsyncMock(return_value=str(archive_path)),
+            ),
+            patch.object(
+                engine,
+                "_get_encryption_config",
+                new=AsyncMock(return_value=encryption_config),
+            ),
+            patch("app.backup_engine.encrypt_backup", side_effect=fail_encryption),
+        ):
+            result = await engine.run_backup(backup_id, skip_validation=True)
+
+        assert result is False
+        assert not archive_path.exists()
+        assert not encrypted_path.exists()
+        assert not key_path.exists()
+
+    async def test_incomplete_encryption_output_fails_closed(
+        self, test_db, temp_backup_dir
+    ):
+        archive_path = temp_backup_dir / "backup.tar"
+        encrypted_path = temp_backup_dir / "backup.tar.enc"
+        key_path = temp_backup_dir / "backup.tar.key"
+        archive_path.write_bytes(b"plaintext")
+        _, backup_id = await _create_backup_record(
+            test_db, stop_container=False, container_name=None
+        )
+        engine = BackupEngine()
+
+        async def incomplete_encryption(*_args):
+            encrypted_path.touch()
+            key_path.touch()
+            return SimpleNamespace(
+                encrypted_path=encrypted_path,
+                key_path=key_path,
+            )
+
+        encryption_config = SimpleNamespace(
+            encryption_enabled=True, public_key="age1test"
+        )
+        with (
+            patch("app.backup_engine.async_session", test_db),
+            patch.object(
+                engine,
+                "_create_backup_archive",
+                new=AsyncMock(return_value=str(archive_path)),
+            ),
+            patch.object(
+                engine,
+                "_get_encryption_config",
+                new=AsyncMock(return_value=encryption_config),
+            ),
+            patch(
+                "app.backup_engine.encrypt_backup", side_effect=incomplete_encryption
+            ),
+        ):
+            result = await engine.run_backup(backup_id, skip_validation=True)
+
+        assert result is False
+        assert not archive_path.exists()
+        assert not encrypted_path.exists()
+        assert not key_path.exists()
+
+    async def test_encryption_does_not_delete_preexisting_artifacts(
+        self, test_db, temp_backup_dir
+    ):
+        archive_path = temp_backup_dir / "backup.tar"
+        encrypted_path = temp_backup_dir / "backup.tar.enc"
+        key_path = temp_backup_dir / "backup.tar.key"
+        archive_path.write_bytes(b"plaintext")
+        encrypted_path.write_bytes(b"existing encrypted data")
+        key_path.write_bytes(b"existing key")
+        _, backup_id = await _create_backup_record(
+            test_db, stop_container=False, container_name=None
+        )
+        engine = BackupEngine()
+        encrypt = AsyncMock()
+        encryption_config = SimpleNamespace(
+            encryption_enabled=True, public_key="age1test"
+        )
+
+        with (
+            patch("app.backup_engine.async_session", test_db),
+            patch.object(
+                engine,
+                "_create_backup_archive",
+                new=AsyncMock(return_value=str(archive_path)),
+            ),
+            patch.object(
+                engine,
+                "_get_encryption_config",
+                new=AsyncMock(return_value=encryption_config),
+            ),
+            patch("app.backup_engine.encrypt_backup", encrypt),
+        ):
+            result = await engine.run_backup(backup_id, skip_validation=True)
+
+        assert result is False
+        encrypt.assert_not_awaited()
+        assert encrypted_path.read_bytes() == b"existing encrypted data"
+        assert key_path.read_bytes() == b"existing key"
+
+
+class TestRemoteSyncSafety:
+    async def _sync(
+        self,
+        test_db,
+        temp_backup_dir,
+        sync_results,
+        *,
+        encrypted=False,
+        storage_ids=None,
+    ):
+        archive_path = temp_backup_dir / "backup.tar.enc"
+        archive_path.write_bytes(b"backup")
+        key_path = temp_backup_dir / "backup.tar.key"
+        if encrypted:
+            key_path.write_bytes(b"key")
+        target_id, backup_id = await _create_backup_record(
+            test_db,
+            remote_storage_ids=storage_ids or [1],
+            delete_local_after_sync=True,
+            stop_container=False,
+            container_name=None,
+        )
+        async with test_db() as session:
+            target = await session.get(BackupTarget, target_id)
+
+        engine = BackupEngine()
+        delete_local = AsyncMock()
+        progress = AsyncMock()
+        engine.add_progress_callback(progress)
+        with (
+            patch("app.backup_engine.async_session", test_db),
+            patch("app.remote_storage.storage_manager") as storage_manager,
+            patch.object(engine, "_delete_local_after_sync", delete_local),
+        ):
+            storage_manager.get_backend.return_value = MagicMock()
+            storage_manager.sync_backup = AsyncMock(side_effect=sync_results)
+            await engine._sync_to_remote(
+                backup_id,
+                target,
+                str(archive_path),
+                encrypted,
+                str(key_path) if encrypted else None,
+            )
+
+        return backup_id, delete_local, progress
+
+    async def test_tuple_failure_is_recorded_as_failed(self, test_db, temp_backup_dir):
+        backup_id, _, _ = await self._sync(
+            test_db,
+            temp_backup_dir,
+            [{1: (False, "archive upload failed")}],
+        )
+
+        async with test_db() as session:
+            result = await session.execute(
+                select(BackupStorageSync).where(
+                    BackupStorageSync.backup_id == backup_id
+                )
+            )
+            sync_record = result.scalar_one()
+
+        assert sync_record.sync_status == "failed"
+        assert sync_record.synced_at is None
+        assert sync_record.error_message == "archive upload failed"
+
+    async def test_archive_upload_failure_prevents_local_deletion(
+        self, test_db, temp_backup_dir
+    ):
+        _, delete_local, _ = await self._sync(
+            test_db,
+            temp_backup_dir,
+            [{1: (False, "archive upload failed")}],
+        )
+
+        delete_local.assert_not_awaited()
+
+    async def test_key_upload_failure_prevents_all_local_deletion(
+        self, test_db, temp_backup_dir
+    ):
+        _, delete_local, _ = await self._sync(
+            test_db,
+            temp_backup_dir,
+            [
+                {1: (True, None)},
+                {1: (False, "key upload failed")},
+            ],
+            encrypted=True,
+        )
+
+        delete_local.assert_not_awaited()
+
+    async def test_missing_required_archive_result_prevents_local_deletion(
+        self, test_db, temp_backup_dir
+    ):
+        _, delete_local, _ = await self._sync(
+            test_db,
+            temp_backup_dir,
+            [{1: (True, None)}],
+            storage_ids=[1, 2],
+        )
+
+        delete_local.assert_not_awaited()
+
+    async def test_missing_required_archive_result_is_recorded_and_counted(
+        self, test_db, temp_backup_dir
+    ):
+        backup_id, _, progress = await self._sync(
+            test_db,
+            temp_backup_dir,
+            [{1: (True, None)}],
+            storage_ids=[1, 2],
+        )
+
+        async with test_db() as session:
+            result = await session.execute(
+                select(BackupStorageSync)
+                .where(BackupStorageSync.backup_id == backup_id)
+                .order_by(BackupStorageSync.storage_id)
+            )
+            sync_records = result.scalars().all()
+
+        assert [record.storage_id for record in sync_records] == [1, 2]
+        assert sync_records[1].sync_status == "failed"
+        assert sync_records[1].error_message == "Upload result missing"
+        assert len(sync_records[1].error_message) <= 500
+        assert any("1/2 succeeded" in str(call) for call in progress.await_args_list)
+
+        async with test_db() as session:
+            result = await session.execute(
+                select(BackupLog).where(BackupLog.backup_id == backup_id)
+            )
+            backup_logs = result.scalars().all()
+
+        assert any("1/2 succeeded" in log.message for log in backup_logs)
+
+    async def test_missing_required_key_result_prevents_local_deletion(
+        self, test_db, temp_backup_dir
+    ):
+        backup_id, delete_local, _ = await self._sync(
+            test_db,
+            temp_backup_dir,
+            [
+                {1: (True, None), 2: (True, None)},
+                {1: (True, None)},
+            ],
+            encrypted=True,
+            storage_ids=[1, 2],
+        )
+
+        delete_local.assert_not_awaited()
+        async with test_db() as session:
+            result = await session.execute(
+                select(BackupStorageSync)
+                .where(BackupStorageSync.backup_id == backup_id)
+                .order_by(BackupStorageSync.storage_id)
+            )
+            sync_records = result.scalars().all()
+
+        assert [record.sync_status for record in sync_records] == [
+            "completed",
+            "failed",
+        ]
+        assert sync_records[1].error_message == "Key upload result missing"
+
+
+class TestHookRedaction:
+    async def test_hook_failure_redacts_command_and_output(self, caplog):
+        marker = "HOOKMARK"
+        process = MagicMock(returncode=7)
+        process.communicate = AsyncMock(return_value=(marker.encode(), marker.encode()))
+        engine = BackupEngine()
+
+        with patch(
+            "app.backup_engine.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=process),
+        ):
+            with pytest.raises(Exception) as exc_info:
+                await engine._run_hook(f"pg_dump --label={marker}")
+
+        assert marker not in str(exc_info.value)
+        assert marker not in caplog.text
+        assert str(exc_info.value) == "Hook 'pg_dump' exited with status 7"
+
+    async def test_hook_marker_never_reaches_backup_logs_or_progress(
+        self, test_db, caplog
+    ):
+        marker = "HOOKMARK"
+        _, backup_id = await _create_backup_record(
+            test_db,
+            stop_container=False,
+            container_name=None,
+            pre_backup_command=f"pg_dump --label={marker}",
+        )
+        process = MagicMock(returncode=7)
+        process.communicate = AsyncMock(return_value=(marker.encode(), marker.encode()))
+        progress = AsyncMock()
+        engine = BackupEngine()
+        engine.add_progress_callback(progress)
+
+        with (
+            patch("app.backup_engine.async_session", test_db),
+            patch(
+                "app.backup_engine.asyncio.create_subprocess_exec",
+                new=AsyncMock(return_value=process),
+            ),
+        ):
+            result = await engine.run_backup(backup_id, skip_validation=True)
+
+        async with test_db() as session:
+            query = await session.execute(
+                select(BackupLog).where(BackupLog.backup_id == backup_id)
+            )
+            backup_logs = query.scalars().all()
+
+        assert result is False
+        assert marker not in caplog.text
+        assert marker not in str([(log.message, log.details) for log in backup_logs])
+        assert marker not in str(progress.await_args_list)
 
 
 class TestBackupMetrics:

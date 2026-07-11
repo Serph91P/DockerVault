@@ -374,6 +374,11 @@ async def init_db():
     # Encrypt any plaintext credentials in remote_storage
     await _migrate_plaintext_credentials()
 
+    # Mark backups that were RUNNING when the container died as FAILED.
+    # Without this, the UI shows perpetual "running" rows and the per-target
+    # lock logic can race against the orphaned record on restart.
+    await _recover_orphaned_backups()
+
     # Create default retention policy
     async with async_session() as session:
         from sqlalchemy import select
@@ -532,6 +537,68 @@ async def _migrate_plaintext_credentials():
             if changed:
                 session.add(storage)
         await session.commit()
+
+
+async def _recover_orphaned_backups():
+    """Mark RUNNING backups as FAILED on startup and remove half-written files.
+
+    A container crash, OOM kill, or hard restart leaves ``BackupStatus.RUNNING``
+    rows behind that will never complete. The frontend would show them as
+    perpetually in-progress and the per-target lock logic could race against
+    the dead task on restart. Also clean up any temporary artifacts
+    (``*.tmp`` from atomic encryption, ``*.partial`` from interrupted writes)
+    that are now orphaned.
+    """
+    import logging
+    import os
+    from pathlib import Path
+
+    from sqlalchemy import update as sa_update
+
+    from app.config import settings as app_settings
+
+    log = logging.getLogger(__name__)
+
+    async with async_session() as session:
+        result = await session.execute(
+            sa_update(Backup)
+            .where(Backup.status == BackupStatus.RUNNING)
+            .values(
+                status=BackupStatus.FAILED,
+                error_message=(
+                    "Container restart while backup was in progress \u2014 "
+                    "marked failed during startup recovery"
+                ),
+                completed_at=_utcnow(),
+            )
+        )
+        if result.rowcount:
+            log.warning(
+                "Recovered %d orphaned RUNNING backup(s) as FAILED",
+                result.rowcount,
+            )
+        await session.commit()
+
+    backup_root = Path(app_settings.BACKUP_BASE_PATH)
+    if not backup_root.is_dir():
+        return
+
+    removed = 0
+    try:
+        for dirpath, _dirnames, filenames in os.walk(backup_root):
+            for name in filenames:
+                if name.endswith(".tmp") or name.endswith(".partial"):
+                    p = Path(dirpath) / name
+                    try:
+                        p.unlink()
+                        removed += 1
+                    except OSError as exc:
+                        log.warning("Could not remove orphan %s: %s", p, exc)
+    except OSError as exc:
+        log.warning("Walking %s for orphan cleanup failed: %s", backup_root, exc)
+
+    if removed:
+        log.info("Removed %d orphaned temporary backup file(s)", removed)
 
 
 async def get_session() -> AsyncSession:

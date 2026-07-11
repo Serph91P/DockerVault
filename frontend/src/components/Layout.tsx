@@ -25,7 +25,7 @@ const navigation = [
   { name: 'Backups', href: '/backups', icon: Archive },
   { name: 'Schedules', href: '/schedules', icon: Clock },
   { name: 'Retention', href: '/retention', icon: Trash2 },
-  { name: 'Remote Storage', href: '/storage', icon: Cloud },
+  { name: 'Local and Remote Storage', href: '/storage', icon: Cloud },
   { name: 'Settings', href: '/settings', icon: Settings },
 ]
 

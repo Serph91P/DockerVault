@@ -21,7 +21,7 @@ jobs:
     - name: Set up Python 3.14
       uses: actions/setup-python@v6
       with:
-        python-version: '3.14'
+        python-version-file: '.python-version'
         
     - name: Cache pip dependencies
       uses: actions/cache@v5
@@ -34,7 +34,7 @@ jobs:
     - name: Install dependencies
       working-directory: backend
       run: |
-        python -m pip install --upgrade pip
+        python -m pip install --upgrade pip==25.3
         pip install -r requirements.txt
         pip install -r requirements-dev.txt
         
@@ -44,7 +44,7 @@ jobs:
         pytest --cov=app --cov-report=xml --cov-report=html
         
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v5
+      uses: codecov/codecov-action@v6
       with:
         files: ./backend/coverage.xml
         flags: backend
@@ -66,9 +66,13 @@ jobs:
     - name: Set up Node.js 24
       uses: actions/setup-node@v6
       with:
-        node-version: '24'
+        node-version-file: '.node-version'
         cache: 'npm'
         cache-dependency-path: frontend/package-lock.json
+
+    - name: Install pinned npm
+      working-directory: frontend
+      run: npm install --global "$(node -p "require('./package.json').packageManager")"
         
     - name: Install dependencies
       working-directory: frontend
@@ -79,7 +83,7 @@ jobs:
       run: npm run test:coverage -- --run
       
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v5
+      uses: codecov/codecov-action@v6
       with:
         files: ./frontend/coverage/coverage-final.json
         flags: frontend
@@ -101,21 +105,25 @@ jobs:
     - name: Set up Python 3.14
       uses: actions/setup-python@v6
       with:
-        python-version: '3.14'
+        python-version-file: '.python-version'
         
     - name: Set up Node.js 24
       uses: actions/setup-node@v6
       with:
-        node-version: '24'
+        node-version-file: '.node-version'
         cache: 'npm'
         cache-dependency-path: frontend/package-lock.json
         
     - name: Install Python dependencies
       working-directory: backend
       run: |
-        python -m pip install --upgrade pip
+        python -m pip install --upgrade pip==25.3
         pip install ruff mypy
         pip install -r requirements.txt
+
+    - name: Install pinned npm
+      working-directory: frontend
+      run: npm install --global "$(node -p "require('./package.json').packageManager")"
         
     - name: Install Node dependencies
       working-directory: frontend
@@ -131,7 +139,8 @@ jobs:
       
     - name: Type check Python code
       working-directory: backend
-      run: mypy app/ || true
+      run: mypy app/
+      continue-on-error: true
       
     - name: Lint TypeScript code
       working-directory: frontend
@@ -154,6 +163,21 @@ jobs:
     - name: Build Docker image
       run: |
         docker build -t dockervault:test .
+
+    - name: Check runtime binaries
+      run: |
+        docker run --rm --entrypoint /bin/bash dockervault:test -o pipefail -c '
+          set -eu
+          for binary in rclone rsync ssh sftp sshpass age curl; do
+            command -v "$binary"
+          done
+          rclone version | grep -F "rclone v1.72.1"
+          rsync --version
+          ssh -V
+          sshpass -V
+          age --version
+          curl --version
+        '
         
     - name: Run integration tests
       run: |
@@ -163,16 +187,25 @@ jobs:
           -v /var/run/docker.sock:/var/run/docker.sock:ro \
           dockervault:test
         
-        # Wait for container to be healthy with retries
+        # Wait for backend liveness through nginx with retries
         echo "Waiting for container to be ready..."
+        ready=false
         for i in {1..30}; do
-          if curl -sf http://localhost:8080 > /dev/null 2>&1; then
-            echo "Frontend is ready!"
+          if health=$(curl -fsS http://localhost:8080/health 2>/dev/null) && \
+             [[ "$health" == *'"status":"healthy"'* ]]; then
+            echo "Backend is healthy through nginx!"
+            ready=true
             break
           fi
           echo "Attempt $i/30 - waiting..."
           sleep 2
         done
+
+        if [ "$ready" != true ]; then
+          echo "Backend did not become healthy through nginx"
+          docker logs dockervault-test
+          exit 1
+        fi
         
         # Show container logs for debugging
         echo "=== Container logs ==="
@@ -181,16 +214,12 @@ jobs:
         
         # Test frontend serves correctly
         curl -f http://localhost:8080 || exit 1
-        
+
         # Test backend health directly (internal port)
-        docker exec dockervault-test curl -sf http://localhost:8000/health || echo "Backend health check not available"
-        
-        # Test API through frontend proxy
-        curl -f http://localhost:8080/api/v1/docker/health || echo "API health check failed (may be expected without Docker socket)"
-        
-        # Clean up
-        docker stop dockervault-test
-        docker rm dockervault-test
+        docker exec dockervault-test curl -fsS http://localhost:8000/health
+
+        # Test a public API endpoint through the nginx proxy
+        curl -fsS http://localhost:8080/api/v1/auth/status
         
     - name: Clean up
       if: always()
@@ -211,7 +240,7 @@ jobs:
     - name: Set up Python 3.14
       uses: actions/setup-python@v6
       with:
-        python-version: '3.14'
+        python-version-file: '.python-version'
     
     - name: Run Trivy vulnerability scanner
       uses: aquasecurity/trivy-action@0.35.0
@@ -231,12 +260,24 @@ jobs:
         
     - name: Run pip-audit on Python dependencies
       working-directory: backend
+      continue-on-error: true
       run: |
+        python -m pip install --upgrade pip==25.3
         pip install pip-audit
-        pip-audit -r requirements.txt || true
+        pip-audit -r requirements.txt
+
+    - name: Set up Node.js 24
+      uses: actions/setup-node@v6
+      with:
+        node-version-file: '.node-version'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Install pinned npm
+      working-directory: frontend
+      run: npm install --global "$(node -p "require('./package.json').packageManager")"
         
     - name: Run npm audit on Node dependencies
       working-directory: frontend
-      run: |
-        npm audit --audit-level high || true
-
+      continue-on-error: true
+      run: npm audit --audit-level high

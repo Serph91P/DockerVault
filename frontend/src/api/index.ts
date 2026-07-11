@@ -336,6 +336,38 @@ export const storageApi = {
   getTypes: () => api.get('/storage/types'),
   listFiles: (id: number, path?: string) => api.get(`/storage/${id}/files`, { params: { path: path || '' } }),
   deleteFile: (id: number, path: string) => api.delete(`/storage/${id}/files`, { params: { path } }),
+  bulkDeleteFiles: (id: number, paths: string[]) =>
+    api.post(`/storage/${id}/files/bulk-delete`, { paths }),
+  bulkDownloadFiles: (id: number, paths: string[]) =>
+    api.post(`/storage/${id}/files/bulk-download`, { paths }, { responseType: 'blob' }),
+  // Local backup files
+  listLocalFiles: (path?: string) =>
+    api.get('/storage/local/files', { params: { path: path || '' } }),
+  deleteLocalFile: (path: string) =>
+    api.delete('/storage/local/files', { params: { path } }),
+  bulkDeleteLocalFiles: (paths: string[]) =>
+    api.post('/storage/local/files/bulk-delete', { paths }),
+  bulkDownloadLocalFiles: (paths: string[]) =>
+    api.post('/storage/local/files/bulk-download', { paths }, { responseType: 'blob' }),
+  // SSH key management
+  listSSHKeys: () => api.get<SSHKeyInfo[]>('/storage/ssh-keys'),
+  generateSSHKey: (data: { name: string; comment?: string; overwrite?: boolean }) =>
+    api.post<SSHKeyInfo>('/storage/ssh-keys', data),
+  deleteSSHKey: (name: string) => api.delete(`/storage/ssh-keys/${name}`),
+  installSSHKey: (
+    name: string,
+    data: { host: string; port: number; username: string; password: string; method?: string },
+  ) => api.post(`/storage/ssh-keys/${name}/install`, data),
+  downloadSSHPublicKeyURL: (name: string) => `/api/v1/storage/ssh-keys/${name}/public`,
+}
+
+export interface SSHKeyInfo {
+  name: string
+  private_path: string
+  public_path: string
+  public_key: string
+  fingerprint?: string | null
+  created_at: number
 }
 
 // Komodo API
@@ -377,12 +409,19 @@ export interface SystemInfo {
   app_version: string
 }
 
+export interface StorageSettings {
+  check_quota_before_upload: boolean
+}
+
 export const settingsApi = {
   getKomodo: () => api.get<KomodoSettings>('/settings/komodo'),
   updateKomodo: (data: { enabled: boolean; api_url?: string; api_key?: string; api_secret?: string }) =>
     api.put<KomodoSettings>('/settings/komodo', data),
   testKomodo: () => api.post<KomodoTestResult>('/settings/komodo/test'),
   getSystemInfo: () => api.get<SystemInfo>('/settings/system-info'),
+  getStorageSettings: () => api.get<StorageSettings>('/settings/storage'),
+  updateStorageSettings: (data: StorageSettings) =>
+    api.put<StorageSettings>('/settings/storage', data),
 }
 
 export default api
