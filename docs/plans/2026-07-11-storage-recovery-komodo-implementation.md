@@ -26,7 +26,7 @@
 ### Task 1: Reproduce local directory deletion
 
 **Files:**
-- Modify: `backend/tests/test_api_storage.py`
+- Create: `backend/tests/test_api_storage.py`
 - Inspect: `backend/app/api/storage.py`
 - Inspect: `backend/app/remote_storage.py`
 
@@ -74,7 +74,7 @@ def delete_local_target(root: Path, relative_path: str) -> DeleteResult: ...
 - Modify: `backend/tests/test_api_storage.py`
 - Modify: `frontend/src/api/index.ts`
 - Modify: `frontend/src/components/StorageBrowser.tsx`
-- Modify: `frontend/src/components/StorageBrowser.test.tsx`
+- Create: `frontend/src/components/StorageBrowser.test.tsx`
 
 **Contract:**
 
@@ -176,17 +176,21 @@ Run complete backend/frontend checks, Docker build, browser component tests, and
 ```python
 class RecoveryHeader(BaseModel):
     format: Literal['dockervault-recovery']
-    version: int
+    envelope_version: Literal[1]
     kdf: Argon2Parameters
-    salt: str
-    nonce: str
+    aead: AesGcmParameters
+
+
+class RecoveryEnvelope(RecoveryHeader):
+    ciphertext_b64: str
 ```
 
 1. Add RED round-trip, wrong-password, tamper, truncation, and unsupported-version tests.
-2. Derive a wrapping key with Argon2id and random salt.
-3. Encrypt and authenticate the complete payload with an established AEAD primitive.
-4. Keep only format and cryptographic parameters outside ciphertext.
-5. Prove known plaintext secrets never appear in output bytes or exceptions.
+2. Validate the versioned header, bounded Argon2id parameters, and Base64 lengths before deriving a direct 256-bit key from the password and fresh salt.
+3. Encrypt and authenticate the complete payload once with AES-256-GCM, a fresh 12-byte payload nonce, and the canonical header as additional authenticated data.
+4. Store ciphertext and the 16-byte authentication tag in separate explicit fields; reject unknown or duplicate fields and never reuse a salt/nonce pair.
+5. Keep only format, envelope version, cryptographic parameters, salt, payload nonce, payload tag, and ciphertext outside the encrypted payload.
+6. Prove known plaintext secrets never appear in output bytes or exceptions.
 
 ### Task 10: Serialize and validate portable state
 

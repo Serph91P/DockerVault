@@ -134,9 +134,31 @@ Private SSH key material is excluded in the first version. Imported SSH-backed t
 
 ### Cryptography
 
-The complete payload is authenticated and encrypted with a random data-encryption key. The export password derives a wrapping key using Argon2id with a random salt and versioned parameters. An established authenticated-encryption primitive from the project dependency stack, such as AES-256-GCM, encrypts the data key and payload.
+Version 1 uses one direct password-derived key because each export has one payload and one password recipient; wrapping a separate data-encryption key would add a second AEAD operation without enabling key rotation or multi-recipient access. Argon2id derives a 256-bit key from the export password, a fresh 16-byte random salt, and the parameters recorded in the envelope. AES-256-GCM encrypts and authenticates the complete payload with a fresh 12-byte random nonce and a 16-byte tag.
 
-Only a minimal non-secret format header, cryptographic parameters, salt, and nonce remain outside the encrypted payload. Wrong passwords, truncation, modification, unsupported versions, and malformed manifests fail closed before any live state changes.
+The `.dockervault` file is a UTF-8 JSON object with these explicit fields:
+
+```json
+{
+  "format": "dockervault-recovery",
+  "envelope_version": 1,
+  "kdf": {
+    "name": "argon2id",
+    "memory_kib": 65536,
+    "iterations": 3,
+    "parallelism": 1,
+    "salt_b64": "AAECAwQFBgcICQoLDA0ODw=="
+  },
+  "aead": {
+    "name": "aes-256-gcm",
+    "nonce_b64": "EBESExQVFhcYGRob",
+    "tag_b64": "HB0eHyAhIiMkJSYnKCkqKw=="
+  },
+  "ciphertext_b64": "LC0uLzAxMjM0NTY3ODk6Ow=="
+}
+```
+
+The binary values shown above are illustrative and use canonical padded Base64. The `format`, `envelope_version`, `kdf`, and `aead` fields except `tag_b64` are serialized as UTF-8 JSON with sorted keys and compact separators and supplied as AEAD additional authenticated data. The AEAD library output is split into `ciphertext_b64` and the 16-byte `tag_b64` on export and recombined only for authenticated decryption. Decoders reject duplicate or unknown fields, invalid Base64, incorrect salt, nonce, key, or tag lengths, unsupported algorithms or versions, and out-of-policy Argon2 parameters before invoking the KDF. Payload schema and application compatibility versions remain encrypted. Wrong passwords, truncation, modification, and malformed manifests fail closed before any live state changes.
 
 Passwords are never logged, persisted, placed in URLs, or returned by APIs. Export responses disable caching. Temporary plaintext files are avoided; unavoidable temporary material uses restrictive permissions and deterministic cleanup.
 
