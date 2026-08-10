@@ -5,4 +5,4 @@ pytest-cov>=7.1.0
 pytest-mock>=3.12.0
 httpx>=0.26.0
 factory-boy>=3.3.0
-faker>=22.0.0
+faker>=40.15.0
