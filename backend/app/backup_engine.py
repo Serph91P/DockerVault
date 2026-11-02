@@ -257,11 +257,12 @@ class BackupEngine:
         target: BackupTarget,
         containers: List[str],
         restore_path: str | None = None,
-    ) -> AsyncExitStack:
-        keys = {
-            f"container:{await docker_client.get_container_identity(name)}"
+    ) -> tuple[AsyncExitStack, Dict[str, str]]:
+        identities = {
+            name: await docker_client.get_container_identity(name)
             for name in containers
         }
+        keys = {f"container:{identity}" for identity in identities.values()}
         for path in (target.host_path, restore_path):
             if path:
                 keys.add(f"path:{os.path.realpath(path)}")
@@ -276,7 +277,7 @@ class BackupEngine:
         except BaseException:
             await claim.aclose()
             raise
-        return claim
+        return claim, identities
 
     async def start_queue_worker(self) -> None:
         """Start the background queue worker that processes backup jobs."""
@@ -700,8 +701,12 @@ class BackupEngine:
                     )
                     start_order = list(reversed(containers_to_stop))
 
-                workload_claim = await self._acquire_workload_locks(
+                workload_claim, identities = await self._acquire_workload_locks(
                     target, containers_to_stop
+                )
+                containers_to_stop = list(dict.fromkeys(identities.values()))
+                start_order = list(
+                    dict.fromkeys(identities.get(name, name) for name in start_order)
                 )
                 if containers_to_stop:
                     # Store original states
@@ -1967,9 +1972,10 @@ class BackupEngine:
         workload_claim = None
         try:
             try:
-                workload_claim = await self._acquire_workload_locks(
+                workload_claim, identities = await self._acquire_workload_locks(
                     target, containers_to_stop, restore_path
                 )
+                containers_to_stop = list(dict.fromkeys(identities.values()))
                 # Stop containers
                 for container_name in containers_to_stop:
                     state = await docker_client.get_container_state(container_name)

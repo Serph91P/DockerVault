@@ -357,7 +357,8 @@ class DockerClientWrapper:
                     if in_degree[dep] == 0:
                         queue.append(dep)
 
-        # For stopping, we want dependent containers first
+        # IDs and unresolved names must still be claimed/validated by the caller.
+        result.extend(name for name in container_names if name not in graph)
         return result
 
     def _calculate_stack_dependency_order(

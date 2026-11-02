@@ -26,6 +26,7 @@ from app.docker_client import DockerClientWrapper
         "path",
         "cancel-waiter",
         "identity-failure",
+        "identity-change",
     ],
 )
 async def test_resource_ownership_spans_stop_archive_restore_and_restart(
@@ -56,9 +57,19 @@ async def test_resource_ownership_spans_stop_archive_restore_and_restart(
 
     containers = {name: SDKContainer(name) for name in ("first", "shared", "last")}
     registry = {**containers, **{c.id: c for c in containers.values()}}
+    shared_lookups = 0
 
     def lookup(name):
-        if case == "identity-failure" and name == "id-shared":
+        nonlocal shared_lookups
+        if case == "identity-change" and name == "shared":
+            shared_lookups += 1
+            return containers["shared"] if shared_lookups == 1 else containers["last"]
+        if (
+            case == "identity-failure"
+            and name == "id-shared"
+            and a_entered.is_set()
+            and not a_release.is_set()
+        ):
             raise RuntimeError("controlled identity lookup failure")
         return registry[name]
 
@@ -70,6 +81,7 @@ async def test_resource_ownership_spans_stop_archive_restore_and_restart(
         "inverse": ["shared", "first"],
         "aliases": ["id-shared"],
         "identity-failure": ["id-shared"],
+        "identity-change": ["id-shared"],
         "independent": ["last"],
         "path": ["last"],
         "cancel-waiter": ["first", "shared"],
