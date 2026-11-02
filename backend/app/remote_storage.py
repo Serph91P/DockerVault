@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import aiofiles
 import aiohttp
@@ -694,10 +695,16 @@ class WebDAVStorage(StorageBackend):
         return aiohttp.ClientSession(auth=auth, timeout=timeout)
 
     def _get_url(self, remote_path: str) -> str:
-        """Build full WebDAV URL"""
-        base = self.config.webdav_url.rstrip("/")
-        path = f"{self.config.base_path}/{remote_path}".replace("//", "/")
-        return f"{base}{path}"
+        """Append filesystem segments without changing the encoded endpoint URL."""
+        if self.config.webdav_url is None:
+            raise ValueError("WebDAV URL is required")
+        base = urlsplit(self.config.webdav_url)
+        suffix = "/".join(
+            quote(part, safe="")
+            for part in f"{self.config.base_path}/{remote_path}".split("/")
+            if part
+        )
+        return urlunsplit(base._replace(path=f"{base.path.rstrip('/')}/{suffix}"))
 
     async def _verify_remote_size(
         self, session: aiohttp.ClientSession, remote_path: str, expected: int
@@ -981,8 +988,8 @@ class WebDAVStorage(StorageBackend):
             async with self._get_session() as session:
                 url = self._get_url(remote_path)
                 # Ensure trailing slash so the server treats it as a collection
-                if not url.endswith("/"):
-                    url += "/"
+                parsed = urlsplit(url)
+                url = urlunsplit(parsed._replace(path=parsed.path.rstrip("/") + "/"))
                 headers = {"Depth": "1", "Content-Type": "application/xml"}
                 body = (
                     '<?xml version="1.0" encoding="utf-8"?>'
@@ -1012,7 +1019,7 @@ class WebDAVStorage(StorageBackend):
             files: List[Dict[str, Any]] = []
 
             # Build the "self" href so we can skip the collection itself
-            request_path = url.split("://", 1)[-1].split("/", 1)[-1].rstrip("/")
+            request_path = urlsplit(url).path.rstrip("/")
 
             for response_el in root.findall("d:response", ns):
                 href_el = response_el.find("d:href", ns)
@@ -1021,8 +1028,7 @@ class WebDAVStorage(StorageBackend):
 
                 href = href_el.text.rstrip("/")
                 # Skip the collection entry itself (first entry is the queried dir)
-                href_decoded = href.rstrip("/")
-                if href_decoded == request_path or href_decoded == "/" + request_path:
+                if urlsplit(href).path.rstrip("/") == request_path:
                     continue
 
                 # Extract the file/directory name from the href
@@ -1031,8 +1037,6 @@ class WebDAVStorage(StorageBackend):
                     continue
 
                 # URL-decode the name
-                from urllib.parse import unquote
-
                 name = unquote(name)
 
                 propstat = response_el.find("d:propstat", ns)
