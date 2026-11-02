@@ -1,0 +1,29 @@
+# Backup catalog lifecycle
+
+A backup row identifies an archive, not merely its local pathname. Removing a
+local copy while a remote path remains keeps the row, logs, remote sync records
+and local encryption-key sidecar. The local pathname becomes null after local
+removal; existing download/restore discovery can still use completed remote
+copies. Retention prunes local copies under the same rule.
+
+Deleting a target with catalogued remote paths or a storage configuration with
+sync references returns HTTP 409 before deleting files or metadata. Remove the
+remote copies explicitly first. A failed, rejected or unavailable remote delete
+retains its sync record and archive identity and reports a warning. Successful
+archive deletion cascades its logs and sync records at the SQLite boundary,
+including bulk SQL deletion and retention.
+
+Every SQLite connection enables foreign-key enforcement. On legacy upgrade,
+logs and sync rows whose backup/storage parent no longer exists are copied to
+`catalog_quarantine` as full JSON rows before removal from the active catalog.
+No local/remote archive or key is deleted by this repair. Quarantined remote paths
+remain available for administrator inspection and manual recovery; they must not
+be automatically attached to a newly reused numeric ID. Existing valid
+remote-only rows are unchanged. Already-misassociated historical rows cannot be
+unambiguously reconstructed from an integer ID alone. Other foreign-key
+violations stop startup rather than guessing ownership or silently dropping data.
+
+Back up the SQLite database before upgrades. Keep the matching previous image
+and database backup together for rollback; do not run an older image against a
+partially upgraded database. The migration ledger and supported legacy upgrades
+are documented separately by the versioned-migrations change (#174).

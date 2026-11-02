@@ -530,6 +530,47 @@ async def run_migrations():
                 )
             )
 
+        await _repair_catalog_orphans(conn)
+
+
+async def _repair_catalog_orphans(conn):
+    """Retain unassignable metadata, without ever touching an archive or provider."""
+    import json
+
+    await conn.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS catalog_quarantine ("
+            "table_name TEXT NOT NULL, row_id INTEGER NOT NULL, row_json TEXT NOT NULL, "
+            "reason TEXT NOT NULL, PRIMARY KEY (table_name, row_id))"
+        )
+    )
+    queries = {
+        "backup_logs": "SELECT * FROM backup_logs WHERE backup_id NOT IN (SELECT id FROM backups)",
+        "backup_storage_syncs": (
+            "SELECT * FROM backup_storage_syncs WHERE backup_id NOT IN (SELECT id FROM backups) "
+            "OR storage_id NOT IN (SELECT id FROM remote_storages)"
+        ),
+    }
+    for table_name, query in queries.items():
+        rows = (await conn.execute(text(query))).mappings().all()
+        for row in rows:
+            await conn.execute(
+                text(
+                    "INSERT OR IGNORE INTO catalog_quarantine (table_name, row_id, row_json, reason) "
+                    "VALUES (:table, :id, :data, 'missing parent reference')"
+                ),
+                {"table": table_name, "id": row["id"], "data": json.dumps(dict(row))},
+            )
+            # Table names come only from the fixed catalog mapping above.
+            await conn.execute(
+                text(f"DELETE FROM {table_name} WHERE id = :id"), {"id": row["id"]}
+            )
+    violations = (await conn.execute(text("PRAGMA foreign_key_check"))).all()
+    if violations:
+        raise RuntimeError(
+            "Unresolved catalog foreign-key violations; refusing startup"
+        )
+
 
 async def _migrate_plaintext_credentials():
     """Encrypt any plaintext credentials in remote_storage rows."""

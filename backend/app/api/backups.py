@@ -341,7 +341,12 @@ async def _delete_remote_copies(session, backup_ids: list[int]) -> list[str]:
             backend = storage_manager.get_backend(sync.storage_id)
             if backend:
                 try:
-                    await backend.delete(sync.remote_path)
+                    deleted = await backend.delete(sync.remote_path)
+                    if not deleted:
+                        remote_errors.append(
+                            f"storage:{sync.storage_id}/{sync.remote_path}"
+                        )
+                        continue
                 except Exception as e:
                     logger.warning(
                         "Could not delete remote file %s from storage %s: %s",
@@ -352,6 +357,10 @@ async def _delete_remote_copies(session, backup_ids: list[int]) -> list[str]:
                     remote_errors.append(
                         f"storage:{sync.storage_id}/{sync.remote_path}"
                     )
+                    continue
+            else:
+                remote_errors.append(f"storage:{sync.storage_id}/{sync.remote_path}")
+                continue
         await session.delete(sync)
 
     return remote_errors
@@ -799,8 +808,10 @@ async def delete_backup(
 ):
     """Delete a backup. Use query params to control what gets deleted.
 
-    - delete_local=true (default): Removes local file and DB record.
-    - delete_remote=true (default): Removes remote copies.
+    - delete_local=true (default): Removes the local file; keeps recovery identity
+      and the key sidecar while remote paths remain.
+    - delete_remote=true (default): Removes remote copies; failed deletion keeps
+      the corresponding sync record.
     - Both false is rejected (nothing to do).
     """
     if not delete_local and not delete_remote:
@@ -853,7 +864,7 @@ async def delete_backup(
 
         if delete_local:
             if preserve_remote:
-                if not file_errors:
+                if not _resolve_backup_path(backup.file_path):
                     backup.file_path = None
             else:
                 await session.delete(backup)
@@ -867,8 +878,8 @@ async def delete_backup(
             return {
                 "status": "deleted",
                 "warning": (
-                    "Database record removed but some files could not be "
-                    f"deleted (permission denied): {file_errors}"
+                    "Some copies could not be deleted; recovery metadata is retained "
+                    f"while remote paths remain: {file_errors}"
                 ),
             }
         return {"status": "deleted"}
