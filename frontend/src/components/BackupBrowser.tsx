@@ -327,7 +327,7 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+    <Modal title="Browse Backup" onClose={onClose}>
       <div className="bg-dark-800 rounded-2xl border border-dark-700 shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-dark-700">
@@ -359,6 +359,7 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
           </div>
           <button
             onClick={onClose}
+            aria-label="Close backup browser"
             className="p-2 text-dark-400 hover:text-dark-200 hover:bg-dark-700 rounded-lg transition-colors"
           >
             <X className="w-5 h-5" />
@@ -529,6 +530,7 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }
+import { Modal } from './ui/dialog'

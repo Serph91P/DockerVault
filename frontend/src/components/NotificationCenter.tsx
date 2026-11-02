@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react'
+import { Modal } from './ui/dialog'
 import {
   Bell,
   X,
@@ -34,8 +34,9 @@ export function NotificationBadge({ onClick }: { onClick: () => void }) {
   return (
     <button
       onClick={onClick}
-      className="relative p-1.5 text-dark-400 hover:text-dark-200 hover:bg-dark-800 rounded-lg transition-colors"
+      className="relative min-h-11 min-w-11 p-3 text-dark-300 hover:text-dark-100 hover:bg-dark-800 rounded-lg transition-colors"
       title="Notifications"
+      aria-label={`Notifications (${unreadCount} unread)`}
     >
       <Bell className="w-4 h-4" />
       {unreadCount > 0 && (
@@ -50,45 +51,14 @@ export function NotificationBadge({ onClick }: { onClick: () => void }) {
 export function NotificationCenter({ isOpen, onClose }: NotificationCenterProps) {
   const { notifications, markRead, markAllRead, removeNotification, clearAll } =
     useNotificationStore()
-  const panelRef = useRef<HTMLDivElement>(null)
-
-  // Close on outside click
-  useEffect(() => {
-    if (!isOpen) return
-    const handleClick = (e: MouseEvent) => {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
-        onClose()
-      }
-    }
-    // Delay to prevent the opening click from immediately closing
-    const timer = setTimeout(() => {
-      document.addEventListener('mousedown', handleClick)
-    }, 0)
-    return () => {
-      clearTimeout(timer)
-      document.removeEventListener('mousedown', handleClick)
-    }
-  }, [isOpen, onClose])
-
-  // Close on Escape
-  useEffect(() => {
-    if (!isOpen) return
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    document.addEventListener('keydown', handleKey)
-    return () => document.removeEventListener('keydown', handleKey)
-  }, [isOpen, onClose])
 
   if (!isOpen) return null
 
   const unreadCount = notifications.filter((n) => !n.read).length
 
   return (
-    <div
-      ref={panelRef}
-      className="absolute bottom-12 left-0 w-80 bg-dark-800 border border-dark-600 rounded-xl shadow-2xl z-50 flex flex-col max-h-[70vh] animate-fade-in"
-    >
+    <Modal title="Notifications" onClose={onClose}>
+    <div className="w-full max-w-lg bg-dark-800 border border-dark-600 rounded-xl shadow-2xl flex flex-col max-h-[85dvh]">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-dark-700">
         <div className="flex items-center gap-2">
@@ -119,6 +89,7 @@ export function NotificationCenter({ isOpen, onClose }: NotificationCenterProps)
             </button>
           )}
           <button
+            aria-label="Close notifications"
             onClick={onClose}
             className="p-1.5 text-dark-400 hover:text-dark-200 hover:bg-dark-700 rounded-lg transition-colors"
           >
@@ -147,6 +118,10 @@ export function NotificationCenter({ isOpen, onClose }: NotificationCenterProps)
                     !notification.read && 'bg-dark-750/50'
                   )}
                   onClick={() => markRead(notification.id)}
+                  onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); markRead(notification.id) } }}
+                  tabIndex={0}
+                  role="group"
+                  aria-label={`${notification.type}: ${notification.title}${notification.read ? ', read' : ', unread'}`}
                 >
                   <div
                     className={clsx(
@@ -167,11 +142,12 @@ export function NotificationCenter({ isOpen, onClose }: NotificationCenterProps)
                         {notification.title}
                       </p>
                       <button
+                        aria-label={`Remove notification: ${notification.title}`}
                         onClick={(e) => {
                           e.stopPropagation()
                           removeNotification(notification.id)
                         }}
-                        className="p-0.5 text-dark-600 hover:text-dark-300 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                        className="p-2 text-dark-400 hover:text-dark-100 flex-shrink-0"
                       >
                         <X className="w-3 h-3" />
                       </button>
@@ -193,5 +169,6 @@ export function NotificationCenter({ isOpen, onClose }: NotificationCenterProps)
         )}
       </div>
     </div>
+    </Modal>
   )
 }

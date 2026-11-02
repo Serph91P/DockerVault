@@ -75,7 +75,7 @@ export default function BackupLogViewer({ backupId, onClose }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+    <Modal title={`Backup ${backupId} — Job Log`} onClose={onClose}>
       <div className="bg-dark-800 border border-dark-600 rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-dark-600">
@@ -85,6 +85,7 @@ export default function BackupLogViewer({ backupId, onClose }: Props) {
           </h2>
           <button
             onClick={onClose}
+            aria-label="Close job log"
             className="p-1.5 rounded-lg hover:bg-dark-600 text-dark-400 hover:text-white transition-colors"
           >
             <X size={18} />
@@ -167,6 +168,7 @@ export default function BackupLogViewer({ backupId, onClose }: Props) {
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }
+import { Modal } from './ui/dialog'

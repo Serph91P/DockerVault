@@ -8,6 +8,9 @@ import { clsx } from 'clsx'
 import ConfirmDialog from '../components/ConfirmDialog'
 import EmptyState from '../components/EmptyState'
 import LoadingSkeleton from '../components/LoadingSkeleton'
+import { Modal } from '../components/ui/dialog'
+import { TextField } from '../components/ui/input'
+import { Button } from '../components/ui/button'
 
 interface ScheduleFormData {
   name: string
@@ -35,73 +38,24 @@ function ScheduleForm({
   isLoading: boolean
 }) {
   const [formData, setFormData] = useState<ScheduleFormData>(initialData || defaultFormData)
+  const [submitted, setSubmitted] = useState(false)
+  const nameError = submitted && !formData.name.trim() ? 'Enter a schedule name.' : undefined
+  const cronError = submitted && !formData.cron_expression.trim() ? 'Enter a cron expression.' : undefined
 
-  return (
-    <div className="space-y-4">
-      <div>
-        <label className="block text-sm font-medium text-dark-300 mb-1">Name</label>
-        <input
-          type="text"
-          value={formData.name}
-          onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-          className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-dark-100"
-          placeholder="Daily Backup"
-        />
-      </div>
-
-      <div>
-        <label className="block text-sm font-medium text-dark-300 mb-1">Cron Expression</label>
-        <input
-          type="text"
-          value={formData.cron_expression}
-          onChange={(e) => setFormData({ ...formData, cron_expression: e.target.value })}
-          className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-dark-100 font-mono"
-          placeholder="0 2 * * *"
-        />
-        <p className="text-xs text-dark-500 mt-1">minute hour day month weekday</p>
-      </div>
-
-      <div>
-        <label className="block text-sm font-medium text-dark-300 mb-1">Description</label>
-        <input
-          type="text"
-          value={formData.description}
-          onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-          className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-dark-100"
-          placeholder="Every day at 2:00 AM"
-        />
-      </div>
-
-      <div className="flex items-center gap-2">
-        <input
-          type="checkbox"
-          id="enabled"
-          checked={formData.enabled}
-          onChange={(e) => setFormData({ ...formData, enabled: e.target.checked })}
-          className="w-4 h-4 rounded border-dark-600 text-primary-500 focus:ring-primary-500 bg-dark-700"
-        />
-        <label htmlFor="enabled" className="text-sm text-dark-300">
-          Enabled
-        </label>
-      </div>
-
-      <div className="flex gap-2 pt-2">
-        <button
-          onClick={() => onSubmit(formData)}
-          disabled={isLoading || !formData.name || !formData.cron_expression}
-          className="flex-1 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          {isLoading ? 'Saving...' : 'Save'}
-        </button>
-        <button
-          onClick={onCancel}
-          className="px-4 py-2 bg-dark-600 text-dark-300 rounded-lg hover:bg-dark-500 transition-colors"
-        >
-          Cancel
-        </button>
-      </div>
+  return <form noValidate className="space-y-4" onSubmit={(event) => {
+    event.preventDefault()
+    setSubmitted(true)
+    if (!isLoading && formData.name.trim() && formData.cron_expression.trim()) onSubmit(formData)
+  }}>
+    <TextField label="Name" value={formData.name} error={nameError} onChange={(event) => setFormData({ ...formData, name: event.target.value })} autoComplete="off" />
+    <TextField label="Cron Expression" value={formData.cron_expression} error={cronError} help="minute hour day month weekday" onChange={(event) => setFormData({ ...formData, cron_expression: event.target.value })} />
+    <TextField label="Description" value={formData.description} onChange={(event) => setFormData({ ...formData, description: event.target.value })} />
+    <label className="flex min-h-11 items-center gap-2 text-sm text-dark-200"><input type="checkbox" checked={formData.enabled} onChange={(event) => setFormData({ ...formData, enabled: event.target.checked })} />Enabled</label>
+    <div className="flex flex-wrap gap-2 pt-2">
+      <Button type="submit" disabled={isLoading}>{isLoading ? 'Saving...' : 'Save'}</Button>
+      <Button type="button" variant="outline" onClick={onCancel} disabled={isLoading}>Cancel</Button>
     </div>
-  )
+  </form>
 }
 
 function ScheduleCard({
@@ -155,7 +109,7 @@ function ScheduleCard({
             <Calendar className="w-5 h-5 text-orange-400" />
           </div>
           <div>
-            <h3 className="text-lg font-semibold text-dark-100">{schedule.name}</h3>
+            <h2 className="text-lg font-semibold text-dark-100 break-words">{schedule.name}</h2>
             {schedule.description && (
               <p className="text-sm text-dark-400">{schedule.description}</p>
             )}
@@ -163,6 +117,7 @@ function ScheduleCard({
         </div>
         <button
           onClick={() => toggleMutation.mutate()}
+          aria-label={`${schedule.enabled ? 'Disable' : 'Enable'} schedule ${schedule.name}`}
           className={`px-2 py-1 rounded-full text-xs font-medium ${
             schedule.enabled
               ? 'bg-green-500/10 text-green-400'
@@ -233,6 +188,7 @@ function ScheduleCard({
         </button>
         <button
           onClick={() => setShowConfirm(true)}
+          aria-label={`Delete schedule ${schedule.name}`}
           disabled={deleteMutation.isPending}
           className="flex items-center justify-center gap-2 px-3 py-2 bg-red-500/10 text-red-400 rounded-lg hover:bg-red-500/20 transition-colors text-sm"
         >
@@ -245,7 +201,6 @@ function ScheduleCard({
         onClose={() => setShowConfirm(false)}
         onConfirm={() => {
           deleteMutation.mutate()
-          setShowConfirm(false)
         }}
         title="Delete Schedule"
         message={`Delete schedule "${schedule.name}"? Targets using it will be unlinked.`}
@@ -450,8 +405,7 @@ export default function Schedules() {
 
       {/* Schedule Form Modal */}
       {(showForm || editingSchedule) && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => { setShowForm(false); setEditingSchedule(null) }} />
+        <Modal title={editingSchedule ? 'Edit Schedule' : 'New Schedule'} onClose={() => { setShowForm(false); setEditingSchedule(null) }} pending={createMutation.isPending || updateMutation.isPending}>
           <div className="relative bg-dark-800 rounded-2xl border border-dark-700 shadow-2xl w-full max-w-lg p-6">
             <h2 className="text-lg font-semibold text-dark-100 mb-4">
               {editingSchedule ? 'Edit Schedule' : 'New Schedule'}
@@ -475,7 +429,7 @@ export default function Schedules() {
               isLoading={createMutation.isPending || updateMutation.isPending}
             />
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   )

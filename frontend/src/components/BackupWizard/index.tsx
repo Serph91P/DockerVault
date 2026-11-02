@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { X, ChevronLeft, ChevronRight, Check, Loader2 } from 'lucide-react'
 import {
@@ -510,35 +510,10 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
     }
   }
 
-  // Keyboard navigation
-  useEffect(() => {
-    if (!isOpen) return
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        handleClose()
-        return
-      }
-      if (e.key === 'Enter') {
-        const tag = (e.target as HTMLElement)?.tagName
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
-        e.preventDefault()
-        if (currentStep === STEPS.length) {
-          if (canProceed() && !isLoading) handleSubmit()
-        } else {
-          handleNext()
-        }
-      }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  })
-
   if (!isOpen) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={handleClose} />
+    <Modal title={isEditing ? 'Edit Backup Target' : 'Create Backup Target'} onClose={handleClose} pending={isLoading}>
 
       {/* Modal */}
       <div className="relative bg-dark-800 rounded-2xl border border-dark-700 w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col">
@@ -552,6 +527,8 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
           </div>
           <button
             onClick={handleClose}
+            aria-label="Close backup wizard"
+            disabled={isLoading}
             className="p-2 text-dark-400 hover:text-dark-200 hover:bg-dark-700 rounded-lg transition-colors"
           >
             <X className="w-5 h-5" />
@@ -560,7 +537,7 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
 
         {/* Progress Steps */}
         <div className="px-6 py-4 border-b border-dark-700">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2 overflow-x-auto" role="group" aria-label="Backup wizard steps" tabIndex={0}>
             {STEPS.map((step, index) => {
               const skipped = shouldSkipStep(step.id)
               const isVisited = isEditing || step.id < currentStep
@@ -570,7 +547,7 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
                   <div className="flex flex-col items-center">
                     <button
                       onClick={() => canClick && setCurrentStep(step.id)}
-                      disabled={!canClick && step.id !== currentStep}
+                      disabled={isLoading || (!canClick && step.id !== currentStep)}
                       title={skipped ? `${step.name} (skipped)` : step.name}
                       className={`flex items-center justify-center rounded-full font-medium transition-colors ${
                         skipped
@@ -706,7 +683,7 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
         <div className="flex items-center justify-between px-6 py-4 border-t border-dark-700">
           <button
             onClick={handlePrev}
-            disabled={currentStep === 1}
+            disabled={currentStep === 1 || isLoading}
             className="flex items-center gap-2 px-4 py-2 text-dark-300 hover:text-dark-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             <ChevronLeft className="w-4 h-4" />
@@ -716,6 +693,7 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
           <div className="flex gap-2">
             <button
               onClick={handleClose}
+              disabled={isLoading}
               className="px-4 py-2 text-dark-300 hover:text-dark-100 transition-colors"
             >
               Cancel
@@ -751,6 +729,7 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
           </div>
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }
+import { Modal } from '../ui/dialog'

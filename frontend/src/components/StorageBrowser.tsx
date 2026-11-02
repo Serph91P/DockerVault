@@ -209,12 +209,9 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
   const breadcrumbs = currentPath ? currentPath.split('/') : []
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-sm"
-      onClick={onClose}
-    >
+    <Modal title={`Browse ${storage.name}`} onClose={onClose}>
       <div
-        className="bg-dark-800 border-l border-dark-700 shadow-2xl w-fit min-w-[48rem] max-w-[90vw] h-full flex flex-col animate-slide-in-right"
+        className="bg-dark-800 border border-dark-700 shadow-2xl w-full max-h-[90dvh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -257,6 +254,7 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
             </button>
             <button
               onClick={onClose}
+              aria-label="Close storage browser"
               className="p-2 text-dark-400 hover:text-dark-200 hover:bg-dark-700 rounded-lg transition-colors"
             >
               <X className="w-5 h-5" />
@@ -328,10 +326,10 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
               <p className="text-dark-400">This directory is empty</p>
             </div>
           ) : (
-            <table className="w-full">
+            <EntityTable label={`Files in ${storage.name}`}>
               <thead className="text-xs text-dark-500 uppercase bg-dark-900/50 sticky top-0">
                 <tr>
-                  <th className="text-left px-4 py-2 font-medium">Name</th>
+                  <th scope="col" className="text-left px-4 py-2 font-medium">Name</th>
                   <th className="text-right px-4 py-2 font-medium w-28">
                     Size
                   </th>
@@ -347,6 +345,8 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
                 {currentPath && (
                   <tr
                     onClick={isSelecting ? undefined : handleBack}
+                    tabIndex={isSelecting ? undefined : 0}
+                    onKeyDown={(event) => { if (!isSelecting && event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); handleBack() } }}
                     className={clsx(
                       'hover:bg-dark-700/50 transition-colors',
                       !isSelecting && 'cursor-pointer'
@@ -367,6 +367,9 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
                   return (
                     <tr
                       key={file.name}
+                      tabIndex={file.is_dir || isSelecting ? 0 : undefined}
+                      aria-selected={isSelecting ? isSelected : undefined}
+                      onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { if (isSelecting || file.is_dir) event.preventDefault(); if (isSelecting) toggleSelection(file.name); else if (file.is_dir) handleNavigate(file.name) } }}
                       className={clsx(
                         'hover:bg-dark-700/50 transition-colors',
                         file.is_dir && !isSelecting && 'cursor-pointer',
@@ -453,7 +456,7 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
                   )
                 })}
               </tbody>
-            </table>
+            </EntityTable>
           )}
         </div>
 
@@ -535,6 +538,8 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
         confirmVariant="danger"
         isLoading={bulkDeleteMutation.isPending}
       />
-    </div>
+    </Modal>
   )
 }
+import { Modal } from './ui/dialog'
+import { EntityTable } from './ui/workspace'

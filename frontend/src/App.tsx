@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, Link } from 'react-router-dom'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import Backups from './pages/Backups'
@@ -45,14 +45,17 @@ function App() {
     <Routes>
       <Route path="/" element={<Layout />}>
         <Route index element={<Dashboard />} />
-        <Route path="backups" element={<Backups />} />
-        <Route path="schedules" element={<Schedules />} />
-        <Route path="retention" element={<Retention />} />
+        <Route path="protection" element={<Backups workspace="protection" />} />
+        <Route path="history" element={<Backups workspace="history" />} />
+        <Route path="protection/schedules" element={<Schedules />} />
+        <Route path="protection/retention" element={<Retention />} />
+        <Route path="backups" element={<Navigate to="/protection" replace />} />
+        <Route path="schedules" element={<Navigate to="/protection/schedules" replace />} />
+        <Route path="retention" element={<Navigate to="/protection/retention" replace />} />
         <Route path="storage" element={<Storage />} />
         <Route path="settings" element={<Settings />} />
+        <Route path="*" element={<section className="space-y-4"><h1 className="text-2xl font-semibold">Page not found</h1><p>This address does not identify an available workspace or resource.</p><Link to="/" className="underline text-primary-300">Return to Overview</Link></section>} />
       </Route>
-      {/* Redirect any unknown routes to dashboard */}
-      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
 }

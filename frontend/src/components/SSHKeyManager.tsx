@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Key, Plus, Trash2, Upload, Copy, Check, Loader2, Download } from 'lucide-react';
 import axios from 'axios';
 import { storageApi, type SSHKeyInfo } from '../api';
+import ConfirmDialog from './ConfirmDialog';
 
 /**
  * Manages SSH keypairs stored under /app/data/ssh_keys.
@@ -19,6 +20,7 @@ export default function SSHKeyManager() {
   const [createComment, setCreateComment] = useState('');
   const [installFor, setInstallFor] = useState<SSHKeyInfo | null>(null);
   const [copiedName, setCopiedName] = useState<string | null>(null);
+  const [deleteKey, setDeleteKey] = useState<string | null>(null);
 
   const { data: keys, isLoading } = useQuery({
     queryKey: ['ssh-keys'],
@@ -41,7 +43,10 @@ export default function SSHKeyManager() {
 
   const deleteMut = useMutation({
     mutationFn: (name: string) => storageApi.deleteSSHKey(name),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['ssh-keys'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['ssh-keys'] });
+      setDeleteKey(null);
+    },
   });
 
   const copy = async (key: SSHKeyInfo) => {
@@ -124,11 +129,7 @@ export default function SSHKeyManager() {
                   <Upload className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
                 </button>
                 <button
-                  onClick={() => {
-                    if (confirm(`Delete SSH key "${key.name}"? This cannot be undone.`)) {
-                      deleteMut.mutate(key.name);
-                    }
-                  }}
+                  onClick={() => setDeleteKey(key.name)}
                   className="p-2 hover:bg-red-100 dark:hover:bg-red-900 rounded"
                   title="Delete key"
                 >
@@ -143,6 +144,9 @@ export default function SSHKeyManager() {
         ))}
       </div>
 
+      <ConfirmDialog isOpen={deleteKey !== null} onClose={() => setDeleteKey(null)} onConfirm={() => { if (deleteKey) deleteMut.mutate(deleteKey); }} title="Delete SSH key" message={`Delete SSH key "${deleteKey}"? This cannot be undone.`} confirmLabel="Delete" isLoading={deleteMut.isPending}>
+        {deleteMut.isError && <p role="alert" className="text-red-300">Could not delete the key. Retry or cancel.</p>}
+      </ConfirmDialog>
       {showCreate && (
         <CreateKeyModal
           name={createName}
@@ -186,8 +190,9 @@ function CreateKeyModal(props: {
   onSubmit: () => void;
 }) {
   const valid = /^[A-Za-z0-9_-]{1,40}$/.test(props.name);
+  const id = useId();
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <Modal title="Generate SSH key" onClose={props.onCancel} pending={props.isPending}>
       <div className="bg-white dark:bg-slate-900 rounded-lg shadow-xl max-w-md w-full p-5 space-y-4">
         <h3 className="font-semibold text-slate-900 dark:text-white">Generate SSH key</h3>
         <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -196,8 +201,9 @@ function CreateKeyModal(props: {
           private key never leaves the container.
         </p>
         <div>
-          <label className="block text-sm text-slate-700 dark:text-slate-300 mb-1">Name</label>
+          <label htmlFor={`${id}-name`} className="block text-sm text-slate-700 dark:text-slate-300 mb-1">Name</label>
           <input
+            id={`${id}-name`}
             type="text"
             value={props.name}
             onChange={(e) => props.onName(e.target.value)}
@@ -209,12 +215,13 @@ function CreateKeyModal(props: {
           </div>
         </div>
         <div>
-          <label className="block text-sm text-slate-700 dark:text-slate-300 mb-1">
+          <label htmlFor={`${id}-comment`} className="block text-sm text-slate-700 dark:text-slate-300 mb-1">
             Comment (optional)
           </label>
           <input
             type="text"
             value={props.comment}
+            id={`${id}-comment`}
             onChange={(e) => props.onComment(e.target.value)}
             placeholder="dockervault@home-server"
             className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -226,6 +233,7 @@ function CreateKeyModal(props: {
         <div className="flex justify-end gap-2 pt-2">
           <button
             onClick={props.onCancel}
+            disabled={props.isPending}
             className="px-4 py-2 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded"
           >
             Cancel
@@ -240,11 +248,12 @@ function CreateKeyModal(props: {
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 
 function InstallKeyModal(props: { keyInfo: SSHKeyInfo; onClose: () => void }) {
+  const id = useId();
   const [host, setHost] = useState('');
   const [port, setPort] = useState('23');
   const [username, setUsername] = useState('');
@@ -269,7 +278,7 @@ function InstallKeyModal(props: { keyInfo: SSHKeyInfo; onClose: () => void }) {
     : null;
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <Modal title="Install key on remote" onClose={props.onClose} pending={installMut.isPending}>
       <div className="bg-white dark:bg-slate-900 rounded-lg shadow-xl max-w-lg w-full p-5 space-y-4">
         <div>
           <h3 className="font-semibold text-slate-900 dark:text-white">
@@ -283,20 +292,22 @@ function InstallKeyModal(props: { keyInfo: SSHKeyInfo; onClose: () => void }) {
         </div>
         <div className="grid grid-cols-3 gap-2">
           <div className="col-span-2">
-            <label className="block text-sm mb-1">Host</label>
+            <label htmlFor={`${id}-host`} className="block text-sm mb-1">Host</label>
             <input
               type="text"
               value={host}
+              id={`${id}-host`}
               onChange={(e) => setHost(e.target.value)}
               placeholder="u123456.your-storagebox.de"
               className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-800"
             />
           </div>
           <div>
-            <label className="block text-sm mb-1">Port</label>
+            <label htmlFor={`${id}-port`} className="block text-sm mb-1">Port</label>
             <input
               type="number"
               value={port}
+              id={`${id}-port`}
               onChange={(e) => setPort(e.target.value)}
               className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-800"
             />
@@ -304,28 +315,31 @@ function InstallKeyModal(props: { keyInfo: SSHKeyInfo; onClose: () => void }) {
         </div>
         <div className="grid grid-cols-2 gap-2">
           <div>
-            <label className="block text-sm mb-1">Username</label>
+            <label htmlFor={`${id}-username`} className="block text-sm mb-1">Username</label>
             <input
               type="text"
               value={username}
+              id={`${id}-username`}
               onChange={(e) => setUsername(e.target.value)}
               placeholder="u123456"
               className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-800"
             />
           </div>
           <div>
-            <label className="block text-sm mb-1">Password</label>
+            <label htmlFor={`${id}-password`} className="block text-sm mb-1">Password</label>
             <input
               type="password"
               value={password}
+              id={`${id}-password`}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-800"
             />
           </div>
         </div>
         <div>
-          <label className="block text-sm mb-1">Install method</label>
+          <label htmlFor={`${id}-method`} className="block text-sm mb-1">Install method</label>
           <select
+            id={`${id}-method`}
             value={method}
             onChange={(e) => setMethod(e.target.value as typeof method)}
             className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-800"
@@ -350,6 +364,7 @@ function InstallKeyModal(props: { keyInfo: SSHKeyInfo; onClose: () => void }) {
         <div className="flex justify-end gap-2 pt-2">
           <button
             onClick={props.onClose}
+            disabled={installMut.isPending}
             className="px-4 py-2 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded"
           >
             Close
@@ -364,6 +379,7 @@ function InstallKeyModal(props: { keyInfo: SSHKeyInfo; onClose: () => void }) {
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
+import { Modal } from './ui/dialog'

@@ -52,6 +52,10 @@ function StorageSettingsCard() {
             </p>
           </div>
           <button
+            role="switch"
+            aria-label="Check quota before upload"
+            aria-checked={storageSettings?.check_quota_before_upload ?? false}
+            disabled={updateMutation.isPending}
             onClick={() =>
               updateMutation.mutate({
                 check_quota_before_upload: !(
@@ -183,6 +187,7 @@ function KomodoSettingsCard() {
           {!isEditing && (
             <button
               onClick={() => refetch()}
+              aria-label="Refresh connection status"
               className="p-2 text-dark-400 hover:bg-dark-700 rounded-lg"
             >
               <RefreshCw className="w-4 h-4" />
@@ -198,6 +203,9 @@ function KomodoSettingsCard() {
             <label className="text-sm text-dark-300">Enable Integration</label>
             <button
               onClick={() => setFormData((prev) => ({ ...prev, enabled: !prev.enabled }))}
+              role="switch"
+              aria-label="Enable Komodo integration"
+              aria-checked={formData.enabled}
               className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
                 formData.enabled ? 'bg-primary-500' : 'bg-dark-600'
               }`}
@@ -238,6 +246,7 @@ function KomodoSettingsCard() {
               <button
                 type="button"
                 onClick={() => setShowApiKey(!showApiKey)}
+                aria-label={showApiKey ? 'Hide API key' : 'Show API key'}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-dark-400 hover:text-dark-200"
               >
                 {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -261,6 +270,7 @@ function KomodoSettingsCard() {
               <button
                 type="button"
                 onClick={() => setShowApiSecret(!showApiSecret)}
+                aria-label={showApiSecret ? 'Hide API secret' : 'Show API secret'}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-dark-400 hover:text-dark-200"
               >
                 {showApiSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -486,7 +496,7 @@ function SystemInfoCard() {
           <p className="font-medium text-dark-200 mb-1">Retention Policies</p>
           <p>
             Configure backup retention (how many backups to keep) on the{' '}
-            <a href="/retention" className="text-primary-400 hover:underline">
+            <a href="/protection/retention" className="text-primary-300 underline underline-offset-2">
               Retention
             </a>{' '}
             page. You can create multiple policies and assign them to targets.
@@ -525,6 +535,7 @@ export default function Settings() {
           </div>
           <button
             onClick={() => refetchDocker()}
+            aria-label="Refresh Docker status"
             className="p-2 text-dark-400 hover:bg-dark-700 rounded-lg"
           >
             <RefreshCw className="w-4 h-4" />

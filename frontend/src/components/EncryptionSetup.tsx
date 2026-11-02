@@ -259,7 +259,7 @@ ${setupData.recovery_instructions}
 
       {/* Setup Modal */}
       {showSetupModal && setupData && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <Modal title="Save Your Private Key" onClose={() => {}} pending={confirmMutation.isPending}>
           <div className="bg-dark-800 border border-dark-700 rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
             <div className="px-6 py-4 border-b border-dark-700">
               <div className="flex items-center gap-3">
@@ -351,12 +351,12 @@ ${setupData.recovery_instructions}
               </div>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
 
       {/* Recovery Instructions Modal */}
       {showInstructions && status?.public_key && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <Modal title="Backup Recovery Instructions" onClose={() => setShowInstructions(false)}>
           <div className="bg-dark-800 border border-dark-700 rounded-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
             <div className="px-6 py-4 border-b border-dark-700 flex items-center justify-between">
               <h2 className="text-lg font-semibold text-dark-100">
@@ -364,6 +364,7 @@ ${setupData.recovery_instructions}
               </h2>
               <button
                 onClick={() => setShowInstructions(false)}
+                aria-label="Close recovery instructions"
                 className="text-dark-400 hover:text-dark-200"
               >
                 <X className="w-5 h-5" />
@@ -463,12 +464,12 @@ chmod 600 private_key.txt`}
               </div>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
 
       {/* Regenerate Warning Modal */}
       {showRegenerateWarning && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <Modal title="Regenerate Encryption Keys?" onClose={() => setShowRegenerateWarning(false)} pending={regenerateMutation.isPending}>
           <div className="bg-dark-800 border border-dark-700 rounded-xl max-w-md w-full">
             <div className="p-6">
               <div className="flex items-center gap-3 mb-4">
@@ -487,6 +488,7 @@ chmod 600 private_key.txt`}
               <div className="flex gap-3">
                 <button
                   onClick={() => setShowRegenerateWarning(false)}
+                  disabled={regenerateMutation.isPending}
                   className="flex-1 px-4 py-2 bg-dark-700 text-dark-300 rounded-lg font-medium hover:bg-dark-600 transition-colors"
                 >
                   Cancel
@@ -501,8 +503,9 @@ chmod 600 private_key.txt`}
               </div>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   );
 }
+import { Modal } from './ui/dialog'

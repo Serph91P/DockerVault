@@ -5,6 +5,7 @@ import toast from 'react-hot-toast'
 import { useState } from 'react'
 import ConfirmDialog from '../components/ConfirmDialog'
 import LoadingSkeleton from '../components/LoadingSkeleton'
+import { Modal } from '../components/ui/dialog'
 
 function PolicyCard({ policy, targets, onEdit }: { policy: RetentionPolicy; targets: BackupTarget[]; onEdit: (policy: RetentionPolicy) => void }) {
   const queryClient = useQueryClient()
@@ -45,6 +46,7 @@ function PolicyCard({ policy, targets, onEdit }: { policy: RetentionPolicy; targ
         <div className="flex gap-2">
           <button
             onClick={() => onEdit(policy)}
+            aria-label={`Edit policy ${policy.name}`}
             className="p-2 text-dark-400 hover:bg-dark-700 rounded-lg"
           >
             <Edit className="w-4 h-4" />
@@ -52,6 +54,7 @@ function PolicyCard({ policy, targets, onEdit }: { policy: RetentionPolicy; targ
           {policy.name !== 'default' && (
             <button
               onClick={() => setShowConfirm(true)}
+              aria-label={`Delete policy ${policy.name}`}
               className="p-2 text-red-400 hover:bg-dark-700 rounded-lg"
             >
               <Trash2 className="w-4 h-4" />
@@ -125,8 +128,7 @@ function EditPolicyModal({ policy, onClose }: { policy: RetentionPolicy; onClose
   })
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+    <Modal title={`Edit Policy — ${policy.name}`} onClose={onClose} pending={updateMutation.isPending}>
       <div className="relative bg-dark-800 rounded-2xl border border-dark-700 shadow-2xl w-full max-w-lg p-6">
         <h2 className="text-lg font-semibold text-dark-100 mb-4">Edit Policy — {policy.name}</h2>
 
@@ -137,6 +139,7 @@ function EditPolicyModal({ policy, onClose }: { policy: RetentionPolicy; onClose
               type="number"
               min={0}
               value={formData.keep_last}
+              aria-label="Keep Last"
               onChange={(e) => setFormData({ ...formData, keep_last: parseInt(e.target.value) || 0 })}
               className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
             />
@@ -150,6 +153,7 @@ function EditPolicyModal({ policy, onClose }: { policy: RetentionPolicy; onClose
                 type="number"
                 min={0}
                 value={formData.keep_daily}
+                aria-label="Keep Daily"
                 onChange={(e) => setFormData({ ...formData, keep_daily: parseInt(e.target.value) || 0 })}
                 className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
               />
@@ -160,6 +164,7 @@ function EditPolicyModal({ policy, onClose }: { policy: RetentionPolicy; onClose
                 type="number"
                 min={0}
                 value={formData.keep_weekly}
+                aria-label="Keep Weekly"
                 onChange={(e) => setFormData({ ...formData, keep_weekly: parseInt(e.target.value) || 0 })}
                 className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
               />
@@ -170,6 +175,7 @@ function EditPolicyModal({ policy, onClose }: { policy: RetentionPolicy; onClose
                 type="number"
                 min={0}
                 value={formData.keep_monthly}
+                aria-label="Keep Monthly"
                 onChange={(e) => setFormData({ ...formData, keep_monthly: parseInt(e.target.value) || 0 })}
                 className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
               />
@@ -180,6 +186,7 @@ function EditPolicyModal({ policy, onClose }: { policy: RetentionPolicy; onClose
                 type="number"
                 min={0}
                 value={formData.keep_yearly}
+                aria-label="Keep Yearly"
                 onChange={(e) => setFormData({ ...formData, keep_yearly: parseInt(e.target.value) || 0 })}
                 className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
               />
@@ -192,6 +199,7 @@ function EditPolicyModal({ policy, onClose }: { policy: RetentionPolicy; onClose
               type="number"
               min={0}
               value={formData.max_age_days}
+              aria-label="Max Age (Days)"
               onChange={(e) => setFormData({ ...formData, max_age_days: parseInt(e.target.value) || 0 })}
               className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
             />
@@ -208,13 +216,14 @@ function EditPolicyModal({ policy, onClose }: { policy: RetentionPolicy; onClose
           </button>
           <button
             onClick={onClose}
+            disabled={updateMutation.isPending}
             className="px-4 py-2 bg-dark-600 text-dark-300 rounded-lg hover:bg-dark-500 transition-colors"
           >
             Cancel
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }
 
@@ -241,8 +250,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
   })
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+    <Modal title="New Retention Policy" onClose={onClose} pending={createMutation.isPending}>
       <div className="relative bg-dark-800 rounded-2xl border border-dark-700 shadow-2xl w-full max-w-lg p-6">
       <h3 className="text-lg font-semibold text-dark-100 mb-4">New Retention Policy</h3>
 
@@ -252,6 +260,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
           <input
             type="text"
             value={formData.name}
+            aria-label="Name"
             onChange={(e) => setFormData({ ...formData, name: e.target.value })}
             className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
             placeholder="e.g. aggressive, conservative"
@@ -265,6 +274,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
             type="number"
             min={0}
             value={formData.keep_last}
+            aria-label="Keep Last"
             onChange={(e) => setFormData({ ...formData, keep_last: parseInt(e.target.value) || 0 })}
             className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
           />
@@ -277,6 +287,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
             <input
               type="number"
               value={formData.keep_daily}
+              aria-label="Daily"
               onChange={(e) =>
                 setFormData({ ...formData, keep_daily: parseInt(e.target.value) })
               }
@@ -288,6 +299,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
             <input
               type="number"
               value={formData.keep_weekly}
+              aria-label="Weekly"
               onChange={(e) =>
                 setFormData({ ...formData, keep_weekly: parseInt(e.target.value) })
               }
@@ -299,6 +311,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
             <input
               type="number"
               value={formData.keep_monthly}
+              aria-label="Monthly"
               onChange={(e) =>
                 setFormData({ ...formData, keep_monthly: parseInt(e.target.value) })
               }
@@ -310,6 +323,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
             <input
               type="number"
               value={formData.keep_yearly}
+              aria-label="Yearly"
               onChange={(e) =>
                 setFormData({ ...formData, keep_yearly: parseInt(e.target.value) })
               }
@@ -323,6 +337,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
           <input
             type="number"
             value={formData.max_age_days}
+            aria-label="Max Age (Days)"
             onChange={(e) =>
               setFormData({ ...formData, max_age_days: parseInt(e.target.value) })
             }
@@ -340,6 +355,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
           </button>
           <button
             onClick={onClose}
+            disabled={createMutation.isPending}
             className="px-4 py-2 bg-dark-600 text-dark-300 rounded-lg hover:bg-dark-500"
           >
             Cancel
@@ -347,7 +363,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
         </div>
       </div>
       </div>
-    </div>
+    </Modal>
   )
 }
 
