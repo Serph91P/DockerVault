@@ -341,7 +341,7 @@ class TestBackupSafety:
         assert worker_finished.is_set()
 
     async def test_archive_worker_finishes_before_backup_cancellation_propagates(
-        self, temp_backup_dir
+        self, test_db, temp_backup_dir
     ):
         engine = BackupEngine()
         worker_started = threading.Event()
@@ -355,6 +355,13 @@ class TestBackupSafety:
             host_path=str(source_path),
             compression_enabled=False,
         )
+        async with test_db() as session:
+            session.add(target)
+            await session.flush()
+            owner = Backup(target_id=target.id, status=BackupStatus.RUNNING)
+            session.add(owner)
+            await session.commit()
+            backup_id = owner.id
 
         def create_tar(*_args):
             worker_started.set()
@@ -363,9 +370,10 @@ class TestBackupSafety:
 
         with (
             patch("app.backup_engine.settings.BACKUP_BASE_PATH", str(temp_backup_dir)),
+            patch("app.backup_engine.async_session", test_db),
             patch.object(engine, "_create_tar", side_effect=create_tar),
         ):
-            task = asyncio.create_task(engine._create_backup_archive(target, 1))
+            task = asyncio.create_task(engine._create_backup_archive(target, backup_id))
             await asyncio.to_thread(worker_started.wait)
             task.cancel()
             await asyncio.sleep(0)

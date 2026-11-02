@@ -23,6 +23,22 @@ remote-only rows are unchanged. Already-misassociated historical rows cannot be
 unambiguously reconstructed from an integer ID alone. Other foreign-key
 violations stop startup rather than guessing ownership or silently dropping data.
 
+## Active artifact ownership
+
+Before any archive worker writes, the backup commits its potential archive,
+encrypted output, temporary encrypted output and key paths in existing backup
+metadata (`active_artifacts`). Orphan collection protects those reservations only
+while the owner is RUNNING. Completed archive/key paths remain protected by their
+normal catalog fields, including during upload. Failed/recovered abandoned jobs do
+not retain staging reservations forever.
+
+The initial inventory is only a hint. Before unlinking an unknown file, cleanup
+acquires SQLite's writer transaction and re-reads current ownership. Producers
+must commit reservations before writing, so completion/new reservations cannot
+race the final ownership check. Truly orphaned files in the same active target
+directory can still be deleted; no age heuristic or directory-wide exclusion is
+used.
+
 Back up the SQLite database before upgrades. Keep the matching previous image
 and database backup together for rollback; do not run an older image against a
 partially upgraded database. The migration ledger and supported legacy upgrades

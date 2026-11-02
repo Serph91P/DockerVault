@@ -1379,6 +1379,20 @@ class BackupEngine:
         if backup_path.exists():
             raise FileExistsError(f"Backup archive already exists: {backup_path}")
 
+        # Reserve every possible artifact before the worker can create any of them.
+        # The cleaner rechecks these reservations under the same SQLite writer lock.
+        async with async_session() as session:
+            record = await session.get(Backup, backup_id)
+            if record is None:
+                raise RuntimeError("Cannot create an archive without a backup owner")
+            metadata = dict(record.backup_metadata or {})
+            metadata["active_artifacts"] = [
+                str(Path(str(backup_path) + suffix).resolve())
+                for suffix in ("", ".enc", ".enc.tmp", ".key")
+            ]
+            record.backup_metadata = metadata
+            await session.commit()
+
         # Get path filters
         include_paths = target.include_paths or []
         exclude_paths = target.exclude_paths or []
