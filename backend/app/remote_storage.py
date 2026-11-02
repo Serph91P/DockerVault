@@ -1171,9 +1171,8 @@ class S3Storage(StorageBackend):
             chunk_size = max(5 * 1024 * 1024, settings.S3_MULTIPART_CHUNK_SIZE)
 
             if file_size < multipart_threshold:
-                # Small file: stream the body via an aiofiles handle so the
-                # full payload is never materialised in memory.
-                async with aiofiles.open(local_path, "rb") as f:
+                # Botocore checksum/retry middleware requires a synchronous seekable body.
+                with open(local_path, "rb") as f:
                     await client.put_object(Bucket=bucket, Key=key, Body=f)
                 logger.info(
                     "S3 upload successful: %s (%.1f MB)",
