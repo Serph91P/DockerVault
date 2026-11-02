@@ -1825,6 +1825,9 @@ class BackupEngine:
         backup_id: int,
         target_path: Optional[str] = None,
         private_key: Optional[str] = None,
+        *,
+        archive_path: Optional[str] = None,
+        key_path: Optional[str] = None,
     ) -> bool:
         """Restore a backup.
 
@@ -1849,8 +1852,8 @@ class BackupEngine:
                 return False
 
             # Check if backup is encrypted
-            is_encrypted = backup.encrypted and backup.encryption_key_path
-            encryption_key_path = backup.encryption_key_path
+            is_encrypted = bool(backup.encrypted)
+            encryption_key_path = key_path or backup.encryption_key_path
 
             if is_encrypted and not private_key:
                 logger.error("Private key required for encrypted backup")
@@ -1862,12 +1865,13 @@ class BackupEngine:
             )
             target = result.scalar_one_or_none()
 
-        if not backup.file_path:
+        source_path = archive_path or backup.file_path
+        if not source_path:
             logger.error("Backup file path is empty for backup %s", backup.id)
             return False
 
         # Resolve the file path (handle legacy paths with unsafe chars)
-        resolved_path = self._resolve_backup_path(backup.file_path)
+        resolved_path = self._resolve_backup_path(source_path)
         if not resolved_path:
             logger.error("Backup file not found: %s", backup.file_path)
             return False
