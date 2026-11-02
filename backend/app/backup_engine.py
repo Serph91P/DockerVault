@@ -553,92 +553,87 @@ class BackupEngine:
         target_lock = self._get_target_lock(peek_target_id)
 
         async with target_lock:
-            return await self._run_backup_inner(backup_id, skip_validation)
+            async with self._backup_semaphore:
+                return await self._run_backup_inner(backup_id, skip_validation)
 
     async def _run_backup_inner(
         self, backup_id: int, skip_validation: bool = False
     ) -> bool:
-        """Inner backup logic, called with a per-target lock already held."""
+        """Backup logic, called with the target lock and global permit held."""
         start_time = time.time()
         file_size = 0
         target_id = None
 
-        async with self._backup_semaphore:
-            async with async_session() as session:
-                result = await session.execute(
-                    select(Backup).where(Backup.id == backup_id)
-                )
-                backup = result.scalar_one_or_none()
+        async with async_session() as session:
+            result = await session.execute(select(Backup).where(Backup.id == backup_id))
+            backup = result.scalar_one_or_none()
 
-                if not backup:
-                    logger.error(
-                        f"Backup {backup_id} not found",
-                        extra={"backup_id": backup_id},
+            if not backup:
+                logger.error(
+                    f"Backup {backup_id} not found",
+                    extra={"backup_id": backup_id},
+                )
+                return False
+
+            # Get target
+            result = await session.execute(
+                select(BackupTarget).where(BackupTarget.id == backup.target_id)
+            )
+            target = result.scalar_one_or_none()
+
+            if not target:
+                logger.error(
+                    f"Target for backup {backup_id} not found",
+                    extra={"backup_id": backup_id, "target_id": backup.target_id},
+                )
+                return False
+
+            target_id = target.id
+
+            # Validate prerequisites unless skipped
+            if not skip_validation:
+                validation_issues = await self.validate_backup_prerequisites(target)
+                if validation_issues:
+                    error_msg = f"Validation failed: {'; '.join(validation_issues)}"
+                    await self._log(
+                        backup_id,
+                        "validation",
+                        error_msg,
+                        level=LogLevel.ERROR,
+                        details={"issues": validation_issues},
                     )
-                    return False
-
-                # Get target
-                result = await session.execute(
-                    select(BackupTarget).where(BackupTarget.id == backup.target_id)
-                )
-                target = result.scalar_one_or_none()
-
-                if not target:
                     logger.error(
-                        f"Target for backup {backup_id} not found",
+                        f"Backup {backup_id} validation failed",
                         extra={
                             "backup_id": backup_id,
-                            "target_id": backup.target_id,
+                            "target_id": target.id,
+                            "target_name": target.name,
+                            "issues": validation_issues,
                         },
                     )
+                    backup.status = BackupStatus.FAILED
+                    backup.error_message = error_msg
+                    backup.completed_at = datetime.now(timezone.utc)
+                    await session.commit()
+                    await self._notify_progress(backup_id, -1, error_msg)
+
+                    # Record failed backup metrics
+                    duration = time.time() - start_time
+                    self.metrics.record_backup(target_id, duration, 0, False)
                     return False
 
-                target_id = target.id
+            # Update status to running
+            backup.status = BackupStatus.RUNNING
+            backup.started_at = datetime.now(timezone.utc)
+            await session.commit()
 
-                # Validate prerequisites unless skipped
-                if not skip_validation:
-                    validation_issues = await self.validate_backup_prerequisites(target)
-                    if validation_issues:
-                        error_msg = f"Validation failed: {'; '.join(validation_issues)}"
-                        await self._log(
-                            backup_id,
-                            "validation",
-                            error_msg,
-                            level=LogLevel.ERROR,
-                            details={"issues": validation_issues},
-                        )
-                        logger.error(
-                            f"Backup {backup_id} validation failed",
-                            extra={
-                                "backup_id": backup_id,
-                                "target_id": target.id,
-                                "target_name": target.name,
-                                "issues": validation_issues,
-                            },
-                        )
-                        backup.status = BackupStatus.FAILED
-                        backup.error_message = error_msg
-                        backup.completed_at = datetime.now(timezone.utc)
-                        await session.commit()
-                        await self._notify_progress(backup_id, -1, error_msg)
-
-                        # Record failed backup metrics
-                        duration = time.time() - start_time
-                        self.metrics.record_backup(target_id, duration, 0, False)
-                        return False
-
-                # Update status to running
-                backup.status = BackupStatus.RUNNING
-                backup.started_at = datetime.now(timezone.utc)
-                await session.commit()
-
-            await self._log(
-                backup_id,
-                "start",
-                f"Starting backup for target '{target.name}'",
-                details={"target_type": target.target_type, "target_id": target.id},
-            )
-            await self._notify_progress(backup_id, 0, "Starting backup...")
+        await self._log(
+            backup_id,
+            "start",
+            f"Starting backup for target '{target.name}'",
+            details={"target_type": target.target_type, "target_id": target.id},
+        )
+        await self._notify_progress(backup_id, 0, "Starting backup...")
 
         try:
             # Determine containers to stop
