@@ -149,6 +149,10 @@ async def encrypt_dek(dek: bytes, public_key: str) -> bytes:
     """
     if not _check_age_installed():
         raise EncryptionError("age not installed")
+    from .recovery import KEY_MAGIC
+
+    if len(dek) != DEK_SIZE:
+        raise EncryptionError("Invalid DEK size")
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -160,7 +164,8 @@ async def encrypt_dek(dek: bytes, public_key: str) -> bytes:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await process.communicate(input=dek)
+        # Bind the authenticated archive version inside the authenticated age envelope.
+        stdout, stderr = await process.communicate(input=KEY_MAGIC + dek)
 
         if process.returncode != 0:
             raise EncryptionError(f"DEK encryption failed: {stderr.decode()}")
@@ -242,108 +247,68 @@ async def decrypt_dek(encrypted_dek: bytes, private_key: str) -> bytes:
             pass
 
 
-async def encrypt_file(input_path: Path, output_path: Path, dek: bytes) -> None:
-    """
-    Encrypt a file using AES-256-CBC with the given DEK.
+async def _crypt_file(
+    input_path: Path, output_path: Path, dek: bytes, *, decrypt: bool
+) -> None:
+    """Run the standalone versioned codec without exposing key material in argv."""
+    import signal
+    import sys
 
-    Uses openssl for compatibility - can be decrypted without the app.
-
-    Args:
-        input_path: Path to file to encrypt
-        output_path: Path for encrypted output
-        dek: Data Encryption Key (32 bytes)
-    """
-    # Write DEK to a temp file to avoid exposing it via /proc/cmdline.
-    # Using a file is more reliable across OpenSSL versions than stdin.
-    fd, pass_file = tempfile.mkstemp(suffix=".pass")
+    error_type = DecryptionError if decrypt else EncryptionError
+    fd, key_file = tempfile.mkstemp(suffix=".key-material")
+    process = None
     try:
-        os.chmod(pass_file, 0o600)
-        os.write(fd, dek.hex().encode())
-        os.close(fd)
-
-        process = await asyncio.create_subprocess_exec(
-            "openssl",
-            "enc",
-            "-aes-256-cbc",
-            "-pbkdf2",
-            "-iter",
-            "100000",
-            "-in",
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(dek)
+        args = [
+            sys.executable,
+            str(Path(__file__).with_name("recovery.py")),
+            "--archive",
             str(input_path),
-            "-out",
+            "--output",
             str(output_path),
-            "-pass",
-            f"file:{pass_file}",
-            stderr=asyncio.subprocess.PIPE,
+            "--key-material-file",
+            key_file,
+        ]
+        if not decrypt:
+            args.append("--encrypt")
+        process = await asyncio.create_subprocess_exec(
+            *args, stderr=asyncio.subprocess.PIPE, start_new_session=True
         )
-        _, stderr = await process.communicate()
-
-        if process.returncode != 0:
-            raise EncryptionError(f"File encryption failed: {stderr.decode()}")
-
-    except Exception as e:
-        if isinstance(e, EncryptionError):
-            raise
-        raise EncryptionError(f"File encryption error: {e}")
-    finally:
         try:
-            os.unlink(pass_file)
-        except OSError:
-            pass
+            _, stderr = await process.communicate()
+        except asyncio.CancelledError:
+            if process.returncode is None:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            settled = asyncio.create_task(process.communicate())
+            while not settled.done():
+                try:
+                    await asyncio.shield(settled)
+                except asyncio.CancelledError:
+                    continue
+            settled.result()
+            raise
+        if process.returncode:
+            raise error_type(stderr.decode().strip() or "Archive codec failed")
+    except Exception as exc:
+        if isinstance(exc, error_type):
+            raise
+        raise error_type(f"Archive codec failed: {exc}") from exc
+    finally:
+        os.unlink(key_file)
+
+
+async def encrypt_file(input_path: Path, output_path: Path, dek: bytes) -> None:
+    """Write a versioned AES-CBC encrypt-then-HMAC archive, atomically."""
+    await _crypt_file(input_path, output_path, dek, decrypt=False)
 
 
 async def decrypt_file(input_path: Path, output_path: Path, dek: bytes) -> None:
-    """
-    Decrypt a file using AES-256-CBC with the given DEK.
-
-    Args:
-        input_path: Path to encrypted file
-        output_path: Path for decrypted output
-        dek: Data Encryption Key (32 bytes)
-    """
-    # Write DEK to a temp file to avoid exposing it via /proc/cmdline.
-    # Using a file is more reliable across OpenSSL versions than stdin.
-    fd, pass_file = tempfile.mkstemp(suffix=".pass")
-    try:
-        os.chmod(pass_file, 0o600)
-        os.write(fd, dek.hex().encode())
-        os.close(fd)
-
-        process = await asyncio.create_subprocess_exec(
-            "openssl",
-            "enc",
-            "-d",
-            "-aes-256-cbc",
-            "-pbkdf2",
-            "-iter",
-            "100000",
-            "-in",
-            str(input_path),
-            "-out",
-            str(output_path),
-            "-pass",
-            f"file:{pass_file}",
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await process.communicate()
-
-        if process.returncode != 0:
-            logger.error(
-                "openssl decryption failed (exit %d): %s",
-                process.returncode,
-                stderr.decode(),
-            )
-            raise DecryptionError(f"File decryption failed: {stderr.decode()}")
-
-    except Exception as e:
-        if isinstance(e, DecryptionError):
-            raise
-        raise DecryptionError(f"File decryption error: {e}")
-    finally:
-        try:
-            os.unlink(pass_file)
-        except OSError:
-            pass
+    """Authenticate new archives before publishing plaintext; explicitly read legacy CBC."""
+    await _crypt_file(input_path, output_path, dek, decrypt=True)
 
 
 async def encrypt_backup(
@@ -587,11 +552,18 @@ using standard command-line tools.
 - Your private key file (the one you exported during setup)
 - `age` tool installed: https://github.com/FiloSottile/age
 - `openssl` (usually pre-installed)
+- Python 3 and the standalone `recover_backup.py` script. Save it with your keys:
+  `/recover_backup.py` on your DockerVault installation, or obtain `backend/app/recovery.py`
+  from the trusted DockerVault release source and save it as `recover_backup.py`.
 
 ### Steps
 
-Run the blocks in the same Bash shell. The age-wrapped DEK is binary; OpenSSL
-requires its 64-character hex representation, with no trailing newline.
+Run the blocks in the same Bash shell. The standalone script needs no Python
+packages or running DockerVault instance. It authenticates v1 archives before
+releasing plaintext, and converts legacy raw binary DEKs to newline-free hex.
+Legacy CBC archives remain readable but cannot provide cryptographic authenticity;
+verify them against a separately trusted checksum before extraction. Never bypass
+an authentication error by stripping the version header or changing the key file.
 
 1. **Save your private key to a file** (if not already):
    ```bash
@@ -603,22 +575,15 @@ requires its 64-character hex representation, with no trailing newline.
    chmod 600 private_key.txt
    ```
 
-2. **Decrypt the DEK (Data Encryption Key)**:
+2. **Check the saved standalone script**:
    ```bash
-   recovery_dir=$(mktemp -d)
-   trap 'rm -f "$recovery_dir/dek.bin" "$recovery_dir/dek.hex"; rmdir "$recovery_dir"' EXIT
-   trap 'exit 1' HUP INT TERM
-   age -d -i private_key.txt backup.tar.gz.key > "$recovery_dir/dek.bin"
-   test "$(wc -c < "$recovery_dir/dek.bin")" -eq 32
-   od -An -v -tx1 "$recovery_dir/dek.bin" | tr -d '[:space:]' > "$recovery_dir/dek.hex"
+   test -f recover_backup.py
    ```
 
 3. **Decrypt the backup**:
    ```bash
-   openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \\
-       -in backup.tar.gz.enc \\
-       -out backup.tar.gz \\
-       -pass "file:$recovery_dir/dek.hex"
+   python3 recover_backup.py --identity private_key.txt --key backup.tar.gz.key \\
+       --archive backup.tar.gz.enc --output backup.tar.gz
    ```
 
 4. **Extract the backup**:
@@ -628,9 +593,7 @@ requires its 64-character hex representation, with no trailing newline.
 
 5. **Clean up**:
    ```bash
-   rm -f "$recovery_dir/dek.bin" "$recovery_dir/dek.hex"
-   rmdir "$recovery_dir"
-   trap - EXIT HUP INT TERM
+   # The script removes temporary DEK/password/plaintext files on success or error.
    # Keep your private key secure; delete this working copy when finished.
    ```
 
@@ -646,6 +609,6 @@ tar xzf backup.tar.gz path/to/specific/file
 ## Security Notes
 - Keep your private key secure and backed up separately
 - Never share your private key
-- The encrypted backups are safe to store anywhere
+- New v1 archives authenticate their ciphertext; legacy CBC has no authenticity guarantee
 - Each backup has a unique encryption key
 """

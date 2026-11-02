@@ -188,7 +188,7 @@ jobs:
         
     - name: Verify exported standalone recovery commands
       run: |
-        tar -cf - backend/tests/runtime_recovery_instructions.py README.md frontend/src/components/EncryptionSetup.tsx | \
+        tar -cf - backend/tests/runtime_recovery_instructions.py backend/app/recovery.py README.md frontend/src/components/EncryptionSetup.tsx | \
           docker run --rm -i --network none --entrypoint /bin/bash dockervault:test -c '
             set -eu
             mkdir -p /app/recovery-check

@@ -5,6 +5,7 @@ import io
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -50,7 +51,9 @@ async def run(root):
     pair = await generate_key_pair()
     payload = b"owned disaster recovery payload\n"
     for source in ("export", "readme", "frontend"):
-        for dek in (b"A" * 32, bytes(range(32))):
+        for dek, legacy in [
+            (key, old) for key in (b"A" * 32, bytes(range(32))) for old in (False, True)
+        ]:
             with tempfile.TemporaryDirectory(prefix="recovery-contract-") as directory:
                 work = Path(directory)
                 archive = work / "backup.tar.gz"
@@ -59,21 +62,45 @@ async def run(root):
                 with tarfile.open(archive, "w:gz") as tar:
                     tar.addfile(member, io.BytesIO(payload))
                 expected = archive.read_bytes()
-                await encrypt_file(archive, work / "backup.tar.gz.enc", dek)
-                (work / "backup.tar.gz.key").write_bytes(
-                    await encrypt_dek(dek, pair.public_key)
+                if legacy:
+                    password = work / "legacy.pass"
+                    password.write_text(dek.hex())
+                    result = subprocess.run(
+                        [
+                            "openssl",
+                            "enc",
+                            "-aes-256-cbc",
+                            "-pbkdf2",
+                            "-iter",
+                            "100000",
+                            "-in",
+                            str(archive),
+                            "-out",
+                            str(work / "backup.tar.gz.enc"),
+                            "-pass",
+                            f"file:{password}",
+                        ],
+                        capture_output=True,
+                    )
+                    assert result.returncode == 0
+                    password.unlink()
+                    wrapped = subprocess.run(
+                        ["age", "-a", "-r", pair.public_key],
+                        input=dek,
+                        capture_output=True,
+                    )
+                    assert wrapped.returncode == 0
+                    (work / "backup.tar.gz.key").write_bytes(wrapped.stdout)
+                else:
+                    await encrypt_file(archive, work / "backup.tar.gz.enc", dek)
+                    (work / "backup.tar.gz.key").write_bytes(
+                        await encrypt_dek(dek, pair.public_key)
+                    )
+                shutil.copyfile(
+                    root / "backend/app/recovery.py", work / "recover_backup.py"
                 )
                 archive.unlink()
-                script = """age() {
-  test "$(stat -c %a "$recovery_dir/dek.bin")" = 600 || return 1
-  command age "$@"
-}
-openssl() {
-  test "$(stat -c %a "$recovery_dir/dek.hex")" = 600 || return 1
-  test "$(wc -c < "$recovery_dir/dek.hex")" -eq 64 || return 1
-  command openssl "$@"
-}
-""" + re.sub(
+                script = re.sub(
                     r"AGE-SECRET-KEY-1X[^\n]*",
                     pair.private_key,
                     commands(source, root, pair.public_key),
@@ -98,6 +125,9 @@ openssl() {
                     f"{source}: temporary secret directory leaked"
                 )
                 assert not list(work.glob("dek*")), f"{source}: DEK files leaked"
+                assert not list(work.glob("dockervault-crypto-*")), (
+                    f"{source}: codec temporary files leaked"
+                )
                 private = work / "private_key.txt"
                 if private.exists():
                     assert private.stat().st_mode & 0o777 == 0o600
@@ -117,9 +147,36 @@ openssl() {
                     assert not list(temporary.iterdir()), (
                         f"{source}: failure leaked DEK files"
                     )
+                    assert not list(work.glob("dockervault-crypto-*")), (
+                        f"{source}: failure leaked codec files"
+                    )
                     damaged.write_bytes(original)
+                if not legacy:
+                    encrypted = work / "backup.tar.gz.enc"
+                    original = encrypted.read_bytes()
+                    flipped = bytearray(original)
+                    flipped[32] ^= 1
+                    for altered in (bytes(flipped), original[:-1], original[8:-32]):
+                        encrypted.write_bytes(altered)
+                        rejected = subprocess.run(
+                            ["bash"],
+                            input=script,
+                            cwd=work,
+                            env=os.environ | {"TMPDIR": str(temporary)},
+                            text=True,
+                            capture_output=True,
+                            timeout=30,
+                        )
+                        assert rejected.returncode != 0, (
+                            f"{source}: authentication/downgrade bypass"
+                        )
+                        assert archive.read_bytes() == expected, (
+                            f"{source}: rejected ciphertext mutated destination"
+                        )
+                        assert not list(work.glob("dockervault-crypto-*"))
+                    encrypted.write_bytes(original)
                 print(
-                    f"{source}: exact commands recovered binary DEK={dek != b'A' * 32}; bytes, mode0600 and success/error secret cleanup passed"
+                    f"{source}: exact commands recovered legacy={legacy}, binary DEK={dek != b'A' * 32}; bytes, mode0600 and success/error cleanup passed"
                 )
 
 
