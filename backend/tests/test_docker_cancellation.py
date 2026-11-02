@@ -27,6 +27,7 @@ async def test_sdk_stop_settles_before_cancellation_recovery(
     cleanup_entered = asyncio.Event()
 
     class SDKContainer:
+        id = "owned-workload-id"
         status = "exited" if scenario == "already-stopped" else "running"
         stops = 0
         starts = 0

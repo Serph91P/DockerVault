@@ -14,6 +14,7 @@ import subprocess
 import tarfile
 import time
 from collections import defaultdict
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -138,6 +139,7 @@ class BackupEngine:
         self.metrics = BackupMetrics()
         self._backup_semaphore = asyncio.Semaphore(2)  # Max concurrent backups
         self._target_locks: Dict[int, asyncio.Lock] = {}
+        self._workload_locks: Dict[str, asyncio.Lock] = {}
         self._queue: asyncio.Queue = asyncio.Queue()
         self._queue_worker_task: Optional[asyncio.Task] = None
 
@@ -249,6 +251,32 @@ class BackupEngine:
         if target_id not in self._target_locks:
             self._target_locks[target_id] = asyncio.Lock()
         return self._target_locks[target_id]
+
+    async def _acquire_workload_locks(
+        self,
+        target: BackupTarget,
+        containers: List[str],
+        restore_path: str | None = None,
+    ) -> AsyncExitStack:
+        keys = {
+            f"container:{await docker_client.get_container_identity(name)}"
+            for name in containers
+        }
+        for path in (target.host_path, restore_path):
+            if path:
+                keys.add(f"path:{os.path.realpath(path)}")
+        if target.volume_name:
+            keys.add(f"volume:{target.volume_name}")
+        claim = AsyncExitStack()
+        try:
+            # One global order prevents inverse/partially overlapping deadlocks.
+            for key in sorted(keys):
+                lock = self._workload_locks.setdefault(key, asyncio.Lock())
+                await claim.enter_async_context(lock)
+        except BaseException:
+            await claim.aclose()
+            raise
+        return claim
 
     async def start_queue_worker(self) -> None:
         """Start the background queue worker that processes backup jobs."""
@@ -641,6 +669,7 @@ class BackupEngine:
             original_states = {}
             start_order = []  # Order for restarting containers
             operation_error = None
+            workload_claim = None
 
             try:
                 if target.target_type == "stack" and target.stack_name:
@@ -671,6 +700,9 @@ class BackupEngine:
                     )
                     start_order = list(reversed(containers_to_stop))
 
+                workload_claim = await self._acquire_workload_locks(
+                    target, containers_to_stop
+                )
                 if containers_to_stop:
                     # Store original states
                     for container_name in containers_to_stop:
@@ -827,9 +859,13 @@ class BackupEngine:
                     for container_name in reversed(containers_to_stop)
                     if container_name not in restart_order
                 )
-                restart_failures = await self._restart_containers_cancellation_safe(
-                    restart_order, original_states, backup_id
-                )
+                try:
+                    restart_failures = await self._restart_containers_cancellation_safe(
+                        restart_order, original_states, backup_id
+                    )
+                finally:
+                    if workload_claim is not None:
+                        await workload_claim.aclose()
                 if restart_failures and operation_error is None:
                     names = ", ".join(restart_failures)
                     raise RuntimeError(f"Failed to restart container(s): {names}")
@@ -1928,8 +1964,12 @@ class BackupEngine:
 
         temp_decrypted_file = None
         operation_error = None
+        workload_claim = None
         try:
             try:
+                workload_claim = await self._acquire_workload_locks(
+                    target, containers_to_stop, restore_path
+                )
                 # Stop containers
                 for container_name in containers_to_stop:
                     state = await docker_client.get_container_state(container_name)
@@ -1995,9 +2035,13 @@ class BackupEngine:
                             cleanup_error,
                         )
 
-                restart_failures = await self._restart_containers_cancellation_safe(
-                    list(reversed(containers_to_stop)), original_states
-                )
+                try:
+                    restart_failures = await self._restart_containers_cancellation_safe(
+                        list(reversed(containers_to_stop)), original_states
+                    )
+                finally:
+                    if workload_claim is not None:
+                        await workload_claim.aclose()
                 if restart_failures and operation_error is None:
                     names = ", ".join(restart_failures)
                     raise RuntimeError(f"Failed to restart container(s): {names}")
