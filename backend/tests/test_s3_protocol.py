@@ -23,6 +23,10 @@ async def s3_service():
         checksums=[],
         events=[],
         mode="normal",
+        abort_mode="normal",
+        created=asyncio.Event(),
+        abort_entered=asyncio.Event(),
+        abort_release=asyncio.Event(),
         entered=asyncio.Event(),
         release=asyncio.Event(),
     )
@@ -32,11 +36,23 @@ async def s3_service():
         state.events.append((request.method, key, dict(query)))
         if request.method == "POST" and "uploads" in query:
             state.uploads["owned-upload"] = {}
+            state.created.set()
+            if state.mode == "create_hold":
+                await state.release.wait()
             return web.Response(
                 text="<InitiateMultipartUploadResult><UploadId>owned-upload</UploadId></InitiateMultipartUploadResult>",
                 content_type="application/xml",
             )
         if request.method == "DELETE" and "uploadId" in query:
+            state.abort_entered.set()
+            if state.abort_mode == "hold":
+                await state.abort_release.wait()
+            if state.abort_mode == "failed":
+                return web.Response(
+                    status=403,
+                    text="<Error><Code>AccessDenied</Code></Error>",
+                    content_type="application/xml",
+                )
             state.uploads.pop(query["uploadId"], None)
             return web.Response(status=204)
         if request.method == "POST" and "uploadId" in query:
@@ -52,6 +68,12 @@ async def s3_service():
                 content_type="application/xml",
             )
         if request.method == "PUT":
+            if state.mode == "part_failure" and "partNumber" in query:
+                return web.Response(
+                    status=400,
+                    text="<Error><Code>SourceRejected</Code></Error>",
+                    content_type="application/xml",
+                )
             if state.mode == "forbidden":
                 return web.Response(
                     status=403,
@@ -66,6 +88,8 @@ async def s3_service():
             if state.mode == "hold":
                 await state.release.wait()
             if "partNumber" in query:
+                if query["uploadId"] not in state.uploads:
+                    return web.Response(status=404)
                 state.uploads[query["uploadId"]][int(query["partNumber"])] = data
             else:
                 state.objects[key] = data
@@ -104,6 +128,7 @@ async def s3_service():
         yield storage, state
     finally:
         state.release.set()
+        state.abort_release.set()
         if storage._client is not None:
             await storage._client.close()
         server.close()
@@ -200,3 +225,124 @@ async def test_large_s3_multipart_actual_http_control(
     assert not state.uploads
     assert len(state.checksums) == 2 and all(state.checksums)
     assert_file_closed(source)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "phase,abort",
+    [
+        ("create_hold", "normal"),
+        ("hold", "normal"),
+        ("hold", "failed"),
+        ("hold", "hold"),
+        ("hold", "repeated_cancel"),
+    ],
+)
+async def test_multipart_cancellation_aborts_at_real_http_boundary(
+    s3_service, tmp_path, monkeypatch, phase, abort
+):
+    from app.config import settings
+
+    storage, state = s3_service
+    monkeypatch.setattr(settings, "S3_MULTIPART_THRESHOLD_BYTES", 5 * 1024 * 1024)
+    monkeypatch.setattr(S3Storage, "MULTIPART_CLEANUP_TIMEOUT", 0.2, raising=False)
+    source = tmp_path / "cancel-large.tar"
+    source.write_bytes(b"x" * (6 * 1024 * 1024))
+    state.mode = phase
+    state.abort_mode = "hold" if abort == "repeated_cancel" else abort
+    task = asyncio.create_task(storage.upload(source, source.name))
+    try:
+        await asyncio.wait_for(
+            (state.created if phase == "create_hold" else state.entered).wait(), 5
+        )
+        task.cancel()
+        if phase == "create_hold":
+            state.release.set()
+        if abort == "repeated_cancel":
+            await asyncio.wait_for(state.abort_entered.wait(), 2)
+            task.cancel()
+            state.abort_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+        assert state.abort_entered.is_set(), (
+            "Cancellation must send a real AbortMultipartUpload DELETE"
+        )
+        if abort in ("normal", "repeated_cancel"):
+            assert not state.uploads
+        else:
+            assert state.uploads, (
+                "Failed/hung provider abort is not a successful cleanup"
+            )
+        assert not state.objects
+        assert_file_closed(source)
+    finally:
+        state.release.set()
+        state.abort_release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cache", ["active", "removed", "replaced"])
+async def test_storage_shutdown_closes_real_sdk_client(s3_service, tmp_path, cache):
+    from app.remote_storage import RemoteStorageManager
+
+    storage, state = s3_service
+    manager = RemoteStorageManager()
+    manager.configs[storage.config.id] = storage.config
+    manager.backends[storage.config.id] = storage
+    source = tmp_path / "shutdown.key"
+    source.write_bytes(b"owned")
+    assert await storage.upload(source, source.name) == (True, "")
+    assert storage._client is not None
+    if cache == "removed":
+        manager.remove_storage(storage.config.id)
+    elif cache == "replaced":
+        manager.add_storage(storage.config)
+    await manager.close()
+    assert storage._client is None
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_multipart_abort_error_preserves_primary_upload_error(
+    s3_service, tmp_path, monkeypatch
+):
+    from app.config import settings
+
+    storage, state = s3_service
+    monkeypatch.setattr(settings, "S3_MULTIPART_THRESHOLD_BYTES", 5 * 1024 * 1024)
+    source = tmp_path / "failure.tar"
+    source.write_bytes(b"x" * (6 * 1024 * 1024))
+    state.mode, state.abort_mode = "part_failure", "failed"
+    success, error = await storage.upload(source, source.name)
+    assert not success and "SourceRejected" in error
+    assert state.abort_entered.is_set()
+    assert state.uploads and not state.objects
+    assert_file_closed(source)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_with_unreturned_upload_id_is_bounded(
+    s3_service, tmp_path, monkeypatch, caplog
+):
+    from app.config import settings
+
+    storage, state = s3_service
+    monkeypatch.setattr(settings, "S3_MULTIPART_THRESHOLD_BYTES", 5 * 1024 * 1024)
+    monkeypatch.setattr(S3Storage, "MULTIPART_CLEANUP_TIMEOUT", 0.05)
+    source = tmp_path / "creation.tar"
+    source.write_bytes(b"x" * (6 * 1024 * 1024))
+    state.mode = "create_hold"
+    task = asyncio.create_task(storage.upload(source, source.name))
+    try:
+        await asyncio.wait_for(state.created.wait(), 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+        assert "provider lifecycle cleanup may be required" in caplog.text
+        assert state.uploads and not state.abort_entered.is_set()
+    finally:
+        state.release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

@@ -1124,6 +1124,38 @@ class WebDAVStorage(StorageBackend):
 class S3Storage(StorageBackend):
     """S3-compatible storage (AWS, MinIO, Backblaze B2, etc.)"""
 
+    MULTIPART_CLEANUP_TIMEOUT = 10.0
+
+    async def close(self):
+        if self._client is not None:
+            await self._client.close()
+            self._client = None
+
+    async def _abort_multipart(self, client, bucket, key, upload_id):
+        try:
+            async with asyncio.timeout(self.MULTIPART_CLEANUP_TIMEOUT):
+                await client.abort_multipart_upload(
+                    Bucket=bucket, Key=key, UploadId=upload_id
+                )
+        except Exception as exc:
+            logger.warning(
+                "S3 multipart abort failed for %s; provider lifecycle cleanup may be required: %s",
+                key,
+                exc,
+            )
+
+    @staticmethod
+    async def _settle_cleanup(coroutine):
+        task = asyncio.create_task(coroutine)
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        task.result()
+        return cancelled
+
     def __init__(self, config: StorageConfig):
         super().__init__(config)
         self._client = None
@@ -1185,7 +1217,30 @@ class S3Storage(StorageBackend):
             # Large file: explicit multipart upload, streaming each part
             # from disk. Aborts the upload on any failure so we don't leak
             # incomplete multipart uploads (and storage costs).
-            create = await client.create_multipart_upload(Bucket=bucket, Key=key)
+            creation = asyncio.create_task(
+                client.create_multipart_upload(Bucket=bucket, Key=key)
+            )
+            try:
+                create = await asyncio.shield(creation)
+            except asyncio.CancelledError:
+
+                async def finish_creation():
+                    try:
+                        async with asyncio.timeout(self.MULTIPART_CLEANUP_TIMEOUT):
+                            created = await creation
+                    except Exception as exc:
+                        logger.warning(
+                            "S3 multipart creation could not be settled for %s; provider lifecycle cleanup may be required: %s",
+                            key,
+                            exc,
+                        )
+                    else:
+                        await self._abort_multipart(
+                            client, bucket, key, created["UploadId"]
+                        )
+
+                await self._settle_cleanup(finish_creation())
+                raise
             upload_id = create["UploadId"]
             parts: list[dict] = []
             try:
@@ -1212,17 +1267,12 @@ class S3Storage(StorageBackend):
                     UploadId=upload_id,
                     MultipartUpload={"Parts": parts},
                 )
-            except Exception:
-                try:
-                    await client.abort_multipart_upload(
-                        Bucket=bucket, Key=key, UploadId=upload_id
-                    )
-                except Exception as abort_exc:  # noqa: BLE001
-                    logger.warning(
-                        "S3 abort_multipart_upload failed for %s: %s",
-                        key,
-                        abort_exc,
-                    )
+            except BaseException:
+                cancelled = await self._settle_cleanup(
+                    self._abort_multipart(client, bucket, key, upload_id)
+                )
+                if cancelled:
+                    raise asyncio.CancelledError
                 raise
 
             logger.info(
@@ -1575,6 +1625,13 @@ class RemoteStorageManager:
     def __init__(self):
         self.configs: Dict[int, StorageConfig] = {}
         self.backends: Dict[int, StorageBackend] = {}
+        self._retired_backends = []
+
+    async def close(self):
+        for backend in list(self.backends.values()) + self._retired_backends:
+            if isinstance(backend, S3Storage):
+                await backend.close()
+        self._retired_backends.clear()
 
     def add_storage(self, config: StorageConfig) -> StorageBackend:
         """Add a storage backend"""
@@ -1583,6 +1640,9 @@ class RemoteStorageManager:
             raise ValueError(f"Unknown storage type: {config.storage_type}")
 
         backend = backend_class(config)
+        previous = self.backends.get(config.id)
+        if isinstance(previous, S3Storage):
+            self._retired_backends.append(previous)
         self.configs[config.id] = config
         self.backends[config.id] = backend
         return backend
@@ -1594,7 +1654,9 @@ class RemoteStorageManager:
     def remove_storage(self, storage_id: int):
         """Remove a storage backend"""
         self.configs.pop(storage_id, None)
-        self.backends.pop(storage_id, None)
+        previous = self.backends.pop(storage_id, None)
+        if isinstance(previous, S3Storage):
+            self._retired_backends.append(previous)
 
     async def upload_to_all(
         self,
