@@ -6,7 +6,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.auth import (
     SESSION_EXPIRE_HOURS,
@@ -117,6 +117,8 @@ async def initial_setup(request: Request, data: SetupRequest, response: Response
     This endpoint only works when no users exist yet.
     """
     async with async_session() as db:
+        # Serialize the singleton setup claim across independent worker processes.
+        await db.execute(text("BEGIN IMMEDIATE"))
         # Check if setup already completed
         result = await db.execute(select(func.count(User.id)))
         user_count = result.scalar()
@@ -141,11 +143,11 @@ async def initial_setup(request: Request, data: SetupRequest, response: Response
             is_admin=True,
         )
         db.add(user)
-        await db.commit()
-        await db.refresh(user)
+        await db.flush()
 
-        # Create session
+        # Commit the user and initial session together while holding the claim.
         token = await create_session(user.id, db)
+        await db.refresh(user)
 
         # Set cookie
         response.set_cookie(
