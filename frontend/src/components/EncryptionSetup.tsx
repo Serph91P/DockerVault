@@ -207,7 +207,7 @@ ${setupData.recovery_instructions}
                 className={`px-4 py-2 rounded-lg font-medium transition-colors ${
                   status.encryption_enabled
                     ? 'bg-dark-700 text-dark-300 hover:bg-dark-600'
-                    : 'bg-green-600 text-white hover:bg-green-700'
+                    : 'bg-green-700 text-white hover:bg-green-800'
                 }`}
               >
                 {status.encryption_enabled ? 'Disable' : 'Enable'}
@@ -337,7 +337,7 @@ ${setupData.recovery_instructions}
                 <button
                   onClick={() => confirmMutation.mutate()}
                   disabled={!downloadedKey || confirmMutation.isPending}
-                  className="w-full px-4 py-3 bg-green-600 hover:bg-green-700 disabled:bg-dark-700 text-white disabled:text-dark-500 rounded-lg font-medium transition-colors"
+                  className="w-full px-4 py-3 bg-green-700 hover:bg-green-800 disabled:bg-dark-700 text-white disabled:text-dark-500 rounded-lg font-medium transition-colors"
                 >
                   {confirmMutation.isPending
                     ? 'Confirming...'
@@ -374,7 +374,7 @@ ${setupData.recovery_instructions}
               {/* Public Key */}
               <div>
                 <h3 className="text-sm font-semibold text-dark-200 mb-2">Your Public Key</h3>
-                <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
+                <pre tabIndex={0} className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
 {status.public_key}
                 </pre>
               </div>
@@ -411,7 +411,7 @@ ${setupData.recovery_instructions}
                 <div className="space-y-4">
                   <div>
                     <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">1.</span> Save your private key to a file:</p>
-                    <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
+                    <pre tabIndex={0} className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
 {`cat > private_key.txt << 'EOF'
 AGE-SECRET-KEY-1XXXXXX...
 EOF
@@ -421,14 +421,14 @@ chmod 600 private_key.txt`}
 
                   <div>
                     <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">2.</span> Decrypt the DEK (Data Encryption Key):</p>
-                    <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
+                    <pre tabIndex={0} className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
 {`age -d -i private_key.txt backup.tar.gz.key > dek.txt`}
                     </pre>
                   </div>
 
                   <div>
                     <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">3.</span> Decrypt the backup:</p>
-                    <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
+                    <pre tabIndex={0} className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
 {`openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \\
     -in backup.tar.gz.enc \\
     -out backup.tar.gz \\
@@ -438,14 +438,14 @@ chmod 600 private_key.txt`}
 
                   <div>
                     <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">4.</span> Extract the backup:</p>
-                    <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
+                    <pre tabIndex={0} className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
 {`tar xzf backup.tar.gz`}
                     </pre>
                   </div>
 
                   <div>
                     <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">5.</span> Clean up:</p>
-                    <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
+                    <pre tabIndex={0} className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
 {`rm dek.txt  # Don't leave the DEK lying around`}
                     </pre>
                   </div>

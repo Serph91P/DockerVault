@@ -210,7 +210,7 @@ function CreateKeyModal(props: {
             placeholder="hetzner_box"
             className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
           />
-          <div className="text-xs text-slate-500 mt-1">
+          <div className="text-xs text-slate-500 dark:text-slate-300 mt-1">
             Letters, digits, underscore, dash. Max 40 chars.
           </div>
         </div>
