@@ -17,6 +17,7 @@ import os
 import random
 import shlex
 import shutil
+import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -1606,17 +1607,42 @@ class RemoteStorageManager:
         """
         results: Dict[int, tuple[bool, str]] = {}
 
-        targets = storage_ids or list(self.backends.keys())
-
-        tasks = []
+        targets = list(self.backends.keys()) if storage_ids is None else storage_ids
         for storage_id in targets:
             backend = self.backends.get(storage_id)
-            if backend and self.configs[storage_id].enabled:
-                tasks.append((storage_id, backend.upload(local_path, remote_path)))
-
-        for storage_id, task in tasks:
+            if not backend or not self.configs[storage_id].enabled:
+                results[storage_id] = (False, "Storage is unavailable or disabled")
+                continue
             try:
-                results[storage_id] = await task
+                result = await backend.upload(local_path, remote_path)
+                success = (
+                    result[0] is True if isinstance(result, tuple) else result is True
+                )
+                error = (
+                    result[1]
+                    if isinstance(result, tuple) and len(result) > 1
+                    else "Upload failed"
+                )
+                if success:
+                    with tempfile.TemporaryDirectory(
+                        prefix="dockervault-verify-"
+                    ) as directory:
+                        downloaded = Path(directory) / "artifact"
+                        if not await backend.download(remote_path, downloaded):
+                            raise OSError("Remote copy verification download failed")
+
+                        def digest(path):
+                            with path.open("rb") as stream:
+                                return hashlib.file_digest(stream, "sha256").digest()
+
+                        if await asyncio.to_thread(
+                            digest, local_path
+                        ) != await asyncio.to_thread(digest, downloaded):
+                            raise OSError("Remote copy verification checksum mismatch")
+                results[storage_id] = (
+                    success,
+                    "" if success else str(error or "Upload failed")[:500],
+                )
             except Exception as e:
                 logger.error(f"Upload to storage {storage_id} failed: {e}")
                 results[storage_id] = (False, str(e)[:500])

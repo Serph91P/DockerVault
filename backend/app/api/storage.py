@@ -995,41 +995,68 @@ async def bulk_download_files(
 async def sync_backup_to_storage(
     storage_id: int, backup_id: int, db: AsyncSession = Depends(get_db)
 ):
-    """Manually sync a specific backup to remote storage"""
-    from pathlib import Path
-
-    from ..database import Backup, BackupTarget
+    """Use the automatic transfer/catalog path without deleting the local copy."""
+    from ..backup_engine import backup_engine
+    from ..database import Backup, BackupStatus, BackupStorageSync, BackupTarget
+    from .backups import _resolve_backup_path
 
     storage = await db.get(RemoteStorageModel, storage_id)
     if not storage:
         raise HTTPException(status_code=404, detail="Storage not found")
-
+    if not storage.enabled:
+        raise HTTPException(status_code=409, detail="Storage is disabled")
     backup = await db.get(Backup, backup_id)
     if not backup:
         raise HTTPException(status_code=404, detail="Backup not found")
-
-    if not backup.file_path:
-        raise HTTPException(status_code=400, detail="Backup has no file")
-
+    if backup.status != BackupStatus.COMPLETED:
+        raise HTTPException(
+            status_code=409, detail="Only completed backups can be synced"
+        )
+    resolved = _resolve_backup_path(backup.file_path)
+    if not resolved:
+        raise HTTPException(status_code=400, detail="Local backup file not available")
+    if backup.encrypted and (
+        not backup.encryption_key_path or not Path(backup.encryption_key_path).is_file()
+    ):
+        raise HTTPException(
+            status_code=400, detail="Encryption key sidecar not available"
+        )
     target = await db.get(BackupTarget, backup.target_id)
-
-    backend = storage_manager.get_backend(storage_id)
-    if not backend:
-        config = _db_to_config(storage)
-        backend = storage_manager.add_storage(config)
-
-    local_path = Path(backup.file_path)
-    remote_path = f"{target.name}/{local_path.name}"
-
-    success = await backend.upload(local_path, remote_path)
-
-    if success:
-        return {
-            "message": f"Backup synced to {storage.name}",
-            "remote_path": remote_path,
-        }
-    else:
-        raise HTTPException(status_code=500, detail="Sync failed")
+    if not target:
+        raise HTTPException(status_code=404, detail="Backup target not found")
+    remote_path = (
+        f"{backup_engine._sanitize_path_name(target.name)}/{Path(resolved).name}"
+    )
+    async with backup_engine._get_target_lock(target.id):
+        collision = (
+            await db.execute(
+                select(BackupStorageSync.id)
+                .where(
+                    BackupStorageSync.storage_id == storage_id,
+                    BackupStorageSync.remote_path.in_(
+                        [remote_path, remote_path.replace(".enc", ".key")]
+                    ),
+                    BackupStorageSync.backup_id != backup_id,
+                )
+                .limit(1)
+            )
+        ).first()
+        if collision:
+            raise HTTPException(
+                status_code=409, detail="Remote path belongs to another backup"
+            )
+        results = await backup_engine._sync_to_remote(
+            backup_id,
+            target,
+            resolved,
+            backup.encrypted,
+            backup.encryption_key_path,
+            storage_ids=[storage_id],
+        )
+    success, error = results.get(storage_id, (False, "Upload result missing"))
+    if not success:
+        raise HTTPException(status_code=502, detail=error or "Sync failed")
+    return {"message": f"Backup synced to {storage.name}", "remote_path": remote_path}
 
 
 def _db_to_config(storage: RemoteStorageModel) -> StorageConfig:

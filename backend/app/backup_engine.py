@@ -1048,12 +1048,14 @@ class BackupEngine:
         backup_path: str,
         encrypted: bool = False,
         encryption_key_path: str | None = None,
-    ) -> None:
+        storage_ids: list[int] | None = None,
+    ) -> dict[int, tuple[bool, str | None]]:
         """Sync a completed backup to configured remote storage backends.
 
         Failures are logged but do NOT mark the backup as failed. The
         local backup is still valid.
         """
+        selected_ids = target.remote_storage_ids if storage_ids is None else storage_ids
         from app.remote_storage import StorageConfig, StorageType, storage_manager
 
         await self._notify_progress(backup_id, 95, "Syncing to remote storage...")
@@ -1063,9 +1065,7 @@ class BackupEngine:
             async with async_session() as session:
                 from app.database import RemoteStorage as RemoteStorageModel
 
-                for storage_id in target.remote_storage_ids:
-                    if storage_manager.get_backend(storage_id):
-                        continue
+                for storage_id in selected_ids:
                     result = await session.execute(
                         select(RemoteStorageModel).where(
                             RemoteStorageModel.id == storage_id
@@ -1073,6 +1073,9 @@ class BackupEngine:
                     )
                     storage = result.scalar_one_or_none()
                     if not storage or not storage.enabled:
+                        storage_manager.remove_storage(storage_id)
+                        continue
+                    if storage_manager.get_backend(storage_id):
                         continue
 
                     from app.credential_encryption import decrypt_value
@@ -1116,9 +1119,9 @@ class BackupEngine:
                 local_path,
                 safe_name,
                 local_path.name,
-                target.remote_storage_ids,
+                selected_ids,
             )
-            required_storage_ids = set(target.remote_storage_ids)
+            required_storage_ids = set(selected_ids)
             normalized_results = {
                 storage_id: (
                     self._remote_sync_result(results[storage_id])
@@ -1141,7 +1144,7 @@ class BackupEngine:
                             key_local,
                             safe_name,
                             key_local.name,
-                            target.remote_storage_ids,
+                            selected_ids,
                         )
                         normalized_key_results = {
                             storage_id: (
@@ -1190,15 +1193,30 @@ class BackupEngine:
             remote_path = f"{safe_name}/{local_path.name}"
             async with async_session() as session:
                 for storage_id, (success, error) in normalized_results.items():
-                    sync_record = BackupStorageSync(
-                        backup_id=backup_id,
-                        storage_id=storage_id,
-                        remote_path=remote_path,
-                        synced_at=datetime.now(timezone.utc) if success else None,
-                        sync_status="completed" if success else "failed",
-                        error_message=None
-                        if success
-                        else (error[:500] if error else "Upload failed"),
+                    records = list(
+                        (
+                            await session.execute(
+                                select(BackupStorageSync).where(
+                                    BackupStorageSync.backup_id == backup_id,
+                                    BackupStorageSync.storage_id == storage_id,
+                                )
+                            )
+                        ).scalars()
+                    )
+                    sync_record = (
+                        records[0]
+                        if records
+                        else BackupStorageSync(
+                            backup_id=backup_id, storage_id=storage_id
+                        )
+                    )
+                    sync_record.remote_path = remote_path
+                    sync_record.synced_at = (
+                        datetime.now(timezone.utc) if success else None
+                    )
+                    sync_record.sync_status = "completed" if success else "failed"
+                    sync_record.error_message = (
+                        None if success else (error or "Upload failed")[:500]
                     )
                     session.add(sync_record)
                 await session.commit()
@@ -1249,10 +1267,15 @@ class BackupEngine:
             all_succeeded = bool(required_storage_ids) and all(
                 normalized_results[storage_id][0] for storage_id in required_storage_ids
             )
-            if all_succeeded and getattr(target, "delete_local_after_sync", False):
+            if (
+                storage_ids is None
+                and all_succeeded
+                and getattr(target, "delete_local_after_sync", False)
+            ):
                 await self._delete_local_after_sync(
                     backup_id, backup_path, encryption_key_path
                 )
+            return normalized_results
 
         except Exception as e:
             await self._log(
@@ -1268,6 +1291,7 @@ class BackupEngine:
                 exc_info=True,
             )
             await self._notify_progress(backup_id, 97, f"Remote sync failed: {e}")
+            return {sid: (False, str(e)[:500]) for sid in selected_ids}
 
     async def _delete_local_after_sync(
         self,
