@@ -112,7 +112,7 @@ Sync backups to external storage providers:
 | SSH/SFTP | SSH server with rsync | `user@server:/backups` |
 | S3 | AWS S3, MinIO, Backblaze B2 | `s3://bucket/path` |
 | WebDAV | Nextcloud, ownCloud | `https://cloud.example.com/dav/` |
-| FTP/FTPS | FTP server | `ftp://server/path` |
+| FTP (unencrypted) | Plain FTP server; use SFTP for secure transport. FTPS is not supported. | `ftp://server/path` |
 | Rclone | 40+ providers (GDrive, Dropbox, OneDrive, ...) | `remote:path` |
 
 ### Cron Expressions

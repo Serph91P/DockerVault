@@ -5,7 +5,7 @@ Supported backends:
 - SSH/SFTP
 - WebDAV
 - S3 (AWS, MinIO, Backblaze B2, etc.)
-- FTP/FTPS
+- FTP (unencrypted; use SFTP for secure transport)
 - Rclone (40+ cloud providers)
 - Local/Network paths (NFS, SMB mounted)
 """
@@ -1426,21 +1426,25 @@ class RcloneStorage(StorageBackend):
 
 
 class FTPStorage(StorageBackend):
-    """FTP/FTPS storage"""
+    """Plain FTP storage. FTPS is not supported; use SFTP for secure transport."""
 
     async def _connect(self):
         """Create FTP connection"""
         import aioftp
 
-        client = aioftp.Client()
-        await client.connect(self.config.host, port=self.config.port or 21)
-        # Set socket timeout for data operations
-        client.socket.settimeout(60)
-        if self.config.username:
-            await client.login(self.config.username, self.config.password or "")
-        return client
+        client = aioftp.Client(socket_timeout=60, connection_timeout=30)
+        try:
+            await client.connect(self.config.host, port=self.config.port or 21)
+            if self.config.username:
+                await client.login(self.config.username, self.config.password or "")
+            else:
+                await client.login()
+            return client
+        except BaseException:
+            client.close()
+            raise
 
-    async def upload(self, local_path: Path, remote_path: str) -> bool:
+    async def upload(self, local_path: Path, remote_path: str) -> tuple[bool, str]:
         try:
             client = await self._connect()
 
@@ -1455,14 +1459,19 @@ class FTPStorage(StorageBackend):
                     pass
 
                 # Upload file
-                await client.upload(local_path, full_path)
-                logger.info(f"FTP upload successful: {remote_path}")
-                return True
-            finally:
+                if not local_path.is_file():
+                    raise FileNotFoundError(
+                        f"Upload source is not a file: {local_path}"
+                    )
+                await client.upload(local_path, full_path, write_into=True)
                 await client.quit()
+                logger.info(f"FTP upload successful: {remote_path}")
+                return True, ""
+            finally:
+                client.close()
         except Exception as e:
             logger.error(f"FTP upload error: {e}")
-            return False
+            return False, _format_exception_message(e)[:500]
 
     async def download(self, remote_path: str, local_path: Path) -> bool:
         try:
@@ -1471,10 +1480,11 @@ class FTPStorage(StorageBackend):
             try:
                 local_path.parent.mkdir(parents=True, exist_ok=True)
                 full_path = f"{self.config.base_path}/{remote_path}"
-                await client.download(full_path, local_path)
+                await client.download(full_path, local_path, write_into=True)
+                await client.quit()
                 return True
             finally:
-                await client.quit()
+                client.close()
         except Exception as e:
             logger.error(f"FTP download error: {e}")
             return False
@@ -1486,9 +1496,10 @@ class FTPStorage(StorageBackend):
             try:
                 full_path = f"{self.config.base_path}/{remote_path}"
                 await client.remove_file(full_path)
+                await client.quit()
                 return True
             finally:
-                await client.quit()
+                client.close()
         except Exception as e:
             logger.error(f"FTP delete error: {e}")
             return False
@@ -1525,9 +1536,10 @@ class FTPStorage(StorageBackend):
                             "modified": modified,
                         }
                     )
+                await client.quit()
                 return files
             finally:
-                await client.quit()
+                client.close()
         except Exception as e:
             logger.error(f"FTP list error: {e}")
             return []
@@ -1535,7 +1547,10 @@ class FTPStorage(StorageBackend):
     async def test_connection(self) -> Dict[str, Any]:
         try:
             client = await self._connect()
-            await client.quit()
+            try:
+                await client.quit()
+            finally:
+                client.close()
             return {"success": True, "message": "FTP connection successful"}
         except Exception as e:
             message = _format_exception_message(e)
