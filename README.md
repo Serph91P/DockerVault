@@ -174,6 +174,8 @@ If you lose access to DockerVault, you can still recover encrypted backups using
 
 ```bash
 # Prerequisites: age (https://github.com/FiloSottile/age) and openssl
+set -euo pipefail
+umask 077
 
 # 1. Save your private key to a file
 cat > private_key.txt << 'EOF'
@@ -182,19 +184,27 @@ EOF
 chmod 600 private_key.txt
 
 # 2. Decrypt the DEK (Data Encryption Key)
-age -d -i private_key.txt backup.tar.gz.key > dek.txt
+recovery_dir=$(mktemp -d)
+trap 'rm -f "$recovery_dir/dek.bin" "$recovery_dir/dek.hex"; rmdir "$recovery_dir"' EXIT
+trap 'exit 1' HUP INT TERM
+age -d -i private_key.txt backup.tar.gz.key > "$recovery_dir/dek.bin"
+test "$(wc -c < "$recovery_dir/dek.bin")" -eq 32
+od -An -v -tx1 "$recovery_dir/dek.bin" | tr -d '[:space:]' > "$recovery_dir/dek.hex"
 
 # 3. Decrypt the backup
 openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
     -in backup.tar.gz.enc \
     -out backup.tar.gz \
-    -pass file:dek.txt
+    -pass "file:$recovery_dir/dek.hex"
 
 # 4. Extract the backup
 tar xzf backup.tar.gz
 
 # 5. Clean up (don't leave keys lying around)
-rm dek.txt private_key.txt
+rm -f "$recovery_dir/dek.bin" "$recovery_dir/dek.hex"
+rmdir "$recovery_dir"
+trap - EXIT HUP INT TERM
+# Keep your private key secure; delete this working copy when finished.
 ```
 
 > [!TIP]
