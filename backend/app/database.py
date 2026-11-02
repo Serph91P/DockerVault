@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy import JSON, Boolean, Column, DateTime
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy import ForeignKey, Integer, String, Text, text
+from sqlalchemy import ForeignKey, Integer, String, Text, event, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, backref, relationship
 
@@ -350,6 +351,18 @@ class AppSettings(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
+# Every pooled SQLite connection must enforce the catalog's declared cascades.
+@event.listens_for(Engine, "connect")
+def _enable_sqlite_foreign_keys(connection, _record):
+    if "sqlite" not in type(connection).__module__:
+        return
+    cursor = connection.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_keys=ON")
+    finally:
+        cursor.close()
+
+
 # Database engine and session
 engine = create_async_engine(
     settings.DATABASE_URL,
@@ -599,6 +612,23 @@ async def _recover_orphaned_backups():
 
     if removed:
         log.info("Removed %d orphaned temporary backup file(s)", removed)
+
+
+async def has_remote_copies(session, backup_id: int) -> bool:
+    """Keep recovery identity while a catalogued remote object may still exist."""
+    from sqlalchemy import select
+
+    return (
+        await session.execute(
+            select(BackupStorageSync.id)
+            .where(
+                BackupStorageSync.backup_id == backup_id,
+                BackupStorageSync.remote_path.isnot(None),
+                BackupStorageSync.remote_path != "",
+            )
+            .limit(1)
+        )
+    ).first() is not None
 
 
 async def get_session() -> AsyncSession:

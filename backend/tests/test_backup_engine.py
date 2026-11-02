@@ -21,6 +21,7 @@ from app.database import (
     BackupStorageSync,
     BackupTarget,
     BackupType,
+    RemoteStorage,
 )
 from app.encryption import EncryptionError
 
@@ -738,6 +739,12 @@ class TestRemoteSyncSafety:
             container_name=None,
         )
         async with test_db() as session:
+            for storage_id in storage_ids or [1]:
+                session.add(RemoteStorage(
+                    id=storage_id, name=f"sync-test-{storage_id}",
+                    storage_type="local", base_path=str(temp_backup_dir),
+                ))
+            await session.commit()
             target = await session.get(BackupTarget, target_id)
 
         engine = BackupEngine()
