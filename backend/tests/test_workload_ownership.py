@@ -7,10 +7,22 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import pytest_asyncio
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.backup_engine import BackupEngine
-from app.database import Backup, BackupStatus, BackupTarget
+from app.database import Base, Backup, BackupStatus, BackupTarget
 from app.docker_client import DockerClientWrapper
+
+
+@pytest_asyncio.fixture
+async def test_db(tmp_path):
+    # Journal writes must use independent connections, not one shared StaticPool transaction.
+    database = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'ownership.db'}")
+    async with database.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    yield async_sessionmaker(database, expire_on_commit=False)
+    await database.dispose()
 
 
 @pytest.mark.asyncio
