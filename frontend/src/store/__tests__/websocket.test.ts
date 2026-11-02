@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { useWebSocketStore } from '../websocket'
+import { cleanupWebSocket, useWebSocketStore } from '../websocket'
 import { act, renderHook } from '@testing-library/react'
 
 // Mock WebSocket using vi.stubGlobal which works in newer jsdom versions
@@ -352,5 +352,27 @@ describe('WebSocket Store', () => {
     
     expect(consoleSpy).toHaveBeenCalled()
     consoleSpy.mockRestore()
+  })
+
+  it('does not reconnect after authenticated session revocation', () => {
+    vi.useFakeTimers()
+    try {
+      act(() => {
+        useWebSocketStore.getState().connect()
+        vi.advanceTimersByTime(0)
+      })
+      const original = mockWebSocket
+      act(() => {
+        original.readyState = MockWebSocket.CLOSED
+        original.onclose?.(new CloseEvent('close', { code: 4001 }))
+        vi.advanceTimersByTime(5001)
+      })
+      expect(mockWebSocket).toBe(original)
+      expect(useWebSocketStore.getState().connected).toBe(false)
+    } finally {
+      cleanupWebSocket()
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
   })
 })
