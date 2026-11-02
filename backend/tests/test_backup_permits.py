@@ -174,4 +174,8 @@ async def test_all_callers_hold_capacity_through_work_and_cleanup(
         assert len(backups) == 3
         assert all(b.status == BackupStatus.COMPLETED for b in backups)
         assert all(Path(b.file_path).is_file() for b in backups)
-        assert all((tmp_path / "remote" / f"target-{i}").is_dir() for i in range(3))
+        for backup in backups:
+            local = Path(backup.file_path)
+            target_name = next(t.name for t in targets if t.id == backup.target_id)
+            remote = tmp_path / "remote" / target_name / local.name
+            assert remote.read_bytes() == local.read_bytes()
