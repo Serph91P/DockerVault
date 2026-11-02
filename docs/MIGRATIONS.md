@@ -8,7 +8,8 @@ This is not an import/export or recovery-bundle feature.
 
 `schema_migrations` records ordered versions: **1** baselines the legacy columns
 and applies the historic remote-sync flag rewrite once; **2** quarantines orphan
-log/sync metadata under the catalog lifecycle in `CATALOG.md`. Completed data
+log/sync metadata under the catalog lifecycle in `CATALOG.md`; **3** adds the
+independent workload-operation journal described in `RECOVERY.md`. Completed data
 transformations are never replayed, including when a user subsequently disables
 remote sync. A future/gapped ledger or unresolved foreign-key violation prevents
 startup instead of serving a partially understood database.

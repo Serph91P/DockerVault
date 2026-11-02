@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 from sqlalchemy import select, update
 
 from app.config import settings
+from app.operations import OperationJournal
 from app.database import (
     Backup,
     BackupLog,
@@ -278,6 +279,11 @@ class BackupEngine:
             await claim.aclose()
             raise
         return claim, identities
+
+    async def recover_operations(self) -> None:
+        await OperationJournal(async_session, docker_client).reconcile(
+            self._restart_containers_cancellation_safe
+        )
 
     async def start_queue_worker(self) -> None:
         """Start the background queue worker that processes backup jobs."""
@@ -664,6 +670,8 @@ class BackupEngine:
         )
         await self._notify_progress(backup_id, 0, "Starting backup...")
 
+        journal = OperationJournal(async_session, docker_client)
+        operation_id = None
         try:
             # Determine containers to stop
             containers_to_stop = []
@@ -708,12 +716,12 @@ class BackupEngine:
                 start_order = list(
                     dict.fromkeys(identities.get(name, name) for name in start_order)
                 )
+                for container_name in containers_to_stop:
+                    original_states[
+                        container_name
+                    ] = await docker_client.get_container_state(container_name)
+                operation_id = await journal.begin(backup_id, "backup", original_states)
                 if containers_to_stop:
-                    # Store original states
-                    for container_name in containers_to_stop:
-                        state = await docker_client.get_container_state(container_name)
-                        original_states[container_name] = state
-
                     # Stop containers in order
                     await self._log(
                         backup_id,
@@ -724,11 +732,15 @@ class BackupEngine:
                     await self._notify_progress(backup_id, 10, "Stopping containers...")
                     for i, container_name in enumerate(containers_to_stop):
                         if original_states.get(container_name) == "running":
+                            await journal.stop(operation_id, container_name)
                             stopped = await docker_client.stop_container(container_name)
                             if not stopped:
                                 raise RuntimeError(
                                     f"Failed to stop container '{container_name}'"
                                 )
+                            await journal.stop(
+                                operation_id, container_name, confirmed=True
+                            )
                             progress = 10 + (20 * (i + 1) / len(containers_to_stop))
                             await self._notify_progress(
                                 backup_id, progress, f"Stopped {container_name}"
@@ -747,6 +759,7 @@ class BackupEngine:
                     await self._run_hook(target.pre_backup_command)
 
                 # Perform the actual backup
+                await journal.phase(operation_id, "archive")
                 await self._log(backup_id, "archive", "Creating backup archive...")
                 await self._notify_progress(backup_id, 35, "Creating backup archive...")
 
@@ -868,6 +881,8 @@ class BackupEngine:
                     restart_failures = await self._restart_containers_cancellation_safe(
                         restart_order, original_states, backup_id
                     )
+                    if operation_id is not None:
+                        await journal.recovered(operation_id, restart_failures)
                 finally:
                     if workload_claim is not None:
                         await workload_claim.aclose()
@@ -879,6 +894,7 @@ class BackupEngine:
                 await self._notify_progress(backup_id, 90, "Containers restarted")
 
             # Update backup record
+            await journal.phase(operation_id, "finalizing")
             async with async_session() as session:
                 duration_seconds = int(
                     (datetime.now(timezone.utc) - backup.started_at).total_seconds()
@@ -901,6 +917,7 @@ class BackupEngine:
 
             # Sync to remote storage if configured
             if target.remote_storage_ids:
+                await journal.phase(operation_id, "upload")
                 await self._log(
                     backup_id,
                     "upload",
@@ -1012,6 +1029,8 @@ class BackupEngine:
 
             await self._notify_progress(backup_id, -1, f"Backup failed: {e}")
             return False
+        finally:
+            await journal.finish(operation_id)
 
     @staticmethod
     def _remote_sync_result(result: Any) -> tuple[bool, Optional[str]]:
@@ -1970,22 +1989,32 @@ class BackupEngine:
         temp_decrypted_file = None
         operation_error = None
         workload_claim = None
+        journal = OperationJournal(async_session, docker_client)
+        operation_id = None
         try:
             try:
                 workload_claim, identities = await self._acquire_workload_locks(
                     target, containers_to_stop, restore_path
                 )
                 containers_to_stop = list(dict.fromkeys(identities.values()))
+                for container_name in containers_to_stop:
+                    original_states[
+                        container_name
+                    ] = await docker_client.get_container_state(container_name)
+                operation_id = await journal.begin(
+                    backup_id, "restore", original_states
+                )
                 # Stop containers
                 for container_name in containers_to_stop:
-                    state = await docker_client.get_container_state(container_name)
-                    original_states[container_name] = state
-                    if state == "running":
+                    if original_states[container_name] == "running":
+                        await journal.stop(operation_id, container_name)
                         stopped = await docker_client.stop_container(container_name)
                         if not stopped:
                             raise RuntimeError(
                                 f"Failed to stop container '{container_name}'"
                             )
+
+                        await journal.stop(operation_id, container_name, confirmed=True)
 
                 # Handle encrypted backups
                 backup_file_to_extract = backup_file
@@ -2007,6 +2036,7 @@ class BackupEngine:
                         raise ValueError(f"Failed to decrypt backup: {e}")
 
                 # Extract backup
+                await journal.phase(operation_id, "extract")
                 is_compressed = backup_file_to_extract.endswith(".gz")
                 mode = "r:gz" if is_compressed else "r"
 
@@ -2045,6 +2075,8 @@ class BackupEngine:
                     restart_failures = await self._restart_containers_cancellation_safe(
                         list(reversed(containers_to_stop)), original_states
                     )
+                    if operation_id is not None:
+                        await journal.recovered(operation_id, restart_failures)
                 finally:
                     if workload_claim is not None:
                         await workload_claim.aclose()
@@ -2059,6 +2091,8 @@ class BackupEngine:
             logger.error(f"Restore failed: {e}")
 
             return False
+        finally:
+            await journal.finish(operation_id)
 
     def _extract_tar(
         self, source: str, dest: str, mode: str, strip_root: str | None = None
