@@ -18,6 +18,7 @@ function PolicyCard({ policy, targets, onEdit }: { policy: RetentionPolicy; targ
     mutationFn: () => retentionApi.deletePolicy(policy.id),
     onSuccess: () => {
       toast.success('Policy deleted')
+      setShowConfirm(false)
       queryClient.invalidateQueries({ queryKey: ['retention-policies'] })
     },
     onError: (err: Error) => toast.error(err.message || 'Failed to delete policy'),
@@ -91,17 +92,16 @@ function PolicyCard({ policy, targets, onEdit }: { policy: RetentionPolicy; targ
       {/* RE1: ConfirmDialog for delete */}
       <ConfirmDialog
         isOpen={showConfirm}
-        onClose={() => setShowConfirm(false)}
-        onConfirm={() => {
-          deleteMutation.mutate()
-          setShowConfirm(false)
-        }}
+        onClose={() => { setShowConfirm(false); deleteMutation.reset() }}
+        onConfirm={() => deleteMutation.mutate()}
         title="Delete Retention Policy"
         message={`Delete policy "${policy.name}"?${usedByTargets.length > 0 ? ` It is currently used by ${usedByTargets.length} target(s): ${usedByTargets.map(t => t.name).join(', ')}.` : ''}`}
         confirmLabel="Delete"
         confirmVariant="danger"
         isLoading={deleteMutation.isPending}
-      />
+      >
+        {deleteMutation.isError && <p role="alert" className="text-red-300">Failed to delete policy. Retry or cancel.</p>}
+      </ConfirmDialog>
     </div>
   )
 }
@@ -387,6 +387,7 @@ export default function Retention() {
   const cleanupMutation = useMutation({
     mutationFn: () => retentionApi.cleanupOrphaned(),
     onSuccess: (data) => {
+      setShowCleanupConfirm(false)
       toast.success(`${data.data.deleted} orphaned files deleted`)
     },
     onError: () => toast.error('Failed to cleanup'),
@@ -476,17 +477,16 @@ export default function Retention() {
 
       <ConfirmDialog
         isOpen={showCleanupConfirm}
-        onClose={() => setShowCleanupConfirm(false)}
-        onConfirm={() => {
-          cleanupMutation.mutate()
-          setShowCleanupConfirm(false)
-        }}
+        onClose={() => { setShowCleanupConfirm(false); cleanupMutation.reset() }}
+        onConfirm={() => cleanupMutation.mutate()}
         title="Cleanup Orphaned Files"
         message="Delete all backup files that are not linked to any backup record? This cannot be undone."
         confirmLabel="Cleanup"
         confirmVariant="danger"
         isLoading={cleanupMutation.isPending}
-      />
+      >
+        {cleanupMutation.isError && <p role="alert" className="text-red-300">Cleanup failed. Retry or cancel.</p>}
+      </ConfirmDialog>
 
       {editingPolicy && (
         <EditPolicyModal

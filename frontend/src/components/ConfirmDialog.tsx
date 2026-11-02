@@ -16,7 +16,7 @@ interface ConfirmDialogProps {
 }
 
 export default function ConfirmDialog({ isOpen, onClose, onConfirm, title, message, confirmLabel = 'Confirm', confirmVariant = 'danger', isLoading = false, confirmDisabled = false, children }: ConfirmDialogProps) {
-  return <Dialog open={isOpen} onOpenChange={(open) => { if (!open && !isLoading) onClose() }}>
+  return <Dialog open={isOpen} onOpenChange={(open, details) => { if (!open) { if (isLoading) details.cancel(); else onClose() } }}>
     <DialogContent className="w-full max-w-md rounded-xl border border-dark-600 bg-dark-800 p-6" aria-busy={isLoading || undefined}>
       <div className="flex items-start gap-3">
         <AlertTriangle className="size-6 shrink-0 text-amber-300" />

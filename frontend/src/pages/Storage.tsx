@@ -137,6 +137,7 @@ export default function Storage() {
   const deleteMutation = useMutation({
     mutationFn: (id: number) => api.delete(`/storage/${id}`),
     onSuccess: () => {
+      setConfirmDialog(null);
       queryClient.invalidateQueries({ queryKey: ['storages'] });
     },
   });
@@ -1063,11 +1064,10 @@ export default function Storage() {
       {/* Confirm Delete Dialog */}
       <ConfirmDialog
         isOpen={!!confirmDialog}
-        onClose={() => setConfirmDialog(null)}
+        onClose={() => { setConfirmDialog(null); deleteMutation.reset(); }}
         onConfirm={() => {
           if (confirmDialog) {
             deleteMutation.mutate(confirmDialog.id);
-            setConfirmDialog(null);
           }
         }}
         title="Delete Storage"
@@ -1075,7 +1075,9 @@ export default function Storage() {
         confirmLabel="Delete"
         confirmVariant="danger"
         isLoading={deleteMutation.isPending}
-      />
+      >
+        {deleteMutation.isError && <p role="alert" className="text-red-300">Failed to delete storage. Retry or cancel.</p>}
+      </ConfirmDialog>
     </div>
   );
 }
