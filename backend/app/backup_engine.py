@@ -1706,8 +1706,11 @@ class BackupEngine:
                 "sudo not available, falling back to in-process tar "
                 "(files owned by other UIDs may be skipped)"
             )
-            mode = "w:gz" if compress else "w"
-            with tarfile.open(dest, mode, compresslevel=6 if compress else None) as tar:
+            with (
+                tarfile.open(dest, "w:gz", compresslevel=6)
+                if compress
+                else tarfile.open(dest, "w")
+            ) as tar:
                 skipped = self._add_source_to_tar(
                     tar, source, arcname_base, include_paths, exclude_paths
                 )
@@ -1753,8 +1756,11 @@ class BackupEngine:
                 "(files owned by other UIDs may be skipped)"
             )
             skipped = []
-            mode = "w:gz" if compress else "w"
-            with tarfile.open(dest, mode, compresslevel=6 if compress else None) as tar:
+            with (
+                tarfile.open(dest, "w:gz", compresslevel=6)
+                if compress
+                else tarfile.open(dest, "w")
+            ) as tar:
                 for archive_name, source_path in sources:
                     if not os.path.exists(source_path):
                         continue

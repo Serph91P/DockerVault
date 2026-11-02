@@ -19,21 +19,30 @@ def link_tree(tmp_path):
     return source
 
 
-def make_archive(implementation, multi, source, archive, include, exclude):
+def make_archive(
+    implementation, multi, source, archive, include, exclude, compress=True
+):
     prefix = "mount/data" if multi else source.name
     if implementation == "fallback":
         engine = BackupEngine()
         with patch.object(engine, "_sudo_available", return_value=False):
             if multi:
                 engine._create_multi_source_tar(
-                    [(prefix, str(source))], str(archive), True, include, exclude, {}
+                    [(prefix, str(source))],
+                    str(archive),
+                    compress,
+                    include,
+                    exclude,
+                    {},
                 )
             else:
-                engine._create_tar(str(source), str(archive), True, include, exclude)
+                engine._create_tar(
+                    str(source), str(archive), compress, include, exclude
+                )
     else:
         config = {
             "dest": str(archive),
-            "compress": True,
+            "compress": compress,
             "sources": [[prefix, str(source)]],
             "include_paths": include,
             "exclude_paths": exclude,
@@ -51,21 +60,25 @@ def make_archive(implementation, multi, source, archive, include, exclude):
 @pytest.mark.parametrize("implementation", ["fallback", "worker"])
 @pytest.mark.parametrize("multi", [False, True])
 @pytest.mark.parametrize("filtering", ["all", "include", "exclude"])
+@pytest.mark.parametrize("compress", [True, False])
 def test_directory_links_roundtrip_once_without_traversal(
-    link_tree, tmp_path, implementation, multi, filtering
+    link_tree, tmp_path, implementation, multi, filtering, compress
 ):
     import tarfile
 
     include = ["real", "current"] if filtering == "include" else []
     exclude = ["current"] if filtering == "exclude" else []
-    archive = tmp_path / "archive.tar.gz"
-    prefix = make_archive(implementation, multi, link_tree, archive, include, exclude)
+    archive = tmp_path / ("archive.tar.gz" if compress else "archive.tar")
+    prefix = make_archive(
+        implementation, multi, link_tree, archive, include, exclude, compress
+    )
+    assert archive.read_bytes().startswith(b"\x1f\x8b") is compress
     expected_links = (
         {"current", "loop"}
         if filtering == "all"
         else ({"current"} if filtering == "include" else {"loop"})
     )
-    with tarfile.open(archive, "r:gz") as tar:
+    with tarfile.open(archive, "r:gz" if compress else "r") as tar:
         members = tar.getmembers()
         names = [member.name for member in members]
         assert {
@@ -79,7 +92,10 @@ def test_directory_links_roundtrip_once_without_traversal(
             assert not any(name.startswith(prefix + "/" + link + "/") for name in names)
     destination = tmp_path / "restore"
     BackupEngine()._extract_tar(
-        str(archive), str(destination), "r:gz", None if multi else ""
+        str(archive),
+        str(destination),
+        "r:gz" if compress else "r",
+        None if multi else "",
     )
     restored = destination / prefix if multi else destination
     assert (restored / "real/file.txt").read_bytes() == b"original payload"
