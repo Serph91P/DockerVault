@@ -8,7 +8,11 @@ This is not an import/export or recovery-bundle feature.
 
 `schema_migrations` records ordered versions: **1** baselines the legacy columns
 and applies the historic remote-sync flag rewrite once; **2** quarantines orphan
-log/sync metadata under the catalog lifecycle in `CATALOG.md`. Completed data
+log/sync metadata under the catalog lifecycle in `CATALOG.md`; **3** repairs
+missing target schedule/retention foreign keys in legacy and v1/v2-ledgered databases.
+The SQLite rebuild preserves extension columns, target/backup IDs, indexes and
+triggers. Invalid existing target references fail startup with the original rows
+and ledger unchanged instead of guessing a replacement policy. Completed data
 transformations are never replayed, including when a user subsequently disables
 remote sync. A future/gapped ledger or unresolved foreign-key violation prevents
 startup instead of serving a partially understood database.
@@ -17,7 +21,11 @@ All pending DDL, data changes and ledger entries execute under one explicit
 SQLite `BEGIN IMMEDIATE` transaction. This is necessary because the sqlite3
 legacy driver does not automatically begin a transaction for DDL. An exception,
 cancellation or process exit rolls back the pending upgrade; retry starts from
-the same committed ledger. The FastAPI lifespan cannot become ready before the
+the same committed ledger. Only the migration connection temporarily disables FK
+enforcement outside that transaction for SQLite's documented table-rebuild path;
+`foreign_key_check` must pass before commit and enforcement is restored before
+returning the connection, including on failure. All ordinary connections remain
+FK-enforced. The FastAPI lifespan cannot become ready before the
 required migration finishes. Other startup responsibilities (credential wrapping
 and recovery of interrupted backup jobs) are separate from this schema ledger.
 
