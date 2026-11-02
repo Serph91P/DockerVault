@@ -38,6 +38,10 @@ jobs:
         pip install -r requirements.txt
         pip install -r requirements-dev.txt
         
+    - name: Check clean runtime import and SQLite startup
+      working-directory: backend
+      run: PYTHONPATH=. python tests/runtime_smoke.py
+
     - name: Run backend tests with coverage
       working-directory: backend
       run: |

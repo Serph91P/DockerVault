@@ -291,8 +291,15 @@ cd backend
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+PYTHONPATH=. python tests/runtime_smoke.py
 uvicorn app.main:app --reload
 ```
+
+`requirements.txt` is the reviewed, universal Python 3.14 runtime lock used by
+both CI and image builds. Edit `backend/requirements.in`, then regenerate from
+the repository root with
+`uv pip compile --universal --python-version 3.14 backend/requirements.in -o backend/requirements.txt`.
+Review the resulting dependency changes and run the runtime smoke test and suite.
 
 ### Frontend
 

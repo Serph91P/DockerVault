@@ -147,6 +147,10 @@ RUN mkdir -p /app/data /backups /var/log/supervisor /run/nginx && \
 # Copy backend application
 COPY --chown=dockervault:dockervault backend/app ./app
 
+# Exercise the same runtime-only dependency/SQLite check on each image architecture.
+COPY backend/tests/runtime_smoke.py ./runtime_smoke.py
+RUN python runtime_smoke.py && rm runtime_smoke.py
+
 # Copy frontend build from builder stage
 COPY --from=frontend-builder /app/dist /usr/share/nginx/html
 
