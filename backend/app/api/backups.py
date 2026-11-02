@@ -337,7 +337,7 @@ async def _delete_remote_copies(session, backup_ids: list[int]) -> list[str]:
 
     remote_errors: list[str] = []
     for sync in sync_records:
-        if sync.remote_path and sync.sync_status == "completed":
+        if sync.remote_path:
             backend = storage_manager.get_backend(sync.storage_id)
             if backend:
                 try:
@@ -788,9 +788,34 @@ async def restore_backup(
                 detail="Invalid restore path: must be within allowed directories",
             )
 
-    success = await backup_engine.restore_backup(
-        backup_id, restore_request.target_path, restore_request.private_key
-    )
+    async with async_session() as session:
+        backup = await session.get(Backup, backup_id)
+        if not backup:
+            raise HTTPException(status_code=404, detail="Backup not found")
+    resolved, temporary = await _ensure_backup_locally(backup)
+    if not resolved:
+        raise HTTPException(
+            status_code=404,
+            detail="Backup archive is not available locally or remotely",
+        )
+    try:
+        key_path = _resolve_backup_path(backup.encryption_key_path)
+        if backup.encrypted and not key_path:
+            key_path = await _download_key_from_remote(backup, resolved)
+        if backup.encrypted and not key_path:
+            raise HTTPException(
+                status_code=400, detail="Encryption key sidecar not available"
+            )
+        success = await backup_engine.restore_backup(
+            backup_id,
+            restore_request.target_path,
+            restore_request.private_key,
+            archive_path=resolved,
+            key_path=key_path,
+        )
+    finally:
+        if temporary:
+            shutil.rmtree(temporary, ignore_errors=True)
 
     if not success:
         raise HTTPException(status_code=500, detail="Restore failed")

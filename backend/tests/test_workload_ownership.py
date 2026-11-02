@@ -148,9 +148,9 @@ async def test_resource_ownership_spans_stop_archive_restore_and_restart(
             "read raced workload restart"
         )
 
-    async def archive(target, backup_id):
+    async def archive(target, backup_id, **kwargs):
         await read_boundary(0 if backup_id == backups[0].id else 1)
-        return await original_archive(target, backup_id)
+        return await original_archive(target, backup_id, **kwargs)
 
     async def extract(func):
         if case == "restore" and asyncio.current_task() is b:
