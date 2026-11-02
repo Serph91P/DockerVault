@@ -19,54 +19,122 @@ router = APIRouter()
 
 
 class ConnectionManager:
-    """Manages WebSocket connections."""
+    """Best-effort notifications with one bounded queue/writer per client."""
+
+    QUEUE_SIZE = 32
+    SEND_TIMEOUT = 5.0
+    CONTROL_TYPES = {"connected", "pong", "subscribed", "error"}
 
     def __init__(self):
         self.active_connections: Set[WebSocket] = set()
         self._lock = asyncio.Lock()
+        self._queues: Dict[WebSocket, asyncio.Queue] = {}
+        self._senders: Dict[WebSocket, asyncio.Task] = {}
+        self._owned: Set[asyncio.Task] = set()
+        self._closing: Set[WebSocket] = set()
 
     async def connect(self, websocket: WebSocket):
-        """Accept and store a new connection."""
-        await websocket.accept()
+        await asyncio.wait_for(websocket.accept(), self.SEND_TIMEOUT)
         async with self._lock:
             self.active_connections.add(websocket)
-        logger.info(
-            f"WebSocket connected. Total connections: {len(self.active_connections)}"
-        )
+            queue = asyncio.Queue(maxsize=self.QUEUE_SIZE)
+            self._queues[websocket] = queue
+            task = asyncio.create_task(self._send_loop(websocket, queue))
+            self._senders[websocket] = task
+            self._owned.add(task)
+            task.add_done_callback(self._owned.discard)
 
-    async def disconnect(self, websocket: WebSocket):
-        """Remove a connection."""
+    async def disconnect(self, websocket: WebSocket, code=1000, reason=""):
         async with self._lock:
+            self._closing.discard(websocket)
+            if websocket not in self.active_connections:
+                return
             self.active_connections.discard(websocket)
-        logger.info(
-            f"WebSocket disconnected. Total connections: {len(self.active_connections)}"
-        )
+            self._queues.pop(websocket, None)
+            task = self._senders.pop(websocket, None)
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        try:
+            await asyncio.wait_for(
+                websocket.close(code=code, reason=reason), self.SEND_TIMEOUT
+            )
+        except Exception:
+            pass  # The peer may already be gone or unable to accept a close frame.
+
+    async def _send_loop(self, websocket, queue):
+        try:
+            while True:
+                message = await queue.get()
+                try:
+                    await asyncio.wait_for(
+                        websocket.send_text(message), self.SEND_TIMEOUT
+                    )
+                finally:
+                    queue.task_done()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.warning("WebSocket sender failed: %s", error)
+        finally:
+            await self.disconnect(
+                websocket, code=1013, reason="Notification delivery stalled"
+            )
+
+    def _enqueue(self, websocket, encoded):
+        queue = self._queues.get(websocket)
+        if queue is None or websocket in self._closing:
+            return
+        if queue.full():
+            retained = []
+            dropped = False
+            while not queue.empty():
+                previous = queue.get_nowait()
+                queue.task_done()
+                if (
+                    not dropped
+                    and json.loads(previous).get("type") not in self.CONTROL_TYPES
+                ):
+                    dropped = True
+                else:
+                    retained.append(previous)
+            for previous in retained:
+                queue.put_nowait(previous)
+            if not dropped:
+                self._closing.add(websocket)
+                task = asyncio.create_task(
+                    self.disconnect(
+                        websocket, code=1013, reason="Notification queue full"
+                    )
+                )
+                self._owned.add(task)
+                task.add_done_callback(self._owned.discard)
+                return
+        queue.put_nowait(encoded)
 
     async def broadcast(self, message: Dict):
-        """Broadcast message to all connections."""
-        if not self.active_connections:
-            return
-
-        message_json = json.dumps(message)
-        disconnected = set()
-
+        encoded = json.dumps(message)
         async with self._lock:
-            for connection in self.active_connections:
-                try:
-                    await connection.send_text(message_json)
-                except Exception as e:
-                    logger.warning(f"Failed to send to WebSocket: {e}")
-                    disconnected.add(connection)
-
-            # Remove disconnected clients
-            self.active_connections -= disconnected
+            for websocket in self.active_connections:
+                self._enqueue(websocket, encoded)
 
     async def send_to_client(self, websocket: WebSocket, message: Dict):
-        """Send message to specific client."""
-        try:
-            await websocket.send_json(message)
-        except Exception as e:
-            logger.warning(f"Failed to send to WebSocket: {e}")
+        async with self._lock:
+            self._enqueue(websocket, json.dumps(message))
+
+    async def shutdown(self):
+        async with self._lock:
+            connections = list(self.active_connections)
+        await asyncio.gather(
+            *(
+                self.disconnect(ws, code=1001, reason="Server shutdown")
+                for ws in connections
+            )
+        )
+        tasks = list(self._owned)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 # Global connection manager
