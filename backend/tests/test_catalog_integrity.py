@@ -62,12 +62,24 @@ async def catalog(test_db, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_all_sqlite_connections_enforce_foreign_keys(test_engine):
-    async with test_engine.connect() as first, test_engine.connect() as second:
-        for connection in (first, second):
+async def test_all_sqlite_connections_enforce_foreign_keys(tmp_path):
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path}/pooled.db", pool_size=2
+    )
+    try:
+        async with engine.connect() as first, engine.connect() as second:
             assert (
-                await connection.execute(text("PRAGMA foreign_keys"))
-            ).scalar_one() == 1
+                first.sync_connection.connection.driver_connection
+                is not second.sync_connection.connection.driver_connection
+            )
+            for connection in (first, second):
+                assert (
+                    await connection.execute(text("PRAGMA foreign_keys"))
+                ).scalar_one() == 1
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
