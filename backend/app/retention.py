@@ -128,7 +128,8 @@ class RetentionManager:
         now = datetime.now(timezone.utc)
         max_age = now - timedelta(days=policy.max_age_days)
 
-        to_keep = set()
+        # keep_last protects recovery points independently of age/calendar buckets.
+        to_keep = {backup.id for backup in backups[: max(0, policy.keep_last or 0)]}
 
         # Group backups by time periods
         daily: Dict[str, Backup] = {}  # YYYY-MM-DD -> newest backup
