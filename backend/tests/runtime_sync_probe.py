@@ -1,6 +1,7 @@
 """Real auth/API/catalog/provider roundtrip across separate process lifetimes."""
 
 import asyncio
+import hashlib
 from pathlib import Path
 import shutil
 import sys
@@ -28,7 +29,7 @@ async def run(mode, root):
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="https://owned-test"
     ) as client:
-        if mode == "sync":
+        if mode in ("sync", "retry"):
             archive.write_bytes(b"owned persisted archive")
             key.write_bytes(b"owned persisted key")
             async with async_session() as db:
@@ -48,6 +49,22 @@ async def run(mode, root):
                     encryption_key_path=str(key),
                 )
                 db.add(backup)
+                if mode == "retry":
+                    await db.flush()
+                    target.remote_storage_ids = [storage.id]
+                    backup.status = BackupStatus.FAILED
+                    backup.file_size = archive.stat().st_size
+                    backup.checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+                    backup.error_message = "Remote sync failed: owned initial denial"
+                    db.add(
+                        BackupStorageSync(
+                            backup_id=backup.id,
+                            storage_id=storage.id,
+                            remote_path="owned/archive.tar.enc",
+                            sync_status="failed",
+                            error_message="owned initial denial",
+                        )
+                    )
                 await db.commit()
                 backup_id, storage_id = backup.id, storage.id
             setup = await client.post(
@@ -59,11 +76,17 @@ async def run(mode, root):
                 },
             )
             assert setup.status_code == 200, setup.text
-            for _ in range(2):
-                response = await client.post(
-                    f"/api/v1/storage/{storage_id}/sync/{backup_id}"
-                )
-                assert response.status_code == 200, response.text
+            if mode == "retry":
+                response = await client.post(f"/api/v1/backups/{backup_id}/retry-sync")
+                assert (
+                    response.status_code == 200 and response.json()["succeeded"] == 1
+                ), response.text
+            else:
+                for _ in range(2):
+                    response = await client.post(
+                        f"/api/v1/storage/{storage_id}/sync/{backup_id}"
+                    )
+                    assert response.status_code == 200, response.text
             archive.unlink()
             key.unlink()
         else:

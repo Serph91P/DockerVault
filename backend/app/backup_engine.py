@@ -1115,6 +1115,23 @@ class BackupEngine:
 
             local_path = Path(backup_path)
             safe_name = self._sanitize_path_name(target.name)
+            remote_path = f"{safe_name}/{local_path.name}"
+            async with async_session() as session:
+                collision = (
+                    await session.execute(
+                        select(BackupStorageSync.id)
+                        .where(
+                            BackupStorageSync.storage_id.in_(selected_ids),
+                            BackupStorageSync.remote_path.in_(
+                                [remote_path, remote_path.replace(".enc", ".key")]
+                            ),
+                            BackupStorageSync.backup_id != backup_id,
+                        )
+                        .limit(1)
+                    )
+                ).first()
+                if collision:
+                    raise ValueError("Remote path belongs to another backup")
             results = await storage_manager.sync_backup(
                 local_path,
                 safe_name,
