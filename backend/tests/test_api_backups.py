@@ -281,7 +281,7 @@ class TestBackupsAPI:
 
     @patch("app.api.backups.backup_engine")
     async def test_restore_backup_success(
-        self, mock_engine, async_client: AsyncClient, db_session
+        self, mock_engine, async_client: AsyncClient, db_session, tmp_path
     ):
         """Test successful backup restoration."""
         # Create target and backup
@@ -307,6 +307,10 @@ class TestBackupsAPI:
         await db_session.refresh(backup)
 
         # Mock restore operation - must be AsyncMock returning True directly
+        archive = tmp_path / "test.tar.gz"
+        archive.write_bytes(b"owned route fixture")
+        backup.file_path = str(archive)
+        await db_session.commit()
         mock_engine.restore_backup = AsyncMock(return_value=True)
 
         # Send empty JSON body since endpoint expects RestoreBackupRequest
@@ -319,7 +323,9 @@ class TestBackupsAPI:
         assert data["status"] == "restored"
 
         # Verify restore was called with target_path=None and private_key=None
-        mock_engine.restore_backup.assert_called_once_with(backup.id, None, None)
+        mock_engine.restore_backup.assert_called_once_with(
+            backup.id, None, None, archive_path=str(archive), key_path=None
+        )
 
     async def test_restore_backup_path_traversal_prevention(
         self, async_client: AsyncClient, db_session

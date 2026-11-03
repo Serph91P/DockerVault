@@ -134,8 +134,8 @@ async def main():
             original_upload = backup_engine._sync_to_remote
             original_progress = backup_engine._notify_progress
 
-            async def archive(*args):
-                result = await original_archive(*args)
+            async def archive(*args, **kwargs):
+                result = await original_archive(*args, **kwargs)
                 if phase == "archive":
                     os._exit(81)
                 return result

@@ -18,7 +18,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from sqlalchemy import select, update
 
@@ -49,6 +49,16 @@ _TAR_WORKER = os.path.join(os.path.dirname(__file__), "tar_worker.py")
 _PYTHON = "/opt/venv/bin/python3"
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ArchiveSources:
+    """The exact data paths/container identities claimed before lifecycle mutation."""
+
+    single_path: str | None = None
+    paths: tuple[tuple[str, str], ...] = ()
+    root: str | None = None
+    container_ids: tuple[str, ...] = ()
 
 
 @dataclass
@@ -258,12 +268,23 @@ class BackupEngine:
         target: BackupTarget,
         containers: List[str],
         restore_path: str | None = None,
-    ) -> tuple[AsyncExitStack, Dict[str, str]]:
+    ) -> tuple[AsyncExitStack, Dict[str, str], ArchiveSources]:
         identities = {
             name: await docker_client.get_container_identity(name)
             for name in containers
         }
-        keys = {f"container:{identity}" for identity in identities.values()}
+        sources = (
+            await self._resolve_archive_sources(target, identities)
+            if restore_path is None
+            else ArchiveSources(single_path=os.path.realpath(restore_path))
+        )
+        keys = {
+            f"container:{identity}"
+            for identity in (*identities.values(), *sources.container_ids)
+        }
+        for path in (sources.single_path, *(path for _name, path in sources.paths)):
+            if path:
+                keys.add(f"path:{os.path.realpath(path)}")
         for path in (target.host_path, restore_path):
             if path:
                 keys.add(f"path:{os.path.realpath(path)}")
@@ -278,7 +299,7 @@ class BackupEngine:
         except BaseException:
             await claim.aclose()
             raise
-        return claim, identities
+        return claim, identities, sources
 
     async def recover_operations(self) -> None:
         await OperationJournal(async_session, docker_client).reconcile(
@@ -709,9 +730,11 @@ class BackupEngine:
                     )
                     start_order = list(reversed(containers_to_stop))
 
-                workload_claim, identities = await self._acquire_workload_locks(
-                    target, containers_to_stop
-                )
+                (
+                    workload_claim,
+                    identities,
+                    archive_sources,
+                ) = await self._acquire_workload_locks(target, containers_to_stop)
                 containers_to_stop = list(dict.fromkeys(identities.values()))
                 start_order = list(
                     dict.fromkeys(identities.get(name, name) for name in start_order)
@@ -720,7 +743,9 @@ class BackupEngine:
                     original_states[
                         container_name
                     ] = await docker_client.get_container_state(container_name)
-                operation_id = await journal.begin(backup_id, "backup", original_states)
+                operation_id = await journal.begin(
+                    backup_id, "backup", original_states, start_order=start_order
+                )
                 if containers_to_stop:
                     # Stop containers in order
                     await self._log(
@@ -769,7 +794,9 @@ class BackupEngine:
                 preexisting_files = (
                     set(backup_dir.iterdir()) if backup_dir.exists() else set()
                 )
-                backup_path = await self._create_backup_archive(target, backup_id)
+                backup_path = await self._create_backup_archive(
+                    target, backup_id, sources=archive_sources
+                )
                 plaintext_path = Path(backup_path)
                 plaintext_created = plaintext_path not in preexisting_files
 
@@ -1352,76 +1379,91 @@ class BackupEngine:
 
         return None
 
+    async def _resolve_archive_sources(
+        self, target: BackupTarget, identities: Dict[str, str] | None = None
+    ) -> ArchiveSources:
+        """Freeze actual mount selection against the immutable lifecycle identities."""
+        identities = identities or {}
+        if target.target_type == "path":
+            path = os.path.realpath(target.host_path)
+            return ArchiveSources(single_path=path, root=os.path.basename(path))
+        volumes = await docker_client.list_volumes()
+        volume_map = {volume.name: volume.mountpoint for volume in volumes}
+        if target.target_type == "volume":
+            if target.volume_name not in volume_map:
+                raise ValueError(f"Volume {target.volume_name} not found")
+            path = os.path.realpath(volume_map[target.volume_name])
+            return ArchiveSources(single_path=path, root=os.path.basename(path))
+        if target.target_type == "container":
+            expected = identities.get(target.container_name)
+            if expected is None:
+                expected = await docker_client.get_container_identity(
+                    target.container_name
+                )
+            containers = [
+                container
+                for container in await docker_client.list_containers()
+                if container.id == expected
+            ]
+            if not containers:
+                raise ValueError(
+                    "Claimed container identity is missing from archive topology"
+                )
+        elif target.target_type == "stack":
+            stacks = await docker_client.get_stacks()
+            stack = next(
+                (stack for stack in stacks if stack.name == target.stack_name), None
+            )
+            if stack is None:
+                raise ValueError(f"Stack {target.stack_name} not found")
+            containers = list(stack.containers)
+        else:
+            raise ValueError(f"Unknown target type: {target.target_type}")
+        paths = []
+        container_ids = []
+        selected = target.selected_volumes or []
+        for container in containers:
+            expected = identities.get(container.name)
+            if expected is None:
+                expected = await docker_client.get_container_identity(container.name)
+            if container.id != expected:
+                raise ValueError(
+                    "Claimed container identity changed before archive selection"
+                )
+            container_ids.append(expected)
+            for mount in container.mounts:
+                name = mount.get("name")
+                if mount.get("type") != "volume" or (selected and name not in selected):
+                    continue
+                if name not in volume_map:
+                    raise ValueError(f"Claimed volume {name} is unavailable")
+                logical = (
+                    f"volumes/{name}"
+                    if target.target_type == "stack"
+                    else mount.get("destination")
+                )
+                selection = (logical, os.path.realpath(volume_map[name]))
+                if selection not in paths:
+                    paths.append(selection)
+        if not paths:
+            raise ValueError("Claimed containers have no selected volumes to backup")
+        return ArchiveSources(paths=tuple(paths), container_ids=tuple(container_ids))
+
     async def _create_backup_archive(
         self,
         target: BackupTarget,
         backup_id: int,
+        *,
+        sources: ArchiveSources | None = None,
     ) -> str:
-        """Create the backup archive."""
-        archive_root = None
-        # Determine source path
-        if target.target_type == "volume":
-            # Volume backup - get mountpoint
-            volumes = await docker_client.list_volumes()
-            volume = next((v for v in volumes if v.name == target.volume_name), None)
-            if not volume:
-                raise ValueError(f"Volume {target.volume_name} not found")
-            source_path = volume.mountpoint
-            archive_root = os.path.basename(source_path)
-        elif target.target_type == "path":
-            source_path = target.host_path
-            archive_root = os.path.basename(source_path)
-        elif target.target_type == "container":
-            # Get all volume mounts from container
-            containers = await docker_client.list_containers()
-            container = next(
-                (c for c in containers if c.name == target.container_name), None
-            )
-            if not container:
-                raise ValueError(f"Container {target.container_name} not found")
-
-            # Get selected volumes (empty list = all volumes)
-            selected_volumes = target.selected_volumes or []
-
-            # Create combined backup of all volumes
-            source_paths = []
-            for mount in container.mounts:
-                if mount.get("type") == "volume":
-                    volume_name = mount.get("name")
-                    # Filter by selected_volumes if specified
-                    if selected_volumes and volume_name not in selected_volumes:
-                        continue
-                    volumes = await docker_client.list_volumes()
-                    volume = next((v for v in volumes if v.name == volume_name), None)
-                    if volume:
-                        source_paths.append(
-                            (mount.get("destination"), volume.mountpoint)
-                        )
-        elif target.target_type == "stack":
-            # Stack backup - collect all volumes from all containers in the stack
-            stacks = await docker_client.get_stacks()
-            stack = next((s for s in stacks if s.name == target.stack_name), None)
-            if not stack:
-                raise ValueError(f"Stack {target.stack_name} not found")
-
-            # Get selected volumes (empty list = all volumes)
-            selected_volumes = target.selected_volumes or []
-
-            # Collect all volumes from the stack
-            source_paths = []
-            volumes = await docker_client.list_volumes()
-            for volume_name in stack.volumes:
-                # Filter by selected_volumes if specified
-                if selected_volumes and volume_name not in selected_volumes:
-                    continue
-                volume = next((v for v in volumes if v.name == volume_name), None)
-                if volume:
-                    source_paths.append((f"volumes/{volume_name}", volume.mountpoint))
-
-            if not source_paths:
-                raise ValueError(f"Stack {target.stack_name} has no volumes to backup")
-        else:
-            raise ValueError(f"Unknown target type: {target.target_type}")
+        """Create the archive from the exact source snapshot protected by ownership."""
+        if sources is None:
+            sources = await self._resolve_archive_sources(target)
+        source_path, source_paths, archive_root = (
+            sources.single_path,
+            sources.paths,
+            sources.root,
+        )
 
         # Create backup directory
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -1476,6 +1518,8 @@ class BackupEngine:
                     ),
                 )
             else:
+                if source_path is None:
+                    raise ValueError("Archive has no claimed source path")
                 await self._run_executor_cancellation_safe(
                     lambda: self._create_tar(
                         source_path,
@@ -1778,7 +1822,7 @@ class BackupEngine:
 
     def _create_multi_source_tar(
         self,
-        sources: List[tuple],  # [(archive_name, source_path), ...]
+        sources: Sequence[tuple[str, str]],  # [(archive_name, source_path), ...]
         dest: str,
         compress: bool = True,
         include_paths: Optional[List[str]] = None,
@@ -1912,6 +1956,9 @@ class BackupEngine:
         backup_id: int,
         target_path: Optional[str] = None,
         private_key: Optional[str] = None,
+        *,
+        archive_path: Optional[str] = None,
+        key_path: Optional[str] = None,
     ) -> bool:
         """Restore a backup.
 
@@ -1936,8 +1983,8 @@ class BackupEngine:
                 return False
 
             # Check if backup is encrypted
-            is_encrypted = backup.encrypted and backup.encryption_key_path
-            encryption_key_path = backup.encryption_key_path
+            is_encrypted = bool(backup.encrypted)
+            encryption_key_path = key_path or backup.encryption_key_path
 
             if is_encrypted and not private_key:
                 logger.error("Private key required for encrypted backup")
@@ -1949,12 +1996,13 @@ class BackupEngine:
             )
             target = result.scalar_one_or_none()
 
-        if not backup.file_path:
+        source_path = archive_path or backup.file_path
+        if not source_path:
             logger.error("Backup file path is empty for backup %s", backup.id)
             return False
 
         # Resolve the file path (handle legacy paths with unsafe chars)
-        resolved_path = self._resolve_backup_path(backup.file_path)
+        resolved_path = self._resolve_backup_path(source_path)
         if not resolved_path:
             logger.error("Backup file not found: %s", backup.file_path)
             return False
@@ -1993,7 +2041,11 @@ class BackupEngine:
         operation_id = None
         try:
             try:
-                workload_claim, identities = await self._acquire_workload_locks(
+                (
+                    workload_claim,
+                    identities,
+                    _archive_sources,
+                ) = await self._acquire_workload_locks(
                     target, containers_to_stop, restore_path
                 )
                 containers_to_stop = list(dict.fromkeys(identities.values()))
@@ -2002,7 +2054,10 @@ class BackupEngine:
                         container_name
                     ] = await docker_client.get_container_state(container_name)
                 operation_id = await journal.begin(
-                    backup_id, "restore", original_states
+                    backup_id,
+                    "restore",
+                    original_states,
+                    start_order=list(reversed(containers_to_stop)),
                 )
                 # Stop containers
                 for container_name in containers_to_stop:
