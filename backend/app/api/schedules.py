@@ -359,9 +359,8 @@ async def delete_schedule(schedule_id: int, request: Request):
         result = await session.execute(
             select(Schedule)
             .where(Schedule.id == schedule_id)
-            .options(
-                selectinload(Schedule.targets.and_(BackupTarget.removed_at.is_(None)))
-            )
+            # Display counts exclude removed plans; relational cleanup must not.
+            .options(selectinload(Schedule.targets))
         )
         schedule = result.scalar_one_or_none()
 

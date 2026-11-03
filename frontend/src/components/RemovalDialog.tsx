@@ -42,7 +42,22 @@ export default function RemovalDialog({ intent, onClose, onChanged }: { intent: 
     } else {
       if (!token) return
       const response = await backupsApi.executeRemoval(token)
-      setResult(response.data)
+      setResult(previous => {
+        if (!previous) return response.data
+        // A retry reports only failed scope; keep every other original outcome.
+        const items = previous.items.map(item => item.outcome === 'failed'
+          ? response.data.items.find(retried => retried.backup_id === item.backup_id && retried.copy === item.copy && retried.storage_id === item.storage_id) ?? item
+          : item)
+        const succeeded = items.filter(item => item.outcome === 'succeeded').length
+        const failed = items.filter(item => item.outcome === 'failed').length
+        const skipped = items.filter(item => item.outcome === 'skipped').length
+        const incomplete = failed > 0 || skipped > 0
+        return {
+          ...response.data, items, succeeded, failed, skipped,
+          status: incomplete ? 'incomplete' : 'completed',
+          warning: incomplete ? response.data.warning || 'Some confirmed copies were not removed. Review failed or skipped items.' : response.data.warning,
+        }
+      })
     }
     onChanged()
   })

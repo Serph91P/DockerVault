@@ -80,7 +80,7 @@ try {
       await page.getByRole('heading', { name: item.name, exact: true }).waitFor()
       console.log(`PASS process-restart/history/encrypted browse+byte-checked restore ${item.entry} ${item.scope}`)
     }
-    for (const item of manifest.filter(i => i.entry.includes('copies'))) {
+    for (const item of manifest.filter(i => i.entry.includes('copies') && !i.entry.endsWith('retry'))) {
       await open(item, true)
       const scope = item.scope === 'mixed' ? 'all' : item.scope
       await page.getByLabel(scope === 'all' ? 'All selected local and remote copies' : scope === 'local' ? 'Local copies only' : 'Remote copies only', { exact: true }).check()
@@ -119,6 +119,31 @@ try {
       page.off('request', listener)
       await page.getByRole('button', { name: 'Close', exact: true }).click()
       console.log(`PASS ${item.entry} ${scope} copy review/cancel/double-click/results${scope === 'all' ? '/actual-provider-failure/failed-only-retry' : '/retained-copy-byte-restore'}`)
+    }
+    for (const item of manifest.filter(i => i.entry.endsWith('retry'))) {
+      await open(item, true)
+      await page.getByRole('button', { name: 'Review exact scope' }).click()
+      await page.getByText('1 archives · 2 selected copies · all scope', { exact: true }).waitFor()
+      assert.ok((await api(`removal-fixture/change-local/${item.backup_id}`, {})).identity_changed)
+      await api(`removal-fixture/block/${item.backup_id}`, {})
+      await page.getByRole('button', { name: 'Permanently delete confirmed copies' }).click()
+      await page.getByText('0 succeeded · 1 failed · 1 skipped', { exact: true }).waitFor()
+      const partial = await state(item)
+      assert.ok(partial.archive && partial.key && partial.catalog && partial.syncs === 1)
+      await api(`removal-fixture/block/${item.backup_id}?blocked=false`, {})
+      await page.getByRole('button', { name: 'Retry failed confirmed copies only' }).press('Enter')
+      await page.getByText('1 succeeded · 0 failed · 1 skipped', { exact: true }).waitFor()
+      const text = await page.getByRole('dialog').innerText()
+      assert.ok(text.includes('Removal incomplete') && text.includes('scope changed'))
+      assert.ok(!text.includes('Selected copies removed'))
+      assert.equal(await page.getByRole('button', { name: 'Retry failed confirmed copies only' }).count(), 0)
+      const after = await state(item)
+      assert.ok(after.archive && after.key && after.catalog && !after.remote && !after.remote_key && after.syncs === 0)
+      await api(`backups/${item.backup_id}/files`, { private_key })
+      await api(`backups/${item.backup_id}/restore`, { private_key })
+      assert.ok((await state(item)).restored_bytes_match, 'skipped local copy must still restore actual bytes')
+      await page.getByRole('button', { name: 'Close', exact: true }).click()
+      console.log(`PASS ${item.entry}: skipped local + failed remote → failed-only retry retains original review/counts; skipped encrypted copy byte-restorable`)
     }
   }
   assert.deepEqual(errors, [], 'no browser runtime exceptions')

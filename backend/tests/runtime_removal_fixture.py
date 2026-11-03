@@ -41,8 +41,17 @@ async def seed():
     (root / "private-key").chmod(0o600)
     manifest = []
     async with async_session() as db:
-        for entry in ("Backups", "Targets", "Backups copies", "Targets copies"):
-            for scope in ("local", "mixed", "remote"):
+        for entry in (
+            "Backups",
+            "Targets",
+            "Backups copies",
+            "Targets copies",
+            "Backups copies retry",
+            "Targets copies retry",
+        ):
+            for scope in (
+                ("mixed",) if entry.endswith("retry") else ("local", "mixed", "remote")
+            ):
                 stored_scope = "mixed" if "copies" in entry else scope
                 folder = root / f"{entry}-{scope}"
                 folder.mkdir()
@@ -160,6 +169,16 @@ async def state(backup_id: int):
             and (folder / "destination/payload.txt").read_bytes()
             == item["payload"].encode(),
         }
+
+
+@app.post("/api/v1/removal-fixture/change-local/{backup_id}")
+async def change_local(backup_id: int):
+    item = next(i for i in await manifest() if i["backup_id"] == backup_id)
+    path = Path(item["folder"]) / "archive.tar.gz.enc"
+    before = path.stat()
+    # Change confirmed identity without corrupting the retained encrypted bytes.
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 10_000_000))
+    return {"identity_changed": path.stat().st_mtime_ns != before.st_mtime_ns}
 
 
 @app.post("/api/v1/removal-fixture/block/{backup_id}")
