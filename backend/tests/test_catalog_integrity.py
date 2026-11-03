@@ -110,7 +110,17 @@ async def test_local_delete_preserves_remote_recovery_catalog(
         else f"/api/v1/backups/{backup_id}?"
     )
     with patch("app.api.backups.settings.BACKUP_BASE_PATH", str(archive.parent)):
-        response = await async_client.delete(endpoint + "delete_remote=false")
+        if bulk:
+            preview = await async_client.post(
+                "/api/v1/backups/removal/preview",
+                json={"target_id": target_id, "scope": "local"},
+            )
+            response = await async_client.post(
+                "/api/v1/backups/removal/execute",
+                json={"token": preview.json()["token"]},
+            )
+        else:
+            response = await async_client.delete(endpoint + "delete_remote=false")
     assert response.status_code == 200
     async with test_db() as session:
         backup = await session.get(Backup, backup_id)
@@ -158,12 +168,11 @@ async def test_local_delete_preserves_remote_recovery_catalog(
 
 
 @pytest.mark.asyncio
-async def test_target_delete_rejects_loss_of_remote_catalog(
-    async_client, test_db, catalog
-):
+async def test_target_removal_preserves_remote_catalog(async_client, test_db, catalog):
     backup_id, target_id, _, archive, _ = catalog
     response = await async_client.delete(f"/api/v1/targets/{target_id}")
-    assert response.status_code == 409
+    assert response.status_code == 200
+    assert response.json()["copies"] == "retained"
     assert archive.exists()
     async with test_db() as session:
         assert await session.get(Backup, backup_id) is not None
@@ -219,7 +228,11 @@ async def test_retention_preserves_remote_recovery_catalog(test_db, catalog):
 async def test_remote_delete_without_backend_keeps_recovery_identity(
     async_client, test_db, catalog
 ):
-    backup_id, _, _, archive, key = catalog
+    backup_id, _, storage_id, archive, key = catalog
+    async with test_db() as session:
+        storage = await session.get(RemoteStorage, storage_id)
+        storage.enabled = False
+        await session.commit()
     with patch("app.api.backups.settings.BACKUP_BASE_PATH", str(archive.parent)):
         response = await async_client.delete(f"/api/v1/backups/{backup_id}")
     assert response.status_code == 200

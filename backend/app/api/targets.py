@@ -11,7 +11,7 @@ from typing import Dict, List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
@@ -173,6 +173,8 @@ class RetentionPolicyInfo(BaseModel):
 class TargetResponse(BaseModel):
     """Backup target response."""
 
+    removed_at: Optional[str] = None
+
     id: int
     name: str
     target_type: str
@@ -263,16 +265,19 @@ def _build_target_response(t: BackupTarget) -> TargetResponse:
         delete_local_after_sync=t.delete_local_after_sync or False,
         created_at=_to_utc_isoformat(t.created_at) or "",
         updated_at=_to_utc_isoformat(t.updated_at) or "",
+        removed_at=_to_utc_isoformat(t.removed_at),
         validation_errors=[],
     )
 
 
 @router.get("", response_model=List[TargetResponse])
-async def list_targets():
+async def list_targets(include_removed: bool = False):
     """List all backup targets."""
     async with async_session() as session:
         result = await session.execute(
-            select(BackupTarget).options(
+            select(BackupTarget)
+            .where(True if include_removed else BackupTarget.removed_at.is_(None))
+            .options(
                 selectinload(BackupTarget.schedule),
                 selectinload(BackupTarget.retention_policy),
             )
@@ -396,6 +401,8 @@ async def get_target(target_id: int):
             raise HTTPException(status_code=404, detail="Target not found")
 
         response = _build_target_response(target)
+        if target.removed_at is not None:
+            raise HTTPException(status_code=404, detail="Target not found")
         response.validation_errors = await target_validation_errors(session, target)
         return response
 
@@ -418,6 +425,9 @@ async def update_target(target_id: int, update: TargetUpdate, request: Request):
             raise HTTPException(status_code=404, detail="Target not found")
 
         # Validate schedule_id if provided
+        if target.removed_at is not None:
+            raise HTTPException(status_code=404, detail="Target not found")
+
         if update.schedule_id is not None:
             if await session.get(Schedule, update.schedule_id) is None:
                 raise HTTPException(
@@ -506,39 +516,35 @@ async def update_target(target_id: int, update: TargetUpdate, request: Request):
 
 @router.delete("/{target_id}")
 async def delete_target(target_id: int, request: Request):
-    """Delete a backup target and all associated backups."""
-    async with async_session() as session:
-        result = await session.execute(
-            select(BackupTarget)
-            .where(BackupTarget.id == target_id)
-            .options(selectinload(BackupTarget.backups))
-        )
-        target = result.scalar_one_or_none()
+    """Remove automation, never archives, keys, sync records or historical identity."""
+    from app.backup_engine import backup_engine
+    from app.database import Backup, BackupStatus
 
-        if not target:
-            raise HTTPException(status_code=404, detail="Target not found")
+    async with backup_engine._get_target_lock(target_id):
+        async with async_session() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            target = await session.get(BackupTarget, target_id)
+            if not target:
+                raise HTTPException(status_code=404, detail="Target not found")
+            already_removed = target.removed_at is not None
+            target.removed_at = target.removed_at or datetime.now(timezone.utc)
+            target.enabled = False
+            # Queued jobs must not start after the removal acknowledgement.
+            from sqlalchemy import update
 
-        from app.database import has_remote_copies
-
-        for backup in target.backups:
-            if await has_remote_copies(session, backup.id):
-                raise HTTPException(
-                    status_code=409,
-                    detail="Remove remote copies before deleting their backup target",
+            await session.execute(
+                update(Backup)
+                .where(
+                    Backup.target_id == target_id, Backup.status == BackupStatus.PENDING
                 )
-
-        # Delete backup files from disk before removing DB records
-        for backup in target.backups:
-            if backup.file_path and os.path.exists(backup.file_path):
-                try:
-                    os.remove(backup.file_path)
-                except OSError as e:
-                    logger.warning(
-                        f"Failed to delete backup file {backup.file_path}: {e}"
-                    )
-
-        await session.delete(target)
-        await session.commit()
-
+                .values(
+                    status=BackupStatus.FAILED,
+                    error_message="Plan removed before backup started",
+                )
+            )
+            await session.commit()
     await reconcile_after_commit(request)
-    return {"status": "deleted"}
+    return {
+        "status": "already_removed" if already_removed else "removed",
+        "copies": "retained",
+    }

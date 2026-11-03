@@ -121,7 +121,16 @@ async def test_failed_sync_requires_actual_provider_delete(
 
     monkeypatch.setattr(backend, "delete", refuse)
     endpoint = "/api/v1/backups" if bulk else f"/api/v1/backups/{backup_id}"
-    response = await async_client.delete(endpoint)
+    if bulk:
+        preview = await async_client.post(
+            "/api/v1/backups/removal/preview",
+            json={"backup_ids": [backup_id], "scope": "all"},
+        )
+        response = await async_client.post(
+            "/api/v1/backups/removal/execute", json={"token": preview.json()["token"]}
+        )
+    else:
+        response = await async_client.delete(endpoint)
     assert response.status_code == 200
     assert calls == [archive.name], "Failed sync can still own uploaded remote bytes"
     assert key.exists() and (remote / archive.name).exists()

@@ -234,7 +234,7 @@ asyncio.run(database.run_migrations())
                 await connection.execute(
                     text("SELECT version FROM schema_migrations ORDER BY version")
                 )
-            ).scalars().all() == [1, 2, 3, 4, 5]
+            ).scalars().all() == [1, 2, 3, 4, 5, 6]
             assert (
                 len(
                     (
@@ -359,7 +359,7 @@ async def test_published_v3_variants_converge_without_reinterpreting_ledger(
                 await connection.execute(
                     text("SELECT version FROM schema_migrations ORDER BY version")
                 )
-            ).scalars().all() == [1, 2, 3, 4, 5]
+            ).scalars().all() == [1, 2, 3, 4, 5, 6]
             assert (
                 await connection.execute(
                     text("SELECT applied_at FROM schema_migrations WHERE version=3")

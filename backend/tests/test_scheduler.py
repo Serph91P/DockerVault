@@ -68,6 +68,7 @@ class TestBackupScheduler:
 
         # Mock target with schedule
         target = MagicMock(spec=BackupTarget)
+        target.removed_at = None
         target.id = 1
         target.name = "test-volume"
         target.target_type = "volume"
@@ -105,6 +106,7 @@ class TestBackupScheduler:
         await scheduler.start()
 
         target = MagicMock(spec=BackupTarget)
+        target.removed_at = None
         target.id = 1
         target.name = "test-volume"
         target.schedule_cron = "0 2 * * *"
@@ -133,6 +135,7 @@ class TestBackupScheduler:
         await scheduler.start()
 
         target = MagicMock(spec=BackupTarget)
+        target.removed_at = None
         target.id = 1
         target.name = "test-volume"
         target.schedule_cron = None
@@ -157,6 +160,7 @@ class TestBackupScheduler:
         await scheduler.start()
 
         target = MagicMock(spec=BackupTarget)
+        target.removed_at = None
         target.id = 1
         target.name = "test-volume"
         target.schedule_cron = "0 2 * * *"
@@ -231,12 +235,14 @@ class TestBackupScheduler:
 
         # Add some schedules
         target1 = MagicMock(spec=BackupTarget)
+        target1.removed_at = None
         target1.id = 1
         target1.name = "volume-1"
         target1.schedule_cron = "0 2 * * *"
         target1.schedule = None  # No Schedule entity
 
         target2 = MagicMock(spec=BackupTarget)
+        target2.removed_at = None
         target2.id = 2
         target2.name = "volume-2"
         target2.schedule_cron = "0 6 * * *"
@@ -264,6 +270,7 @@ class TestBackupScheduler:
 
         # Mock target from database
         target = MagicMock(spec=BackupTarget)
+        target.removed_at = None
         target.id = 1
         target.name = "test-volume"
         target.enabled = True
@@ -318,6 +325,7 @@ class TestBackupScheduler:
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         target = MagicMock(spec=BackupTarget)
+        target.removed_at = None
         target.id = 1
         target.enabled = False
 
@@ -378,6 +386,7 @@ class TestBackupScheduler:
 
         # Mock target from database
         target = MagicMock(spec=BackupTarget)
+        target.removed_at = None
         target.id = 1
         target.name = "test-volume"
         target.enabled = True
@@ -427,6 +436,7 @@ class TestBackupScheduler:
 
         # Mock disabled target
         target = MagicMock(spec=BackupTarget)
+        target.removed_at = None
         target.id = 1
         target.name = "test-volume"
         target.enabled = False  # Disabled
@@ -466,6 +476,7 @@ class TestSchedulerEdgeCases:
         await scheduler.start()
 
         target = MagicMock(spec=BackupTarget)
+        target.removed_at = None
         target.id = 1
         target.name = "test-volume"
         target.schedule_cron = "invalid cron expression"

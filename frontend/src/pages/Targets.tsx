@@ -4,15 +4,15 @@ import { targetsApi, backupsApi, schedulesApi, BackupTarget, ScheduleEntity } fr
 import toast from 'react-hot-toast'
 import { useState } from 'react'
 import BackupWizard from '../components/BackupWizard'
-import ConfirmDialog from '../components/ConfirmDialog'
+import RemovalDialog, { RemovalIntent } from '../components/RemovalDialog'
 import EmptyState from '../components/EmptyState'
 import LoadingSkeleton from '../components/LoadingSkeleton'
 
-function TargetCard({ target, schedules, onEdit }: { target: BackupTarget; schedules: ScheduleEntity[]; onEdit: (target: BackupTarget) => void }) {
+function TargetCard({ target, schedules, onEdit, onRemove }: { target: BackupTarget; schedules: ScheduleEntity[]; onEdit: (target: BackupTarget) => void; onRemove: (intent: RemovalIntent) => void }) {
   const queryClient = useQueryClient()
   const [editingSchedule, setEditingSchedule] = useState(false)
   const [selectedScheduleId, setSelectedScheduleId] = useState<number | undefined>(target.schedule_id ?? undefined)
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+
 
   const triggerBackupMutation = useMutation({
     mutationFn: () => backupsApi.create(target.id),
@@ -48,15 +48,6 @@ function TargetCard({ target, schedules, onEdit }: { target: BackupTarget; sched
     onError: () => toast.error('Failed to update schedule'),
   })
 
-  const deleteMutation = useMutation({
-    mutationFn: () => targetsApi.delete(target.id),
-    onSuccess: () => {
-      toast.success('Target deleted')
-      queryClient.invalidateQueries({ queryKey: ['targets'] })
-      queryClient.invalidateQueries({ queryKey: ['schedules'] })
-    },
-    onError: () => toast.error('Failed to delete target'),
-  })
 
   const handleSaveSchedule = () => {
     updateScheduleMutation.mutate(selectedScheduleId)
@@ -237,32 +228,22 @@ function TargetCard({ target, schedules, onEdit }: { target: BackupTarget; sched
           <Pencil className="w-4 h-4" />
         </button>
         <button
-          onClick={() => setShowDeleteConfirm(true)}
-          disabled={deleteMutation.isPending}
+          onClick={() => onRemove({ kind: 'plan', targetId: target.id, name: target.name })}
+          aria-label={`Remove protection plan ${target.name}`}
           className="px-3 py-2 bg-red-500/10 text-red-400 rounded-lg hover:bg-red-500/20 transition-colors"
         >
           <Trash2 className="w-4 h-4" />
         </button>
       </div>
 
-      <ConfirmDialog
-        isOpen={showDeleteConfirm}
-        onClose={() => setShowDeleteConfirm(false)}
-        onConfirm={() => {
-          deleteMutation.mutate()
-          setShowDeleteConfirm(false)
-        }}
-        title="Delete Target"
-        message={`Delete target "${target.name}"? This cannot be undone. Existing backups will be kept.`}
-        confirmLabel="Delete"
-        confirmVariant="danger"
-        isLoading={deleteMutation.isPending}
-      />
+      <button onClick={() => onRemove({ kind: 'copies', targetId: target.id, name: target.name })} className="text-red-400">Delete archive copies</button>
     </div>
   )
 }
 
 export default function Targets() {
+  const queryClient = useQueryClient()
+  const [removal, setRemoval] = useState<RemovalIntent | null>(null)
   const [wizardOpen, setWizardOpen] = useState(false)
   const [editingTarget, setEditingTarget] = useState<BackupTarget | null>(null)
   
@@ -307,7 +288,7 @@ export default function Targets() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {targets?.map((target) => (
-            <TargetCard key={target.id} target={target} schedules={schedules} onEdit={handleEdit} />
+            <TargetCard key={target.id} target={target} schedules={schedules} onEdit={handleEdit} onRemove={setRemoval} />
           ))}
         </div>
       )}
@@ -323,6 +304,11 @@ export default function Targets() {
 
       {/* Backup Wizard Modal */}
       <BackupWizard isOpen={wizardOpen} onClose={handleWizardClose} editTarget={editingTarget} />
+      {removal && <RemovalDialog intent={removal} onClose={() => setRemoval(null)} onChanged={() => {
+        queryClient.invalidateQueries({ queryKey: ['targets'] })
+        queryClient.invalidateQueries({ queryKey: ['backups'] })
+        queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      }} />}
     </div>
   )
 }
