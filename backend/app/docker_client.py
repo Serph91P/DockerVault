@@ -248,7 +248,20 @@ class DockerClientWrapper:
             container = await loop.run_in_executor(
                 None, lambda: self.client.containers.get(container_id_or_name)
             )
-            await loop.run_in_executor(None, lambda: container.stop(timeout=timeout))
+            stop = loop.run_in_executor(None, lambda: container.stop(timeout=timeout))
+            cancellation = None
+            while not stop.done():
+                try:
+                    await asyncio.shield(stop)
+                except asyncio.CancelledError as exc:
+                    if cancellation is None:
+                        cancellation = exc
+                except Exception:
+                    break  # Retrieve the SDK failure after preserving cancellation.
+            if cancellation is not None:
+                stop.exception()
+                raise cancellation
+            stop.result()
             logger.info(f"Stopped container: {container_id_or_name}")
             return True
         except Exception as e:
