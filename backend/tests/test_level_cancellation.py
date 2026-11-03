@@ -139,11 +139,18 @@ async def test_sync_claims_survive_single_abort_and_settlement(monkeypatch, mode
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["edge", "level"])
+@pytest.mark.parametrize("boundary", ["dependency", "factory"])
 async def test_dependency_session_rollback_settles_without_spin(
-    tmp_path, monkeypatch, mode
+    tmp_path, monkeypatch, mode, boundary
 ):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'owned.db'}")
-    maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    maker = async_sessionmaker(
+        engine,
+        class_=AsyncSession
+        if boundary == "dependency"
+        else database.async_session.class_,
+        expire_on_commit=False,
+    )
     monkeypatch.setattr(database, "async_session", maker)
     entered, release, rolled_back = (asyncio.Event() for _ in range(3))
     import aiosqlite
@@ -162,7 +169,12 @@ async def test_dependency_session_rollback_settles_without_spin(
 
     async def operation():
         # Cleanup happens after yield, in the same task, as for a FastAPI dependency.
-        async with asynccontextmanager(database.get_session)() as session:
+        context = (
+            asynccontextmanager(database.get_session)()
+            if boundary == "dependency"
+            else maker()
+        )
+        async with context as session:
             await session.execute(text("INSERT INTO owned VALUES (1)"))
 
     try:

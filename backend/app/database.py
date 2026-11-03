@@ -386,9 +386,18 @@ engine = create_async_engine(
     echo=False,
 )
 
+
+class CancellationSafeAsyncSession(AsyncSession):
+    """Finish rollback/close without level cancellation spinning in SQLAlchemy."""
+
+    async def __aexit__(self, type_, value, traceback) -> None:
+        with CancelScope(shield=True):
+            await super().__aexit__(type_, value, traceback)
+
+
 async_session = async_sessionmaker(
     engine,
-    class_=AsyncSession,
+    class_=CancellationSafeAsyncSession,
     expire_on_commit=False,
 )
 
