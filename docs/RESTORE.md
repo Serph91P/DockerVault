@@ -15,7 +15,11 @@ archives keep their mount/source prefixes, including when only one mount was
 archived; their existing custom-destination semantics are unchanged.
 
 Mapping remaps archive-root-relative hardlink targets together with file names.
-Relative symlink targets are not rewritten. Absolute names, paths escaping the
+Relative symlink targets are not rewritten. Directory symlinks are archived once
+without traversing them; existing include/exclude rules apply to the link entry.
+Safe relative links (including a link to the restore root) round-trip, while an
+external target remains forbidden on extraction. Old archives cannot recover
+links that were omitted when they were created. Absolute names, paths escaping the
 destination and unsafe links are still checked before extraction, and Python's
 `data` extraction filter remains enabled. A recorded single-source root that does
 not match the archive is rejected instead of silently restoring to another tree.
