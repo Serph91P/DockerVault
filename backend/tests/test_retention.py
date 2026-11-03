@@ -64,13 +64,21 @@ async def test_keep_last_preserves_three_real_files_and_rows(
 
 
 @pytest.mark.parametrize(
-    "keep_last,keep_daily,expected",
-    [(2, 2, {1, 2, 3}), (0, 0, {1}), (10, 0, {1, 2, 3, 4})],
+    "hour,keep_last,keep_daily,expected",
+    [
+        (12, 2, 2, {1, 2, 3}),
+        (0, 2, 2, {1, 2}),
+        (12, 0, 0, {1}),
+        (0, 0, 0, {1}),
+        (12, 10, 0, {1, 2, 3, 4}),
+        (0, 10, 0, {1, 2, 3, 4}),
+    ],
 )
 def test_keep_last_unions_calendar_and_preserves_keep_one_fallback(
-    keep_last, keep_daily, expected
+    hour, keep_last, keep_daily, expected
 ):
-    now = datetime.now(timezone.utc)
+    # Midnight hourly snapshots span different days; noon snapshots share today.
+    now = datetime(2026, 6, 15, hour, tzinfo=timezone.utc)
     backups = [
         Backup(id=index + 1, created_at=now - timedelta(hours=hours))
         for index, hours in enumerate([0, 1, 25, 49])
@@ -83,4 +91,6 @@ def test_keep_last_unions_calendar_and_preserves_keep_one_fallback(
         keep_yearly=0,
         max_age_days=365,
     )
-    assert RetentionManager()._select_backups_to_keep(backups, policy) == expected
+    with patch("app.retention.datetime") as clock:
+        clock.now.return_value = now
+        assert RetentionManager()._select_backups_to_keep(backups, policy) == expected
