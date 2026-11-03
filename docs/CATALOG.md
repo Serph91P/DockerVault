@@ -43,3 +43,14 @@ Back up the SQLite database before upgrades. Keep the matching previous image
 and database backup together for rollback; do not run an older image against a
 partially upgraded database. The migration ledger and supported legacy upgrades
 are documented separately by the versioned-migrations change (#174).
+
+Restore resolves a retained remote-only archive and its required key before
+calling the engine, passes those working paths explicitly, and removes temporary
+downloads after restore. It never rewrites the permanent catalog to temporary
+paths. A missing archive/key cannot report a successful restore.
+
+A failed/pending sync may already have uploaded archive bytes (for example when
+the key sidecar failed). Every non-empty recorded remote path therefore needs a
+confirmed provider deletion before its metadata/key can be discarded, regardless
+of sync status. Missing backend or refused deletion retains recovery identity and
+reports a warning for both single and bulk deletion.
