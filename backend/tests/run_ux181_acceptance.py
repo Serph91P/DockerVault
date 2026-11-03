@@ -141,7 +141,11 @@ try:
                 assert not client.containers.list(
                     all=True, filters={"volume": volume}
                 ), "Owned test volume is still in use"
-                owned.remove()
+                try:
+                    owned.remove()
+                except docker.errors.NotFound:
+                    # AutoRemove can finish deleting an anonymous volume after get().
+                    pass
                 try:
                     client.volumes.get(volume)
                 except docker.errors.NotFound:

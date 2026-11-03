@@ -111,16 +111,21 @@ for (const wizard of [false, true]) {
     await waitFor(() => fail ? expect(screen.getByRole('button', { name: 'Save Changes' })).toBeEnabled() : expect(view.close).toHaveBeenCalledOnce())
     cachesSafe()
   })
-  it(`${editor} preserves unloaded hooks after a failed private load`, async () => {
+  it.each(['failed', 'pending'])(`${editor} preserves unloaded hooks after a %s private load`, async state => {
     let sent: Record<string, unknown> | undefined
-    server.use(http.get('/api/v1/targets/917', () => HttpResponse.json({ detail: hooks }, { status: 503 })), http.put('/api/v1/targets/917', async ({ request }) => { sent = await request.json() as Record<string, unknown>; return HttpResponse.json(target) }))
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    server.use(http.get('/api/v1/targets/917', async () => { if (state === 'pending') await gate; return HttpResponse.json({ detail: hooks }, { status: 503 }) }), http.put('/api/v1/targets/917', async ({ request }) => { sent = await request.json() as Record<string, unknown>; return HttpResponse.json(target) }))
     mount()
     await options()
-    await screen.findByText(/Could not load hook commands/)
+    await screen.findByText(state === 'failed' ? /Could not load hook commands/ : /Loading private hook commands/)
+    expect(screen.getByPlaceholderText(wizard ? /pg_dump/ : /mysqldump/)).toBeDisabled()
     await save()
     await waitFor(() => expect(sent).toBeDefined())
     expect(Object.hasOwn(sent!, 'pre_backup_command')).toBe(false)
     expect(Object.hasOwn(sent!, 'post_backup_command')).toBe(false)
+    release()
+    expect(queryClient.getMutationCache().getAll()).toHaveLength(0)
     cachesSafe()
   })
   it(`${editor} drops late loads across close/reopen and target switches`, async () => {
