@@ -21,6 +21,7 @@ from ..database import get_db
 from ..remote_storage import StorageConfig, StorageType, storage_manager
 from ..credential_encryption import decrypt_value, encrypt_value
 from ..config import settings
+from ..storage_validation import storage_errors, stored_storage_errors
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -46,13 +47,13 @@ def _validate_ssh_key_path(path: str) -> str:
 class StorageCreate(BaseModel):
     """Create a new remote storage configuration"""
 
-    name: str
+    name: str = Field(min_length=1, max_length=255)
     storage_type: StorageType
     enabled: bool = True
 
     # Connection settings
     host: Optional[str] = None
-    port: Optional[int] = None
+    port: Optional[int] = Field(default=None, ge=1, le=65535)
     username: Optional[str] = None
     password: Optional[str] = None
 
@@ -79,10 +80,10 @@ class StorageCreate(BaseModel):
 class StorageUpdate(BaseModel):
     """Update remote storage configuration"""
 
-    name: Optional[str] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     enabled: Optional[bool] = None
     host: Optional[str] = None
-    port: Optional[int] = None
+    port: Optional[int] = Field(default=None, ge=1, le=65535)
     username: Optional[str] = None
     password: Optional[str] = None
     base_path: Optional[str] = None
@@ -115,6 +116,7 @@ class StorageResponse(BaseModel):
     rclone_remote: Optional[str]
     created_at: str
     updated_at: str
+    validation_errors: List[str] = []
 
     class Config:
         from_attributes = True
@@ -148,6 +150,7 @@ async def list_storage(db: AsyncSession = Depends(get_db)):
             s3_endpoint_url=s.s3_endpoint_url,
             webdav_url=s.webdav_url,
             rclone_remote=s.rclone_remote,
+            validation_errors=stored_storage_errors(s),
             created_at=s.created_at.isoformat(),
             updated_at=s.updated_at.isoformat(),
         )
@@ -489,6 +492,12 @@ async def install_ssh_key(name: str, data: SSHKeyInstallRequest):
 @router.post("", response_model=StorageResponse)
 async def create_storage(data: StorageCreate, db: AsyncSession = Depends(get_db)):
     """Create a new remote storage configuration"""
+    errors = storage_errors(data.model_dump())
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Invalid storage configuration", "errors": errors},
+        )
     validated_ssh_key_path = None
     if data.ssh_key_path:
         validated_ssh_key_path = _validate_ssh_key_path(data.ssh_key_path)
@@ -539,6 +548,7 @@ async def create_storage(data: StorageCreate, db: AsyncSession = Depends(get_db)
         s3_endpoint_url=storage.s3_endpoint_url,
         webdav_url=storage.webdav_url,
         rclone_remote=storage.rclone_remote,
+        validation_errors=stored_storage_errors(storage),
         created_at=storage.created_at.isoformat(),
         updated_at=storage.updated_at.isoformat(),
     )
@@ -566,6 +576,7 @@ async def get_storage(storage_id: int, db: AsyncSession = Depends(get_db)):
         s3_endpoint_url=storage.s3_endpoint_url,
         webdav_url=storage.webdav_url,
         rclone_remote=storage.rclone_remote,
+        validation_errors=stored_storage_errors(storage),
         created_at=storage.created_at.isoformat(),
         updated_at=storage.updated_at.isoformat(),
     )
@@ -580,13 +591,29 @@ async def update_storage(
     if not storage:
         raise HTTPException(status_code=404, detail="Storage not found")
 
-    for field, value in data.model_dump(exclude_unset=True).items():
-        if isinstance(value, str) and value == "":
-            continue
+    updates = data.model_dump(exclude_unset=True)
+    # Blank edit credentials mean keep stored secret; null is an explicit clear.
+    updates = {
+        field: value
+        for field, value in updates.items()
+        if not (field in ("password", "s3_access_key", "s3_secret_key") and value == "")
+    }
+    effective = {
+        column.name: getattr(storage, column.name)
+        for column in storage.__table__.columns
+    }
+    errors = storage_errors({**effective, **updates})
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Invalid storage configuration", "errors": errors},
+        )
+    if updates.get("ssh_key_path"):
+        updates["ssh_key_path"] = _validate_ssh_key_path(updates["ssh_key_path"])
+    for field, value in updates.items():
         if field in ("password", "s3_access_key", "s3_secret_key") and value:
             value = encrypt_value(value)
-        if field == "ssh_key_path" and value:
-            value = _validate_ssh_key_path(value)
+
         setattr(storage, field, value)
 
     await db.commit()
@@ -612,6 +639,7 @@ async def update_storage(
         s3_endpoint_url=storage.s3_endpoint_url,
         webdav_url=storage.webdav_url,
         rclone_remote=storage.rclone_remote,
+        validation_errors=stored_storage_errors(storage),
         created_at=storage.created_at.isoformat(),
         updated_at=storage.updated_at.isoformat(),
     )

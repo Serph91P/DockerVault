@@ -18,6 +18,7 @@ from app.config import settings
 from app.cron import cron_warnings, next_run
 from app.database import BackupTarget, Schedule, async_session
 from app.api._scheduler import reconcile_after_commit
+from app.target_validation import check_target_references, target_validation_errors
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +205,7 @@ class TargetResponse(BaseModel):
     delete_local_after_sync: bool
     created_at: str
     updated_at: str
+    validation_errors: List[str] = []
 
     class Config:
         from_attributes = True
@@ -261,6 +263,7 @@ def _build_target_response(t: BackupTarget) -> TargetResponse:
         delete_local_after_sync=t.delete_local_after_sync or False,
         created_at=_to_utc_isoformat(t.created_at) or "",
         updated_at=_to_utc_isoformat(t.updated_at) or "",
+        validation_errors=[],
     )
 
 
@@ -275,24 +278,33 @@ async def list_targets():
             )
         )
         targets = result.scalars().all()
-
-        return [_build_target_response(t) for t in targets]
+        responses = []
+        for target in targets:
+            response = _build_target_response(target)
+            response.validation_errors = await target_validation_errors(session, target)
+            responses.append(response)
+        return responses
 
 
 @router.post("", response_model=TargetResponse)
 async def create_target(target: TargetCreate, request: Request):
     """Create a new backup target."""
     async with async_session() as session:
-        # Validate schedule_id if provided
-        if target.schedule_id is not None:
-            schedule_result = await session.execute(
-                select(Schedule).where(Schedule.id == target.schedule_id)
+        # Validate target references (schedule, retention, remote storage)
+        reference_errors = await check_target_references(
+            session,
+            schedule_id=target.schedule_id,
+            retention_policy_id=target.retention_policy_id,
+            remote_storage_ids=target.remote_storage_ids,
+        )
+        if reference_errors:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Invalid target references",
+                    "errors": reference_errors,
+                },
             )
-            if not schedule_result.scalar_one_or_none():
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Schedule with id {target.schedule_id} not found",
-                )
 
         # Validate target type and required fields
         if target.target_type == "container" and not target.container_name:
@@ -383,7 +395,9 @@ async def get_target(target_id: int):
         if not target:
             raise HTTPException(status_code=404, detail="Target not found")
 
-        return _build_target_response(target)
+        response = _build_target_response(target)
+        response.validation_errors = await target_validation_errors(session, target)
+        return response
 
 
 @router.put("/{target_id}", response_model=TargetResponse)
@@ -405,10 +419,7 @@ async def update_target(target_id: int, update: TargetUpdate, request: Request):
 
         # Validate schedule_id if provided
         if update.schedule_id is not None:
-            schedule_result = await session.execute(
-                select(Schedule).where(Schedule.id == update.schedule_id)
-            )
-            if not schedule_result.scalar_one_or_none():
+            if await session.get(Schedule, update.schedule_id) is None:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Schedule with id {update.schedule_id} not found",
@@ -425,6 +436,23 @@ async def update_target(target_id: int, update: TargetUpdate, request: Request):
             target.enabled = update.enabled
         if "retention_policy_id" in update.model_fields_set:
             target.retention_policy_id = update.retention_policy_id
+        if update.remote_storage_ids is not None:
+            target.remote_storage_ids = update.remote_storage_ids
+            target.sync_to_remote = len(update.remote_storage_ids) > 0
+        reference_errors = await check_target_references(
+            session,
+            schedule_id=target.schedule_id,
+            retention_policy_id=target.retention_policy_id,
+            remote_storage_ids=target.remote_storage_ids,
+        )
+        if reference_errors:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Invalid target references",
+                    "errors": reference_errors,
+                },
+            )
         if update.dependencies is not None:
             target.dependencies = update.dependencies
         if update.selected_volumes is not None:
