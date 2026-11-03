@@ -23,3 +23,11 @@ links that were omitted when they were created. Absolute names, paths escaping t
 destination and unsafe links are still checked before extraction, and Python's
 `data` extraction filter remains enabled. A recorded single-source root that does
 not match the archive is rejected instead of silently restoring to another tree.
+
+Backup and restore ownership uses the actual canonical data paths, not only a
+configured target or volume name. Volume/container/stack mountpoints therefore
+share the same path lock as a restore to that directory (including symlink aliases),
+with all keys acquired in one global order. The archive reader receives the frozen
+source/mount snapshot resolved against claimed immutable container IDs before any
+stop. It never reselects a replacement by name after stopping the original; a
+missing/disagreeing identity fails closed instead of reading unclaimed live data.
