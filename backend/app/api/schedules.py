@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import AwareDatetime, BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -15,6 +15,8 @@ from app.backup_engine import backup_engine
 from app.database import BackupTarget, Schedule, async_session
 from app.scheduler import BackupScheduler, DisabledBackupTargetError
 from app.api._scheduler import reconcile_after_commit
+from app.config import settings
+from app.cron import CONTRACT, cron_warnings
 
 router = APIRouter()
 
@@ -54,6 +56,7 @@ class ScheduleResponse(BaseModel):
     next_run: Optional[str] = None
     created_at: str
     updated_at: str
+    cron_warnings: List[str] = []
 
 
 class ScheduleWithTargets(ScheduleResponse):
@@ -79,6 +82,58 @@ class EstimateRequest(BaseModel):
 
     target_id: int
     cron_expression: str
+
+
+class PreviewRequest(BaseModel):
+    cron_expression: str
+    base_time: Optional[AwareDatetime] = None
+    count: int = Field(default=3, ge=1, le=10)
+
+
+@router.post("/preview")
+async def preview_cron(data: PreviewRequest):
+    scheduler = BackupScheduler()
+    runs = []
+    base = data.base_time
+    try:
+        for _ in range(data.count):
+            base = scheduler.get_next_run(data.cron_expression, base)
+            runs.append(base.isoformat())
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid cron expression: {exc}")
+    return {
+        "next_runs": runs,
+        "timezone": settings.TZ,
+        "contract": CONTRACT,
+        "warnings": cron_warnings(data.cron_expression),
+    }
+
+
+@router.get("/compatibility/inventory")
+async def cron_inventory():
+    """Expose incompatible/ambiguous stored intent without changing execution."""
+    async with async_session() as session:
+        schedules = (await session.execute(select(Schedule))).scalars().all()
+        targets = (await session.execute(select(BackupTarget))).scalars().all()
+        items = []
+        for kind, rows, field in (
+            ("schedule", schedules, "cron_expression"),
+            ("target_legacy", targets, "schedule_cron"),
+        ):
+            for row in rows:
+                expression = getattr(row, field)
+                warnings = cron_warnings(expression)
+                if warnings:
+                    items.append(
+                        {
+                            "kind": kind,
+                            "id": row.id,
+                            "name": row.name,
+                            "expression": expression,
+                            "warnings": warnings,
+                        }
+                    )
+    return {"contract": CONTRACT, "timezone": settings.TZ, "items": items}
 
 
 # ============================================
@@ -111,6 +166,7 @@ async def list_schedules():
                     id=schedule.id,
                     name=schedule.name,
                     cron_expression=schedule.cron_expression,
+                    cron_warnings=cron_warnings(schedule.cron_expression),
                     description=schedule.description,
                     enabled=schedule.enabled,
                     target_count=len(schedule.targets),
@@ -158,6 +214,7 @@ async def create_schedule(data: ScheduleCreate, request: Request):
             id=schedule.id,
             name=schedule.name,
             cron_expression=schedule.cron_expression,
+            cron_warnings=cron_warnings(schedule.cron_expression),
             description=schedule.description,
             enabled=schedule.enabled,
             target_count=0,
@@ -205,6 +262,7 @@ async def get_schedule(schedule_id: int):
             id=schedule.id,
             name=schedule.name,
             cron_expression=schedule.cron_expression,
+            cron_warnings=cron_warnings(schedule.cron_expression),
             description=schedule.description,
             enabled=schedule.enabled,
             target_count=len(targets),
@@ -276,6 +334,7 @@ async def update_schedule(schedule_id: int, data: ScheduleUpdate, request: Reque
             id=schedule.id,
             name=schedule.name,
             cron_expression=schedule.cron_expression,
+            cron_warnings=cron_warnings(schedule.cron_expression),
             description=schedule.description,
             enabled=schedule.enabled,
             target_count=len(schedule.targets),
@@ -494,15 +553,17 @@ async def cron_help():
     """Get help for cron expressions."""
     return {
         "format": "minute hour day month weekday",
+        "contract": CONTRACT,
+        "timezone": settings.TZ,
         "examples": [
             {"expression": "0 2 * * *", "description": "Every day at 2:00 AM"},
-            {"expression": "0 3 * * 0", "description": "Every Sunday at 3:00 AM"},
+            {"expression": "0 3 * * sun", "description": "Every Sunday at 3:00 AM"},
             {
                 "expression": "0 4 1 * *",
                 "description": "First day of every month at 4:00 AM",
             },
             {"expression": "0 */6 * * *", "description": "Every 6 hours"},
-            {"expression": "30 1 * * 1-5", "description": "Weekdays at 1:30 AM"},
+            {"expression": "30 1 * * mon-fri", "description": "Weekdays at 1:30 AM"},
         ],
         "special": {
             "*": "Any value",

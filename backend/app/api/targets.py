@@ -8,13 +8,14 @@ import shlex
 from datetime import datetime, timezone
 from typing import Dict, List, Literal, Optional
 
-from croniter import croniter
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
+from app.cron import cron_warnings, next_run
 from app.database import BackupTarget, Schedule, async_session
 from app.api._scheduler import reconcile_after_commit
 
@@ -42,9 +43,7 @@ def validate_cron_expression(cron_expr: Optional[str]) -> Optional[str]:
     if not cron_expr:
         return None
 
-    # Validate using croniter
-    if not croniter.is_valid(cron_expr):
-        raise ValueError(f"Invalid cron expression: {cron_expr}")
+    next_run(cron_expr)
 
     return cron_expr
 
@@ -168,6 +167,7 @@ class TargetResponse(BaseModel):
     schedule_id: Optional[int] = None  # NEW: Reference to Schedule entity
     schedule: Optional[ScheduleInfo] = None  # Embedded schedule info
     schedule_cron: Optional[str] = None  # DEPRECATED: backwards compat
+    cron_warnings: List[str] = []
     enabled: bool
     retention_policy_id: Optional[int] = None
     retention_policy: Optional[RetentionPolicyInfo] = None  # Embedded info
@@ -226,6 +226,9 @@ def _build_target_response(t: BackupTarget) -> TargetResponse:
         schedule_id=t.schedule_id,
         schedule=schedule_info,
         schedule_cron=t.schedule_cron,
+        cron_warnings=cron_warnings(
+            t.schedule.cron_expression if t.schedule else t.schedule_cron
+        ),
         enabled=t.enabled,
         retention_policy_id=t.retention_policy_id,
         retention_policy=retention_policy_info,
