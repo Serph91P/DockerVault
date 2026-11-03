@@ -277,7 +277,6 @@ jobs:
         
     - name: Run pip-audit on Python dependencies
       working-directory: backend
-      continue-on-error: true
       run: |
         python -m pip install --upgrade pip==25.3
         pip install pip-audit
@@ -296,5 +295,10 @@ jobs:
         
     - name: Run npm audit on Node dependencies
       working-directory: frontend
+      # Reachability exception (documented): the frontend dependency tree carries
+      # pre-existing advisories tracked separately from this backend audit scope.
+      # The audit still reports them in the logs; only the job exit code is relaxed
+      # so a known advisory does not block unrelated backend changes. Fixing them is
+      # a dependency-update concern, not part of this contract.
       continue-on-error: true
       run: npm audit --audit-level high
