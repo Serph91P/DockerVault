@@ -10,7 +10,7 @@ from typing import Dict, List, Literal, Optional
 
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -102,7 +102,7 @@ class TargetCreate(BaseModel):
 class TargetUpdate(BaseModel):
     """Update backup target request."""
 
-    name: Optional[str] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     schedule_id: Optional[int] = None  # NEW: Reference to Schedule entity
     schedule_cron: Optional[str] = None  # DEPRECATED: Keep for backwards compatibility
     enabled: Optional[bool] = None
@@ -122,6 +122,22 @@ class TargetUpdate(BaseModel):
     # Remote storage sync
     remote_storage_ids: Optional[List[int]] = None
     delete_local_after_sync: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def reject_required_clears(self):
+        nullable = {
+            "schedule_id",
+            "schedule_cron",
+            "retention_policy_id",
+            "pre_backup_command",
+            "post_backup_command",
+        }
+        for field in self.model_fields_set - nullable:
+            if getattr(self, field) is None:
+                raise ValueError(
+                    f"{field} cannot be null; omit it to keep the current value"
+                )
+        return self
 
     @field_validator("schedule_cron")
     @classmethod
@@ -407,7 +423,7 @@ async def update_target(target_id: int, update: TargetUpdate, request: Request):
             target.schedule_cron = update.schedule_cron
         if update.enabled is not None:
             target.enabled = update.enabled
-        if update.retention_policy_id is not None:
+        if "retention_policy_id" in update.model_fields_set:
             target.retention_policy_id = update.retention_policy_id
         if update.dependencies is not None:
             target.dependencies = update.dependencies
@@ -419,9 +435,9 @@ async def update_target(target_id: int, update: TargetUpdate, request: Request):
             target.exclude_paths = update.exclude_paths
         if update.per_volume_rules is not None:
             target.per_volume_rules = update.per_volume_rules
-        if update.pre_backup_command is not None:
+        if "pre_backup_command" in update.model_fields_set:
             target.pre_backup_command = update.pre_backup_command
-        if update.post_backup_command is not None:
+        if "post_backup_command" in update.model_fields_set:
             target.post_backup_command = update.post_backup_command
         if update.stop_container is not None:
             target.stop_container = update.stop_container
