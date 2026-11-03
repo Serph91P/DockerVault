@@ -196,6 +196,9 @@ jobs:
             PYTHONPATH=/app python /app/recovery-check/backend/tests/runtime_recovery_instructions.py /app/recovery-check
           '
 
+    - name: Real authenticated backup and local/remote encrypted restore after restart
+      run: python3 backend/tests/run_backup_roundtrip.py dockervault:test
+
     - name: Run integration tests
       run: |
         # Run container in background
@@ -293,12 +296,13 @@ jobs:
       working-directory: frontend
       run: npm install --global "$(node -p "require('./package.json').packageManager")"
         
-    - name: Run npm audit on Node dependencies
-      working-directory: frontend
-      # Reachability exception (documented): the frontend dependency tree carries
-      # pre-existing advisories tracked separately from this backend audit scope.
-      # The audit still reports them in the logs; only the job exit code is relaxed
-      # so a known advisory does not block unrelated backend changes. Fixing them is
-      # a dependency-update concern, not part of this contract.
-      continue-on-error: true
-      run: npm audit --audit-level high
+    - name: Run fail-closed npm audit with exact existing-debt exceptions
+      run: python backend/tests/check_npm_audit.py
+
+    - name: Preserve the complete npm audit report
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: npm-audit-report
+        path: frontend/npm-audit-report.json
+        if-no-files-found: error
