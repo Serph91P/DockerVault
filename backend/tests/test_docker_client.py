@@ -4,6 +4,8 @@ Tests for docker_client module.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.docker_client import ContainerInfo, DockerClientWrapper, VolumeInfo
 
 
@@ -288,7 +290,8 @@ class TestDockerClientWrapper:
         assert len(stack.containers) == 1
 
     @patch("app.docker_client.docker.DockerClient")
-    async def test_get_dependency_order(self, mock_docker_client):
+    @pytest.mark.parametrize("extra", [[], ["db123"], ["missing"]])
+    async def test_get_dependency_order(self, mock_docker_client, extra):
         """Test getting container dependency order."""
         mock_client = MagicMock()
         mock_docker_client.return_value = mock_client
@@ -321,12 +324,14 @@ class TestDockerClientWrapper:
         mock_client.containers.list.return_value = [mock_db, mock_app]
 
         wrapper = DockerClientWrapper()
-        order = await wrapper.get_dependency_order(["app", "db"])
+        order = await wrapper.get_dependency_order(["app", "db", *extra])
 
         assert isinstance(order, list)
         # App should come before db for stopping (since app depends on db)
         assert "app" in order
         assert "db" in order
+        assert set(order) == {"app", "db", *extra}
+        assert order.index("app") < order.index("db")
 
     def test_close(self):
         """Test closing Docker client."""

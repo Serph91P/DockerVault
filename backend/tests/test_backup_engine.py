@@ -55,6 +55,7 @@ async def _create_backup_record(test_db, backup_path=None, **target_overrides):
 
 
 def _configure_stopped_container(mock_docker, start_result=True):
+    mock_docker.get_container_identity = AsyncMock(side_effect=lambda name: name)
     mock_docker.get_dependency_order = AsyncMock(return_value=["test-container"])
     mock_docker.get_container_state = AsyncMock(
         side_effect=lambda _name: (
@@ -442,6 +443,9 @@ class TestBackupSafety:
             mock_docker.get_dependency_order = AsyncMock(
                 return_value=["test-container"]
             )
+            mock_docker.get_container_identity = AsyncMock(
+                side_effect=lambda name: name
+            )
             mock_docker.get_container_state = AsyncMock(return_value="running")
             mock_docker.stop_container = AsyncMock(return_value=False)
             mock_docker.start_container = AsyncMock(return_value=True)
@@ -465,6 +469,9 @@ class TestBackupSafety:
             patch("app.backup_engine.docker_client") as mock_docker,
             patch.object(engine, "_extract_tar", extract),
         ):
+            mock_docker.get_container_identity = AsyncMock(
+                side_effect=lambda name: name
+            )
             mock_docker.get_container_state = AsyncMock(return_value="running")
             mock_docker.stop_container = AsyncMock(return_value=False)
             mock_docker.start_container = AsyncMock(return_value=True)
@@ -502,6 +509,9 @@ class TestBackupSafety:
             mock_docker.get_dependency_order = AsyncMock(
                 return_value=["test-container"]
             )
+            mock_docker.get_container_identity = AsyncMock(
+                side_effect=lambda name: name
+            )
             mock_docker.get_container_state = AsyncMock(
                 side_effect=["running"] + ["exited"] * 20
             )
@@ -527,6 +537,9 @@ class TestBackupSafety:
             patch("app.backup_engine.asyncio.sleep", new=AsyncMock()),
             patch.object(engine, "_extract_tar", new=MagicMock()),
         ):
+            mock_docker.get_container_identity = AsyncMock(
+                side_effect=lambda name: name
+            )
             mock_docker.get_container_state = AsyncMock(
                 side_effect=["running"] + ["exited"] * 20
             )
@@ -584,6 +597,9 @@ class TestBackupSafety:
         ):
             mock_docker.get_dependency_order = AsyncMock(
                 return_value=["test-container"]
+            )
+            mock_docker.get_container_identity = AsyncMock(
+                side_effect=lambda name: name
             )
             mock_docker.get_container_state = AsyncMock(
                 side_effect=["running"] + ["exited"] * 20
