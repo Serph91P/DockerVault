@@ -9,13 +9,14 @@ from datetime import datetime, timezone
 from typing import Dict, List, Literal, Optional
 
 from croniter import croniter
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
 from app.database import BackupTarget, Schedule, async_session
+from app.api._scheduler import reconcile_after_commit
 
 logger = logging.getLogger(__name__)
 
@@ -260,7 +261,7 @@ async def list_targets():
 
 
 @router.post("", response_model=TargetResponse)
-async def create_target(target: TargetCreate):
+async def create_target(target: TargetCreate, request: Request):
     """Create a new backup target."""
     async with async_session() as session:
         # Validate schedule_id if provided
@@ -333,6 +334,7 @@ async def create_target(target: TargetCreate):
         result = await session.execute(
             select(BackupTarget)
             .where(BackupTarget.id == db_target.id)
+            .execution_options(populate_existing=True)
             .options(
                 selectinload(BackupTarget.schedule),
                 selectinload(BackupTarget.retention_policy),
@@ -340,7 +342,9 @@ async def create_target(target: TargetCreate):
         )
         db_target = result.scalar_one()
 
-        return _build_target_response(db_target)
+        response = _build_target_response(db_target)
+    await reconcile_after_commit(request)
+    return response
 
 
 @router.get("/{target_id}", response_model=TargetResponse)
@@ -364,7 +368,7 @@ async def get_target(target_id: int):
 
 
 @router.put("/{target_id}", response_model=TargetResponse)
-async def update_target(target_id: int, update: TargetUpdate):
+async def update_target(target_id: int, update: TargetUpdate, request: Request):
     """Update a backup target."""
     async with async_session() as session:
         result = await session.execute(
@@ -390,12 +394,13 @@ async def update_target(target_id: int, update: TargetUpdate):
                     status_code=400,
                     detail=f"Schedule with id {update.schedule_id} not found",
                 )
+        if "schedule_id" in update.model_fields_set:
             target.schedule_id = update.schedule_id
 
         # Update fields
         if update.name is not None:
             target.name = update.name
-        if update.schedule_cron is not None:
+        if "schedule_cron" in update.model_fields_set:
             target.schedule_cron = update.schedule_cron
         if update.enabled is not None:
             target.enabled = update.enabled
@@ -439,6 +444,7 @@ async def update_target(target_id: int, update: TargetUpdate):
         result = await session.execute(
             select(BackupTarget)
             .where(BackupTarget.id == target_id)
+            .execution_options(populate_existing=True)
             .options(
                 selectinload(BackupTarget.schedule),
                 selectinload(BackupTarget.retention_policy),
@@ -446,11 +452,13 @@ async def update_target(target_id: int, update: TargetUpdate):
         )
         target = result.scalar_one()
 
-        return _build_target_response(target)
+        response = _build_target_response(target)
+    await reconcile_after_commit(request)
+    return response
 
 
 @router.delete("/{target_id}")
-async def delete_target(target_id: int):
+async def delete_target(target_id: int, request: Request):
     """Delete a backup target and all associated backups."""
     async with async_session() as session:
         result = await session.execute(
@@ -485,4 +493,5 @@ async def delete_target(target_id: int):
         await session.delete(target)
         await session.commit()
 
-        return {"status": "deleted"}
+    await reconcile_after_commit(request)
+    return {"status": "deleted"}
