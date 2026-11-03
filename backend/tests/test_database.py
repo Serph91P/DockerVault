@@ -227,26 +227,19 @@ class TestDatabaseModels:
         assert backup.checksum == "def456"
 
     async def test_backup_with_orphan_target_id(self, db_session):
-        """Test backup creation with non-existent target_id.
+        """Reject orphan references on the same SQLite configuration as production."""
+        import pytest
+        from sqlalchemy.exc import IntegrityError
 
-        Note: SQLite doesn't enforce foreign key constraints by default.
-        This test verifies the backup is created but has an orphan reference.
-        In production with FK constraints enabled, this would raise IntegrityError.
-        """
-        # Create a backup with invalid target_id
         backup = Backup(
-            target_id=99999,  # Non-existent target
+            target_id=99999,
             backup_type=BackupType.FULL,
             status=BackupStatus.PENDING,
         )
-
         db_session.add(backup)
-        await db_session.commit()
-        await db_session.refresh(backup)
-
-        # Backup was created (SQLite FK constraints not enforced by default)
-        assert backup.id is not None
-        assert backup.target_id == 99999
+        with pytest.raises(IntegrityError):
+            await db_session.commit()
+        await db_session.rollback()
 
     async def test_metadata_json_field(self, db_session):
         """Test JSON metadata field functionality."""

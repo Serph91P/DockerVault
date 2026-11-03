@@ -624,6 +624,18 @@ async def delete_storage(storage_id: int, db: AsyncSession = Depends(get_db)):
     if not storage:
         raise HTTPException(status_code=404, detail="Storage not found")
 
+    from ..database import BackupStorageSync
+
+    references = await db.execute(
+        select(BackupStorageSync.id)
+        .where(BackupStorageSync.storage_id == storage_id)
+        .limit(1)
+    )
+    if references.first() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Remove backup sync records before deleting their storage configuration",
+        )
     await db.delete(storage)
     await db.commit()
 

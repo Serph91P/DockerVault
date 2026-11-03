@@ -463,6 +463,15 @@ async def delete_target(target_id: int):
         if not target:
             raise HTTPException(status_code=404, detail="Target not found")
 
+        from app.database import has_remote_copies
+
+        for backup in target.backups:
+            if await has_remote_copies(session, backup.id):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Remove remote copies before deleting their backup target",
+                )
+
         # Delete backup files from disk before removing DB records
         for backup in target.backups:
             if backup.file_path and os.path.exists(backup.file_path):

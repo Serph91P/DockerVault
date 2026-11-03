@@ -18,6 +18,7 @@ from app.database import (
     BackupTarget,
     RetentionPolicy,
     async_session,
+    has_remote_copies,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,21 +83,28 @@ class RetentionManager:
             deleted_count = 0
             for backup in to_delete:
                 try:
+                    preserve_remote = await has_remote_copies(session, backup.id)
                     # Delete backup file and encryption key sidecar
                     if backup.file_path and os.path.exists(backup.file_path):
                         os.remove(backup.file_path)
                         logger.info(f"Deleted backup file: {backup.file_path}")
                     # Clean up .key sidecar for encrypted backups
-                    if backup.encryption_key_path and os.path.exists(
-                        backup.encryption_key_path
+                    if (
+                        not preserve_remote
+                        and backup.encryption_key_path
+                        and os.path.exists(backup.encryption_key_path)
                     ):
                         os.remove(backup.encryption_key_path)
                         logger.info(
                             f"Deleted encryption key: {backup.encryption_key_path}"
                         )
 
-                    # Delete record
-                    await session.execute(delete(Backup).where(Backup.id == backup.id))
+                    if preserve_remote:
+                        backup.file_path = None
+                    else:
+                        await session.execute(
+                            delete(Backup).where(Backup.id == backup.id)
+                        )
                     deleted_count += 1
                 except Exception as e:
                     logger.error(f"Failed to delete backup {backup.id}: {e}")
