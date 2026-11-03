@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   X,
@@ -21,8 +21,8 @@ import {
   AlertCircle,
   Cloud,
 } from 'lucide-react'
-import axios from 'axios'
-import { Backup, backupsApi } from '../api'
+import api, { Backup } from '../api'
+import { ownsSession, sessionGeneration, sessionSignal } from '../store/session'
 import { clsx } from 'clsx'
 
 interface BackupFile {
@@ -186,11 +186,13 @@ function FileTree({
   depth,
   backupId,
   encryptedDownload,
+  prefix = '',
 }: {
   files: BackupFile[]
   depth: number
   backupId: number
   encryptedDownload?: (filePath: string, fileName: string) => Promise<void>
+  prefix?: string
 }) {
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
 
@@ -249,7 +251,7 @@ function FileTree({
       {sortedFiles.map((file) => (
         <FileRow
           key={file.path}
-          file={file}
+          file={{ ...file, path: prefix + file.path }}
           depth={depth}
           backupId={backupId}
           expanded={expandedDirs.has(file.path)}
@@ -257,7 +259,7 @@ function FileTree({
           encryptedDownload={encryptedDownload}
         >
           {file.children.length > 0 && (
-            <FileTree files={file.children} depth={depth + 1} backupId={backupId} encryptedDownload={encryptedDownload} />
+            <FileTree files={file.children} depth={depth + 1} backupId={backupId} encryptedDownload={encryptedDownload} prefix={`${prefix}${file.path}/`} />
           )}
         </FileRow>
       ))}
@@ -270,24 +272,39 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
   const [privateKey, setPrivateKey] = useState('')
   const [keySubmitted, setKeySubmitted] = useState(false)
   const [showKey, setShowKey] = useState(false)
+  const key = useRef('')
+  const requests = useRef(new AbortController())
+  const [contextId, setContextId] = useState(() => crypto.randomUUID())
+  const [downloadError, setDownloadError] = useState('')
+  useEffect(() => {
+    requests.current = new AbortController()
+    return () => { key.current = ''; requests.current.abort() }
+  }, [])
 
   const isRemoteOnly = backup.local_available === false && backup.remote_synced
 
   const shouldFetch = isEncrypted ? keySubmitted : true
-  const trimmedKey = privateKey.trim()
+
 
   const [offset, setOffset] = useState(0)
   const pageSize = 2000
   const { data: page, isLoading, error } = useQuery({
-    queryKey: ['backup-files', backup.id, isEncrypted ? 'encrypted' : 'plain', keySubmitted ? trimmedKey : '', offset],
-    queryFn: async () => {
-      const response = isEncrypted
-        ? await backupsApi.listFilesEncrypted(backup.id, trimmedKey, pageSize, offset)
-        : await backupsApi.listFiles(backup.id, pageSize, offset)
-      return {
-        files: response.data as BackupFile[],
-        total: Number(response.headers['x-total-count']),
-        hasMore: response.headers['x-has-more'] === 'true',
+    queryKey: ['backup-files', backup.id, isEncrypted ? 'encrypted' : 'plain', contextId, offset],
+    queryFn: async ({ signal }) => {
+      try {
+        const response = await api.request({
+          url: `/backups/${backup.id}/files`, method: isEncrypted ? 'POST' : 'GET',
+          data: isEncrypted ? { private_key: key.current } : undefined,
+          params: { limit: pageSize, offset }, signal,
+        })
+        return {
+          files: response.data as BackupFile[],
+          total: Number(response.headers['x-total-count']),
+          hasMore: response.headers['x-has-more'] === 'true',
+        }
+      } catch (error) {
+        // Axios errors retain request bodies: only a sanitized error may enter Query.
+        throw Object.assign(new Error('Unable to browse archive'), { status: (error as { response?: { status?: number } }).response?.status })
       }
     },
     enabled: shouldFetch,
@@ -299,11 +316,15 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
   const handleKeySubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (privateKey.trim()) {
+      key.current = privateKey.trim()
+      setPrivateKey('')
       setKeySubmitted(true)
     }
   }
 
   const handleRetryKey = () => {
+    key.current = ''
+    setContextId(crypto.randomUUID())
     setKeySubmitted(false)
     setOffset(0)
     setPrivateKey('')
@@ -311,15 +332,18 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
 
   // For encrypted backups, use POST for file downloads
   const handleEncryptedDownload = async (filePath: string, fileName: string) => {
+    const owner = sessionGeneration()
+    const signal = AbortSignal.any([requests.current.signal, sessionSignal()])
     try {
-      const response = await fetch(`/api/v1/backups/${backup.id}/files/${encodeURIComponent(filePath)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ private_key: privateKey.trim() }),
+      setDownloadError('')
+      const response = await api.request({
+        url: `/backups/${backup.id}/files/${encodeURIComponent(filePath)}`,
+        method: isEncrypted ? 'POST' : 'GET',
+        data: isEncrypted ? { private_key: key.current } : undefined,
+        responseType: 'blob', signal,
       })
-      if (!response.ok) throw new Error('Download failed')
-
-      const blob = await response.blob()
+      if (!ownsSession(owner) || signal.aborted) return
+      const blob = response.data as Blob
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -329,7 +353,7 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
       document.body.removeChild(a)
       URL.revokeObjectURL(url)
     } catch {
-      console.error('Failed to download file')
+      if (ownsSession(owner) && !signal.aborted) setDownloadError('Download failed. Retry while this archive is open.')
     }
   }
 
@@ -374,6 +398,7 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-4">
+          {downloadError && <p role="alert">{downloadError}</p>}
           {/* Encrypted backup: Key input */}
           {isEncrypted && !keySubmitted ? (
             <div className="flex flex-col items-center justify-center py-8">
@@ -388,11 +413,12 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
 
               <form onSubmit={handleKeySubmit} className="w-full max-w-md space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-dark-300 mb-2">
+                  <label htmlFor="browse-private-key" className="block text-sm font-medium text-dark-300 mb-2">
                     Age Private Key
                   </label>
                   <div className="relative">
                     <textarea
+                      id="browse-private-key"
                       value={privateKey}
                       onChange={(e) => setPrivateKey(e.target.value)}
                       placeholder="AGE-SECRET-KEY-1..."
@@ -453,12 +479,8 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
             <div className="text-center py-12">
               {(() => {
                 // Extract the error detail from the API response
-                const detail = axios.isAxiosError(error)
-                  ? error.response?.data?.detail
-                  : undefined
-                const status = axios.isAxiosError(error)
-                  ? error.response?.status
-                  : undefined
+                const status = (error as { status?: number }).status
+                const detail = status === 404 ? 'Backup file not found' : undefined
                 const isFileNotFound =
                   status === 404 && typeof detail === 'string' && detail.toLowerCase().includes('file not found')
 
@@ -512,7 +534,7 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
                 files={files}
                 depth={0}
                 backupId={backup.id}
-                encryptedDownload={isEncrypted ? handleEncryptedDownload : undefined}
+                encryptedDownload={handleEncryptedDownload}
               />
             </div>
           ) : (
