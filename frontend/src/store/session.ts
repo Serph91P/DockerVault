@@ -2,6 +2,7 @@ import { QueryClient } from '@tanstack/react-query'
 import { CanceledError, type InternalAxiosRequestConfig } from 'axios'
 import toast from 'react-hot-toast'
 import api from '../api'
+import { isTargetRequest, protectTargetResponse } from '../api/targetPrivacy'
 import { useNotificationStore } from './notifications'
 import { cleanupWebSocket } from './websocket'
 
@@ -51,11 +52,13 @@ api.interceptors.request.use((config) => {
 }, undefined, { synchronous: true })
 api.interceptors.response.use((response) => {
   if (owners.get(response.config) !== generation) throw new CanceledError('Session changed')
-  return response
+  return protectTargetResponse(response)
 }, (error) => {
   if (error.config && owners.get(error.config) !== generation) {
     return Promise.reject(new CanceledError('Session changed'))
   }
   if (error.response?.status === 401 && !error.config?.url?.startsWith('/auth/')) expire()
+  // Validation errors can echo command bodies; never expose their Axios context.
+  if (isTargetRequest(error.config)) return Promise.reject(new Error('Target request failed. Check the current server state before retrying.'))
   return Promise.reject(error)
 })

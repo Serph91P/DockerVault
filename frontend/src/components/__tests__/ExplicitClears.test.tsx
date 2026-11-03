@@ -22,6 +22,7 @@ afterEach(cleanup)
 function prepare(wizard: boolean) {
   let sent: Record<string, unknown> | undefined
   server.use(
+    http.get('/api/v1/targets/917', () => HttpResponse.json(target)),
     http.get('/api/v1/schedules', () => HttpResponse.json([{ id: 41, name: 'Owned schedule', cron_expression: '0 2 * * *', enabled: true, target_count: 1 }])),
     http.get('/api/v1/retention', () => HttpResponse.json([{ id: 42, name: 'Owned retention', keep_last: 3, keep_daily: 0, keep_weekly: 0, keep_monthly: 0 }])),
     http.get('/api/v1/storage', () => HttpResponse.json([])),

@@ -5,6 +5,7 @@ import { WizardData } from './index'
 interface Props {
   data: WizardData
   updateData: (updates: Partial<WizardData>) => void
+  hooksDisabled?: boolean
 }
 
 // Compression options
@@ -14,7 +15,7 @@ const COMPRESSION_OPTIONS = [
   { value: 'zstd', label: 'Zstandard', description: 'Best ratio — ~70% smaller, slightly slower' },
 ]
 
-export default function StepOptions({ data, updateData }: Props) {
+export default function StepOptions({ data, updateData, hooksDisabled = false }: Props) {
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   return (
@@ -110,6 +111,7 @@ export default function StepOptions({ data, updateData }: Props) {
             <input
               type="text"
               value={data.preCommand}
+              disabled={hooksDisabled}
               onChange={(e) => updateData({ preCommand: e.target.value })}
               placeholder="e.g., docker exec db pg_dump > /backup/dump.sql"
               className="w-full px-4 py-2 bg-dark-900 border border-dark-600 rounded-lg text-dark-100 font-mono text-sm focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
@@ -128,6 +130,7 @@ export default function StepOptions({ data, updateData }: Props) {
             <input
               type="text"
               value={data.postCommand}
+              disabled={hooksDisabled}
               onChange={(e) => updateData({ postCommand: e.target.value })}
               placeholder="e.g., rm /backup/dump.sql"
               className="w-full px-4 py-2 bg-dark-900 border border-dark-600 rounded-lg text-dark-100 font-mono text-sm focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
