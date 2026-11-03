@@ -111,6 +111,9 @@ async def lifespan(app: FastAPI):
     # Shutdown — drain in-progress backups before stopping scheduler
     logger.info("Shutting down DockerVault backend...")
     await backup_engine.shutdown(timeout=settings.SHUTDOWN_TIMEOUT)
+    from app.websocket import manager
+
+    await manager.shutdown()
     await scheduler.stop()
     logger.info("Shutdown complete")
 
