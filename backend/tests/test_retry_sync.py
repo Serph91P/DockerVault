@@ -193,3 +193,59 @@ async def test_retry_does_not_overwrite_other_backup_identity(
     response = await async_client.post(f"/api/v1/backups/{backup_id}/retry-sync")
     assert response.status_code >= 400 or response.json()["succeeded"] == 0
     assert destination.read_bytes() == b"other identity"
+
+
+@pytest.mark.asyncio
+async def test_retry_preserves_enc_directories_and_ignores_noncolliding_key_names(
+    async_client, test_db, retry_catalog
+):
+    from app.api.backups import _ensure_backup_locally, _download_key_from_remote
+    import shutil
+
+    backup_id, storage_id, archive, key, remote = retry_catalog
+    archive = archive.rename(archive.with_name("archive.enc.tar.enc"))
+    key = key.rename(key.with_name("different-local.key"))
+    foreign_path = "owned.key/archive.key.tar.key"
+    foreign = remote / foreign_path
+    foreign.parent.mkdir(parents=True)
+    foreign.write_bytes(b"foreign identity remains")
+    async with test_db() as session:
+        backup = await session.get(Backup, backup_id)
+        target = await session.get(BackupTarget, backup.target_id)
+        target.name = "owned.enc"
+        backup.file_path, backup.encryption_key_path = str(archive), str(key)
+        other = Backup(
+            target_id=target.id, status=BackupStatus.COMPLETED, encrypted=False
+        )
+        session.add(other)
+        await session.flush()
+        session.add(
+            BackupStorageSync(
+                backup_id=other.id,
+                storage_id=storage_id,
+                remote_path=foreign_path,
+                sync_status="completed",
+            )
+        )
+        await session.commit()
+    response = await async_client.post(f"/api/v1/backups/{backup_id}/retry-sync")
+    assert response.status_code == 200 and response.json()["succeeded"] == 1, (
+        response.text
+    )
+    assert foreign.read_bytes() == b"foreign identity remains"
+    assert (
+        remote / "owned.enc/archive.enc.tar.enc"
+    ).read_bytes() == b"owned ciphertext"
+    assert (remote / "owned.enc/archive.enc.tar.key").read_bytes() == b"owned sidecar"
+    archive.unlink()
+    key.unlink()
+    storage_manager.backends.clear()
+    storage_manager.configs.clear()
+    restored, temporary = await _ensure_backup_locally(backup)
+    try:
+        assert Path(restored).read_bytes() == b"owned ciphertext"
+        restored_key = await _download_key_from_remote(backup, restored)
+        assert restored_key and Path(restored_key).read_bytes() == b"owned sidecar"
+    finally:
+        if temporary:
+            shutil.rmtree(temporary)
