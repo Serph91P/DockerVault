@@ -407,11 +407,14 @@ ${setupData.recovery_instructions}
               {/* Steps */}
               <div>
                 <h3 className="text-sm font-semibold text-dark-200 mb-3">Recovery Steps</h3>
+                <p className="text-sm text-dark-300 mb-3">Run these blocks in the same Bash shell. The binary DEK must be converted to hex before OpenSSL can use it.</p>
                 <div className="space-y-4">
                   <div>
                     <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">1.</span> Save your private key to a file:</p>
                     <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
-{`cat > private_key.txt << 'EOF'
+{`set -euo pipefail
+umask 077
+cat > private_key.txt << 'EOF'
 AGE-SECRET-KEY-1XXXXXX...
 EOF
 chmod 600 private_key.txt`}
@@ -421,7 +424,12 @@ chmod 600 private_key.txt`}
                   <div>
                     <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">2.</span> Decrypt the DEK (Data Encryption Key):</p>
                     <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
-{`age -d -i private_key.txt backup.tar.gz.key > dek.txt`}
+{`recovery_dir=$(mktemp -d)
+trap 'rm -f "$recovery_dir/dek.bin" "$recovery_dir/dek.hex"; rmdir "$recovery_dir"' EXIT
+trap 'exit 1' HUP INT TERM
+age -d -i private_key.txt backup.tar.gz.key > "$recovery_dir/dek.bin"
+test "$(wc -c < "$recovery_dir/dek.bin")" -eq 32
+od -An -v -tx1 "$recovery_dir/dek.bin" | tr -d '[:space:]' > "$recovery_dir/dek.hex"`}
                     </pre>
                   </div>
 
@@ -431,7 +439,7 @@ chmod 600 private_key.txt`}
 {`openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \\
     -in backup.tar.gz.enc \\
     -out backup.tar.gz \\
-    -pass file:dek.txt`}
+    -pass "file:$recovery_dir/dek.hex"`}
                     </pre>
                   </div>
 
@@ -445,7 +453,10 @@ chmod 600 private_key.txt`}
                   <div>
                     <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">5.</span> Clean up:</p>
                     <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
-{`rm dek.txt  # Don't leave the DEK lying around`}
+{`rm -f "$recovery_dir/dek.bin" "$recovery_dir/dek.hex"
+rmdir "$recovery_dir"
+trap - EXIT HUP INT TERM
+# Keep your private key secure; delete this working copy when finished.`}
                     </pre>
                   </div>
                 </div>

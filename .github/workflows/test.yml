@@ -186,6 +186,16 @@ jobs:
           curl --version
         '
         
+    - name: Verify exported standalone recovery commands
+      run: |
+        tar -cf - backend/tests/runtime_recovery_instructions.py README.md frontend/src/components/EncryptionSetup.tsx | \
+          docker run --rm -i --network none --entrypoint /bin/bash dockervault:test -c '
+            set -eu
+            mkdir -p /app/recovery-check
+            tar -xf - -C /app/recovery-check
+            PYTHONPATH=/app python /app/recovery-check/backend/tests/runtime_recovery_instructions.py /app/recovery-check
+          '
+
     - name: Run integration tests
       run: |
         # Run container in background

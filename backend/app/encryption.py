@@ -595,8 +595,13 @@ using standard command-line tools.
 
 ### Steps
 
+Run the blocks in the same Bash shell. The age-wrapped DEK is binary; OpenSSL
+requires its 64-character hex representation, with no trailing newline.
+
 1. **Save your private key to a file** (if not already):
    ```bash
+   set -euo pipefail
+   umask 077
    cat > private_key.txt << 'EOF'
    AGE-SECRET-KEY-1XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
    EOF
@@ -605,7 +610,12 @@ using standard command-line tools.
 
 2. **Decrypt the DEK (Data Encryption Key)**:
    ```bash
-   age -d -i private_key.txt backup.tar.gz.key > dek.txt
+   recovery_dir=$(mktemp -d)
+   trap 'rm -f "$recovery_dir/dek.bin" "$recovery_dir/dek.hex"; rmdir "$recovery_dir"' EXIT
+   trap 'exit 1' HUP INT TERM
+   age -d -i private_key.txt backup.tar.gz.key > "$recovery_dir/dek.bin"
+   test "$(wc -c < "$recovery_dir/dek.bin")" -eq 32
+   od -An -v -tx1 "$recovery_dir/dek.bin" | tr -d '[:space:]' > "$recovery_dir/dek.hex"
    ```
 
 3. **Decrypt the backup**:
@@ -613,7 +623,7 @@ using standard command-line tools.
    openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \\
        -in backup.tar.gz.enc \\
        -out backup.tar.gz \\
-       -pass file:dek.txt
+       -pass "file:$recovery_dir/dek.hex"
    ```
 
 4. **Extract the backup**:
@@ -623,7 +633,10 @@ using standard command-line tools.
 
 5. **Clean up**:
    ```bash
-   rm dek.txt  # Don't leave the DEK lying around
+   rm -f "$recovery_dir/dek.bin" "$recovery_dir/dek.hex"
+   rmdir "$recovery_dir"
+   trap - EXIT HUP INT TERM
+   # Keep your private key secure; delete this working copy when finished.
    ```
 
 ### Extract a Single File
