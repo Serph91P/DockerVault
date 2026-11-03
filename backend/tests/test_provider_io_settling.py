@@ -9,8 +9,10 @@ import aioftp
 import pytest
 
 from app.remote_storage import LocalStorage, StorageConfig, StorageType
-from tests.test_ftp_protocol import ftp_service  # noqa: F401
+from tests import test_ftp_protocol
 from tests.test_remote_object_ownership import test_engine  # noqa: F401
+
+ftp_service = test_ftp_protocol.ftp_service
 
 
 @pytest.mark.asyncio
