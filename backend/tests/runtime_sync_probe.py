@@ -1,4 +1,4 @@
-"""Real auth/API/catalog/provider roundtrip across separate process lifetimes."""
+"""Opaque synthetic-byte auth/provider/catalog probe, NOT app backup or restore."""
 
 import asyncio
 import hashlib

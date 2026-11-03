@@ -53,7 +53,8 @@ describe('API Layer', () => {
 
     it('should delete backup', async () => {
       const response = await backupsApi.delete(1)
-      expect(response.status).toBe(204)
+      expect(response.status).toBe(200)
+      expect(response.data.status).toBe('deleted')
     })
 
     it('should restore backup', async () => {
