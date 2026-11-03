@@ -49,9 +49,13 @@ same destination therefore cannot both overwrite it and report success. Ownershi
 is re-read after waiting; an existing foreign archive **or sidecar**, including a
 failed/partial catalog copy, rejects the operation with409. Cancelling a waiter
 releases any already-acquired keys before transfer starts. Once transfer starts,
-a protected child operation is awaited through actual provider I/O, verification
-and catalog commit before cancellation propagates or claims are released (including
-repeated cancellation); cancelling an executor future alone cannot stop its writer.
+a child operation receives cancellation once and is joined before claims are
+released, including repeated cancellation. Abort-capable transfers receive the
+signal (S3 multipart and FTP ABOR); non-abortable copies, single PUTs and other
+provider writes settle at their I/O boundary first. Verification downloads and
+hash workers likewise finish before their temporary files are removed. Cancellation
+still propagates, rather than acknowledging an interrupted transfer as completed;
+cancelling an executor future alone cannot stop its writer.
 Independent storage/path identities remain
 independent. This uses the existing single application engine, not a distributed
 provider-side lock or external coordination service.
