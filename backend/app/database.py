@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy import JSON, Boolean, Column, DateTime
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy import ForeignKey, Integer, String, Text, text
+from sqlalchemy import ForeignKey, Integer, String, Text, event, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, backref, relationship
 
@@ -161,6 +162,22 @@ class Backup(Base):
     backup_metadata = Column(JSON, default=dict)
 
     created_at = Column(DateTime, default=_utcnow)
+
+
+class WorkloadOperation(Base):
+    """Durable lifecycle intent survives both process loss and backup deletion."""
+
+    __tablename__ = "workload_operations"
+    id = Column(Integer, primary_key=True)
+    backup_id = Column(
+        Integer, ForeignKey("backups.id", ondelete="SET NULL"), nullable=True
+    )
+    kind = Column(String(16), nullable=False)
+    phase = Column(String(32), nullable=False, default="claimed")
+    state = Column(String(32), nullable=False, default="active")
+    resources = Column(JSON, nullable=False, default=dict)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
 
 
 class BackupLog(Base):
@@ -350,6 +367,18 @@ class AppSettings(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
+# Every pooled SQLite connection must enforce the catalog's declared cascades.
+@event.listens_for(Engine, "connect")
+def _enable_sqlite_foreign_keys(connection, _record):
+    if "sqlite" not in type(connection).__module__:
+        return
+    cursor = connection.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_keys=ON")
+    finally:
+        cursor.close()
+
+
 # Database engine and session
 engine = create_async_engine(
     settings.DATABASE_URL,
@@ -364,11 +393,7 @@ async_session = async_sessionmaker(
 
 
 async def init_db():
-    """Initialize database tables."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    # Run migrations for existing databases
+    """Initialize the database only after all required migrations succeed."""
     await run_migrations()
 
     # Encrypt any plaintext credentials in remote_storage
@@ -400,122 +425,302 @@ async def init_db():
 
 
 async def run_migrations():
-    """Run database migrations for existing databases.
+    """Upgrade atomically; restore FK enforcement before returning a pooled connection."""
+    migrations = (
+        _upgrade_legacy_schema,
+        _repair_catalog_orphans,
+        _create_operation_journal,
+        _ensure_target_foreign_keys,
+        _create_operation_journal,
+    )
+    async with engine.connect() as conn:
+        # SQLite's documented rebuild procedure requires this outside a transaction.
+        await conn.execute(text("PRAGMA foreign_keys=OFF"))
+        await conn.commit()
+        try:
+            async with conn.begin():
+                await conn.execute(text("BEGIN IMMEDIATE"))
+                await conn.execute(
+                    text(
+                        "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+                    )
+                )
+                completed = (
+                    (
+                        await conn.execute(
+                            text(
+                                "SELECT version FROM schema_migrations ORDER BY version"
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if completed != list(range(1, len(completed) + 1)) or len(
+                    completed
+                ) > len(migrations):
+                    raise RuntimeError(
+                        "Unsupported or incomplete migration ledger; refusing startup"
+                    )
+                for version, migrate in enumerate(migrations, start=1):
+                    if version in completed:
+                        continue
+                    if version == 1:
+                        await conn.run_sync(Base.metadata.create_all)
+                    await migrate(conn)
+                    await conn.execute(
+                        text(
+                            "INSERT INTO schema_migrations (version) VALUES (:version)"
+                        ),
+                        {"version": version},
+                    )
+                if (
+                    await conn.execute(text("PRAGMA foreign_key_check"))
+                ).first() is not None:
+                    raise RuntimeError(
+                        "Catalog foreign-key violations; refusing startup"
+                    )
+        finally:
+            await conn.rollback()
+            await conn.execute(text("PRAGMA foreign_keys=ON"))
+            await conn.commit()
 
-    This handles adding new columns to existing tables that
-    create_all doesn't update.
-    """
-    async with engine.begin() as conn:
-        # Check and add missing columns to backups table
-        result = await conn.execute(text("PRAGMA table_info(backups)"))
-        backups_columns = {row[1] for row in result.fetchall()}
 
-        if "encrypted" not in backups_columns:
-            await conn.execute(
-                text("ALTER TABLE backups ADD COLUMN encrypted BOOLEAN DEFAULT 0")
-            )
+async def _ensure_target_foreign_keys(conn):
+    """Converge supported legacy target tables without losing extension columns/objects."""
+    import re
 
-        if "encryption_key_path" not in backups_columns:
-            await conn.execute(
-                text("ALTER TABLE backups ADD COLUMN encryption_key_path VARCHAR(1024)")
-            )
-
-        # Check and add missing columns to backup_targets table
-        result = await conn.execute(text("PRAGMA table_info(backup_targets)"))
-        targets_columns = {row[1] for row in result.fetchall()}
-
-        if "schedule_id" not in targets_columns:
-            await conn.execute(
-                text("ALTER TABLE backup_targets ADD COLUMN schedule_id INTEGER")
-            )
-
-        if "retention_policy_id" not in targets_columns:
+    references = {
+        "schedule_id": "schedules",
+        "retention_policy_id": "retention_policies",
+    }
+    existing = {
+        (row[3], row[2], row[4])
+        for row in (
+            await conn.execute(text("PRAGMA foreign_key_list(backup_targets)"))
+        ).all()
+    }
+    missing = {
+        column: parent
+        for column, parent in references.items()
+        if (column, parent, "id") not in existing
+    }
+    if not missing:
+        return
+    for column, parent in missing.items():
+        invalid = (
             await conn.execute(
                 text(
-                    "ALTER TABLE backup_targets ADD COLUMN retention_policy_id INTEGER"
+                    f'SELECT id FROM backup_targets WHERE "{column}" IS NOT NULL AND "{column}" NOT IN (SELECT id FROM "{parent}") LIMIT 1'
                 )
             )
-
-        # Add volume selection and path filtering columns
-        if "selected_volumes" not in targets_columns:
-            await conn.execute(
-                text(
-                    "ALTER TABLE backup_targets ADD COLUMN selected_volumes JSON "
-                    "DEFAULT '[]'"
-                )
+        ).first()
+        if invalid:
+            raise RuntimeError(
+                f"Invalid legacy target {column} reference; refusing startup without changing data"
             )
-
-        if "include_paths" not in targets_columns:
-            await conn.execute(
-                text(
-                    "ALTER TABLE backup_targets ADD COLUMN include_paths JSON "
-                    "DEFAULT '[]'"
-                )
-            )
-
-        if "exclude_paths" not in targets_columns:
-            await conn.execute(
-                text(
-                    "ALTER TABLE backup_targets ADD COLUMN exclude_paths JSON "
-                    "DEFAULT '[]'"
-                )
-            )
-
-        if "per_volume_rules" not in targets_columns:
-            await conn.execute(
-                text(
-                    "ALTER TABLE backup_targets ADD COLUMN per_volume_rules JSON "
-                    "DEFAULT '{}'"
-                )
-            )
-
-        if "sync_to_remote" not in targets_columns:
-            await conn.execute(
-                text(
-                    "ALTER TABLE backup_targets ADD COLUMN sync_to_remote "
-                    "BOOLEAN DEFAULT 0"
-                )
-            )
-
-        if "remote_storage_ids" not in targets_columns:
-            await conn.execute(
-                text(
-                    "ALTER TABLE backup_targets ADD COLUMN remote_storage_ids "
-                    "JSON DEFAULT '[]'"
-                )
-            )
-
-        if "delete_local_after_sync" not in targets_columns:
-            await conn.execute(
-                text(
-                    "ALTER TABLE backup_targets ADD COLUMN "
-                    "delete_local_after_sync BOOLEAN DEFAULT 0"
-                )
-            )
-
-        # Data migration: fix rows where remote_storage_ids is set but
-        # sync_to_remote is still False (can happen on older databases).
+    original = (
         await conn.execute(
             text(
-                "UPDATE backup_targets SET sync_to_remote = 1 "
-                "WHERE remote_storage_ids IS NOT NULL "
-                "AND remote_storage_ids != '[]' "
-                "AND remote_storage_ids != '' "
-                "AND sync_to_remote = 0"
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='backup_targets'"
+            )
+        )
+    ).scalar_one()
+    replacement, count = re.subn(
+        r'(?i)^CREATE TABLE\s+(?:"backup_targets"|`backup_targets`|\[backup_targets\]|backup_targets)',
+        'CREATE TABLE "backup_targets__fk_rebuild"',
+        original,
+        count=1,
+    )
+    if count != 1:
+        raise RuntimeError("Unsupported legacy target table declaration")
+    closing = replacement.rfind(")")
+    constraints = ", " + ", ".join(
+        f'FOREIGN KEY ("{column}") REFERENCES "{parent}" (id)'
+        for column, parent in missing.items()
+    )
+    replacement = replacement[:closing] + constraints + replacement[closing:]
+    objects = (
+        (
+            await conn.execute(
+                text(
+                    "SELECT sql FROM sqlite_master WHERE tbl_name='backup_targets' AND type IN ('index','trigger') AND sql IS NOT NULL"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    columns = [
+        row[1]
+        for row in (await conn.execute(text("PRAGMA table_info(backup_targets)"))).all()
+    ]
+    quoted = ", ".join('"' + name.replace('"', '""') + '"' for name in columns)
+    await conn.execute(text(replacement))
+    await conn.execute(
+        text(
+            f"INSERT INTO backup_targets__fk_rebuild ({quoted}) SELECT {quoted} FROM backup_targets"
+        )
+    )
+    await conn.execute(text("DROP TABLE backup_targets"))
+    await conn.execute(
+        text("ALTER TABLE backup_targets__fk_rebuild RENAME TO backup_targets")
+    )
+    for sql in objects:
+        await conn.execute(text(sql))
+
+
+async def _create_operation_journal(conn):
+    await conn.run_sync(
+        lambda sync: WorkloadOperation.__table__.create(sync, checkfirst=True)
+    )
+
+
+async def _upgrade_legacy_schema(conn):
+    """Baseline the supported unversioned schema and its once-only data rewrite."""
+    # Check and add missing columns to backups table
+    result = await conn.execute(text("PRAGMA table_info(backups)"))
+    backups_columns = {row[1] for row in result.fetchall()}
+
+    if "encrypted" not in backups_columns:
+        await conn.execute(
+            text("ALTER TABLE backups ADD COLUMN encrypted BOOLEAN DEFAULT 0")
+        )
+
+    if "encryption_key_path" not in backups_columns:
+        await conn.execute(
+            text("ALTER TABLE backups ADD COLUMN encryption_key_path VARCHAR(1024)")
+        )
+
+    # Check and add missing columns to backup_targets table
+    result = await conn.execute(text("PRAGMA table_info(backup_targets)"))
+    targets_columns = {row[1] for row in result.fetchall()}
+
+    if "schedule_id" not in targets_columns:
+        await conn.execute(
+            text("ALTER TABLE backup_targets ADD COLUMN schedule_id INTEGER")
+        )
+
+    if "retention_policy_id" not in targets_columns:
+        await conn.execute(
+            text("ALTER TABLE backup_targets ADD COLUMN retention_policy_id INTEGER")
+        )
+
+    # Add volume selection and path filtering columns
+    if "selected_volumes" not in targets_columns:
+        await conn.execute(
+            text(
+                "ALTER TABLE backup_targets ADD COLUMN selected_volumes JSON "
+                "DEFAULT '[]'"
             )
         )
 
-        # Check and add missing columns to retention_policies table
-        result = await conn.execute(text("PRAGMA table_info(retention_policies)"))
-        retention_columns = {row[1] for row in result.fetchall()}
+    if "include_paths" not in targets_columns:
+        await conn.execute(
+            text(
+                "ALTER TABLE backup_targets ADD COLUMN include_paths JSON DEFAULT '[]'"
+            )
+        )
 
-        if "keep_last" not in retention_columns:
+    if "exclude_paths" not in targets_columns:
+        await conn.execute(
+            text(
+                "ALTER TABLE backup_targets ADD COLUMN exclude_paths JSON DEFAULT '[]'"
+            )
+        )
+
+    if "per_volume_rules" not in targets_columns:
+        await conn.execute(
+            text(
+                "ALTER TABLE backup_targets ADD COLUMN per_volume_rules JSON "
+                "DEFAULT '{}'"
+            )
+        )
+
+    if "sync_to_remote" not in targets_columns:
+        await conn.execute(
+            text(
+                "ALTER TABLE backup_targets ADD COLUMN sync_to_remote BOOLEAN DEFAULT 0"
+            )
+        )
+
+    if "remote_storage_ids" not in targets_columns:
+        await conn.execute(
+            text(
+                "ALTER TABLE backup_targets ADD COLUMN remote_storage_ids "
+                "JSON DEFAULT '[]'"
+            )
+        )
+
+    if "delete_local_after_sync" not in targets_columns:
+        await conn.execute(
+            text(
+                "ALTER TABLE backup_targets ADD COLUMN "
+                "delete_local_after_sync BOOLEAN DEFAULT 0"
+            )
+        )
+
+    # Data migration: fix rows where remote_storage_ids is set but
+    # sync_to_remote is still False (can happen on older databases).
+    await conn.execute(
+        text(
+            "UPDATE backup_targets SET sync_to_remote = 1 "
+            "WHERE remote_storage_ids IS NOT NULL "
+            "AND remote_storage_ids != '[]' "
+            "AND remote_storage_ids != '' "
+            "AND sync_to_remote = 0"
+        )
+    )
+
+    # Check and add missing columns to retention_policies table
+    result = await conn.execute(text("PRAGMA table_info(retention_policies)"))
+    retention_columns = {row[1] for row in result.fetchall()}
+
+    if "keep_last" not in retention_columns:
+        await conn.execute(
+            text(
+                "ALTER TABLE retention_policies ADD COLUMN keep_last INTEGER DEFAULT 0"
+            )
+        )
+
+
+async def _repair_catalog_orphans(conn):
+    """Retain unassignable metadata, without ever touching an archive or provider."""
+    import json
+
+    await conn.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS catalog_quarantine ("
+            "table_name TEXT NOT NULL, row_id INTEGER NOT NULL, row_json TEXT NOT NULL, "
+            "reason TEXT NOT NULL, PRIMARY KEY (table_name, row_id))"
+        )
+    )
+    queries = {
+        "backup_logs": "SELECT * FROM backup_logs WHERE backup_id NOT IN (SELECT id FROM backups)",
+        "backup_storage_syncs": (
+            "SELECT * FROM backup_storage_syncs WHERE backup_id NOT IN (SELECT id FROM backups) "
+            "OR storage_id NOT IN (SELECT id FROM remote_storages)"
+        ),
+    }
+    for table_name, query in queries.items():
+        rows = (await conn.execute(text(query))).mappings().all()
+        for row in rows:
             await conn.execute(
                 text(
-                    "ALTER TABLE retention_policies ADD COLUMN keep_last INTEGER "
-                    "DEFAULT 0"
-                )
+                    "INSERT OR IGNORE INTO catalog_quarantine (table_name, row_id, row_json, reason) "
+                    "VALUES (:table, :id, :data, 'missing parent reference')"
+                ),
+                {"table": table_name, "id": row["id"], "data": json.dumps(dict(row))},
             )
+            # Table names come only from the fixed catalog mapping above.
+            await conn.execute(
+                text(f"DELETE FROM {table_name} WHERE id = :id"), {"id": row["id"]}
+            )
+    violations = (await conn.execute(text("PRAGMA foreign_key_check"))).all()
+    if violations:
+        raise RuntimeError(
+            "Unresolved catalog foreign-key violations; refusing startup"
+        )
 
 
 async def _migrate_plaintext_credentials():
@@ -540,7 +745,7 @@ async def _migrate_plaintext_credentials():
 
 
 async def _recover_orphaned_backups():
-    """Mark RUNNING backups as FAILED on startup and remove half-written files.
+    """Terminally fail interrupted/queued jobs and remove half-written files.
 
     A container crash, OOM kill, or hard restart leaves ``BackupStatus.RUNNING``
     rows behind that will never complete. The frontend would show them as
@@ -562,19 +767,19 @@ async def _recover_orphaned_backups():
     async with async_session() as session:
         result = await session.execute(
             sa_update(Backup)
-            .where(Backup.status == BackupStatus.RUNNING)
+            .where(Backup.status.in_([BackupStatus.RUNNING, BackupStatus.PENDING]))
             .values(
                 status=BackupStatus.FAILED,
                 error_message=(
-                    "Container restart while backup was in progress \u2014 "
-                    "marked failed during startup recovery"
+                    "Interrupted by restart; accepted job terminally failed. "
+                    "Legacy workload state may be unknown: verify workloads manually and retry."
                 ),
                 completed_at=_utcnow(),
             )
         )
         if result.rowcount:
             log.warning(
-                "Recovered %d orphaned RUNNING backup(s) as FAILED",
+                "Resolved %d interrupted or pending backup(s) as FAILED",
                 result.rowcount,
             )
         await session.commit()
@@ -599,6 +804,23 @@ async def _recover_orphaned_backups():
 
     if removed:
         log.info("Removed %d orphaned temporary backup file(s)", removed)
+
+
+async def has_remote_copies(session, backup_id: int) -> bool:
+    """Keep recovery identity while a catalogued remote object may still exist."""
+    from sqlalchemy import select
+
+    return (
+        await session.execute(
+            select(BackupStorageSync.id)
+            .where(
+                BackupStorageSync.backup_id == backup_id,
+                BackupStorageSync.remote_path.isnot(None),
+                BackupStorageSync.remote_path != "",
+            )
+            .limit(1)
+        )
+    ).first() is not None
 
 
 async def get_session() -> AsyncSession:

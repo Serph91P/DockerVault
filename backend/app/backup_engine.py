@@ -14,14 +14,16 @@ import subprocess
 import tarfile
 import time
 from collections import defaultdict
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from sqlalchemy import select, update
 
 from app.config import settings
+from app.operations import OperationJournal
 from app.database import (
     Backup,
     BackupLog,
@@ -39,6 +41,7 @@ from app.encryption import (
     EncryptionError,
     decrypt_backup,
     encrypt_backup,
+    key_sidecar_path,
 )
 
 # Path to the tar worker script that runs as root via sudo.
@@ -47,6 +50,17 @@ _TAR_WORKER = os.path.join(os.path.dirname(__file__), "tar_worker.py")
 _PYTHON = "/opt/venv/bin/python3"
 
 logger = logging.getLogger(__name__)
+REMOTE_PATH_CONFLICT = "Remote path belongs to another backup"
+
+
+@dataclass(frozen=True)
+class ArchiveSources:
+    """The exact data paths/container identities claimed before lifecycle mutation."""
+
+    single_path: str | None = None
+    paths: tuple[tuple[str, str], ...] = ()
+    root: str | None = None
+    container_ids: tuple[str, ...] = ()
 
 
 @dataclass
@@ -138,6 +152,8 @@ class BackupEngine:
         self.metrics = BackupMetrics()
         self._backup_semaphore = asyncio.Semaphore(2)  # Max concurrent backups
         self._target_locks: Dict[int, asyncio.Lock] = {}
+        self._workload_locks: Dict[str, asyncio.Lock] = {}
+        self._remote_sync_locks: Dict[tuple[int, str], asyncio.Lock] = {}
         self._queue: asyncio.Queue = asyncio.Queue()
         self._queue_worker_task: Optional[asyncio.Task] = None
 
@@ -249,6 +265,49 @@ class BackupEngine:
         if target_id not in self._target_locks:
             self._target_locks[target_id] = asyncio.Lock()
         return self._target_locks[target_id]
+
+    async def _acquire_workload_locks(
+        self,
+        target: BackupTarget,
+        containers: List[str],
+        restore_path: str | None = None,
+    ) -> tuple[AsyncExitStack, Dict[str, str], ArchiveSources]:
+        identities = {
+            name: await docker_client.get_container_identity(name)
+            for name in containers
+        }
+        sources = (
+            await self._resolve_archive_sources(target, identities)
+            if restore_path is None
+            else ArchiveSources(single_path=os.path.realpath(restore_path))
+        )
+        keys = {
+            f"container:{identity}"
+            for identity in (*identities.values(), *sources.container_ids)
+        }
+        for path in (sources.single_path, *(path for _name, path in sources.paths)):
+            if path:
+                keys.add(f"path:{os.path.realpath(path)}")
+        for path in (target.host_path, restore_path):
+            if path:
+                keys.add(f"path:{os.path.realpath(path)}")
+        if target.volume_name:
+            keys.add(f"volume:{target.volume_name}")
+        claim = AsyncExitStack()
+        try:
+            # One global order prevents inverse/partially overlapping deadlocks.
+            for key in sorted(keys):
+                lock = self._workload_locks.setdefault(key, asyncio.Lock())
+                await claim.enter_async_context(lock)
+        except BaseException:
+            await claim.aclose()
+            raise
+        return claim, identities, sources
+
+    async def recover_operations(self) -> None:
+        await OperationJournal(async_session, docker_client).reconcile(
+            self._restart_containers_cancellation_safe
+        )
 
     async def start_queue_worker(self) -> None:
         """Start the background queue worker that processes backup jobs."""
@@ -553,99 +612,97 @@ class BackupEngine:
         target_lock = self._get_target_lock(peek_target_id)
 
         async with target_lock:
-            return await self._run_backup_inner(backup_id, skip_validation)
+            async with self._backup_semaphore:
+                return await self._run_backup_inner(backup_id, skip_validation)
 
     async def _run_backup_inner(
         self, backup_id: int, skip_validation: bool = False
     ) -> bool:
-        """Inner backup logic, called with a per-target lock already held."""
+        """Backup logic, called with the target lock and global permit held."""
         start_time = time.time()
         file_size = 0
         target_id = None
 
-        async with self._backup_semaphore:
-            async with async_session() as session:
-                result = await session.execute(
-                    select(Backup).where(Backup.id == backup_id)
-                )
-                backup = result.scalar_one_or_none()
+        async with async_session() as session:
+            result = await session.execute(select(Backup).where(Backup.id == backup_id))
+            backup = result.scalar_one_or_none()
 
-                if not backup:
-                    logger.error(
-                        f"Backup {backup_id} not found",
-                        extra={"backup_id": backup_id},
+            if not backup:
+                logger.error(
+                    f"Backup {backup_id} not found",
+                    extra={"backup_id": backup_id},
+                )
+                return False
+
+            # Get target
+            result = await session.execute(
+                select(BackupTarget).where(BackupTarget.id == backup.target_id)
+            )
+            target = result.scalar_one_or_none()
+
+            if not target:
+                logger.error(
+                    f"Target for backup {backup_id} not found",
+                    extra={"backup_id": backup_id, "target_id": backup.target_id},
+                )
+                return False
+
+            target_id = target.id
+
+            # Validate prerequisites unless skipped
+            if not skip_validation:
+                validation_issues = await self.validate_backup_prerequisites(target)
+                if validation_issues:
+                    error_msg = f"Validation failed: {'; '.join(validation_issues)}"
+                    await self._log(
+                        backup_id,
+                        "validation",
+                        error_msg,
+                        level=LogLevel.ERROR,
+                        details={"issues": validation_issues},
                     )
-                    return False
-
-                # Get target
-                result = await session.execute(
-                    select(BackupTarget).where(BackupTarget.id == backup.target_id)
-                )
-                target = result.scalar_one_or_none()
-
-                if not target:
                     logger.error(
-                        f"Target for backup {backup_id} not found",
+                        f"Backup {backup_id} validation failed",
                         extra={
                             "backup_id": backup_id,
-                            "target_id": backup.target_id,
+                            "target_id": target.id,
+                            "target_name": target.name,
+                            "issues": validation_issues,
                         },
                     )
+                    backup.status = BackupStatus.FAILED
+                    backup.error_message = error_msg
+                    backup.completed_at = datetime.now(timezone.utc)
+                    await session.commit()
+                    await self._notify_progress(backup_id, -1, error_msg)
+
+                    # Record failed backup metrics
+                    duration = time.time() - start_time
+                    self.metrics.record_backup(target_id, duration, 0, False)
                     return False
 
-                target_id = target.id
+            # Update status to running
+            backup.status = BackupStatus.RUNNING
+            backup.started_at = datetime.now(timezone.utc)
+            await session.commit()
 
-                # Validate prerequisites unless skipped
-                if not skip_validation:
-                    validation_issues = await self.validate_backup_prerequisites(target)
-                    if validation_issues:
-                        error_msg = f"Validation failed: {'; '.join(validation_issues)}"
-                        await self._log(
-                            backup_id,
-                            "validation",
-                            error_msg,
-                            level=LogLevel.ERROR,
-                            details={"issues": validation_issues},
-                        )
-                        logger.error(
-                            f"Backup {backup_id} validation failed",
-                            extra={
-                                "backup_id": backup_id,
-                                "target_id": target.id,
-                                "target_name": target.name,
-                                "issues": validation_issues,
-                            },
-                        )
-                        backup.status = BackupStatus.FAILED
-                        backup.error_message = error_msg
-                        backup.completed_at = datetime.now(timezone.utc)
-                        await session.commit()
-                        await self._notify_progress(backup_id, -1, error_msg)
+        await self._log(
+            backup_id,
+            "start",
+            f"Starting backup for target '{target.name}'",
+            details={"target_type": target.target_type, "target_id": target.id},
+        )
+        await self._notify_progress(backup_id, 0, "Starting backup...")
 
-                        # Record failed backup metrics
-                        duration = time.time() - start_time
-                        self.metrics.record_backup(target_id, duration, 0, False)
-                        return False
-
-                # Update status to running
-                backup.status = BackupStatus.RUNNING
-                backup.started_at = datetime.now(timezone.utc)
-                await session.commit()
-
-            await self._log(
-                backup_id,
-                "start",
-                f"Starting backup for target '{target.name}'",
-                details={"target_type": target.target_type, "target_id": target.id},
-            )
-            await self._notify_progress(backup_id, 0, "Starting backup...")
-
+        journal = OperationJournal(async_session, docker_client)
+        operation_id = None
         try:
             # Determine containers to stop
             containers_to_stop = []
             original_states = {}
             start_order = []  # Order for restarting containers
             operation_error = None
+            workload_claim = None
 
             try:
                 if target.target_type == "stack" and target.stack_name:
@@ -676,12 +733,23 @@ class BackupEngine:
                     )
                     start_order = list(reversed(containers_to_stop))
 
+                (
+                    workload_claim,
+                    identities,
+                    archive_sources,
+                ) = await self._acquire_workload_locks(target, containers_to_stop)
+                containers_to_stop = list(dict.fromkeys(identities.values()))
+                start_order = list(
+                    dict.fromkeys(identities.get(name, name) for name in start_order)
+                )
+                for container_name in containers_to_stop:
+                    original_states[
+                        container_name
+                    ] = await docker_client.get_container_state(container_name)
+                operation_id = await journal.begin(
+                    backup_id, "backup", original_states, start_order=start_order
+                )
                 if containers_to_stop:
-                    # Store original states
-                    for container_name in containers_to_stop:
-                        state = await docker_client.get_container_state(container_name)
-                        original_states[container_name] = state
-
                     # Stop containers in order
                     await self._log(
                         backup_id,
@@ -692,11 +760,15 @@ class BackupEngine:
                     await self._notify_progress(backup_id, 10, "Stopping containers...")
                     for i, container_name in enumerate(containers_to_stop):
                         if original_states.get(container_name) == "running":
+                            await journal.stop(operation_id, container_name)
                             stopped = await docker_client.stop_container(container_name)
                             if not stopped:
                                 raise RuntimeError(
                                     f"Failed to stop container '{container_name}'"
                                 )
+                            await journal.stop(
+                                operation_id, container_name, confirmed=True
+                            )
                             progress = 10 + (20 * (i + 1) / len(containers_to_stop))
                             await self._notify_progress(
                                 backup_id, progress, f"Stopped {container_name}"
@@ -715,6 +787,7 @@ class BackupEngine:
                     await self._run_hook(target.pre_backup_command)
 
                 # Perform the actual backup
+                await journal.phase(operation_id, "archive")
                 await self._log(backup_id, "archive", "Creating backup archive...")
                 await self._notify_progress(backup_id, 35, "Creating backup archive...")
 
@@ -724,7 +797,9 @@ class BackupEngine:
                 preexisting_files = (
                     set(backup_dir.iterdir()) if backup_dir.exists() else set()
                 )
-                backup_path = await self._create_backup_archive(target, backup_id)
+                backup_path = await self._create_backup_archive(
+                    target, backup_id, sources=archive_sources
+                )
                 plaintext_path = Path(backup_path)
                 plaintext_created = plaintext_path not in preexisting_files
 
@@ -832,9 +907,15 @@ class BackupEngine:
                     for container_name in reversed(containers_to_stop)
                     if container_name not in restart_order
                 )
-                restart_failures = await self._restart_containers_cancellation_safe(
-                    restart_order, original_states, backup_id
-                )
+                try:
+                    restart_failures = await self._restart_containers_cancellation_safe(
+                        restart_order, original_states, backup_id
+                    )
+                    if operation_id is not None:
+                        await journal.recovered(operation_id, restart_failures)
+                finally:
+                    if workload_claim is not None:
+                        await workload_claim.aclose()
                 if restart_failures and operation_error is None:
                     names = ", ".join(restart_failures)
                     raise RuntimeError(f"Failed to restart container(s): {names}")
@@ -843,6 +924,7 @@ class BackupEngine:
                 await self._notify_progress(backup_id, 90, "Containers restarted")
 
             # Update backup record
+            await journal.phase(operation_id, "finalizing")
             async with async_session() as session:
                 duration_seconds = int(
                     (datetime.now(timezone.utc) - backup.started_at).total_seconds()
@@ -865,6 +947,7 @@ class BackupEngine:
 
             # Sync to remote storage if configured
             if target.remote_storage_ids:
+                await journal.phase(operation_id, "upload")
                 await self._log(
                     backup_id,
                     "upload",
@@ -976,6 +1059,8 @@ class BackupEngine:
 
             await self._notify_progress(backup_id, -1, f"Backup failed: {e}")
             return False
+        finally:
+            await journal.finish(operation_id)
 
     @staticmethod
     def _remote_sync_result(result: Any) -> tuple[bool, Optional[str]]:
@@ -993,12 +1078,96 @@ class BackupEngine:
         backup_path: str,
         encrypted: bool = False,
         encryption_key_path: str | None = None,
-    ) -> None:
+        storage_ids: list[int] | None = None,
+    ) -> dict[int, tuple[bool, str | None]]:
+        """Own concrete archive AND sidecar identities until verification/catalog commit."""
+        selected_ids = (
+            list(target.remote_storage_ids or [])
+            if storage_ids is None
+            else list(storage_ids)
+        )
+        remote_path = (
+            f"{self._sanitize_path_name(target.name)}/{Path(backup_path).name}"
+        )
+        paths = {remote_path}
+        if encrypted:
+            paths.add(key_sidecar_path(remote_path))
+        keys = {(storage_id, path) for storage_id in selected_ids for path in paths}
+        async with AsyncExitStack() as claims:
+            for key in sorted(keys):
+                await claims.enter_async_context(
+                    self._remote_sync_locks.setdefault(key, asyncio.Lock())
+                )
+            # Re-read AFTER acquiring every path: another target may have just committed.
+            async with async_session() as session:
+                existing = (
+                    await session.execute(
+                        select(
+                            BackupStorageSync.storage_id,
+                            BackupStorageSync.remote_path,
+                            Backup.encrypted,
+                        )
+                        .join(Backup, Backup.id == BackupStorageSync.backup_id)
+                        .where(
+                            BackupStorageSync.storage_id.in_(selected_ids),
+                            BackupStorageSync.backup_id != backup_id,
+                        )
+                    )
+                ).all()
+            for storage_id, path, owns_key in existing:
+                if not path:
+                    continue
+                foreign = {path, key_sidecar_path(path)} if owns_key else {path}
+                if any((storage_id, item) in keys for item in foreign):
+                    await self._log(
+                        backup_id,
+                        "upload",
+                        REMOTE_PATH_CONFLICT,
+                        level=LogLevel.WARNING,
+                    )
+                    return {
+                        storage_id: (False, REMOTE_PATH_CONFLICT)
+                        for storage_id in selected_ids
+                    }
+            # Deliver cancellation once, but keep claims until real I/O/abort settles.
+            transfer = asyncio.create_task(
+                self._sync_to_remote_claimed(
+                    backup_id,
+                    target,
+                    backup_path,
+                    encrypted,
+                    encryption_key_path,
+                    storage_ids,
+                )
+            )
+            cancellation = None
+            while not transfer.done():
+                try:
+                    await asyncio.shield(transfer)
+                except asyncio.CancelledError as exc:
+                    if cancellation is None:
+                        transfer.cancel()
+                    cancellation = exc
+            result = transfer.result()
+            if cancellation is not None:
+                raise cancellation
+            return result
+
+    async def _sync_to_remote_claimed(
+        self,
+        backup_id: int,
+        target: BackupTarget,
+        backup_path: str,
+        encrypted: bool = False,
+        encryption_key_path: str | None = None,
+        storage_ids: list[int] | None = None,
+    ) -> dict[int, tuple[bool, str | None]]:
         """Sync a completed backup to configured remote storage backends.
 
         Failures are logged but do NOT mark the backup as failed. The
         local backup is still valid.
         """
+        selected_ids = target.remote_storage_ids if storage_ids is None else storage_ids
         from app.remote_storage import StorageConfig, StorageType, storage_manager
 
         await self._notify_progress(backup_id, 95, "Syncing to remote storage...")
@@ -1008,9 +1177,7 @@ class BackupEngine:
             async with async_session() as session:
                 from app.database import RemoteStorage as RemoteStorageModel
 
-                for storage_id in target.remote_storage_ids:
-                    if storage_manager.get_backend(storage_id):
-                        continue
+                for storage_id in selected_ids:
                     result = await session.execute(
                         select(RemoteStorageModel).where(
                             RemoteStorageModel.id == storage_id
@@ -1018,6 +1185,9 @@ class BackupEngine:
                     )
                     storage = result.scalar_one_or_none()
                     if not storage or not storage.enabled:
+                        storage_manager.remove_storage(storage_id)
+                        continue
+                    if storage_manager.get_backend(storage_id):
                         continue
 
                     from app.credential_encryption import decrypt_value
@@ -1061,9 +1231,9 @@ class BackupEngine:
                 local_path,
                 safe_name,
                 local_path.name,
-                target.remote_storage_ids,
+                selected_ids,
             )
-            required_storage_ids = set(target.remote_storage_ids)
+            required_storage_ids = set(selected_ids)
             normalized_results = {
                 storage_id: (
                     self._remote_sync_result(results[storage_id])
@@ -1085,8 +1255,8 @@ class BackupEngine:
                         key_results = await storage_manager.sync_backup(
                             key_local,
                             safe_name,
-                            key_local.name,
-                            target.remote_storage_ids,
+                            key_sidecar_path(local_path.name),
+                            selected_ids,
                         )
                         normalized_key_results = {
                             storage_id: (
@@ -1135,15 +1305,30 @@ class BackupEngine:
             remote_path = f"{safe_name}/{local_path.name}"
             async with async_session() as session:
                 for storage_id, (success, error) in normalized_results.items():
-                    sync_record = BackupStorageSync(
-                        backup_id=backup_id,
-                        storage_id=storage_id,
-                        remote_path=remote_path,
-                        synced_at=datetime.now(timezone.utc) if success else None,
-                        sync_status="completed" if success else "failed",
-                        error_message=None
-                        if success
-                        else (error[:500] if error else "Upload failed"),
+                    records = list(
+                        (
+                            await session.execute(
+                                select(BackupStorageSync).where(
+                                    BackupStorageSync.backup_id == backup_id,
+                                    BackupStorageSync.storage_id == storage_id,
+                                )
+                            )
+                        ).scalars()
+                    )
+                    sync_record = (
+                        records[0]
+                        if records
+                        else BackupStorageSync(
+                            backup_id=backup_id, storage_id=storage_id
+                        )
+                    )
+                    sync_record.remote_path = remote_path
+                    sync_record.synced_at = (
+                        datetime.now(timezone.utc) if success else None
+                    )
+                    sync_record.sync_status = "completed" if success else "failed"
+                    sync_record.error_message = (
+                        None if success else (error or "Upload failed")[:500]
                     )
                     session.add(sync_record)
                 await session.commit()
@@ -1194,10 +1379,15 @@ class BackupEngine:
             all_succeeded = bool(required_storage_ids) and all(
                 normalized_results[storage_id][0] for storage_id in required_storage_ids
             )
-            if all_succeeded and getattr(target, "delete_local_after_sync", False):
+            if (
+                storage_ids is None
+                and all_succeeded
+                and getattr(target, "delete_local_after_sync", False)
+            ):
                 await self._delete_local_after_sync(
                     backup_id, backup_path, encryption_key_path
                 )
+            return normalized_results
 
         except Exception as e:
             await self._log(
@@ -1213,6 +1403,7 @@ class BackupEngine:
                 exc_info=True,
             )
             await self._notify_progress(backup_id, 97, f"Remote sync failed: {e}")
+            return {sid: (False, str(e)[:500]) for sid in selected_ids}
 
     async def _delete_local_after_sync(
         self,
@@ -1297,73 +1488,91 @@ class BackupEngine:
 
         return None
 
+    async def _resolve_archive_sources(
+        self, target: BackupTarget, identities: Dict[str, str] | None = None
+    ) -> ArchiveSources:
+        """Freeze actual mount selection against the immutable lifecycle identities."""
+        identities = identities or {}
+        if target.target_type == "path":
+            path = os.path.realpath(target.host_path)
+            return ArchiveSources(single_path=path, root=os.path.basename(path))
+        volumes = await docker_client.list_volumes()
+        volume_map = {volume.name: volume.mountpoint for volume in volumes}
+        if target.target_type == "volume":
+            if target.volume_name not in volume_map:
+                raise ValueError(f"Volume {target.volume_name} not found")
+            path = os.path.realpath(volume_map[target.volume_name])
+            return ArchiveSources(single_path=path, root=os.path.basename(path))
+        if target.target_type == "container":
+            expected = identities.get(target.container_name)
+            if expected is None:
+                expected = await docker_client.get_container_identity(
+                    target.container_name
+                )
+            containers = [
+                container
+                for container in await docker_client.list_containers()
+                if container.id == expected
+            ]
+            if not containers:
+                raise ValueError(
+                    "Claimed container identity is missing from archive topology"
+                )
+        elif target.target_type == "stack":
+            stacks = await docker_client.get_stacks()
+            stack = next(
+                (stack for stack in stacks if stack.name == target.stack_name), None
+            )
+            if stack is None:
+                raise ValueError(f"Stack {target.stack_name} not found")
+            containers = list(stack.containers)
+        else:
+            raise ValueError(f"Unknown target type: {target.target_type}")
+        paths = []
+        container_ids = []
+        selected = target.selected_volumes or []
+        for container in containers:
+            expected = identities.get(container.name)
+            if expected is None:
+                expected = await docker_client.get_container_identity(container.name)
+            if container.id != expected:
+                raise ValueError(
+                    "Claimed container identity changed before archive selection"
+                )
+            container_ids.append(expected)
+            for mount in container.mounts:
+                name = mount.get("name")
+                if mount.get("type") != "volume" or (selected and name not in selected):
+                    continue
+                if name not in volume_map:
+                    raise ValueError(f"Claimed volume {name} is unavailable")
+                logical = (
+                    f"volumes/{name}"
+                    if target.target_type == "stack"
+                    else mount.get("destination")
+                )
+                selection = (logical, os.path.realpath(volume_map[name]))
+                if selection not in paths:
+                    paths.append(selection)
+        if not paths:
+            raise ValueError("Claimed containers have no selected volumes to backup")
+        return ArchiveSources(paths=tuple(paths), container_ids=tuple(container_ids))
+
     async def _create_backup_archive(
         self,
         target: BackupTarget,
         backup_id: int,
+        *,
+        sources: ArchiveSources | None = None,
     ) -> str:
-        """Create the backup archive."""
-        # Determine source path
-        if target.target_type == "volume":
-            # Volume backup - get mountpoint
-            volumes = await docker_client.list_volumes()
-            volume = next((v for v in volumes if v.name == target.volume_name), None)
-            if not volume:
-                raise ValueError(f"Volume {target.volume_name} not found")
-            source_path = volume.mountpoint
-        elif target.target_type == "path":
-            source_path = target.host_path
-        elif target.target_type == "container":
-            # Get all volume mounts from container
-            containers = await docker_client.list_containers()
-            container = next(
-                (c for c in containers if c.name == target.container_name), None
-            )
-            if not container:
-                raise ValueError(f"Container {target.container_name} not found")
-
-            # Get selected volumes (empty list = all volumes)
-            selected_volumes = target.selected_volumes or []
-
-            # Create combined backup of all volumes
-            source_paths = []
-            for mount in container.mounts:
-                if mount.get("type") == "volume":
-                    volume_name = mount.get("name")
-                    # Filter by selected_volumes if specified
-                    if selected_volumes and volume_name not in selected_volumes:
-                        continue
-                    volumes = await docker_client.list_volumes()
-                    volume = next((v for v in volumes if v.name == volume_name), None)
-                    if volume:
-                        source_paths.append(
-                            (mount.get("destination"), volume.mountpoint)
-                        )
-        elif target.target_type == "stack":
-            # Stack backup - collect all volumes from all containers in the stack
-            stacks = await docker_client.get_stacks()
-            stack = next((s for s in stacks if s.name == target.stack_name), None)
-            if not stack:
-                raise ValueError(f"Stack {target.stack_name} not found")
-
-            # Get selected volumes (empty list = all volumes)
-            selected_volumes = target.selected_volumes or []
-
-            # Collect all volumes from the stack
-            source_paths = []
-            volumes = await docker_client.list_volumes()
-            for volume_name in stack.volumes:
-                # Filter by selected_volumes if specified
-                if selected_volumes and volume_name not in selected_volumes:
-                    continue
-                volume = next((v for v in volumes if v.name == volume_name), None)
-                if volume:
-                    source_paths.append((f"volumes/{volume_name}", volume.mountpoint))
-
-            if not source_paths:
-                raise ValueError(f"Stack {target.stack_name} has no volumes to backup")
-        else:
-            raise ValueError(f"Unknown target type: {target.target_type}")
+        """Create the archive from the exact source snapshot protected by ownership."""
+        if sources is None:
+            sources = await self._resolve_archive_sources(target)
+        source_path, source_paths, archive_root = (
+            sources.single_path,
+            sources.paths,
+            sources.root,
+        )
 
         # Create backup directory
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -1378,6 +1587,26 @@ class BackupEngine:
         backup_path = backup_dir / filename
         if backup_path.exists():
             raise FileExistsError(f"Backup archive already exists: {backup_path}")
+
+        # Reserve every possible artifact before the worker can create any of them.
+        # The cleaner rechecks these reservations under the same SQLite writer lock.
+        async with async_session() as session:
+            record = await session.get(Backup, backup_id)
+            if record is None:
+                raise RuntimeError("Cannot create an archive without a backup owner")
+            metadata = dict(record.backup_metadata or {})
+            single_source = target.target_type in ("path", "volume")
+            metadata["archive_layout"] = {
+                "version": 1,
+                "kind": "single" if single_source else "multi",
+                "root": archive_root,
+            }
+            metadata["active_artifacts"] = [
+                str(Path(str(backup_path) + suffix).resolve())
+                for suffix in ("", ".enc", ".enc.tmp", ".key")
+            ]
+            record.backup_metadata = metadata
+            await session.commit()
 
         # Get path filters
         include_paths = target.include_paths or []
@@ -1398,6 +1627,8 @@ class BackupEngine:
                     ),
                 )
             else:
+                if source_path is None:
+                    raise ValueError("Archive has no claimed source path")
                 await self._run_executor_cancellation_safe(
                     lambda: self._create_tar(
                         source_path,
@@ -1551,8 +1782,11 @@ class BackupEngine:
                 dirnames.clear()
                 continue
 
-            # Add files
-            for filename in filenames:
+            # os.walk lists directory symlinks in dirnames but never visits them.
+            symlink_dirs = [
+                name for name in dirnames if os.path.islink(os.path.join(dirpath, name))
+            ]
+            for filename in filenames + symlink_dirs:
                 filepath = os.path.join(dirpath, filename)
                 file_rel = os.path.join(rel_dir, filename) if rel_dir else filename
                 arcpath = os.path.join(arc_dir, filename)
@@ -1680,8 +1914,11 @@ class BackupEngine:
                 "sudo not available, falling back to in-process tar "
                 "(files owned by other UIDs may be skipped)"
             )
-            mode = "w:gz" if compress else "w"
-            with tarfile.open(dest, mode, compresslevel=6 if compress else None) as tar:
+            with (
+                tarfile.open(dest, "w:gz", compresslevel=6)
+                if compress
+                else tarfile.open(dest, "w")
+            ) as tar:
                 skipped = self._add_source_to_tar(
                     tar, source, arcname_base, include_paths, exclude_paths
                 )
@@ -1694,7 +1931,7 @@ class BackupEngine:
 
     def _create_multi_source_tar(
         self,
-        sources: List[tuple],  # [(archive_name, source_path), ...]
+        sources: Sequence[tuple[str, str]],  # [(archive_name, source_path), ...]
         dest: str,
         compress: bool = True,
         include_paths: Optional[List[str]] = None,
@@ -1727,8 +1964,11 @@ class BackupEngine:
                 "(files owned by other UIDs may be skipped)"
             )
             skipped = []
-            mode = "w:gz" if compress else "w"
-            with tarfile.open(dest, mode, compresslevel=6 if compress else None) as tar:
+            with (
+                tarfile.open(dest, "w:gz", compresslevel=6)
+                if compress
+                else tarfile.open(dest, "w")
+            ) as tar:
                 for archive_name, source_path in sources:
                     if not os.path.exists(source_path):
                         continue
@@ -1825,6 +2065,9 @@ class BackupEngine:
         backup_id: int,
         target_path: Optional[str] = None,
         private_key: Optional[str] = None,
+        *,
+        archive_path: Optional[str] = None,
+        key_path: Optional[str] = None,
     ) -> bool:
         """Restore a backup.
 
@@ -1849,8 +2092,8 @@ class BackupEngine:
                 return False
 
             # Check if backup is encrypted
-            is_encrypted = backup.encrypted and backup.encryption_key_path
-            encryption_key_path = backup.encryption_key_path
+            is_encrypted = bool(backup.encrypted)
+            encryption_key_path = key_path or backup.encryption_key_path
 
             if is_encrypted and not private_key:
                 logger.error("Private key required for encrypted backup")
@@ -1862,12 +2105,13 @@ class BackupEngine:
             )
             target = result.scalar_one_or_none()
 
-        if not backup.file_path:
+        source_path = archive_path or backup.file_path
+        if not source_path:
             logger.error("Backup file path is empty for backup %s", backup.id)
             return False
 
         # Resolve the file path (handle legacy paths with unsafe chars)
-        resolved_path = self._resolve_backup_path(backup.file_path)
+        resolved_path = self._resolve_backup_path(source_path)
         if not resolved_path:
             logger.error("Backup file not found: %s", backup.file_path)
             return False
@@ -1901,18 +2145,40 @@ class BackupEngine:
 
         temp_decrypted_file = None
         operation_error = None
+        workload_claim = None
+        journal = OperationJournal(async_session, docker_client)
+        operation_id = None
         try:
             try:
+                (
+                    workload_claim,
+                    identities,
+                    _archive_sources,
+                ) = await self._acquire_workload_locks(
+                    target, containers_to_stop, restore_path
+                )
+                containers_to_stop = list(dict.fromkeys(identities.values()))
+                for container_name in containers_to_stop:
+                    original_states[
+                        container_name
+                    ] = await docker_client.get_container_state(container_name)
+                operation_id = await journal.begin(
+                    backup_id,
+                    "restore",
+                    original_states,
+                    start_order=list(reversed(containers_to_stop)),
+                )
                 # Stop containers
                 for container_name in containers_to_stop:
-                    state = await docker_client.get_container_state(container_name)
-                    original_states[container_name] = state
-                    if state == "running":
+                    if original_states[container_name] == "running":
+                        await journal.stop(operation_id, container_name)
                         stopped = await docker_client.stop_container(container_name)
                         if not stopped:
                             raise RuntimeError(
                                 f"Failed to stop container '{container_name}'"
                             )
+
+                        await journal.stop(operation_id, container_name, confirmed=True)
 
                 # Handle encrypted backups
                 backup_file_to_extract = backup_file
@@ -1934,12 +2200,25 @@ class BackupEngine:
                         raise ValueError(f"Failed to decrypt backup: {e}")
 
                 # Extract backup
+                await journal.phase(operation_id, "extract")
                 is_compressed = backup_file_to_extract.endswith(".gz")
                 mode = "r:gz" if is_compressed else "r"
 
+                layout = (backup.backup_metadata or {}).get("archive_layout", {})
+                if layout.get("version") == 1:
+                    strip_root = (
+                        (layout.get("root") or "")
+                        if layout.get("kind") == "single"
+                        else None
+                    )
+                else:
+                    # Legacy app archives have the source basename as their root.
+                    strip_root = (
+                        "" if target.target_type in ("path", "volume") else None
+                    )
                 await self._run_executor_cancellation_safe(
                     lambda: self._extract_tar(
-                        backup_file_to_extract, restore_path, mode
+                        backup_file_to_extract, restore_path, mode, strip_root
                     ),
                 )
             except BaseException as exc:
@@ -1956,9 +2235,15 @@ class BackupEngine:
                             cleanup_error,
                         )
 
-                restart_failures = await self._restart_containers_cancellation_safe(
-                    list(reversed(containers_to_stop)), original_states
-                )
+                try:
+                    restart_failures = await self._restart_containers_cancellation_safe(
+                        list(reversed(containers_to_stop)), original_states
+                    )
+                    if operation_id is not None:
+                        await journal.recovered(operation_id, restart_failures)
+                finally:
+                    if workload_claim is not None:
+                        await workload_claim.aclose()
                 if restart_failures and operation_error is None:
                     names = ", ".join(restart_failures)
                     raise RuntimeError(f"Failed to restart container(s): {names}")
@@ -1970,8 +2255,12 @@ class BackupEngine:
             logger.error(f"Restore failed: {e}")
 
             return False
+        finally:
+            await journal.finish(operation_id)
 
-    def _extract_tar(self, source: str, dest: str, mode: str):
+    def _extract_tar(
+        self, source: str, dest: str, mode: str, strip_root: str | None = None
+    ):
         """Extract tar archive safely.
 
         Validates that all extracted files stay within the destination
@@ -1980,8 +2269,43 @@ class BackupEngine:
         abs_dest = os.path.realpath(dest)
 
         with tarfile.open(source, mode) as tar:
-            # Validate all members before extraction
-            for member in tar.getmembers():
+            members = tar.getmembers()
+            for member in members:
+                if os.path.isabs(member.name):
+                    raise ValueError(
+                        f"Path traversal detected in archive: {member.name}"
+                    )
+            if strip_root is not None and members:
+                root = strip_root or members[0].name.split("/", 1)[0]
+                prefix = root + "/"
+                has_single_root = root not in ("", ".", "..") and all(
+                    (member.name == root and member.isdir())
+                    or member.name.startswith(prefix)
+                    for member in members
+                )
+                if strip_root and not has_single_root:
+                    raise ValueError("Archive members do not match the recorded layout")
+                if has_single_root:
+                    mapped = []
+                    for member in members:
+                        name = (
+                            "." if member.name == root else member.name[len(prefix) :]
+                        )
+                        linkname = member.linkname
+                        if member.islnk():
+                            if not linkname.startswith(prefix):
+                                raise ValueError(
+                                    "Hardlink escapes the single-source archive root"
+                                )
+                            linkname = linkname[len(prefix) :]
+                        mapped.append(
+                            member.replace(name=name, linkname=linkname, deep=False)
+                        )
+                    # tarfile resolves hardlinks through this cached member list.
+                    members = tar.members = mapped
+
+            # Validate all mapped members before writing any destination files.
+            for member in members:
                 member_path = os.path.join(dest, member.name)
                 abs_member = os.path.realpath(member_path)
 
@@ -2002,11 +2326,17 @@ class BackupEngine:
 
                 # Check for suspicious symlinks
                 if member.issym() or member.islnk():
-                    link_path = os.path.join(
-                        dest, os.path.dirname(member.name), member.linkname
+                    link_path = (
+                        os.path.join(dest, member.linkname)
+                        if member.islnk()
+                        else os.path.join(
+                            dest, os.path.dirname(member.name), member.linkname
+                        )
                     )
                     abs_link = os.path.realpath(link_path)
-                    if not abs_link.startswith(abs_dest + os.sep):
+                    if abs_link != abs_dest and not abs_link.startswith(
+                        abs_dest + os.sep
+                    ):
                         raise ValueError(
                             f"Symlink escape detected in archive: "
                             f"{member.name} -> {member.linkname}"
@@ -2016,9 +2346,9 @@ class BackupEngine:
             import sys
 
             if sys.version_info >= (3, 12):
-                tar.extractall(dest, filter="data")
+                tar.extractall(dest, members=members, filter="data")
             else:
-                tar.extractall(dest)
+                tar.extractall(dest, members=members)
 
     async def _get_encryption_config(self) -> Optional[EncryptionConfig]:
         """Get encryption configuration if set up."""

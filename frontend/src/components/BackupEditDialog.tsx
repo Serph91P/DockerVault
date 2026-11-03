@@ -120,13 +120,14 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
     updateMutation.mutate({
       name: formData.name,
       enabled: formData.enabled,
-      schedule_id: formData.schedule_id || undefined,
-      retention_policy_id: formData.retention_policy_id || undefined,
+      schedule_id: formData.schedule_id ?? null,
+      schedule_cron: formData.schedule_id == null ? null : undefined,
+      retention_policy_id: formData.retention_policy_id ?? null,
       compression_enabled: formData.compression !== 'none',
       include_paths: formData.include_paths,
       exclude_paths: formData.exclude_paths,
-      pre_backup_command: formData.pre_backup_command || undefined,
-      post_backup_command: formData.post_backup_command || undefined,
+      pre_backup_command: formData.pre_backup_command || null,
+      post_backup_command: formData.post_backup_command || null,
       stop_container: formData.stop_container,
       remote_storage_ids: formData.remote_storage_ids,
       delete_local_after_sync:

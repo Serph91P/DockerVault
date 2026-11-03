@@ -59,15 +59,15 @@ export interface BackupTarget {
   volume_name?: string
   host_path?: string
   stack_name?: string
-  schedule_id?: number  // NEW: Reference to Schedule entity
+  schedule_id?: number | null  // Explicit null removes the reference on update
   schedule?: {  // NEW: Embedded schedule info
     id: number
     name: string
     cron_expression: string
   }
-  schedule_cron?: string  // DEPRECATED: Keep for backwards compatibility
+  schedule_cron?: string | null  // DEPRECATED: Keep for backwards compatibility
   enabled: boolean
-  retention_policy_id?: number
+  retention_policy_id?: number | null
   retention_policy?: RetentionPolicyInfo  // Embedded retention policy info
   dependencies: string[]
   // Volume selection for container/stack backups
@@ -77,8 +77,8 @@ export interface BackupTarget {
   exclude_paths: string[]  // Exclude these paths/patterns
   // Per-volume path rules (overrides global for specific volumes)
   per_volume_rules: Record<string, { include_paths: string[]; exclude_paths: string[] }>
-  pre_backup_command?: string
-  post_backup_command?: string
+  pre_backup_command?: string | null
+  post_backup_command?: string | null
   stop_container: boolean
   compression_enabled: boolean
   // Remote storage sync
@@ -264,9 +264,9 @@ export const backupsApi = {
       } 
     }),
   getStats: (id: number) => api.get(`/backups/${id}/stats`),
-  listFiles: (id: number) => api.get(`/backups/${id}/files`),
-  listFilesEncrypted: (id: number, privateKey: string) =>
-    api.post(`/backups/${id}/files`, { private_key: privateKey }),
+  listFiles: (id: number, limit = 2000, offset = 0) => api.get(`/backups/${id}/files`, { params: { limit, offset } }),
+  listFilesEncrypted: (id: number, privateKey: string, limit = 2000, offset = 0) =>
+    api.post(`/backups/${id}/files`, { private_key: privateKey }, { params: { limit, offset } }),
   retrySync: (id: number) => api.post(`/backups/${id}/retry-sync`),
   getLogs: (id: number) => api.get<BackupLogEntry[]>(`/backups/${id}/logs`),
 }
@@ -287,6 +287,8 @@ export const schedulesApi = {
   estimate: (target_id: number, cron_expression: string) =>
     api.post('/schedules/estimate', { target_id, cron_expression }),
   getCronHelp: () => api.get('/schedules/cron-help'),
+  preview: (cron_expression: string) => api.post<{ next_runs: string[]; timezone: string; contract: string; warnings: string[] }>('/schedules/preview', { cron_expression }),
+  cronInventory: () => api.get<{ contract: string; timezone: string; items: { kind: string; id: number; name: string; expression: string; warnings: string[] }[] }>('/schedules/compatibility/inventory'),
   
   // Legacy endpoint for backwards compatibility
   listLegacy: () => api.get<Schedule[]>('/schedules/legacy/by-target'),

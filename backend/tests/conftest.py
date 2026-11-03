@@ -18,6 +18,21 @@ from app.database import Base
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _hermetic_credential_encryption():
+    """Use an explicit synthetic key so tests never write the production
+    /app/data/.credential_key file, which does not exist on bare CI runners."""
+    from cryptography.fernet import Fernet
+
+    from app import credential_encryption
+    from app.config import settings
+
+    if not settings.CREDENTIAL_ENCRYPTION_KEY:
+        settings.CREDENTIAL_ENCRYPTION_KEY = Fernet.generate_key().decode()
+    credential_encryption._fernet = None
+    yield
+
+
 @pytest.fixture(scope="session")
 def event_loop():
     """Create event loop for the test session."""
@@ -59,8 +74,8 @@ async def db_session(test_db):
 
 
 @pytest_asyncio.fixture
-async def async_client(test_db):
-    """Create async test client with mocked database and auth bypassed."""
+async def async_client(test_db, monkeypatch):
+    """Use fixture SQLite, a real paused scheduler and the existing auth bypass."""
     # Create a mock user for authentication
     mock_user = AsyncMock()
     mock_user.id = 1
@@ -86,13 +101,22 @@ async def async_client(test_db):
     ):
         # Import app after patching
         from app.main import app
+        from app.scheduler import BackupScheduler
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-            cookies={"session_token": "test-token"},
-        ) as client:
-            yield client
+        # Exercise real scheduler state without executing synthetic backup targets.
+        live_scheduler = BackupScheduler()
+        live_scheduler.scheduler.start(paused=True)
+        monkeypatch.setitem(app.state._state, "scheduler", live_scheduler)
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+                cookies={"session_token": "test-token"},
+            ) as client:
+                yield client
+        finally:
+            live_scheduler.scheduler.shutdown(wait=False)
+            await asyncio.sleep(0)
 
 
 @pytest.fixture

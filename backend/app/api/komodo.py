@@ -9,7 +9,7 @@ import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.config import settings
+
 from app.komodo import komodo_client
 
 router = APIRouter()
@@ -39,8 +39,8 @@ async def get_komodo_status():
     is_available = await komodo_client.is_available()
 
     return {
-        "enabled": settings.KOMODO_ENABLED,
-        "api_url": settings.KOMODO_API_URL or None,
+        "enabled": komodo_client.enabled,
+        "api_url": komodo_client.api_url or None,
         "connected": is_available,
     }
 
@@ -48,7 +48,7 @@ async def get_komodo_status():
 @router.post("/test")
 async def test_komodo_connection():
     """Test connection to Komodo."""
-    if not settings.KOMODO_ENABLED:
+    if not (await komodo_client.refresh()).enabled:
         raise HTTPException(status_code=400, detail="Komodo integration is not enabled")
 
     is_available = await komodo_client.is_available()
@@ -62,7 +62,7 @@ async def test_komodo_connection():
 @router.post("/container-action")
 async def request_container_action(request: ContainerActionRequest):
     """Request Komodo to perform a container action."""
-    if not settings.KOMODO_ENABLED:
+    if not (await komodo_client.refresh()).enabled:
         raise HTTPException(status_code=400, detail="Komodo integration is not enabled")
 
     logger.info(
@@ -94,7 +94,7 @@ async def request_container_action(request: ContainerActionRequest):
 @router.get("/container/{container_name}")
 async def get_container_status(container_name: str):
     """Get container status from Komodo."""
-    if not settings.KOMODO_ENABLED:
+    if not (await komodo_client.refresh()).enabled:
         raise HTTPException(status_code=400, detail="Komodo integration is not enabled")
 
     status = await komodo_client.get_container_status(container_name)

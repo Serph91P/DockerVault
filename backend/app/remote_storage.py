@@ -5,7 +5,7 @@ Supported backends:
 - SSH/SFTP
 - WebDAV
 - S3 (AWS, MinIO, Backblaze B2, etc.)
-- FTP/FTPS
+- FTP (unencrypted; use SFTP for secure transport)
 - Rclone (40+ cloud providers)
 - Local/Network paths (NFS, SMB mounted)
 """
@@ -17,11 +17,13 @@ import os
 import random
 import shlex
 import shutil
+import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Awaitable, Dict, List, Optional
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import aiofiles
 import aiohttp
@@ -29,6 +31,25 @@ import aiohttp
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+async def _await_io_settled(operation: Awaitable[Any]) -> Any:
+    """Join non-abortable I/O before propagating cancellation to its caller."""
+    work = asyncio.ensure_future(operation)
+    cancellation = None
+    while not work.done():
+        try:
+            await asyncio.shield(work)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+        except Exception:
+            if cancellation is None:
+                raise
+    if cancellation is not None:
+        if not work.cancelled():
+            work.exception()
+        raise cancellation
+    return work.result()
 
 
 def _format_exception_message(exc: Exception) -> str:
@@ -166,7 +187,9 @@ class LocalStorage(StorageBackend):
 
             # Use async copy
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, shutil.copy2, str(local_path), str(dest))
+            await _await_io_settled(
+                loop.run_in_executor(None, shutil.copy2, str(local_path), str(dest))
+            )
 
             logger.info(f"Copied {local_path} to {dest}")
             return True, ""
@@ -180,7 +203,9 @@ class LocalStorage(StorageBackend):
             local_path.parent.mkdir(parents=True, exist_ok=True)
 
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, shutil.copy2, str(src), str(local_path))
+            await _await_io_settled(
+                loop.run_in_executor(None, shutil.copy2, str(src), str(local_path))
+            )
 
             return True
         except Exception as e:
@@ -694,10 +719,16 @@ class WebDAVStorage(StorageBackend):
         return aiohttp.ClientSession(auth=auth, timeout=timeout)
 
     def _get_url(self, remote_path: str) -> str:
-        """Build full WebDAV URL"""
-        base = self.config.webdav_url.rstrip("/")
-        path = f"{self.config.base_path}/{remote_path}".replace("//", "/")
-        return f"{base}{path}"
+        """Append filesystem segments without changing the encoded endpoint URL."""
+        if self.config.webdav_url is None:
+            raise ValueError("WebDAV URL is required")
+        base = urlsplit(self.config.webdav_url)
+        suffix = "/".join(
+            quote(part, safe="")
+            for part in f"{self.config.base_path}/{remote_path}".split("/")
+            if part
+        )
+        return urlunsplit(base._replace(path=f"{base.path.rstrip('/')}/{suffix}"))
 
     async def _verify_remote_size(
         self, session: aiohttp.ClientSession, remote_path: str, expected: int
@@ -981,8 +1012,8 @@ class WebDAVStorage(StorageBackend):
             async with self._get_session() as session:
                 url = self._get_url(remote_path)
                 # Ensure trailing slash so the server treats it as a collection
-                if not url.endswith("/"):
-                    url += "/"
+                parsed = urlsplit(url)
+                url = urlunsplit(parsed._replace(path=parsed.path.rstrip("/") + "/"))
                 headers = {"Depth": "1", "Content-Type": "application/xml"}
                 body = (
                     '<?xml version="1.0" encoding="utf-8"?>'
@@ -1012,7 +1043,7 @@ class WebDAVStorage(StorageBackend):
             files: List[Dict[str, Any]] = []
 
             # Build the "self" href so we can skip the collection itself
-            request_path = url.split("://", 1)[-1].split("/", 1)[-1].rstrip("/")
+            request_path = urlsplit(url).path.rstrip("/")
 
             for response_el in root.findall("d:response", ns):
                 href_el = response_el.find("d:href", ns)
@@ -1021,8 +1052,7 @@ class WebDAVStorage(StorageBackend):
 
                 href = href_el.text.rstrip("/")
                 # Skip the collection entry itself (first entry is the queried dir)
-                href_decoded = href.rstrip("/")
-                if href_decoded == request_path or href_decoded == "/" + request_path:
+                if urlsplit(href).path.rstrip("/") == request_path:
                     continue
 
                 # Extract the file/directory name from the href
@@ -1031,8 +1061,6 @@ class WebDAVStorage(StorageBackend):
                     continue
 
                 # URL-decode the name
-                from urllib.parse import unquote
-
                 name = unquote(name)
 
                 propstat = response_el.find("d:propstat", ns)
@@ -1119,6 +1147,38 @@ class WebDAVStorage(StorageBackend):
 class S3Storage(StorageBackend):
     """S3-compatible storage (AWS, MinIO, Backblaze B2, etc.)"""
 
+    MULTIPART_CLEANUP_TIMEOUT = 10.0
+
+    async def close(self):
+        if self._client is not None:
+            await self._client.close()
+            self._client = None
+
+    async def _abort_multipart(self, client, bucket, key, upload_id):
+        try:
+            async with asyncio.timeout(self.MULTIPART_CLEANUP_TIMEOUT):
+                await client.abort_multipart_upload(
+                    Bucket=bucket, Key=key, UploadId=upload_id
+                )
+        except Exception as exc:
+            logger.warning(
+                "S3 multipart abort failed for %s; provider lifecycle cleanup may be required: %s",
+                key,
+                exc,
+            )
+
+    @staticmethod
+    async def _settle_cleanup(coroutine):
+        task = asyncio.create_task(coroutine)
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        task.result()
+        return cancelled
+
     def __init__(self, config: StorageConfig):
         super().__init__(config)
         self._client = None
@@ -1167,10 +1227,12 @@ class S3Storage(StorageBackend):
             chunk_size = max(5 * 1024 * 1024, settings.S3_MULTIPART_CHUNK_SIZE)
 
             if file_size < multipart_threshold:
-                # Small file: stream the body via an aiofiles handle so the
-                # full payload is never materialised in memory.
-                async with aiofiles.open(local_path, "rb") as f:
-                    await client.put_object(Bucket=bucket, Key=key, Body=f)
+                # Botocore checksum/retry middleware requires a synchronous seekable body.
+                with open(local_path, "rb") as f:
+                    # Single PUT has no protocol-level abort once its bytes were accepted.
+                    await _await_io_settled(
+                        client.put_object(Bucket=bucket, Key=key, Body=f)
+                    )
                 logger.info(
                     "S3 upload successful: %s (%.1f MB)",
                     key,
@@ -1181,7 +1243,30 @@ class S3Storage(StorageBackend):
             # Large file: explicit multipart upload, streaming each part
             # from disk. Aborts the upload on any failure so we don't leak
             # incomplete multipart uploads (and storage costs).
-            create = await client.create_multipart_upload(Bucket=bucket, Key=key)
+            creation = asyncio.create_task(
+                client.create_multipart_upload(Bucket=bucket, Key=key)
+            )
+            try:
+                create = await asyncio.shield(creation)
+            except asyncio.CancelledError:
+
+                async def finish_creation():
+                    try:
+                        async with asyncio.timeout(self.MULTIPART_CLEANUP_TIMEOUT):
+                            created = await creation
+                    except Exception as exc:
+                        logger.warning(
+                            "S3 multipart creation could not be settled for %s; provider lifecycle cleanup may be required: %s",
+                            key,
+                            exc,
+                        )
+                    else:
+                        await self._abort_multipart(
+                            client, bucket, key, created["UploadId"]
+                        )
+
+                await self._settle_cleanup(finish_creation())
+                raise
             upload_id = create["UploadId"]
             parts: list[dict] = []
             try:
@@ -1208,17 +1293,12 @@ class S3Storage(StorageBackend):
                     UploadId=upload_id,
                     MultipartUpload={"Parts": parts},
                 )
-            except Exception:
-                try:
-                    await client.abort_multipart_upload(
-                        Bucket=bucket, Key=key, UploadId=upload_id
-                    )
-                except Exception as abort_exc:  # noqa: BLE001
-                    logger.warning(
-                        "S3 abort_multipart_upload failed for %s: %s",
-                        key,
-                        abort_exc,
-                    )
+            except BaseException:
+                cancelled = await self._settle_cleanup(
+                    self._abort_multipart(client, bucket, key, upload_id)
+                )
+                if cancelled:
+                    raise asyncio.CancelledError
                 raise
 
             logger.info(
@@ -1262,31 +1342,38 @@ class S3Storage(StorageBackend):
         try:
             client = await self._get_client()
             prefix = f"{self.config.base_path}/{remote_path}".lstrip("/")
-
-            response = await client.list_objects_v2(
-                Bucket=self.config.s3_bucket, Prefix=prefix
-            )
-
+            if prefix and not prefix.endswith("/"):
+                prefix += "/"
+            paginator = client.get_paginator("list_objects_v2")
             files = []
-            for obj in response.get("Contents", []):
-                modified = 0
-                if obj.get("LastModified"):
-                    try:
-                        modified = obj["LastModified"].timestamp()
-                    except (AttributeError, TypeError):
-                        modified = 0
-                files.append(
-                    {
-                        "name": obj["Key"].split("/")[-1],
-                        "size": obj["Size"],
-                        "is_dir": False,
-                        "modified": modified,
-                    }
-                )
+            async for response in paginator.paginate(
+                Bucket=self.config.s3_bucket, Prefix=prefix
+            ):
+                if response.get("IsTruncated") and not response.get(
+                    "NextContinuationToken"
+                ):
+                    raise RuntimeError(
+                        "Truncated S3 listing omitted its continuation token"
+                    )
+                for obj in response.get("Contents", []):
+                    modified = 0
+                    if obj.get("LastModified"):
+                        try:
+                            modified = obj["LastModified"].timestamp()
+                        except (AttributeError, TypeError):
+                            modified = 0
+                    files.append(
+                        {
+                            "name": obj["Key"].removeprefix(prefix),
+                            "size": obj["Size"],
+                            "is_dir": False,
+                            "modified": modified,
+                        }
+                    )
             return files
         except Exception as e:
             logger.error(f"S3 list error: {e}")
-            return []
+            raise
 
     async def test_connection(self) -> Dict[str, Any]:
         try:
@@ -1423,21 +1510,25 @@ class RcloneStorage(StorageBackend):
 
 
 class FTPStorage(StorageBackend):
-    """FTP/FTPS storage"""
+    """Plain FTP storage. FTPS is not supported; use SFTP for secure transport."""
 
     async def _connect(self):
         """Create FTP connection"""
         import aioftp
 
-        client = aioftp.Client()
-        await client.connect(self.config.host, port=self.config.port or 21)
-        # Set socket timeout for data operations
-        client.socket.settimeout(60)
-        if self.config.username:
-            await client.login(self.config.username, self.config.password or "")
-        return client
+        client = aioftp.Client(socket_timeout=60, connection_timeout=30)
+        try:
+            await client.connect(self.config.host, port=self.config.port or 21)
+            if self.config.username:
+                await client.login(self.config.username, self.config.password or "")
+            else:
+                await client.login()
+            return client
+        except BaseException:
+            client.close()
+            raise
 
-    async def upload(self, local_path: Path, remote_path: str) -> bool:
+    async def upload(self, local_path: Path, remote_path: str) -> tuple[bool, str]:
         try:
             client = await self._connect()
 
@@ -1452,14 +1543,25 @@ class FTPStorage(StorageBackend):
                     pass
 
                 # Upload file
-                await client.upload(local_path, full_path)
-                logger.info(f"FTP upload successful: {remote_path}")
-                return True
-            finally:
+                if not local_path.is_file():
+                    raise FileNotFoundError(
+                        f"Upload source is not a file: {local_path}"
+                    )
+                await client.upload(local_path, full_path, write_into=True)
                 await client.quit()
+                logger.info(f"FTP upload successful: {remote_path}")
+                return True, ""
+            except asyncio.CancelledError:
+                try:
+                    await _await_io_settled(client.abort())
+                except Exception as exc:
+                    logger.warning("FTP upload abort failed: %s", exc)
+                raise
+            finally:
+                client.close()
         except Exception as e:
             logger.error(f"FTP upload error: {e}")
-            return False
+            return False, _format_exception_message(e)[:500]
 
     async def download(self, remote_path: str, local_path: Path) -> bool:
         try:
@@ -1468,10 +1570,17 @@ class FTPStorage(StorageBackend):
             try:
                 local_path.parent.mkdir(parents=True, exist_ok=True)
                 full_path = f"{self.config.base_path}/{remote_path}"
-                await client.download(full_path, local_path)
-                return True
-            finally:
+                await client.download(full_path, local_path, write_into=True)
                 await client.quit()
+                return True
+            except asyncio.CancelledError:
+                try:
+                    await _await_io_settled(client.abort())
+                except Exception as exc:
+                    logger.warning("FTP download abort failed: %s", exc)
+                raise
+            finally:
+                client.close()
         except Exception as e:
             logger.error(f"FTP download error: {e}")
             return False
@@ -1483,9 +1592,10 @@ class FTPStorage(StorageBackend):
             try:
                 full_path = f"{self.config.base_path}/{remote_path}"
                 await client.remove_file(full_path)
+                await client.quit()
                 return True
             finally:
-                await client.quit()
+                client.close()
         except Exception as e:
             logger.error(f"FTP delete error: {e}")
             return False
@@ -1522,9 +1632,10 @@ class FTPStorage(StorageBackend):
                             "modified": modified,
                         }
                     )
+                await client.quit()
                 return files
             finally:
-                await client.quit()
+                client.close()
         except Exception as e:
             logger.error(f"FTP list error: {e}")
             return []
@@ -1532,7 +1643,10 @@ class FTPStorage(StorageBackend):
     async def test_connection(self) -> Dict[str, Any]:
         try:
             client = await self._connect()
-            await client.quit()
+            try:
+                await client.quit()
+            finally:
+                client.close()
             return {"success": True, "message": "FTP connection successful"}
         except Exception as e:
             message = _format_exception_message(e)
@@ -1556,6 +1670,13 @@ class RemoteStorageManager:
     def __init__(self):
         self.configs: Dict[int, StorageConfig] = {}
         self.backends: Dict[int, StorageBackend] = {}
+        self._retired_backends = []
+
+    async def close(self):
+        for backend in list(self.backends.values()) + self._retired_backends:
+            if isinstance(backend, S3Storage):
+                await backend.close()
+        self._retired_backends.clear()
 
     def add_storage(self, config: StorageConfig) -> StorageBackend:
         """Add a storage backend"""
@@ -1564,6 +1685,9 @@ class RemoteStorageManager:
             raise ValueError(f"Unknown storage type: {config.storage_type}")
 
         backend = backend_class(config)
+        previous = self.backends.get(config.id)
+        if isinstance(previous, S3Storage):
+            self._retired_backends.append(previous)
         self.configs[config.id] = config
         self.backends[config.id] = backend
         return backend
@@ -1575,7 +1699,9 @@ class RemoteStorageManager:
     def remove_storage(self, storage_id: int):
         """Remove a storage backend"""
         self.configs.pop(storage_id, None)
-        self.backends.pop(storage_id, None)
+        previous = self.backends.pop(storage_id, None)
+        if isinstance(previous, S3Storage):
+            self._retired_backends.append(previous)
 
     async def upload_to_all(
         self,
@@ -1588,17 +1714,52 @@ class RemoteStorageManager:
         """
         results: Dict[int, tuple[bool, str]] = {}
 
-        targets = storage_ids or list(self.backends.keys())
-
-        tasks = []
+        targets = list(self.backends.keys()) if storage_ids is None else storage_ids
         for storage_id in targets:
             backend = self.backends.get(storage_id)
-            if backend and self.configs[storage_id].enabled:
-                tasks.append((storage_id, backend.upload(local_path, remote_path)))
-
-        for storage_id, task in tasks:
+            if not backend or not self.configs[storage_id].enabled:
+                results[storage_id] = (False, "Storage is unavailable or disabled")
+                continue
             try:
-                results[storage_id] = await task
+                upload = backend.upload(local_path, remote_path)
+                # These providers settle their I/O or protocol abort themselves.
+                result = (
+                    await upload
+                    if isinstance(backend, (LocalStorage, S3Storage, FTPStorage))
+                    else await _await_io_settled(upload)
+                )
+                success = (
+                    result[0] is True if isinstance(result, tuple) else result is True
+                )
+                error = (
+                    result[1]
+                    if isinstance(result, tuple) and len(result) > 1
+                    else "Upload failed"
+                )
+                if success:
+                    with tempfile.TemporaryDirectory(
+                        prefix="dockervault-verify-"
+                    ) as directory:
+                        downloaded = Path(directory) / "artifact"
+                        if not await _await_io_settled(
+                            backend.download(remote_path, downloaded)
+                        ):
+                            raise OSError("Remote copy verification download failed")
+
+                        def digest(path):
+                            with path.open("rb") as stream:
+                                return hashlib.file_digest(stream, "sha256").digest()
+
+                        if await _await_io_settled(
+                            asyncio.to_thread(digest, local_path)
+                        ) != await _await_io_settled(
+                            asyncio.to_thread(digest, downloaded)
+                        ):
+                            raise OSError("Remote copy verification checksum mismatch")
+                results[storage_id] = (
+                    success,
+                    "" if success else str(error or "Upload failed")[:500],
+                )
             except Exception as e:
                 logger.error(f"Upload to storage {storage_id} failed: {e}")
                 results[storage_id] = (False, str(e)[:500])

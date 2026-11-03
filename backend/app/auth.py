@@ -89,14 +89,30 @@ async def invalidate_session(token: str, db: AsyncSession) -> bool:
     token_hash = _hash_token(token)
     result = await db.execute(delete(Session).where(Session.token == token_hash))
     await db.commit()
+    from app.websocket import manager
+
+    await manager.revoke_sessions({token_hash})
     return result.rowcount > 0
 
 
 async def invalidate_all_user_sessions(user_id: int, db: AsyncSession) -> int:
     """Invalidate all sessions for a user."""
-    result = await db.execute(delete(Session).where(Session.user_id == user_id))
+    hashes: set[str] = set(
+        (
+            await db.execute(
+                delete(Session)
+                .where(Session.user_id == user_id)
+                .returning(Session.token)
+            )
+        )
+        .scalars()
+        .all()
+    )
     await db.commit()
-    return result.rowcount
+    from app.websocket import manager
+
+    await manager.revoke_sessions(hashes)
+    return len(hashes)
 
 
 async def cleanup_expired_sessions(db: AsyncSession) -> int:
@@ -114,7 +130,11 @@ async def get_session_user(token: str, db: AsyncSession) -> Optional[User]:
     The presented raw token is hashed before comparison to match
     the SHA-256 hash stored in the database.
     """
-    token_hash = _hash_token(token)
+    return await get_session_user_by_hash(_hash_token(token), db)
+
+
+async def get_session_user_by_hash(token_hash: str, db: AsyncSession) -> Optional[User]:
+    """Validate a stored session identity without retaining its raw credential."""
     result = await db.execute(
         select(Session).where(
             Session.token == token_hash, Session.expires_at > datetime.now(timezone.utc)

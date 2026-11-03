@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Calendar, Clock, HelpCircle, Plus, Ban } from 'lucide-react'
 import { WizardData } from './index'
-import { ScheduleEntity } from '../../api'
+import { ScheduleEntity, schedulesApi } from '../../api'
 
 interface Props {
   data: WizardData
@@ -16,92 +17,28 @@ const CRON_PRESETS = [
   { label: 'Every 6 hours', cron: '0 */6 * * *', description: 'At minute 0 every 6 hours' },
   { label: 'Daily at midnight', cron: '0 0 * * *', description: 'Every day at 00:00' },
   { label: 'Daily at 3 AM', cron: '0 3 * * *', description: 'Every day at 03:00' },
-  { label: 'Weekly on Sunday', cron: '0 0 * * 0', description: 'Every Sunday at 00:00' },
+  { label: 'Weekly on Sunday', cron: '0 0 * * sun', description: 'Every Sunday at 00:00' },
   { label: 'Monthly', cron: '0 0 1 * *', description: 'First day of month at 00:00' },
 ]
 
-// Human-readable cron description
-function describeCron(expr: string): string {
-  const parts = expr.trim().split(/\s+/)
-  if (parts.length !== 5) return 'Invalid cron expression'
-  const [min, hour, dom, mon, dow] = parts
-
-  const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-  const MONTHS = ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
-
-  const pad = (n: string) => n.padStart(2, '0')
-  const timeStr = hour !== '*' && min !== '*' ? `at ${pad(hour)}:${pad(min)}` : min === '0' && hour.startsWith('*/') ? `every ${hour.slice(2)} hours` : hour === '*' && min === '0' ? 'every hour' : hour === '*' ? `every minute` : `at ${pad(hour)}:${pad(min)}`
-
-  if (dom === '*' && mon === '*' && dow === '*') {
-    if (hour === '*' && min === '*') return 'Every minute'
-    if (hour === '*' && min === '0') return 'Every hour at minute 0'
-    if (hour === '*') return `Every hour at minute ${min}`
-    if (hour.startsWith('*/')) return `Every ${hour.slice(2)} hours`
-    return `Every day ${timeStr}`
+function CronPreview({ expression }: { expression: string }) {
+  const preview = useQuery({
+    queryKey: ['cron-preview', expression],
+    queryFn: () => schedulesApi.preview(expression).then((r) => r.data),
+    enabled: !!expression,
+    retry: false,
+  })
+  if (preview.isError) {
+    const error = preview.error as { response?: { data?: { detail?: string } } }
+    return <p role="alert" className="text-sm text-red-400">{error.response?.data?.detail || 'Schedule preview unavailable. Check the server before saving.'}</p>
   }
-  if (dom === '*' && mon === '*' && dow !== '*') {
-    const dayName = WEEKDAYS[parseInt(dow)] || dow
-    return `Every ${dayName} ${timeStr}`
-  }
-  if (dom !== '*' && mon === '*' && dow === '*') {
-    return `On day ${dom} of every month ${timeStr}`
-  }
-  if (dom !== '*' && mon !== '*') {
-    const monthName = MONTHS[parseInt(mon)] || mon
-    return `On ${monthName} ${dom} ${timeStr}`
-  }
-  return `${expr}`
-}
-
-// Compute next N run dates from a cron expression
-function getNextRuns(expr: string, count: number): Date[] {
-  const parts = expr.trim().split(/\s+/)
-  if (parts.length !== 5) return []
-  const [minPart, hourPart, domPart, monPart, dowPart] = parts
-
-  const parseField = (field: string, max: number): number[] | null => {
-    if (field === '*') return null // means "all"
-    if (field.startsWith('*/')) {
-      const step = parseInt(field.slice(2))
-      if (isNaN(step) || step <= 0) return null
-      const result: number[] = []
-      for (let i = 0; i <= max; i += step) result.push(i)
-      return result
-    }
-    const vals = field.split(',').map(Number).filter(n => !isNaN(n))
-    return vals.length > 0 ? vals : null
-  }
-
-  const allowedMin = parseField(minPart, 59)
-  const allowedHour = parseField(hourPart, 23)
-  const allowedDom = parseField(domPart, 31)
-  const allowedMon = parseField(monPart, 12)
-  const allowedDow = parseField(dowPart, 6)
-
-  const results: Date[] = []
-  const now = new Date()
-  const cursor = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes() + 1, 0, 0)
-
-  // Iterate at most 525600 minutes (1 year)
-  for (let i = 0; i < 525600 && results.length < count; i++) {
-    const m = cursor.getMinutes()
-    const h = cursor.getHours()
-    const d = cursor.getDate()
-    const mo = cursor.getMonth() + 1
-    const wd = cursor.getDay()
-
-    const minOk = !allowedMin || allowedMin.includes(m)
-    const hourOk = !allowedHour || allowedHour.includes(h)
-    const domOk = !allowedDom || allowedDom.includes(d)
-    const monOk = !allowedMon || allowedMon.includes(mo)
-    const dowOk = !allowedDow || allowedDow.includes(wd)
-
-    if (minOk && hourOk && domOk && monOk && dowOk) {
-      results.push(new Date(cursor))
-    }
-    cursor.setMinutes(cursor.getMinutes() + 1)
-  }
-  return results
+  if (!preview.data) return <p className="text-xs text-dark-400">Loading server preview...</p>
+  return <div className="mt-2 space-y-2">
+    <p className="text-xs text-dark-400">{preview.data.contract}</p>
+    <p className="text-xs text-dark-400">Next runs (server timezone: {preview.data.timezone}; dates displayed in your local timezone):</p>
+    {preview.data.next_runs.map((text) => <p key={text} className="text-sm text-primary-400">{new Date(text).toLocaleString()}</p>)}
+    {preview.data.warnings.map((warning) => <p key={warning} role="alert" className="text-sm text-yellow-400">{warning}</p>)}
+  </div>
 }
 
 export default function StepSchedule({ data, updateData, schedules, isLoadingSchedules }: Props) {
@@ -126,6 +63,7 @@ export default function StepSchedule({ data, updateData, schedules, isLoadingSch
   }, [schedules, isLoadingSchedules, data.scheduleId, data.newSchedule, updateData])
 
   const handleScheduleSelect = (scheduleId: string) => {
+    hasAutoSelected.current = true
     if (scheduleId === 'none') {
       updateData({ scheduleId: null, newSchedule: null })
     } else if (scheduleId === 'new') {
@@ -282,27 +220,7 @@ export default function StepSchedule({ data, updateData, schedules, isLoadingSch
 
             {/* Human-readable cron preview */}
             {data.newSchedule.cronExpression && (
-              <div className="mt-2 space-y-2">
-                <p className="text-sm text-primary-400">
-                  {describeCron(data.newSchedule.cronExpression)}
-                </p>
-                {(() => {
-                  const nextRuns = getNextRuns(data.newSchedule.cronExpression, 3)
-                  if (nextRuns.length === 0) return null
-                  return (
-                    <div className="text-xs text-dark-500">
-                      <span className="text-dark-400">Next runs: </span>
-                      {nextRuns.map((d, i) => (
-                        <span key={i}>
-                          {i > 0 && ', '}
-                          {d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}{' '}
-                          {d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
-                        </span>
-                      ))}
-                    </div>
-                  )
-                })()}
-              </div>
+              <CronPreview expression={data.newSchedule.cronExpression} />
             )}
 
             {/* Cron Presets — always visible */}
@@ -350,11 +268,11 @@ export default function StepSchedule({ data, updateData, schedules, isLoadingSch
                   </div>
                   <div className="text-center">
                     <div className="font-medium text-dark-300">Weekday</div>
-                    <div>0-6</div>
+                    <div>mon-sun (0=Mon, 6=Sun)</div>
                   </div>
                 </div>
                 <p className="mt-2 text-dark-400">
-                  Use <code>*</code> for any, <code>*/n</code> for every n, <code>n,m</code> for specific values
+                  Use <code>*</code> for any, <code>*/n</code> for every n, <code>n,m</code> for specific values. Day-of-month AND weekday must both match; macros are unsupported.
                 </p>
               </div>
             )}

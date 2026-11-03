@@ -97,6 +97,7 @@ async def lifespan(app: FastAPI):
     # Start backup queue worker before the scheduler can trigger backups
     from app.backup_engine import backup_engine
 
+    await backup_engine.recover_operations()
     await backup_engine.start_queue_worker()
     logger.info("Backup queue worker started")
 
@@ -110,7 +111,13 @@ async def lifespan(app: FastAPI):
     # Shutdown — drain in-progress backups before stopping scheduler
     logger.info("Shutting down DockerVault backend...")
     await backup_engine.shutdown(timeout=settings.SHUTDOWN_TIMEOUT)
+    from app.websocket import manager
+
+    await manager.shutdown()
     await scheduler.stop()
+    from app.remote_storage import storage_manager
+
+    await storage_manager.close()
     logger.info("Shutdown complete")
 
 

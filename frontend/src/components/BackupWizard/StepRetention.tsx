@@ -86,6 +86,7 @@ export default function StepRetention({ data, updateData, policies, isLoadingPol
   }, [policies, isLoadingPolicies, data.retentionPolicyId, data.newRetentionPolicy, updateData])
 
   const handlePolicySelect = (policyId: string) => {
+    hasAutoSelected.current = true
     if (policyId === 'none') {
       updateData({
         retentionPolicyId: null,

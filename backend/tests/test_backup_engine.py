@@ -21,6 +21,7 @@ from app.database import (
     BackupStorageSync,
     BackupTarget,
     BackupType,
+    RemoteStorage,
 )
 from app.encryption import EncryptionError
 
@@ -54,6 +55,7 @@ async def _create_backup_record(test_db, backup_path=None, **target_overrides):
 
 
 def _configure_stopped_container(mock_docker, start_result=True):
+    mock_docker.get_container_identity = AsyncMock(side_effect=lambda name: name)
     mock_docker.get_dependency_order = AsyncMock(return_value=["test-container"])
     mock_docker.get_container_state = AsyncMock(
         side_effect=lambda _name: (
@@ -340,7 +342,7 @@ class TestBackupSafety:
         assert worker_finished.is_set()
 
     async def test_archive_worker_finishes_before_backup_cancellation_propagates(
-        self, temp_backup_dir
+        self, test_db, temp_backup_dir
     ):
         engine = BackupEngine()
         worker_started = threading.Event()
@@ -354,6 +356,13 @@ class TestBackupSafety:
             host_path=str(source_path),
             compression_enabled=False,
         )
+        async with test_db() as session:
+            session.add(target)
+            await session.flush()
+            owner = Backup(target_id=target.id, status=BackupStatus.RUNNING)
+            session.add(owner)
+            await session.commit()
+            backup_id = owner.id
 
         def create_tar(*_args):
             worker_started.set()
@@ -362,9 +371,10 @@ class TestBackupSafety:
 
         with (
             patch("app.backup_engine.settings.BACKUP_BASE_PATH", str(temp_backup_dir)),
+            patch("app.backup_engine.async_session", test_db),
             patch.object(engine, "_create_tar", side_effect=create_tar),
         ):
-            task = asyncio.create_task(engine._create_backup_archive(target, 1))
+            task = asyncio.create_task(engine._create_backup_archive(target, backup_id))
             await asyncio.to_thread(worker_started.wait)
             task.cancel()
             await asyncio.sleep(0)
@@ -433,6 +443,9 @@ class TestBackupSafety:
             mock_docker.get_dependency_order = AsyncMock(
                 return_value=["test-container"]
             )
+            mock_docker.get_container_identity = AsyncMock(
+                side_effect=lambda name: name
+            )
             mock_docker.get_container_state = AsyncMock(return_value="running")
             mock_docker.stop_container = AsyncMock(return_value=False)
             mock_docker.start_container = AsyncMock(return_value=True)
@@ -456,6 +469,9 @@ class TestBackupSafety:
             patch("app.backup_engine.docker_client") as mock_docker,
             patch.object(engine, "_extract_tar", extract),
         ):
+            mock_docker.get_container_identity = AsyncMock(
+                side_effect=lambda name: name
+            )
             mock_docker.get_container_state = AsyncMock(return_value="running")
             mock_docker.stop_container = AsyncMock(return_value=False)
             mock_docker.start_container = AsyncMock(return_value=True)
@@ -493,6 +509,9 @@ class TestBackupSafety:
             mock_docker.get_dependency_order = AsyncMock(
                 return_value=["test-container"]
             )
+            mock_docker.get_container_identity = AsyncMock(
+                side_effect=lambda name: name
+            )
             mock_docker.get_container_state = AsyncMock(
                 side_effect=["running"] + ["exited"] * 20
             )
@@ -518,6 +537,9 @@ class TestBackupSafety:
             patch("app.backup_engine.asyncio.sleep", new=AsyncMock()),
             patch.object(engine, "_extract_tar", new=MagicMock()),
         ):
+            mock_docker.get_container_identity = AsyncMock(
+                side_effect=lambda name: name
+            )
             mock_docker.get_container_state = AsyncMock(
                 side_effect=["running"] + ["exited"] * 20
             )
@@ -575,6 +597,9 @@ class TestBackupSafety:
         ):
             mock_docker.get_dependency_order = AsyncMock(
                 return_value=["test-container"]
+            )
+            mock_docker.get_container_identity = AsyncMock(
+                side_effect=lambda name: name
             )
             mock_docker.get_container_state = AsyncMock(
                 side_effect=["running"] + ["exited"] * 20
@@ -738,6 +763,16 @@ class TestRemoteSyncSafety:
             container_name=None,
         )
         async with test_db() as session:
+            for storage_id in storage_ids or [1]:
+                session.add(
+                    RemoteStorage(
+                        id=storage_id,
+                        name=f"sync-test-{storage_id}",
+                        storage_type="local",
+                        base_path=str(temp_backup_dir),
+                    )
+                )
+            await session.commit()
             target = await session.get(BackupTarget, target_id)
 
         engine = BackupEngine()

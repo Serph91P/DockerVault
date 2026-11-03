@@ -8,14 +8,17 @@ import shlex
 from datetime import datetime, timezone
 from typing import Dict, List, Literal, Optional
 
-from croniter import croniter
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field, field_validator
+
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
+from app.cron import cron_warnings, next_run
 from app.database import BackupTarget, Schedule, async_session
+from app.api._scheduler import reconcile_after_commit
+from app.target_validation import check_target_references, target_validation_errors
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +44,7 @@ def validate_cron_expression(cron_expr: Optional[str]) -> Optional[str]:
     if not cron_expr:
         return None
 
-    # Validate using croniter
-    if not croniter.is_valid(cron_expr):
-        raise ValueError(f"Invalid cron expression: {cron_expr}")
+    next_run(cron_expr)
 
     return cron_expr
 
@@ -102,7 +103,7 @@ class TargetCreate(BaseModel):
 class TargetUpdate(BaseModel):
     """Update backup target request."""
 
-    name: Optional[str] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     schedule_id: Optional[int] = None  # NEW: Reference to Schedule entity
     schedule_cron: Optional[str] = None  # DEPRECATED: Keep for backwards compatibility
     enabled: Optional[bool] = None
@@ -122,6 +123,22 @@ class TargetUpdate(BaseModel):
     # Remote storage sync
     remote_storage_ids: Optional[List[int]] = None
     delete_local_after_sync: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def reject_required_clears(self):
+        nullable = {
+            "schedule_id",
+            "schedule_cron",
+            "retention_policy_id",
+            "pre_backup_command",
+            "post_backup_command",
+        }
+        for field in self.model_fields_set - nullable:
+            if getattr(self, field) is None:
+                raise ValueError(
+                    f"{field} cannot be null; omit it to keep the current value"
+                )
+        return self
 
     @field_validator("schedule_cron")
     @classmethod
@@ -167,6 +184,7 @@ class TargetResponse(BaseModel):
     schedule_id: Optional[int] = None  # NEW: Reference to Schedule entity
     schedule: Optional[ScheduleInfo] = None  # Embedded schedule info
     schedule_cron: Optional[str] = None  # DEPRECATED: backwards compat
+    cron_warnings: List[str] = []
     enabled: bool
     retention_policy_id: Optional[int] = None
     retention_policy: Optional[RetentionPolicyInfo] = None  # Embedded info
@@ -187,6 +205,7 @@ class TargetResponse(BaseModel):
     delete_local_after_sync: bool
     created_at: str
     updated_at: str
+    validation_errors: List[str] = []
 
     class Config:
         from_attributes = True
@@ -225,6 +244,9 @@ def _build_target_response(t: BackupTarget) -> TargetResponse:
         schedule_id=t.schedule_id,
         schedule=schedule_info,
         schedule_cron=t.schedule_cron,
+        cron_warnings=cron_warnings(
+            t.schedule.cron_expression if t.schedule else t.schedule_cron
+        ),
         enabled=t.enabled,
         retention_policy_id=t.retention_policy_id,
         retention_policy=retention_policy_info,
@@ -241,6 +263,7 @@ def _build_target_response(t: BackupTarget) -> TargetResponse:
         delete_local_after_sync=t.delete_local_after_sync or False,
         created_at=_to_utc_isoformat(t.created_at) or "",
         updated_at=_to_utc_isoformat(t.updated_at) or "",
+        validation_errors=[],
     )
 
 
@@ -255,24 +278,33 @@ async def list_targets():
             )
         )
         targets = result.scalars().all()
-
-        return [_build_target_response(t) for t in targets]
+        responses = []
+        for target in targets:
+            response = _build_target_response(target)
+            response.validation_errors = await target_validation_errors(session, target)
+            responses.append(response)
+        return responses
 
 
 @router.post("", response_model=TargetResponse)
-async def create_target(target: TargetCreate):
+async def create_target(target: TargetCreate, request: Request):
     """Create a new backup target."""
     async with async_session() as session:
-        # Validate schedule_id if provided
-        if target.schedule_id is not None:
-            schedule_result = await session.execute(
-                select(Schedule).where(Schedule.id == target.schedule_id)
+        # Validate target references (schedule, retention, remote storage)
+        reference_errors = await check_target_references(
+            session,
+            schedule_id=target.schedule_id,
+            retention_policy_id=target.retention_policy_id,
+            remote_storage_ids=target.remote_storage_ids,
+        )
+        if reference_errors:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Invalid target references",
+                    "errors": reference_errors,
+                },
             )
-            if not schedule_result.scalar_one_or_none():
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Schedule with id {target.schedule_id} not found",
-                )
 
         # Validate target type and required fields
         if target.target_type == "container" and not target.container_name:
@@ -333,6 +365,7 @@ async def create_target(target: TargetCreate):
         result = await session.execute(
             select(BackupTarget)
             .where(BackupTarget.id == db_target.id)
+            .execution_options(populate_existing=True)
             .options(
                 selectinload(BackupTarget.schedule),
                 selectinload(BackupTarget.retention_policy),
@@ -340,7 +373,9 @@ async def create_target(target: TargetCreate):
         )
         db_target = result.scalar_one()
 
-        return _build_target_response(db_target)
+        response = _build_target_response(db_target)
+    await reconcile_after_commit(request)
+    return response
 
 
 @router.get("/{target_id}", response_model=TargetResponse)
@@ -360,11 +395,13 @@ async def get_target(target_id: int):
         if not target:
             raise HTTPException(status_code=404, detail="Target not found")
 
-        return _build_target_response(target)
+        response = _build_target_response(target)
+        response.validation_errors = await target_validation_errors(session, target)
+        return response
 
 
 @router.put("/{target_id}", response_model=TargetResponse)
-async def update_target(target_id: int, update: TargetUpdate):
+async def update_target(target_id: int, update: TargetUpdate, request: Request):
     """Update a backup target."""
     async with async_session() as session:
         result = await session.execute(
@@ -382,25 +419,40 @@ async def update_target(target_id: int, update: TargetUpdate):
 
         # Validate schedule_id if provided
         if update.schedule_id is not None:
-            schedule_result = await session.execute(
-                select(Schedule).where(Schedule.id == update.schedule_id)
-            )
-            if not schedule_result.scalar_one_or_none():
+            if await session.get(Schedule, update.schedule_id) is None:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Schedule with id {update.schedule_id} not found",
                 )
+        if "schedule_id" in update.model_fields_set:
             target.schedule_id = update.schedule_id
 
         # Update fields
         if update.name is not None:
             target.name = update.name
-        if update.schedule_cron is not None:
+        if "schedule_cron" in update.model_fields_set:
             target.schedule_cron = update.schedule_cron
         if update.enabled is not None:
             target.enabled = update.enabled
-        if update.retention_policy_id is not None:
+        if "retention_policy_id" in update.model_fields_set:
             target.retention_policy_id = update.retention_policy_id
+        if update.remote_storage_ids is not None:
+            target.remote_storage_ids = update.remote_storage_ids
+            target.sync_to_remote = len(update.remote_storage_ids) > 0
+        reference_errors = await check_target_references(
+            session,
+            schedule_id=target.schedule_id,
+            retention_policy_id=target.retention_policy_id,
+            remote_storage_ids=target.remote_storage_ids,
+        )
+        if reference_errors:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Invalid target references",
+                    "errors": reference_errors,
+                },
+            )
         if update.dependencies is not None:
             target.dependencies = update.dependencies
         if update.selected_volumes is not None:
@@ -411,9 +463,9 @@ async def update_target(target_id: int, update: TargetUpdate):
             target.exclude_paths = update.exclude_paths
         if update.per_volume_rules is not None:
             target.per_volume_rules = update.per_volume_rules
-        if update.pre_backup_command is not None:
+        if "pre_backup_command" in update.model_fields_set:
             target.pre_backup_command = update.pre_backup_command
-        if update.post_backup_command is not None:
+        if "post_backup_command" in update.model_fields_set:
             target.post_backup_command = update.post_backup_command
         if update.stop_container is not None:
             target.stop_container = update.stop_container
@@ -439,6 +491,7 @@ async def update_target(target_id: int, update: TargetUpdate):
         result = await session.execute(
             select(BackupTarget)
             .where(BackupTarget.id == target_id)
+            .execution_options(populate_existing=True)
             .options(
                 selectinload(BackupTarget.schedule),
                 selectinload(BackupTarget.retention_policy),
@@ -446,11 +499,13 @@ async def update_target(target_id: int, update: TargetUpdate):
         )
         target = result.scalar_one()
 
-        return _build_target_response(target)
+        response = _build_target_response(target)
+    await reconcile_after_commit(request)
+    return response
 
 
 @router.delete("/{target_id}")
-async def delete_target(target_id: int):
+async def delete_target(target_id: int, request: Request):
     """Delete a backup target and all associated backups."""
     async with async_session() as session:
         result = await session.execute(
@@ -462,6 +517,15 @@ async def delete_target(target_id: int):
 
         if not target:
             raise HTTPException(status_code=404, detail="Target not found")
+
+        from app.database import has_remote_copies
+
+        for backup in target.backups:
+            if await has_remote_copies(session, backup.id):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Remove remote copies before deleting their backup target",
+                )
 
         # Delete backup files from disk before removing DB records
         for backup in target.backups:
@@ -476,4 +540,5 @@ async def delete_target(target_id: int):
         await session.delete(target)
         await session.commit()
 
-        return {"status": "deleted"}
+    await reconcile_after_commit(request)
+    return {"status": "deleted"}

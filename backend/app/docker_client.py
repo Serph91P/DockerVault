@@ -248,7 +248,20 @@ class DockerClientWrapper:
             container = await loop.run_in_executor(
                 None, lambda: self.client.containers.get(container_id_or_name)
             )
-            await loop.run_in_executor(None, lambda: container.stop(timeout=timeout))
+            stop = loop.run_in_executor(None, lambda: container.stop(timeout=timeout))
+            cancellation = None
+            while not stop.done():
+                try:
+                    await asyncio.shield(stop)
+                except asyncio.CancelledError as exc:
+                    if cancellation is None:
+                        cancellation = exc
+                except Exception:
+                    break  # Retrieve the SDK failure after preserving cancellation.
+            if cancellation is not None:
+                stop.exception()
+                raise cancellation
+            stop.result()
             logger.info(f"Stopped container: {container_id_or_name}")
             return True
         except Exception as e:
@@ -268,6 +281,17 @@ class DockerClientWrapper:
         except Exception as e:
             logger.error(f"Failed to start container {container_id_or_name}: {e}")
             return False
+
+    async def get_container_identity(self, container_id_or_name: str) -> str:
+        """Normalize Docker names and ID aliases to one lifecycle-lock identity."""
+        container = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: self.client.containers.get(container_id_or_name)
+        )
+        if not container.id:
+            raise RuntimeError(
+                f"Cannot resolve workload identity: {container_id_or_name}"
+            )
+        return container.id
 
     async def get_container_state(self, container_id_or_name: str) -> Optional[str]:
         """Get container state."""
@@ -333,7 +357,8 @@ class DockerClientWrapper:
                     if in_degree[dep] == 0:
                         queue.append(dep)
 
-        # For stopping, we want dependent containers first
+        # IDs and unresolved names must still be claimed/validated by the caller.
+        result.extend(name for name in container_names if name not in graph)
         return result
 
     def _calculate_stack_dependency_order(
