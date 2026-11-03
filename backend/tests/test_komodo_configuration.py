@@ -19,8 +19,19 @@ from tests.test_remote_object_ownership import test_engine  # noqa: F401
 
 
 @pytest_asyncio.fixture
-async def komodo_service(async_client, test_db, monkeypatch):
+async def komodo_service(async_client, test_db, monkeypatch, tmp_path):
+    from app import credential_encryption
     from app.api import settings as api_settings, komodo as api_komodo
+    from cryptography.fernet import Fernet
+
+    # Keep credential encryption hermetic: an explicit synthetic key instead of
+    # the production /app/data key file, which is absent on the CI runner.
+    synthetic_key = Fernet.generate_key().decode()
+    monkeypatch.setattr(credential_encryption, "_fernet", None)
+    monkeypatch.setattr(
+        credential_encryption, "_KEY_FILE_PATH", tmp_path / ".credential_key"
+    )
+    monkeypatch.setattr(settings, "CREDENTIAL_ENCRYPTION_KEY", synthetic_key)
 
     calls = []
 
@@ -270,6 +281,7 @@ asyncio.run(main())
         KOMODO_API_KEY="",
         KOMODO_API_SECRET="",
         KOMODO_ALLOWED_HOSTS="127.0.0.1",
+        CREDENTIAL_ENCRYPTION_KEY=settings.CREDENTIAL_ENCRYPTION_KEY,
     )
     process = await asyncio.create_subprocess_exec(
         sys.executable,
