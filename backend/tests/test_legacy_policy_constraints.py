@@ -234,7 +234,7 @@ asyncio.run(database.run_migrations())
                 await connection.execute(
                     text("SELECT version FROM schema_migrations ORDER BY version")
                 )
-            ).scalars().all() == [1, 2, 3]
+            ).scalars().all() == [1, 2, 3, 4, 5]
             assert (
                 len(
                     (
@@ -245,5 +245,146 @@ asyncio.run(database.run_migrations())
                 )
                 == 2
             )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("third_version", ["journal", "policy-fks"])
+async def test_published_v3_variants_converge_without_reinterpreting_ledger(
+    tmp_path, third_version
+):
+    path = tmp_path / "published-v3.sqlite"
+    with closing(sqlite3.connect(path)) as raw, raw:
+        raw.executescript(
+            (Path(__file__).parent / "fixtures/legacy_pre_schedule.sql").read_text()
+        )
+    engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+    try:
+        await old_ledger(engine)
+        async with engine.connect() as connection:
+            await connection.execute(text("PRAGMA foreign_keys=OFF"))
+            await connection.commit()
+            async with connection.begin():
+                await connection.execute(text("DROP TABLE workload_operations"))
+                if third_version == "journal":
+                    await database._create_operation_journal(connection)
+                else:
+                    await database._ensure_target_foreign_keys(connection)
+                await connection.execute(
+                    text(
+                        "INSERT INTO retention_policies(id,name,keep_last) VALUES(13,'owned-policy',9)"
+                    )
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO backup_targets(id,name,target_type,retention_policy_id) VALUES(41,'owned-target','path',13)"
+                    )
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO backups(id,target_id,status) VALUES(51,41,'COMPLETED')"
+                    )
+                )
+                if third_version == "journal":
+                    await connection.execute(
+                        text(
+                            "INSERT INTO workload_operations(id,backup_id,kind,phase,state,resources,error) VALUES(71,51,'backup','stopped','recovery_required',:resources,'preserve journal')"
+                        ),
+                        {
+                            "resources": '{"immutable-owned-id":{"original":"running","requested":true,"stopped":true,"restored":false}}'
+                        },
+                    )
+                await connection.execute(
+                    text(
+                        "INSERT INTO schema_migrations VALUES(3,'published-v3-marker')"
+                    )
+                )
+            await connection.execute(text("PRAGMA foreign_keys=ON"))
+            await connection.commit()
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+
+        with (
+            patch.object(database, "engine", engine),
+            patch.object(
+                database,
+                "async_session",
+                async_sessionmaker(engine, expire_on_commit=False),
+            ),
+            patch.object(
+                database.settings, "BACKUP_BASE_PATH", str(tmp_path / "backups")
+            ),
+        ):
+            await database.init_db()
+            await database.init_db()
+        async with engine.connect() as connection:
+            assert (
+                await connection.execute(
+                    text("SELECT name,keep_last FROM retention_policies WHERE id=13")
+                )
+            ).one() == ("owned-policy", 9)
+            assert (
+                await connection.execute(
+                    text(
+                        "SELECT name,retention_policy_id FROM backup_targets WHERE id=41"
+                    )
+                )
+            ).one() == ("owned-target", 13)
+            assert (
+                await connection.execute(
+                    text("SELECT target_id FROM backups WHERE id=51")
+                )
+            ).scalar_one() == 41
+            if third_version == "journal":
+                import json
+
+                row = (
+                    await connection.execute(
+                        text(
+                            "SELECT backup_id,kind,phase,state,resources,error FROM workload_operations WHERE id=71"
+                        )
+                    )
+                ).one()
+                assert tuple(row[:4]) == (51, "backup", "stopped", "recovery_required")
+                assert json.loads(row[4]) == {
+                    "immutable-owned-id": {
+                        "original": "running",
+                        "requested": True,
+                        "stopped": True,
+                        "restored": False,
+                    }
+                }
+                assert row[5] == "preserve journal"
+            assert (
+                await connection.execute(
+                    text("SELECT version FROM schema_migrations ORDER BY version")
+                )
+            ).scalars().all() == [1, 2, 3, 4, 5]
+            assert (
+                await connection.execute(
+                    text("SELECT applied_at FROM schema_migrations WHERE version=3")
+                )
+            ).scalar_one() == "published-v3-marker"
+            assert (
+                await connection.execute(
+                    text(
+                        "SELECT name FROM sqlite_master WHERE name='workload_operations'"
+                    )
+                )
+            ).scalar_one() == "workload_operations"
+            assert {
+                row[3]: row[2]
+                for row in (
+                    await connection.execute(
+                        text("PRAGMA foreign_key_list(backup_targets)")
+                    )
+                ).all()
+            } == {
+                "schedule_id": "schedules",
+                "retention_policy_id": "retention_policies",
+            }
+            assert (
+                await connection.execute(text("PRAGMA foreign_key_check"))
+            ).all() == []
     finally:
         await engine.dispose()

@@ -164,6 +164,22 @@ class Backup(Base):
     created_at = Column(DateTime, default=_utcnow)
 
 
+class WorkloadOperation(Base):
+    """Durable lifecycle intent survives both process loss and backup deletion."""
+
+    __tablename__ = "workload_operations"
+    id = Column(Integer, primary_key=True)
+    backup_id = Column(
+        Integer, ForeignKey("backups.id", ondelete="SET NULL"), nullable=True
+    )
+    kind = Column(String(16), nullable=False)
+    phase = Column(String(32), nullable=False, default="claimed")
+    state = Column(String(32), nullable=False, default="active")
+    resources = Column(JSON, nullable=False, default=dict)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+
+
 class BackupLog(Base):
     """Structured log entry for a backup job step."""
 
@@ -413,7 +429,9 @@ async def run_migrations():
     migrations = (
         _upgrade_legacy_schema,
         _repair_catalog_orphans,
+        _create_operation_journal,
         _ensure_target_foreign_keys,
+        _create_operation_journal,
     )
     async with engine.connect() as conn:
         # SQLite's documented rebuild procedure requires this outside a transaction.
@@ -550,6 +568,12 @@ async def _ensure_target_foreign_keys(conn):
     )
     for sql in objects:
         await conn.execute(text(sql))
+
+
+async def _create_operation_journal(conn):
+    await conn.run_sync(
+        lambda sync: WorkloadOperation.__table__.create(sync, checkfirst=True)
+    )
 
 
 async def _upgrade_legacy_schema(conn):
@@ -721,7 +745,7 @@ async def _migrate_plaintext_credentials():
 
 
 async def _recover_orphaned_backups():
-    """Mark RUNNING backups as FAILED on startup and remove half-written files.
+    """Terminally fail interrupted/queued jobs and remove half-written files.
 
     A container crash, OOM kill, or hard restart leaves ``BackupStatus.RUNNING``
     rows behind that will never complete. The frontend would show them as
@@ -743,19 +767,19 @@ async def _recover_orphaned_backups():
     async with async_session() as session:
         result = await session.execute(
             sa_update(Backup)
-            .where(Backup.status == BackupStatus.RUNNING)
+            .where(Backup.status.in_([BackupStatus.RUNNING, BackupStatus.PENDING]))
             .values(
                 status=BackupStatus.FAILED,
                 error_message=(
-                    "Container restart while backup was in progress \u2014 "
-                    "marked failed during startup recovery"
+                    "Interrupted by restart; accepted job terminally failed. "
+                    "Legacy workload state may be unknown: verify workloads manually and retry."
                 ),
                 completed_at=_utcnow(),
             )
         )
         if result.rowcount:
             log.warning(
-                "Recovered %d orphaned RUNNING backup(s) as FAILED",
+                "Resolved %d interrupted or pending backup(s) as FAILED",
                 result.rowcount,
             )
         await session.commit()

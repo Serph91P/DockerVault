@@ -8,11 +8,15 @@ This is not an import/export or recovery-bundle feature.
 
 `schema_migrations` records ordered versions: **1** baselines the legacy columns
 and applies the historic remote-sync flag rewrite once; **2** quarantines orphan
-log/sync metadata under the catalog lifecycle in `CATALOG.md`; **3** repairs
-missing target schedule/retention foreign keys in legacy and v1/v2-ledgered databases.
-The SQLite rebuild preserves extension columns, target/backup IDs, indexes and
-triggers. Invalid existing target references fail startup with the original rows
-and ledger unchanged instead of guessing a replacement policy. Completed data
+log/sync metadata under the catalog lifecycle in `CATALOG.md`; **3** is the
+historically published independent workload-operation journal (`RECOVERY.md`).
+Forward convergence versions **4** (target schedule/retention FKs) and **5**
+(idempotent journal creation) support both that historical v3 database and the
+intermediate #174 correction that already recorded target FKs as v3. An applied
+ledger entry is never replayed/reinterpreted; the new steps converge the actual
+schema to both invariants. The rebuild preserves extension columns, target/backup
+IDs, indexes and triggers. Invalid existing references fail startup with original
+rows/ledger unchanged rather than guessing a policy. Completed data
 transformations are never replayed, including when a user subsequently disables
 remote sync. A future/gapped ledger or unresolved foreign-key violation prevents
 startup instead of serving a partially understood database.

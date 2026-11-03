@@ -97,6 +97,7 @@ async def lifespan(app: FastAPI):
     # Start backup queue worker before the scheduler can trigger backups
     from app.backup_engine import backup_engine
 
+    await backup_engine.recover_operations()
     await backup_engine.start_queue_worker()
     logger.info("Backup queue worker started")
 
