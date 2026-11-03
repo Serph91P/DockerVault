@@ -173,7 +173,7 @@ DockerVault supports end-to-end encryption for your backups using **AES-256-CBC*
 If you lose access to DockerVault, you can still recover encrypted backups using standard command-line tools:
 
 ```bash
-# Prerequisites: age (https://github.com/FiloSottile/age) and openssl
+# Prerequisites: age, openssl, Python 3 and recover_backup.py (see below)
 set -euo pipefail
 umask 077
 
@@ -183,32 +183,32 @@ AGE-SECRET-KEY-1XXXXXX...
 EOF
 chmod 600 private_key.txt
 
-# 2. Decrypt the DEK (Data Encryption Key)
-recovery_dir=$(mktemp -d)
-trap 'rm -f "$recovery_dir/dek.bin" "$recovery_dir/dek.hex"; rmdir "$recovery_dir"' EXIT
-trap 'exit 1' HUP INT TERM
-age -d -i private_key.txt backup.tar.gz.key > "$recovery_dir/dek.bin"
-test "$(wc -c < "$recovery_dir/dek.bin")" -eq 32
-od -An -v -tx1 "$recovery_dir/dek.bin" | tr -d '[:space:]' > "$recovery_dir/dek.hex"
+# 2. Check the saved standalone recovery script
+test -f recover_backup.py
 
 # 3. Decrypt the backup
-openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \
-    -in backup.tar.gz.enc \
-    -out backup.tar.gz \
-    -pass "file:$recovery_dir/dek.hex"
+python3 recover_backup.py --identity private_key.txt --key backup.tar.gz.key \
+    --archive backup.tar.gz.enc --output backup.tar.gz
 
 # 4. Extract the backup
 tar xzf backup.tar.gz
 
 # 5. Clean up (don't leave keys lying around)
-rm -f "$recovery_dir/dek.bin" "$recovery_dir/dek.hex"
-rmdir "$recovery_dir"
-trap - EXIT HUP INT TERM
+# The script cleans up its temporary DEK/password/plaintext files automatically.
 # Keep your private key secure; delete this working copy when finished.
 ```
 
 > [!TIP]
 > The downloaded private key file includes these recovery instructions.
+
+Save the standalone script from `/recover_backup.py` on your DockerVault instance
+with your key export, or obtain `backend/app/recovery.py` from the trusted release
+source and save it as `recover_backup.py`. It uses only Python's standard library,
+age and OpenSSL; no running app, database or Python package install is needed.
+New versioned archives authenticate content before output/extraction. Legacy CBC
+archives remain readable with their original raw-DEK sidecars, but have no
+cryptographic authenticity guarantee: compare against an independently trusted
+checksum before extraction. See [the archive format](docs/ENCRYPTION.md).
 
 ## Security Considerations
 

@@ -153,6 +153,7 @@ RUN python runtime_smoke.py && rm runtime_smoke.py
 
 # Copy frontend build from builder stage
 COPY --from=frontend-builder /app/dist /usr/share/nginx/html
+COPY backend/app/recovery.py /usr/share/nginx/html/recover_backup.py
 
 # Copy configuration files
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
