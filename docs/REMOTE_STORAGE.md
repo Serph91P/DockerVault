@@ -74,3 +74,17 @@ verification applies to the encryption key sidecar. Hashing runs outside the eve
 loop, reads bounded chunks, and temporary files are removed on failure/cancellation.
 Previous untracked copies are not trusted merely because an old version returned
 200: sync again from a verified local source to verify and catalog the copy.
+
+## Retry eligibility
+
+Retry uses the same verified archive/sidecar path and persistent enabled-storage
+state, even with a warm client cache. Concurrent requests serialize on the target
+lock and re-read outcomes; successful copies are not retried or duplicated.
+A failed backup is accepted only for a recorded `Remote sync failed:` or
+`Remote storage sync failed:` error, an existing failed sync record, and a local
+archive matching its persisted size and SHA-256. Missing checksums, archive/job
+failures, cancellations, or changed bytes are rejected rather than guessed safe.
+Encrypted backups also require their sidecar. After every required copy succeeds,
+the prior error is retained in `backup_metadata.recovered_remote_sync_error` and
+status becomes completed; unsuccessful recovery preserves the backup error and
+local artifacts. This does not regenerate the backup or delete its local copy.

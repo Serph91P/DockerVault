@@ -83,8 +83,9 @@ async def test_encrypted_sync_recovers_exact_archive_and_sidecar(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("collision", ["archive", "sidecar"])
+@pytest.mark.parametrize("operation", ["manual", "retry"])
 async def test_concurrent_normalized_targets_cannot_overwrite_remote_identity(
-    async_client, test_db, tmp_path, monkeypatch, collision
+    async_client, test_db, tmp_path, monkeypatch, collision, operation
 ):
     archives, keys = [], []
     for index in range(2):
@@ -109,6 +110,8 @@ async def test_concurrent_normalized_targets_cannot_overwrite_remote_identity(
         )
         session.add_all([*targets, storage])
         await session.flush()
+        for target in targets:
+            target.remote_storage_ids = [storage.id]
         backups = [
             Backup(
                 target_id=target.id,
@@ -149,20 +152,24 @@ async def test_concurrent_normalized_targets_cannot_overwrite_remote_identity(
         return await original(self, source, destination)
 
     monkeypatch.setattr(LocalStorage, "upload", upload)
+
+    def endpoint(backup_id):
+        return (
+            f"/api/v1/storage/{storage_id}/sync/{backup_id}"
+            if operation == "manual"
+            else f"/api/v1/backups/{backup_id}/retry-sync"
+        )
+
     with (
         patch.dict(storage_manager.backends, {}, clear=True),
         patch.dict(storage_manager.configs, {}, clear=True),
         patch("app.config.settings.BACKUP_BASE_PATH", str(tmp_path)),
     ):
-        first = asyncio.create_task(
-            async_client.post(f"/api/v1/storage/{storage_id}/sync/{ids[0]}")
-        )
+        first = asyncio.create_task(async_client.post(endpoint(ids[0])))
         second = observer = None
         try:
             await asyncio.wait_for(entered.wait(), 10)
-            second = asyncio.create_task(
-                async_client.post(f"/api/v1/storage/{storage_id}/sync/{ids[1]}")
-            )
+            second = asyncio.create_task(async_client.post(endpoint(ids[1])))
             observer = asyncio.create_task(contention.wait())
             done, _ = await asyncio.wait(
                 (second, observer), timeout=10, return_when=asyncio.FIRST_COMPLETED
@@ -175,7 +182,15 @@ async def test_concurrent_normalized_targets_cannot_overwrite_remote_identity(
                 asyncio.gather(first, second), 10
             )
             assert response_a.status_code == 200, response_a.text
-            assert response_b.status_code == 409, response_b.text
+            if operation == "manual":
+                assert response_b.status_code == 409, response_b.text
+            else:
+                assert response_a.json()["succeeded"] == 1
+                assert (
+                    response_b.status_code == 200
+                    and response_b.json()["succeeded"] == 0
+                    and response_b.json()["failed"] == 1
+                ), response_b.text
             async with test_db() as session:
                 rows = (await session.scalars(select(BackupStorageSync))).all()
             assert (

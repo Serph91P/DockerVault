@@ -8,8 +8,9 @@ import sys
 import pytest
 
 
+@pytest.mark.parametrize("operation", ["sync", "retry"])
 @pytest.mark.parametrize("special_names", [False, True])
-def test_manual_sync_survives_real_process_restart(tmp_path, special_names):
+def test_sync_survives_real_process_restart(tmp_path, operation, special_names):
     backend = Path(__file__).resolve().parents[1]
     env = os.environ | {
         "DATABASE_URL": f"sqlite+aiosqlite:///{tmp_path}/catalog.db",
@@ -17,7 +18,7 @@ def test_manual_sync_survives_real_process_restart(tmp_path, special_names):
         "PYTHONPATH": str(backend),
         "SYNC_SPECIAL_NAMES": "1" if special_names else "0",
     }
-    for mode in ("sync", "recover"):
+    for mode in (operation, "recover"):
         result = subprocess.run(
             [
                 sys.executable,
