@@ -12,7 +12,11 @@ persisted stop intent is eligible for recovery. An originally stopped resource
 is never started. A stop whose completion was not recorded may still be executing
 inside Docker; recovery settles that recorded bounded stop before restarting,
 instead of trusting a transient `running` state. Subsequent reconciliation sees
-confirmed stop/recovery state and does not repeat completed transitions.
+confirmed stop/recovery state and does not repeat completed transitions. Recovery
+starts dependencies before consumers using start ranks persisted with the
+immutable IDs, not stop-order iteration or mutable names. Historical journals
+without ranks use the reverse of their recorded stop order. Both backup and
+restore follow this rule; originally stopped members stay stopped.
 
 Interrupted accepted pending/running jobs are explicitly marked failed, not
 silently abandoned or replayed. An unfinished journal also fails a backup that

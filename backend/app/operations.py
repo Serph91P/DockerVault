@@ -12,9 +12,16 @@ class OperationJournal:
         self.sessions = sessions
         self.docker = docker
 
-    async def begin(self, backup_id, kind, original_states):
+    async def begin(self, backup_id, kind, original_states, start_order=None):
         if any(state is None for state in original_states.values()):
             raise RuntimeError("Unknown workload state; refusing external changes")
+        order = list(
+            dict.fromkeys(
+                start_order if start_order is not None else reversed(original_states)
+            )
+        )
+        order.extend(identity for identity in original_states if identity not in order)
+        ranks = {identity: index for index, identity in enumerate(order)}
         async with self.sessions() as session:
             operation = WorkloadOperation(
                 backup_id=backup_id,
@@ -22,6 +29,7 @@ class OperationJournal:
                 resources={
                     identity: {
                         "original": state,
+                        "start_index": ranks[identity],
                         "requested": False,
                         "stopped": False,
                         "restored": state != "running",
@@ -113,6 +121,16 @@ class OperationJournal:
                         continue
                     await self.stop(operation.id, identity, confirmed=True)
                 ready.append(identity)
+            # Historical journals only persisted stop-order insertion, not start ranks.
+            legacy_order = {
+                identity: index
+                for index, identity in enumerate(reversed(operation.resources))
+            }
+            ready.sort(
+                key=lambda identity: operation.resources[identity].get(
+                    "start_index", legacy_order[identity]
+                )
+            )
             failures.extend(
                 await restart(ready, {identity: "running" for identity in ready})
             )
