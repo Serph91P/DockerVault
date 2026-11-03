@@ -996,8 +996,8 @@ async def sync_backup_to_storage(
     storage_id: int, backup_id: int, db: AsyncSession = Depends(get_db)
 ):
     """Use the automatic transfer/catalog path without deleting the local copy."""
-    from ..backup_engine import backup_engine
-    from ..database import Backup, BackupStatus, BackupStorageSync, BackupTarget
+    from ..backup_engine import REMOTE_PATH_CONFLICT, backup_engine
+    from ..database import Backup, BackupStatus, BackupTarget
     from .backups import _resolve_backup_path
 
     storage = await db.get(RemoteStorageModel, storage_id)
@@ -1028,23 +1028,6 @@ async def sync_backup_to_storage(
         f"{backup_engine._sanitize_path_name(target.name)}/{Path(resolved).name}"
     )
     async with backup_engine._get_target_lock(target.id):
-        collision = (
-            await db.execute(
-                select(BackupStorageSync.id)
-                .where(
-                    BackupStorageSync.storage_id == storage_id,
-                    BackupStorageSync.remote_path.in_(
-                        [remote_path, remote_path.replace(".enc", ".key")]
-                    ),
-                    BackupStorageSync.backup_id != backup_id,
-                )
-                .limit(1)
-            )
-        ).first()
-        if collision:
-            raise HTTPException(
-                status_code=409, detail="Remote path belongs to another backup"
-            )
         results = await backup_engine._sync_to_remote(
             backup_id,
             target,
@@ -1055,7 +1038,10 @@ async def sync_backup_to_storage(
         )
     success, error = results.get(storage_id, (False, "Upload result missing"))
     if not success:
-        raise HTTPException(status_code=502, detail=error or "Sync failed")
+        raise HTTPException(
+            status_code=409 if error == REMOTE_PATH_CONFLICT else 502,
+            detail=error or "Sync failed",
+        )
     return {"message": f"Backup synced to {storage.name}", "remote_path": remote_path}
 
 

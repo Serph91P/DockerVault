@@ -31,7 +31,7 @@ from app.database import (
     async_session,
     has_remote_copies,
 )
-from app.encryption import DecryptionError, decrypt_backup
+from app.encryption import DecryptionError, decrypt_backup, key_sidecar_path
 from app.rate_limit import limiter
 from app.remote_storage import StorageConfig, StorageType, storage_manager
 
@@ -154,8 +154,8 @@ async def _ensure_backup_locally(
 
                     # Also download .key sidecar file for encrypted backups
                     if backup.encrypted:
-                        key_remote = sync.remote_path.replace(".enc", ".key")
-                        key_local = temp_dir / filename.replace(".enc", ".key")
+                        key_remote = key_sidecar_path(sync.remote_path)
+                        key_local = temp_dir / key_sidecar_path(filename)
                         try:
                             await backend.download(key_remote, key_local)
                             # Validate that the downloaded key file is non-empty
@@ -562,7 +562,7 @@ async def retry_remote_sync(backup_id: int):
         if success and backup.encrypted and backup.encryption_key_path:
             key_path = Path(backup.encryption_key_path)
             if key_path.exists():
-                key_remote = remote_path.replace(".enc", ".key")
+                key_remote = key_sidecar_path(remote_path)
                 try:
                     await backend.upload(key_path, key_remote)
                 except Exception:
@@ -615,7 +615,7 @@ async def retry_remote_sync(backup_id: int):
         if success and backup.encrypted and backup.encryption_key_path:
             key_path = Path(backup.encryption_key_path)
             if key_path.exists():
-                key_remote = remote_path.replace(".enc", ".key")
+                key_remote = key_sidecar_path(remote_path)
                 try:
                     await backend.upload(key_path, key_remote)
                 except Exception:
@@ -1207,11 +1207,11 @@ async def _download_key_from_remote(
 
         archive_dir = os.path.dirname(resolved_archive)
         archive_basename = os.path.basename(resolved_archive)
-        key_basename = archive_basename.replace(".enc", ".key")
+        key_basename = key_sidecar_path(archive_basename)
         key_local = os.path.join(archive_dir, key_basename)
 
         for sync in syncs:
-            key_remote = sync.remote_path.replace(".enc", ".key")
+            key_remote = key_sidecar_path(sync.remote_path)
             backend = storage_manager.get_backend(sync.storage_id)
             if not backend:
                 storage = await session.get(RemoteStorage, sync.storage_id)
@@ -1321,7 +1321,7 @@ async def _get_decrypted_archive_path(
     if not resolved_key:
         archive_dir = os.path.dirname(resolved_archive)
         archive_basename = os.path.basename(resolved_archive)
-        key_basename = archive_basename.replace(".enc", ".key")
+        key_basename = key_sidecar_path(archive_basename)
         resolved_key = _try_key_candidate(os.path.join(archive_dir, key_basename))
 
     # 5. Download .key from remote storage as last resort

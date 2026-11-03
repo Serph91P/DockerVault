@@ -41,6 +41,7 @@ from app.encryption import (
     EncryptionError,
     decrypt_backup,
     encrypt_backup,
+    key_sidecar_path,
 )
 
 # Path to the tar worker script that runs as root via sudo.
@@ -49,6 +50,7 @@ _TAR_WORKER = os.path.join(os.path.dirname(__file__), "tar_worker.py")
 _PYTHON = "/opt/venv/bin/python3"
 
 logger = logging.getLogger(__name__)
+REMOTE_PATH_CONFLICT = "Remote path belongs to another backup"
 
 
 @dataclass(frozen=True)
@@ -151,6 +153,7 @@ class BackupEngine:
         self._backup_semaphore = asyncio.Semaphore(2)  # Max concurrent backups
         self._target_locks: Dict[int, asyncio.Lock] = {}
         self._workload_locks: Dict[str, asyncio.Lock] = {}
+        self._remote_sync_locks: Dict[tuple[int, str], asyncio.Lock] = {}
         self._queue: asyncio.Queue = asyncio.Queue()
         self._queue_worker_task: Optional[asyncio.Task] = None
 
@@ -1077,6 +1080,73 @@ class BackupEngine:
         encryption_key_path: str | None = None,
         storage_ids: list[int] | None = None,
     ) -> dict[int, tuple[bool, str | None]]:
+        """Own concrete archive AND sidecar identities until verification/catalog commit."""
+        selected_ids = (
+            list(target.remote_storage_ids or [])
+            if storage_ids is None
+            else list(storage_ids)
+        )
+        remote_path = (
+            f"{self._sanitize_path_name(target.name)}/{Path(backup_path).name}"
+        )
+        paths = {remote_path}
+        if encrypted:
+            paths.add(key_sidecar_path(remote_path))
+        keys = {(storage_id, path) for storage_id in selected_ids for path in paths}
+        async with AsyncExitStack() as claims:
+            for key in sorted(keys):
+                await claims.enter_async_context(
+                    self._remote_sync_locks.setdefault(key, asyncio.Lock())
+                )
+            # Re-read AFTER acquiring every path: another target may have just committed.
+            async with async_session() as session:
+                existing = (
+                    await session.execute(
+                        select(
+                            BackupStorageSync.storage_id,
+                            BackupStorageSync.remote_path,
+                            Backup.encrypted,
+                        )
+                        .join(Backup, Backup.id == BackupStorageSync.backup_id)
+                        .where(
+                            BackupStorageSync.storage_id.in_(selected_ids),
+                            BackupStorageSync.backup_id != backup_id,
+                        )
+                    )
+                ).all()
+            for storage_id, path, owns_key in existing:
+                if not path:
+                    continue
+                foreign = {path, key_sidecar_path(path)} if owns_key else {path}
+                if any((storage_id, item) in keys for item in foreign):
+                    await self._log(
+                        backup_id,
+                        "upload",
+                        REMOTE_PATH_CONFLICT,
+                        level=LogLevel.WARNING,
+                    )
+                    return {
+                        storage_id: (False, REMOTE_PATH_CONFLICT)
+                        for storage_id in selected_ids
+                    }
+            return await self._sync_to_remote_claimed(
+                backup_id,
+                target,
+                backup_path,
+                encrypted,
+                encryption_key_path,
+                storage_ids,
+            )
+
+    async def _sync_to_remote_claimed(
+        self,
+        backup_id: int,
+        target: BackupTarget,
+        backup_path: str,
+        encrypted: bool = False,
+        encryption_key_path: str | None = None,
+        storage_ids: list[int] | None = None,
+    ) -> dict[int, tuple[bool, str | None]]:
         """Sync a completed backup to configured remote storage backends.
 
         Failures are logged but do NOT mark the backup as failed. The
@@ -1170,7 +1240,7 @@ class BackupEngine:
                         key_results = await storage_manager.sync_backup(
                             key_local,
                             safe_name,
-                            key_local.name,
+                            key_sidecar_path(local_path.name),
                             selected_ids,
                         )
                         normalized_key_results = {
