@@ -1,0 +1,21 @@
+# Runtime dependency inputs. Regenerate requirements.txt with:
+# uv pip compile --universal --python-version 3.14 backend/requirements.in -o backend/requirements.txt
+fastapi>=0.136.1
+uvicorn[standard]>=0.41.0
+python-multipart>=0.0.22
+sqlalchemy[asyncio]>=2.0.49
+aiosqlite>=0.22.1
+docker>=7.1.0
+pydantic>=2.12.5
+pydantic-settings>=2.14.0
+apscheduler>=3.11.2
+croniter>=6.0.0
+aiohttp>=3.13.3
+httpx>=0.28.1
+aiofiles>=25.1.0
+aioboto3>=15.5.0
+aioftp>=0.27.2
+bcrypt>=5.0.0
+cryptography>=46.0.5
+slowapi>=0.1.9
+python-dateutil>=2.9.0.post0

@@ -6,3 +6,7 @@ pytest-mock>=3.12.0
 httpx>=0.26.0
 factory-boy>=3.3.0
 faker>=22.0.0
+
+# CI tooling: pin Ruff to avoid changes to the lint/format implementation.
+ruff==0.17.3
+mypy>=1.0.0
