@@ -18,6 +18,21 @@ from app.database import Base
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _hermetic_credential_encryption():
+    """Use an explicit synthetic key so tests never write the production
+    /app/data/.credential_key file, which does not exist on bare CI runners."""
+    from cryptography.fernet import Fernet
+
+    from app import credential_encryption
+    from app.config import settings
+
+    if not settings.CREDENTIAL_ENCRYPTION_KEY:
+        settings.CREDENTIAL_ENCRYPTION_KEY = Fernet.generate_key().decode()
+    credential_encryption._fernet = None
+    yield
+
+
 @pytest.fixture(scope="session")
 def event_loop():
     """Create event loop for the test session."""

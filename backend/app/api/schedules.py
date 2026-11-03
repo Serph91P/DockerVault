@@ -476,7 +476,9 @@ async def trigger_all_backups(schedule_id: int):
     import asyncio
 
     from app.backup_engine import BackupType
-    from app.config import settings as app_settings
+    from app.komodo_config import load_komodo_config
+
+    komodo_config = await load_komodo_config()
 
     async with async_session() as session:
         result = await session.execute(
@@ -495,7 +497,7 @@ async def trigger_all_backups(schedule_id: int):
         # When Komodo is active, push targets whose stack/container name
         # contains "komodo" to the end so that Komodo keeps running
         # while every other backup goes through its stop/start cycle.
-        if app_settings.KOMODO_ENABLED:
+        if komodo_config.enabled:
 
             def _is_komodo_target(t: BackupTarget) -> bool:
                 name = (t.stack_name or t.container_name or "").lower()

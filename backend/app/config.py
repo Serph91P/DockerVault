@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     KOMODO_API_KEY: str = ""
     KOMODO_API_SECRET: str = ""
     KOMODO_ENABLED: bool = False
+    KOMODO_ALLOWED_HOSTS: str = ""  # Exact operator-approved internal hostnames
 
     # Timezone
     TZ: str = "Europe/Berlin"
