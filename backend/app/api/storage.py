@@ -834,7 +834,10 @@ async def list_files(
         backend = storage_manager.add_storage(config)
 
     safe_path = _validate_remote_path(path) if path else path
-    files = await backend.list_files(safe_path)
+    try:
+        files = await backend.list_files(safe_path)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Remote listing failed") from exc
     return {"files": files, "path": safe_path}
 
 

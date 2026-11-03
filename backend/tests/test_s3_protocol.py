@@ -41,18 +41,26 @@ async def s3_service():
             state.listing_requests.append((query.get("prefix"), token))
             page = state.listing_pages[token]
             if page.get("error"):
-                return web.Response(status=403, text="<Error><Code>AccessDenied</Code><Message>Owned listing denied</Message></Error>", content_type="application/xml")
-            xml = ET.Element("ListBucketResult", xmlns="http://s3.amazonaws.com/doc/2006-03-01/")
-            ET.SubElement(xml,"Name").text = "owned-bucket"
-            ET.SubElement(xml,"Prefix").text = query.get("prefix", "")
-            ET.SubElement(xml,"IsTruncated").text = "true" if page.get("next") else "false"
+                return web.Response(
+                    status=403,
+                    text="<Error><Code>AccessDenied</Code><Message>Owned listing denied</Message></Error>",
+                    content_type="application/xml",
+                )
+            xml = ET.Element(
+                "ListBucketResult", xmlns="http://s3.amazonaws.com/doc/2006-03-01/"
+            )
+            ET.SubElement(xml, "Name").text = "owned-bucket"
+            ET.SubElement(xml, "Prefix").text = query.get("prefix", "")
+            ET.SubElement(xml, "IsTruncated").text = (
+                "true" if page.get("truncated", bool(page.get("next"))) else "false"
+            )
             if page.get("next"):
-                ET.SubElement(xml,"NextContinuationToken").text = page["next"]
+                ET.SubElement(xml, "NextContinuationToken").text = page["next"]
             for object_key in page.get("keys", []):
-                item = ET.SubElement(xml,"Contents")
-                ET.SubElement(item,"Key").text = object_key
-                ET.SubElement(item,"Size").text = "17"
-                ET.SubElement(item,"LastModified").text = "2026-01-01T00:00:00.000Z"
+                item = ET.SubElement(xml, "Contents")
+                ET.SubElement(item, "Key").text = object_key
+                ET.SubElement(item, "Size").text = "17"
+                ET.SubElement(item, "LastModified").text = "2026-01-01T00:00:00.000Z"
             return web.Response(body=ET.tostring(xml), content_type="application/xml")
         if request.method == "POST" and "uploads" in query:
             state.uploads["owned-upload"] = {}

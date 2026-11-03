@@ -99,3 +99,21 @@ returns an ID or rejects/hangs abort, cleanup is logged as incomplete rather tha
 reported successful; configure a provider-side incomplete-multipart lifecycle
 policy as defense in depth. The original upload error is preserved if abort fails.
 SDK clients, including replaced/removed cached S3 clients, close during shutdown.
+
+## S3 inventory
+
+Listing uses the SDK's async ListObjectsV2 paginator and follows every continuation
+until the inventory is complete, including empty final pages. Provider errors or
+truncated responses without a continuation token fail instead of returning an
+empty/partial success; the files API reports502 without exposing provider details.
+The existing `{files, path}` response and `name`, `size`, `is_dir`, `modified` item
+fields remain unchanged. Names retain the full key relative to the requested
+folder prefix, so `a/same.tar` and `b/same.tar` remain distinct. Folder prefixes end
+in `/` to avoid accidentally matching sibling names such as `reports-old`.
+
+This preserves recursive object inventory, not a new delimiter-based directory
+browser. There is no silent MaxItems cap. The existing list API materializes all
+matching objects and therefore uses memory proportional to inventory size; a
+future public paginated API would need an explicit continuation/truncation contract
+rather than silently omitting backups. No schema/archive or storage-browser UI
+redesign is included.

@@ -1342,31 +1342,38 @@ class S3Storage(StorageBackend):
         try:
             client = await self._get_client()
             prefix = f"{self.config.base_path}/{remote_path}".lstrip("/")
-
-            response = await client.list_objects_v2(
-                Bucket=self.config.s3_bucket, Prefix=prefix
-            )
-
+            if prefix and not prefix.endswith("/"):
+                prefix += "/"
+            paginator = client.get_paginator("list_objects_v2")
             files = []
-            for obj in response.get("Contents", []):
-                modified = 0
-                if obj.get("LastModified"):
-                    try:
-                        modified = obj["LastModified"].timestamp()
-                    except (AttributeError, TypeError):
-                        modified = 0
-                files.append(
-                    {
-                        "name": obj["Key"].split("/")[-1],
-                        "size": obj["Size"],
-                        "is_dir": False,
-                        "modified": modified,
-                    }
-                )
+            async for response in paginator.paginate(
+                Bucket=self.config.s3_bucket, Prefix=prefix
+            ):
+                if response.get("IsTruncated") and not response.get(
+                    "NextContinuationToken"
+                ):
+                    raise RuntimeError(
+                        "Truncated S3 listing omitted its continuation token"
+                    )
+                for obj in response.get("Contents", []):
+                    modified = 0
+                    if obj.get("LastModified"):
+                        try:
+                            modified = obj["LastModified"].timestamp()
+                        except (AttributeError, TypeError):
+                            modified = 0
+                    files.append(
+                        {
+                            "name": obj["Key"].removeprefix(prefix),
+                            "size": obj["Size"],
+                            "is_dir": False,
+                            "modified": modified,
+                        }
+                    )
             return files
         except Exception as e:
             logger.error(f"S3 list error: {e}")
-            return []
+            raise
 
     async def test_connection(self) -> Dict[str, Any]:
         try:
