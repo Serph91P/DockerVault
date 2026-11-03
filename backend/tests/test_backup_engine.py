@@ -128,6 +128,7 @@ class TestBackupEngine:
             enabled=True,
         )
 
+        mock_session_instance.get.return_value = target
         engine = BackupEngine()
         backup = await engine.create_backup(target, BackupType.FULL)
 

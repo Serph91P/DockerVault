@@ -30,10 +30,15 @@ from app.database import (
     BackupType,
     RemoteStorage,
     async_session,
-    has_remote_copies,
 )
 from app.encryption import DecryptionError, decrypt_backup, key_sidecar_path
 from app.rate_limit import limiter
+from app.copy_removal import (
+    RemovalSelection,
+    RemovalExecution,
+    preview_removal,
+    execute_removal,
+)
 from app.remote_storage import (
     StorageConfig,
     StorageType,
@@ -333,49 +338,6 @@ def _build_backup_response(
     )
 
 
-async def _delete_remote_copies(session, backup_ids: list[int]) -> list[str]:
-    """Delete remote copies for the given backup IDs.
-
-    Returns a list of error messages for failed deletions.
-    """
-    from app.remote_storage import storage_manager
-
-    result = await session.execute(
-        select(BackupStorageSync).where(BackupStorageSync.backup_id.in_(backup_ids))
-    )
-    sync_records = result.scalars().all()
-
-    remote_errors: list[str] = []
-    for sync in sync_records:
-        if sync.remote_path:
-            backend = storage_manager.get_backend(sync.storage_id)
-            if backend:
-                try:
-                    deleted = await backend.delete(sync.remote_path)
-                    if not deleted:
-                        remote_errors.append(
-                            f"storage:{sync.storage_id}/{sync.remote_path}"
-                        )
-                        continue
-                except Exception as e:
-                    logger.warning(
-                        "Could not delete remote file %s from storage %s: %s",
-                        sync.remote_path,
-                        sync.storage_id,
-                        e,
-                    )
-                    remote_errors.append(
-                        f"storage:{sync.storage_id}/{sync.remote_path}"
-                    )
-                    continue
-            else:
-                remote_errors.append(f"storage:{sync.storage_id}/{sync.remote_path}")
-                continue
-        await session.delete(sync)
-
-    return remote_errors
-
-
 @router.get("", response_model=List[BackupResponse])
 async def list_backups(
     target_id: Optional[int] = None,
@@ -426,6 +388,18 @@ async def list_backups(
             )
             for b in backups
         ]
+
+
+@router.post("/removal/preview")
+async def preview_copy_removal(selection: RemovalSelection):
+    """Review authoritative, frozen archive/copy scope, never a paginated sample."""
+    return await preview_removal(selection)
+
+
+@router.post("/removal/execute")
+async def execute_copy_removal(execution: RemovalExecution):
+    """Execute only the exact copies in a live confirmation or failed-scope retry."""
+    return await execute_removal(execution.token)
 
 
 @router.get("/{backup_id}", response_model=BackupResponse)
@@ -570,7 +544,7 @@ async def create_backup(request: Request, request_body: CreateBackupRequest):
         )
         target = result.scalar_one_or_none()
 
-        if not target:
+        if not target or target.removed_at is not None:
             logger.error("Target %s not found", request_body.target_id)
             raise HTTPException(status_code=404, detail="Target not found")
 
@@ -585,7 +559,10 @@ async def create_backup(request: Request, request_body: CreateBackupRequest):
         if request_body.backup_type == "full"
         else BackupType.INCREMENTAL
     )
-    backup = await backup_engine.create_backup(target, backup_type)
+    try:
+        backup = await backup_engine.create_backup(target, backup_type)
+    except ValueError as exc:
+        raise HTTPException(409, "Plan removed before backup could start") from exc
 
     logger.info(f"Created backup {backup.id}, starting backup task...")
 
@@ -681,6 +658,18 @@ async def get_restore_info(backup_id: int):
 async def restore_backup(
     request: Request, backup_id: int, restore_request: RestoreBackupRequest
 ):
+    async with async_session() as session:
+        backup = await session.get(Backup, backup_id)
+        if not backup:
+            raise HTTPException(404, "Backup not found")
+        target_id = backup.target_id
+    async with backup_engine._get_target_lock(target_id):
+        return await _restore_backup_claimed(backup_id, restore_request)
+
+
+async def _restore_backup_claimed(
+    backup_id: int, restore_request: RestoreBackupRequest
+):
     """Restore a backup.
 
     If target_path is provided, it must be within allowed restore directories
@@ -750,14 +739,7 @@ async def delete_backup(
     delete_local: bool = Query(True, description="Delete local backup file"),
     delete_remote: bool = Query(True, description="Delete remote copies"),
 ):
-    """Delete a backup. Use query params to control what gets deleted.
-
-    - delete_local=true (default): Removes the local file; keeps recovery identity
-      and the key sidecar while remote paths remain.
-    - delete_remote=true (default): Removes remote copies; failed deletion keeps
-      the corresponding sync record.
-    - Both false is rejected (nothing to do).
-    """
+    """Compatibility entry point for one explicitly identified archive."""
     if not delete_local and not delete_remote:
         raise HTTPException(
             status_code=400,
@@ -765,68 +747,19 @@ async def delete_backup(
         )
 
     async with async_session() as session:
-        result = await session.execute(select(Backup).where(Backup.id == backup_id))
-        backup = result.scalar_one_or_none()
-
-        if not backup:
+        if await session.get(Backup, backup_id) is None:
             raise HTTPException(status_code=404, detail="Backup not found")
-
-        file_errors: list[str] = []
-        if delete_remote:
-            file_errors.extend(await _delete_remote_copies(session, [backup.id]))
-        preserve_remote = await has_remote_copies(session, backup.id)
-
-        # Delete local file if requested
-        if delete_local and backup.file_path:
-            resolved = _resolve_backup_path(backup.file_path)
-            if resolved:
-                try:
-                    os.remove(resolved)
-                except OSError as e:
-                    logger.warning("Could not delete backup file %s: %s", resolved, e)
-                    file_errors.append(str(resolved))
-            # Also try to remove the .key sidecar file
-            if backup.encryption_key_path and not preserve_remote:
-                resolved_key = _resolve_backup_path(backup.encryption_key_path)
-                if resolved_key:
-                    try:
-                        os.remove(resolved_key)
-                    except OSError as e:
-                        logger.warning(
-                            "Could not delete key file %s: %s", resolved_key, e
-                        )
-                        file_errors.append(str(resolved_key))
-
-            # Try to remove the parent directory if it is now empty
-            if resolved and not file_errors:
-                parent = os.path.dirname(resolved)
-                try:
-                    if parent and os.path.isdir(parent) and not os.listdir(parent):
-                        os.rmdir(parent)
-                except OSError:
-                    pass  # non-critical
-
-        if delete_local:
-            if preserve_remote:
-                if not _resolve_backup_path(backup.file_path):
-                    backup.file_path = None
-            else:
-                await session.delete(backup)
-        elif delete_remote:
-            # Keep DB record but clear sync records (already done in _delete_remote_copies)
-            pass
-
-        await session.commit()
-
-        if file_errors:
-            return {
-                "status": "deleted",
-                "warning": (
-                    "Some copies could not be deleted; recovery metadata is retained "
-                    f"while remote paths remain: {file_errors}"
-                ),
-            }
-        return {"status": "deleted"}
+    scope = (
+        "all"
+        if delete_local and delete_remote
+        else "local"
+        if delete_local
+        else "remote"
+    )
+    preview = await preview_removal(
+        RemovalSelection(scope=scope, backup_ids=[backup_id])
+    )
+    return await execute_removal(preview["token"])
 
 
 @router.delete("")
@@ -839,100 +772,11 @@ async def delete_all_backups(
     delete_local: bool = Query(True, description="Delete local backup files"),
     delete_remote: bool = Query(True, description="Delete remote copies"),
 ):
-    """Delete all backups, optionally filtered by target_id.
-
-    Use delete_local/delete_remote to control scope.
-    """
-    if not delete_local and not delete_remote:
-        raise HTTPException(
-            status_code=400,
-            detail="At least one of delete_local or delete_remote must be true.",
-        )
-
-    async with async_session() as session:
-        query = select(Backup)
-        if target_id is not None:
-            query = query.where(Backup.target_id == target_id)
-
-        result = await session.execute(query)
-        backups = result.scalars().all()
-
-        if not backups:
-            return {"status": "deleted", "deleted_count": 0}
-
-        deleted_count = 0
-        file_errors: list[str] = []
-        backup_ids = [b.id for b in backups]
-
-        # Delete remote copies if requested
-        if delete_remote:
-            remote_errors = await _delete_remote_copies(session, backup_ids)
-            file_errors.extend(remote_errors)
-
-        for backup in backups:
-            preserve_remote = await has_remote_copies(session, backup.id)
-            # Delete local file if requested
-            if delete_local and backup.file_path:
-                resolved = _resolve_backup_path(backup.file_path)
-                if resolved:
-                    try:
-                        os.remove(resolved)
-                    except OSError as e:
-                        logger.warning(
-                            "Could not delete backup file %s: %s", resolved, e
-                        )
-                        file_errors.append(str(resolved))
-
-                # Delete .key sidecar
-                if backup.encryption_key_path and not preserve_remote:
-                    resolved_key = _resolve_backup_path(backup.encryption_key_path)
-                    if resolved_key:
-                        try:
-                            os.remove(resolved_key)
-                        except OSError as e:
-                            logger.warning(
-                                "Could not delete key file %s: %s",
-                                resolved_key,
-                                e,
-                            )
-                            file_errors.append(str(resolved_key))
-
-            if delete_local:
-                if preserve_remote:
-                    backup.file_path = None
-                else:
-                    await session.delete(backup)
-                deleted_count += 1
-
-        await session.commit()
-
-        # Clean up empty target directories
-        if delete_local:
-            for backup in backups:
-                if backup.file_path:
-                    resolved = _resolve_backup_path(backup.file_path)
-                    if resolved:
-                        parent = os.path.dirname(resolved)
-                        try:
-                            if (
-                                parent
-                                and os.path.isdir(parent)
-                                and not os.listdir(parent)
-                            ):
-                                os.rmdir(parent)
-                        except OSError:
-                            pass
-
-        if not delete_local:
-            deleted_count = len(backups)
-
-        response: dict = {"status": "deleted", "deleted_count": deleted_count}
-        if file_errors:
-            response["warning"] = (
-                f"{deleted_count} record(s) processed but {len(file_errors)} "
-                f"file(s) could not be deleted: {file_errors}"
-            )
-        return response
+    """Filter-based deletion requires an explicit frozen confirmation."""
+    raise HTTPException(
+        409,
+        "Review POST /backups/removal/preview, then execute its token; unconfirmed bulk deletion is disabled",
+    )
 
 
 class BackupLogEntry(BaseModel):

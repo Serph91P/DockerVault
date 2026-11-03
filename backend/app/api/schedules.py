@@ -146,7 +146,9 @@ async def list_schedules():
     """List all schedules with target counts."""
     async with async_session() as session:
         result = await session.execute(
-            select(Schedule).options(selectinload(Schedule.targets))
+            select(Schedule).options(
+                selectinload(Schedule.targets.and_(BackupTarget.removed_at.is_(None)))
+            )
         )
         schedules = result.scalars().all()
 
@@ -233,7 +235,9 @@ async def get_schedule(schedule_id: int):
         result = await session.execute(
             select(Schedule)
             .where(Schedule.id == schedule_id)
-            .options(selectinload(Schedule.targets))
+            .options(
+                selectinload(Schedule.targets.and_(BackupTarget.removed_at.is_(None)))
+            )
         )
         schedule = result.scalar_one_or_none()
 
@@ -280,7 +284,9 @@ async def update_schedule(schedule_id: int, data: ScheduleUpdate, request: Reque
         result = await session.execute(
             select(Schedule)
             .where(Schedule.id == schedule_id)
-            .options(selectinload(Schedule.targets))
+            .options(
+                selectinload(Schedule.targets.and_(BackupTarget.removed_at.is_(None)))
+            )
         )
         schedule = result.scalar_one_or_none()
 
@@ -353,6 +359,7 @@ async def delete_schedule(schedule_id: int, request: Request):
         result = await session.execute(
             select(Schedule)
             .where(Schedule.id == schedule_id)
+            # Display counts exclude removed plans; relational cleanup must not.
             .options(selectinload(Schedule.targets))
         )
         schedule = result.scalar_one_or_none()
@@ -391,8 +398,9 @@ async def list_schedules_legacy():
         result = await session.execute(
             select(BackupTarget)
             .where(
+                BackupTarget.removed_at.is_(None),
                 (BackupTarget.schedule_id.isnot(None))
-                | (BackupTarget.schedule_cron.isnot(None))
+                | (BackupTarget.schedule_cron.isnot(None)),
             )
             .options(selectinload(BackupTarget.schedule))
         )
@@ -484,14 +492,18 @@ async def trigger_all_backups(schedule_id: int):
         result = await session.execute(
             select(Schedule)
             .where(Schedule.id == schedule_id)
-            .options(selectinload(Schedule.targets))
+            .options(
+                selectinload(Schedule.targets.and_(BackupTarget.removed_at.is_(None)))
+            )
         )
         schedule = result.scalar_one_or_none()
 
         if not schedule:
             raise HTTPException(status_code=404, detail="Schedule not found")
 
-        enabled_targets = [t for t in schedule.targets if t.enabled]
+        enabled_targets = [
+            t for t in schedule.targets if t.enabled and t.removed_at is None
+        ]
         skipped = [t.id for t in schedule.targets if not t.enabled]
 
         # When Komodo is active, push targets whose stack/container name
@@ -509,7 +521,11 @@ async def trigger_all_backups(schedule_id: int):
         backup_ids: list[int] = []
         triggered: list[int] = []
         for target in enabled_targets:
-            backup = await backup_engine.create_backup(target, BackupType.FULL)
+            try:
+                backup = await backup_engine.create_backup(target, BackupType.FULL)
+            except ValueError:
+                skipped.append(target.id)
+                continue
             backup_ids.append(backup.id)
             triggered.append(target.id)
 

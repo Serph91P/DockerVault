@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from anyio import CancelScope
-from sqlalchemy import select, update
+from sqlalchemy import select, update, text
 
 from app.config import settings
 from app.operations import OperationJournal
@@ -576,6 +576,11 @@ class BackupEngine:
     ) -> Backup:
         """Create a new backup for the target."""
         async with async_session() as session:
+            # Serialize plan removal without blocking creation behind running jobs.
+            await session.execute(text("BEGIN IMMEDIATE"))
+            current = await session.get(BackupTarget, target.id)
+            if current is None or current.removed_at is not None:
+                raise ValueError("Plan removed; cannot create a backup")
             backup = Backup(
                 target_id=target.id,
                 backup_type=backup_type,
@@ -651,6 +656,12 @@ class BackupEngine:
                 return False
 
             target_id = target.id
+
+            if target.removed_at is not None:
+                backup.status = BackupStatus.FAILED
+                backup.error_message = "Plan removed before backup started"
+                await session.commit()
+                return False
 
             # Validate prerequisites unless skipped
             if not skip_validation:

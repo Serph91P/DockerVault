@@ -137,6 +137,8 @@ class BackupScheduler:
 
     def _get_target_cron(self, target: BackupTarget) -> Optional[str]:
         """Get the cron expression for a target (from schedule or legacy field)."""
+        if target.removed_at is not None:
+            return None
         # Prefer schedule relationship
         if target.schedule:
             return target.schedule.cron_expression if target.schedule.enabled else None
@@ -209,6 +211,8 @@ class BackupScheduler:
             if not target:
                 logger.error(f"Target {target_id} not found for scheduled backup")
                 return
+            if target.removed_at is not None:
+                return
 
             if not target.enabled:
                 logger.info(f"Target {target_id} is disabled, skipping backup")
@@ -253,7 +257,9 @@ class BackupScheduler:
         logger.info("Running retention cleanup")
 
         async with async_session() as session:
-            result = await session.execute(select(BackupTarget))
+            result = await session.execute(
+                select(BackupTarget).where(BackupTarget.removed_at.is_(None))
+            )
             targets = result.scalars().all()
 
             for target in targets:
@@ -307,14 +313,17 @@ class BackupScheduler:
             )
             target = result.scalar_one_or_none()
 
-            if not target:
+            if not target or target.removed_at is not None:
                 return False
 
             if not target.enabled:
                 raise DisabledBackupTargetError("Target is disabled")
 
         # Create and enqueue backup (per-target lock prevents overlaps)
-        backup = await backup_engine.create_backup(target, BackupType.FULL)
+        try:
+            backup = await backup_engine.create_backup(target, BackupType.FULL)
+        except ValueError:
+            return False
         await backup_engine.enqueue(backup.id)
 
         return True
