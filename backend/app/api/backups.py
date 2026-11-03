@@ -369,7 +369,7 @@ async def _delete_remote_copies(session, backup_ids: list[int]) -> list[str]:
 @router.get("", response_model=List[BackupResponse])
 async def list_backups(
     target_id: Optional[int] = None,
-    status: Optional[str] = None,
+    status: Optional[BackupStatus] = None,
     limit: int = Query(default=50, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ):
@@ -392,7 +392,7 @@ async def list_backups(
         if target_id:
             query = query.where(Backup.target_id == target_id)
         if status:
-            query = query.where(Backup.status == BackupStatus(status))
+            query = query.where(Backup.status == status)
 
         result = await session.execute(query)
         backups = result.scalars().all()
