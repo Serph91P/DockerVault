@@ -115,6 +115,9 @@ async def lifespan(app: FastAPI):
 
     await manager.shutdown()
     await scheduler.stop()
+    from app.remote_storage import storage_manager
+
+    await storage_manager.close()
     logger.info("Shutdown complete")
 
 

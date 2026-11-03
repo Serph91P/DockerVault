@@ -88,3 +88,14 @@ Encrypted backups also require their sidecar. After every required copy succeeds
 the prior error is retained in `backup_metadata.recovered_remote_sync_error` and
 status becomes completed; unsuccessful recovery preserves the backup error and
 local artifacts. This does not regenerate the backup or delete its local copy.
+
+## S3 multipart cancellation
+
+After an UploadId is known, cancellation sends a bounded AbortMultipartUpload and
+then re-raises cancellation, including repeated cancellation during cleanup.
+A response arriving during cancelled creation is settled and its UploadId aborted.
+Creation settlement and abort each have a 10-second budget. If the provider never
+returns an ID or rejects/hangs abort, cleanup is logged as incomplete rather than
+reported successful; configure a provider-side incomplete-multipart lifecycle
+policy as defense in depth. The original upload error is preserved if abort fails.
+SDK clients, including replaced/removed cached S3 clients, close during shutdown.
