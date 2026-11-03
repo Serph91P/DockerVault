@@ -6,9 +6,10 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database import EncryptionConfig, get_db
+from ..database import AppSettings, EncryptionConfig, get_db
 from ..encryption import (
     EncryptionError,
     generate_key_pair,
@@ -39,6 +40,7 @@ class EncryptionStatusResponse(BaseModel):
 
     setup_completed: bool
     encryption_enabled: bool
+    onboarding_deferred: bool = False
     public_key: Optional[str] = None
     key_created_at: Optional[str] = None
 
@@ -54,21 +56,43 @@ async def get_encryption_status(db: AsyncSession = Depends(get_db)):
     """Get current encryption configuration status"""
     result = await db.execute(select(EncryptionConfig).limit(1))
     config = result.scalar_one_or_none()
+    deferred = (
+        await db.execute(
+            select(AppSettings).where(
+                AppSettings.key == "encryption_onboarding_deferred"
+            )
+        )
+    ).scalar_one_or_none()
+    onboarding_deferred = bool(deferred and deferred.value == "true")
 
     if not config:
         return EncryptionStatusResponse(
             setup_completed=False,
             encryption_enabled=False,
+            onboarding_deferred=onboarding_deferred,
         )
 
     return EncryptionStatusResponse(
         setup_completed=config.setup_completed,
         encryption_enabled=config.encryption_enabled,
+        onboarding_deferred=onboarding_deferred,
         public_key=config.public_key,
         key_created_at=(
             config.key_created_at.isoformat() if config.key_created_at else None
         ),
     )
+
+
+@router.post("/defer")
+async def defer_encryption(db: AsyncSession = Depends(get_db)):
+    """Record deliberate unencrypted use without claiming key custody."""
+    await db.execute(
+        insert(AppSettings)
+        .values(key="encryption_onboarding_deferred", value="true")
+        .on_conflict_do_update(index_elements=["key"], set_={"value": "true"})
+    )
+    await db.commit()
+    return {"onboarding_deferred": True}
 
 
 @router.post("/setup", response_model=EncryptionSetupResponse)
@@ -91,6 +115,12 @@ async def setup_encryption(request: Request, db: AsyncSession = Depends(get_db))
                 "Encryption already configured. Use /regenerate to create "
                 "new keys (this will make existing backups unrecoverable!)."
             ),
+        )
+
+    if existing and existing.public_key:
+        raise HTTPException(
+            status_code=409,
+            detail="A pending key already exists. Use explicit regeneration if it was lost.",
         )
 
     try:

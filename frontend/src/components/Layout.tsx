@@ -18,7 +18,7 @@ import { useWebSocketStore } from '../store/websocket'
 import { useAuthStore } from '../store/auth'
 import { useKeyboardShortcuts } from './KeyboardShortcuts'
 import { NotificationBadge, NotificationCenter } from './NotificationCenter'
-import toast from 'react-hot-toast'
+
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
@@ -38,7 +38,6 @@ export default function Layout() {
   
   const handleLogout = async () => {
     await logout()
-    toast.success('Logged out successfully')
   }
 
   return (

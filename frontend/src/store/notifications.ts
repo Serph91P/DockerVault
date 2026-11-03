@@ -23,31 +23,11 @@ interface NotificationStore {
 
 const MAX_NOTIFICATIONS = 50
 
-function loadNotifications(): Notification[] {
-  try {
-    const stored = localStorage.getItem('dockervault_notifications')
-    if (stored) {
-      const parsed = JSON.parse(stored) as Notification[]
-      // Keep only last MAX_NOTIFICATIONS and items from last 7 days
-      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
-      return parsed.filter((n) => n.timestamp > cutoff).slice(0, MAX_NOTIFICATIONS)
-    }
-  } catch {
-    // Ignore parse errors
-  }
-  return []
-}
-
-function saveNotifications(notifications: Notification[]) {
-  try {
-    localStorage.setItem('dockervault_notifications', JSON.stringify(notifications))
-  } catch {
-    // Ignore storage errors
-  }
-}
+// Notifications are private to this page session. Remove legacy unscoped data.
+try { localStorage.removeItem('dockervault_notifications') } catch { /* Storage unavailable. */ }
 
 export const useNotificationStore = create<NotificationStore>((set, get) => ({
-  notifications: loadNotifications(),
+  notifications: [],
 
   addNotification: (notification) => {
     const newNotification: Notification = {
@@ -58,7 +38,6 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
     }
     set((state) => {
       const updated = [newNotification, ...state.notifications].slice(0, MAX_NOTIFICATIONS)
-      saveNotifications(updated)
       return { notifications: updated }
     })
   },
@@ -68,7 +47,6 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
       const updated = state.notifications.map((n) =>
         n.id === id ? { ...n, read: true } : n
       )
-      saveNotifications(updated)
       return { notifications: updated }
     })
   },
@@ -76,7 +54,6 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
   markAllRead: () => {
     set((state) => {
       const updated = state.notifications.map((n) => ({ ...n, read: true }))
-      saveNotifications(updated)
       return { notifications: updated }
     })
   },
@@ -84,13 +61,12 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
   removeNotification: (id) => {
     set((state) => {
       const updated = state.notifications.filter((n) => n.id !== id)
-      saveNotifications(updated)
       return { notifications: updated }
     })
   },
 
   clearAll: () => {
-    saveNotifications([])
+
     set({ notifications: [] })
   },
 

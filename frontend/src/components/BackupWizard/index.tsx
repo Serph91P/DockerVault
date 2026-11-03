@@ -9,6 +9,7 @@ import {
   targetsApi,
 } from '../../api'
 import toast from 'react-hot-toast'
+import { useAuthStore } from '../../store/auth'
 
 import StepTargetSelect from './StepTargetSelect'
 import StepDependencies from './StepDependencies'
@@ -110,11 +111,19 @@ interface WizardDraft {
   data: WizardData
   currentStep: number
   savedAt: number
+  ownerId?: number
+}
+
+function sanitizedDraftData(data: WizardData): WizardData {
+  const safe = Object.fromEntries(Object.keys(initialData).map(name => [name, data[name as keyof WizardData] ?? initialData[name as keyof WizardData]])) as unknown as WizardData
+  safe.preCommand = ''
+  safe.postCommand = ''
+  return safe
 }
 
 function saveDraft(data: WizardData, currentStep: number) {
   try {
-    const draft: WizardDraft = { data, currentStep, savedAt: Date.now() }
+    const draft: WizardDraft = { data: sanitizedDraftData(data), currentStep, savedAt: Date.now(), ownerId: useAuthStore.getState().user?.id }
     localStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
   } catch { /* localStorage full or unavailable */ }
 }
@@ -129,6 +138,8 @@ function loadDraft(): WizardDraft | null {
       localStorage.removeItem(DRAFT_KEY)
       return null
     }
+    draft.data = sanitizedDraftData(draft.data)
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
     return draft
   } catch {
     return null
