@@ -287,6 +287,8 @@ export const schedulesApi = {
   estimate: (target_id: number, cron_expression: string) =>
     api.post('/schedules/estimate', { target_id, cron_expression }),
   getCronHelp: () => api.get('/schedules/cron-help'),
+  preview: (cron_expression: string) => api.post<{ next_runs: string[]; timezone: string; contract: string; warnings: string[] }>('/schedules/preview', { cron_expression }),
+  cronInventory: () => api.get<{ contract: string; timezone: string; items: { kind: string; id: number; name: string; expression: string; warnings: string[] }[] }>('/schedules/compatibility/inventory'),
   
   // Legacy endpoint for backwards compatibility
   listLegacy: () => api.get<Schedule[]>('/schedules/legacy/by-target'),

@@ -272,7 +272,7 @@ function CronHelp() {
         <h2 className="text-lg font-semibold text-dark-100">Cron Help</h2>
       </div>
 
-      <p className="text-sm text-dark-400 mb-4">Format: {help.format}</p>
+      <p className="text-sm text-dark-400 mb-4">Format: {help.format}. {help.contract} Timezone: {help.timezone}.</p>
 
       <div className="mb-4">
         <p className="text-xs text-dark-400 mb-2">Examples:</p>
@@ -310,6 +310,11 @@ export default function Schedules() {
   const [showForm, setShowForm] = useState(false)
   const [editingSchedule, setEditingSchedule] = useState<ScheduleEntity | null>(null)
   const [showCronHelp, setShowCronHelp] = useState(false)
+
+  const { data: cronInventory } = useQuery({
+    queryKey: ['schedules', 'cron-inventory'],
+    queryFn: () => schedulesApi.cronInventory().then((r) => r.data),
+  })
 
   const { data: schedules, isLoading } = useQuery({
     queryKey: ['schedules'],
@@ -405,6 +410,15 @@ export default function Schedules() {
           </button>
         </div>
       </div>
+
+      {!!cronInventory?.items.length && <section role="alert" className="rounded-xl border border-yellow-500/30 bg-yellow-500/10 p-4 space-y-2">
+        <h2 className="font-medium text-yellow-400">Stored schedule compatibility - review intent</h2>
+        <p className="text-sm text-dark-300">{cronInventory.contract} Timezone: {cronInventory.timezone}. Valid existing execution has not been changed.</p>
+        {cronInventory.items.map((item) => <div key={`${item.kind}-${item.id}`} className="text-sm text-dark-300">
+          <strong>{item.kind === 'target_legacy' ? 'Legacy target' : 'Schedule'}: {item.name}</strong> <code>{item.expression}</code>
+          {item.warnings.map((warning) => <p key={warning}>{warning}</p>)}
+        </div>)}
+      </section>}
 
       <div className={clsx('grid gap-6', showCronHelp ? 'grid-cols-1 lg:grid-cols-3' : 'grid-cols-1')}>
         <div className={clsx(showCronHelp ? 'lg:col-span-2' : '', 'space-y-6')}>

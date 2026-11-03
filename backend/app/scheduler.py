@@ -10,12 +10,13 @@ from typing import Dict, List, Optional
 from apscheduler.jobstores.memory import MemoryJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from croniter import croniter
+
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
 from app.backup_engine import BackupType, backup_engine
 from app.config import settings
+from app.cron import cron_trigger, next_run
 from app.database import BackupSchedule, BackupTarget, async_session
 from app.retention import retention_manager
 from app.auth import cleanup_expired_sessions
@@ -132,7 +133,7 @@ class BackupScheduler:
                 )
 
     def _trigger(self, cron_expr):
-        return CronTrigger.from_crontab(cron_expr)
+        return cron_trigger(cron_expr)
 
     def _get_target_cron(self, target: BackupTarget) -> Optional[str]:
         """Get the cron expression for a target (from schedule or legacy field)."""
@@ -280,9 +281,7 @@ class BackupScheduler:
         self, cron_expr: str, base_time: Optional[datetime] = None
     ) -> datetime:
         """Get next run time for a cron expression."""
-        base = base_time or datetime.now(timezone.utc)
-        cron = croniter(cron_expr, base)
-        return cron.get_next(datetime)
+        return next_run(cron_expr, base_time)
 
     def get_scheduled_jobs(self) -> List[Dict]:
         """Get all scheduled jobs."""
