@@ -18,3 +18,17 @@ when its identity is unambiguous. Re-upload from a verified local copy otherwise
 A collision may already have overwritten the older bytes; metadata/renaming cannot
 recover them. Do not delete the last verified local copy based on a previously
 acknowledged upload alone.
+
+## FTP transport
+
+`ftp` means plain, **unencrypted FTP**, including credentials and backup contents.
+FTPS (explicit or implicit TLS) is not supported. Existing FTP configurations
+retain their protocol and port; this release does not silently switch transport.
+Use SSH/SFTP for a secure connection, and migrate intentionally by configuring and
+testing that destination before removing any verified copy. Do not expose plain
+FTP on an untrusted network.
+
+Connections use aioftp's supported 30-second connection and 60-second socket/read
+timeouts. Each operation opens and closes its own client, including failed login,
+handshake, cancellation and data-operation failures; repeated calls are safe.
+Uploads return the same `(success, error_message)` tuple as other providers.

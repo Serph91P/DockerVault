@@ -51,7 +51,7 @@ const STORAGE_TYPES = [
   { value: 'ssh', label: 'SSH / SFTP', icon: Key, description: 'SSH server with rsync or SFTP' },
   { value: 's3', label: 'S3 Compatible', icon: Cloud, description: 'AWS S3, MinIO, Backblaze B2' },
   { value: 'webdav', label: 'WebDAV', icon: Globe, description: 'Nextcloud, ownCloud, etc.' },
-  { value: 'ftp', label: 'FTP / FTPS', icon: Server, description: 'FTP or FTPS server' },
+  { value: 'ftp', label: 'FTP (unencrypted)', icon: Server, description: 'Plain FTP; use SFTP for secure transport. FTPS is not supported.' },
   { value: 'rclone', label: 'Rclone', icon: FolderSync, description: '40+ cloud providers (GDrive, Dropbox, ...)' },
 ];
 

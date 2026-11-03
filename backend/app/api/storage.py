@@ -184,8 +184,8 @@ async def list_storage_types():
             "optional": ["s3_region", "s3_endpoint_url", "base_path"],
         },
         "ftp": {
-            "name": "FTP/FTPS",
-            "description": "FTP or FTPS server",
+            "name": "FTP (unencrypted)",
+            "description": "Plain FTP server; use SSH/SFTP for secure transport. FTPS is not supported.",
             "required": ["host", "username", "password", "base_path"],
             "optional": ["port"],
         },
