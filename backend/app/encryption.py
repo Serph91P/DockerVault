@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 DEK_SIZE = 32
 
 
+def key_sidecar_path(archive_path: str) -> str:
+    """Replace only the terminal encryption suffix, never directory/stem segments."""
+    return archive_path.removesuffix(".enc") + ".key"
+
+
 @dataclass
 class KeyPair:
     """Encryption key pair"""

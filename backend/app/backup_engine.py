@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from anyio import CancelScope
 from sqlalchemy import select, update
 
 from app.config import settings
@@ -41,6 +42,7 @@ from app.encryption import (
     EncryptionError,
     decrypt_backup,
     encrypt_backup,
+    key_sidecar_path,
 )
 
 # Path to the tar worker script that runs as root via sudo.
@@ -49,6 +51,7 @@ _TAR_WORKER = os.path.join(os.path.dirname(__file__), "tar_worker.py")
 _PYTHON = "/opt/venv/bin/python3"
 
 logger = logging.getLogger(__name__)
+REMOTE_PATH_CONFLICT = "Remote path belongs to another backup"
 
 
 @dataclass(frozen=True)
@@ -151,6 +154,7 @@ class BackupEngine:
         self._backup_semaphore = asyncio.Semaphore(2)  # Max concurrent backups
         self._target_locks: Dict[int, asyncio.Lock] = {}
         self._workload_locks: Dict[str, asyncio.Lock] = {}
+        self._remote_sync_locks: Dict[tuple[int, str], asyncio.Lock] = {}
         self._queue: asyncio.Queue = asyncio.Queue()
         self._queue_worker_task: Optional[asyncio.Task] = None
 
@@ -232,7 +236,8 @@ class BackupEngine:
         cancellation = None
         while not cleanup_task.done():
             try:
-                await asyncio.shield(cleanup_task)
+                with CancelScope(shield=cancellation is not None):
+                    await asyncio.shield(cleanup_task)
             except asyncio.CancelledError as exc:
                 cancellation = exc
 
@@ -248,7 +253,8 @@ class BackupEngine:
         cancellation = None
         while not future.done():
             try:
-                await asyncio.shield(future)
+                with CancelScope(shield=cancellation is not None):
+                    await asyncio.shield(future)
             except asyncio.CancelledError as exc:
                 cancellation = exc
 
@@ -1075,12 +1081,97 @@ class BackupEngine:
         backup_path: str,
         encrypted: bool = False,
         encryption_key_path: str | None = None,
-    ) -> None:
+        storage_ids: list[int] | None = None,
+    ) -> dict[int, tuple[bool, str | None]]:
+        """Own concrete archive AND sidecar identities until verification/catalog commit."""
+        selected_ids = (
+            list(target.remote_storage_ids or [])
+            if storage_ids is None
+            else list(storage_ids)
+        )
+        remote_path = (
+            f"{self._sanitize_path_name(target.name)}/{Path(backup_path).name}"
+        )
+        paths = {remote_path}
+        if encrypted:
+            paths.add(key_sidecar_path(remote_path))
+        keys = {(storage_id, path) for storage_id in selected_ids for path in paths}
+        async with AsyncExitStack() as claims:
+            for key in sorted(keys):
+                await claims.enter_async_context(
+                    self._remote_sync_locks.setdefault(key, asyncio.Lock())
+                )
+            # Re-read AFTER acquiring every path: another target may have just committed.
+            async with async_session() as session:
+                existing = (
+                    await session.execute(
+                        select(
+                            BackupStorageSync.storage_id,
+                            BackupStorageSync.remote_path,
+                            Backup.encrypted,
+                        )
+                        .join(Backup, Backup.id == BackupStorageSync.backup_id)
+                        .where(
+                            BackupStorageSync.storage_id.in_(selected_ids),
+                            BackupStorageSync.backup_id != backup_id,
+                        )
+                    )
+                ).all()
+            for storage_id, path, owns_key in existing:
+                if not path:
+                    continue
+                foreign = {path, key_sidecar_path(path)} if owns_key else {path}
+                if any((storage_id, item) in keys for item in foreign):
+                    await self._log(
+                        backup_id,
+                        "upload",
+                        REMOTE_PATH_CONFLICT,
+                        level=LogLevel.WARNING,
+                    )
+                    return {
+                        storage_id: (False, REMOTE_PATH_CONFLICT)
+                        for storage_id in selected_ids
+                    }
+            # Deliver cancellation once, but keep claims until real I/O/abort settles.
+            transfer = asyncio.create_task(
+                self._sync_to_remote_claimed(
+                    backup_id,
+                    target,
+                    backup_path,
+                    encrypted,
+                    encryption_key_path,
+                    storage_ids,
+                )
+            )
+            cancellation = None
+            while not transfer.done():
+                try:
+                    with CancelScope(shield=cancellation is not None):
+                        await asyncio.shield(transfer)
+                except asyncio.CancelledError as exc:
+                    if cancellation is None:
+                        transfer.cancel()
+                    cancellation = exc
+            result = transfer.result()
+            if cancellation is not None:
+                raise cancellation
+            return result
+
+    async def _sync_to_remote_claimed(
+        self,
+        backup_id: int,
+        target: BackupTarget,
+        backup_path: str,
+        encrypted: bool = False,
+        encryption_key_path: str | None = None,
+        storage_ids: list[int] | None = None,
+    ) -> dict[int, tuple[bool, str | None]]:
         """Sync a completed backup to configured remote storage backends.
 
         Failures are logged but do NOT mark the backup as failed. The
         local backup is still valid.
         """
+        selected_ids = target.remote_storage_ids if storage_ids is None else storage_ids
         from app.remote_storage import StorageConfig, StorageType, storage_manager
 
         await self._notify_progress(backup_id, 95, "Syncing to remote storage...")
@@ -1090,9 +1181,7 @@ class BackupEngine:
             async with async_session() as session:
                 from app.database import RemoteStorage as RemoteStorageModel
 
-                for storage_id in target.remote_storage_ids:
-                    if storage_manager.get_backend(storage_id):
-                        continue
+                for storage_id in selected_ids:
                     result = await session.execute(
                         select(RemoteStorageModel).where(
                             RemoteStorageModel.id == storage_id
@@ -1100,6 +1189,9 @@ class BackupEngine:
                     )
                     storage = result.scalar_one_or_none()
                     if not storage or not storage.enabled:
+                        storage_manager.remove_storage(storage_id)
+                        continue
+                    if storage_manager.get_backend(storage_id):
                         continue
 
                     from app.credential_encryption import decrypt_value
@@ -1143,9 +1235,9 @@ class BackupEngine:
                 local_path,
                 safe_name,
                 local_path.name,
-                target.remote_storage_ids,
+                selected_ids,
             )
-            required_storage_ids = set(target.remote_storage_ids)
+            required_storage_ids = set(selected_ids)
             normalized_results = {
                 storage_id: (
                     self._remote_sync_result(results[storage_id])
@@ -1167,8 +1259,8 @@ class BackupEngine:
                         key_results = await storage_manager.sync_backup(
                             key_local,
                             safe_name,
-                            key_local.name,
-                            target.remote_storage_ids,
+                            key_sidecar_path(local_path.name),
+                            selected_ids,
                         )
                         normalized_key_results = {
                             storage_id: (
@@ -1217,15 +1309,30 @@ class BackupEngine:
             remote_path = f"{safe_name}/{local_path.name}"
             async with async_session() as session:
                 for storage_id, (success, error) in normalized_results.items():
-                    sync_record = BackupStorageSync(
-                        backup_id=backup_id,
-                        storage_id=storage_id,
-                        remote_path=remote_path,
-                        synced_at=datetime.now(timezone.utc) if success else None,
-                        sync_status="completed" if success else "failed",
-                        error_message=None
-                        if success
-                        else (error[:500] if error else "Upload failed"),
+                    records = list(
+                        (
+                            await session.execute(
+                                select(BackupStorageSync).where(
+                                    BackupStorageSync.backup_id == backup_id,
+                                    BackupStorageSync.storage_id == storage_id,
+                                )
+                            )
+                        ).scalars()
+                    )
+                    sync_record = (
+                        records[0]
+                        if records
+                        else BackupStorageSync(
+                            backup_id=backup_id, storage_id=storage_id
+                        )
+                    )
+                    sync_record.remote_path = remote_path
+                    sync_record.synced_at = (
+                        datetime.now(timezone.utc) if success else None
+                    )
+                    sync_record.sync_status = "completed" if success else "failed"
+                    sync_record.error_message = (
+                        None if success else (error or "Upload failed")[:500]
                     )
                     session.add(sync_record)
                 await session.commit()
@@ -1276,10 +1383,15 @@ class BackupEngine:
             all_succeeded = bool(required_storage_ids) and all(
                 normalized_results[storage_id][0] for storage_id in required_storage_ids
             )
-            if all_succeeded and getattr(target, "delete_local_after_sync", False):
+            if (
+                storage_ids is None
+                and all_succeeded
+                and getattr(target, "delete_local_after_sync", False)
+            ):
                 await self._delete_local_after_sync(
                     backup_id, backup_path, encryption_key_path
                 )
+            return normalized_results
 
         except Exception as e:
             await self._log(
@@ -1295,6 +1407,7 @@ class BackupEngine:
                 exc_info=True,
             )
             await self._notify_progress(backup_id, 97, f"Remote sync failed: {e}")
+            return {sid: (False, str(e)[:500]) for sid in selected_ids}
 
     async def _delete_local_after_sync(
         self,

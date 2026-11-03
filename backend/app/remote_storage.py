@@ -17,19 +17,41 @@ import os
 import random
 import shlex
 import shutil
+import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Awaitable, Dict, List, Optional
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import aiofiles
 import aiohttp
+from anyio import CancelScope
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+async def _await_io_settled(operation: Awaitable[Any]) -> Any:
+    """Join non-abortable I/O before propagating cancellation to its caller."""
+    work = asyncio.ensure_future(operation)
+    cancellation = None
+    while not work.done():
+        try:
+            with CancelScope(shield=cancellation is not None):
+                await asyncio.shield(work)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+        except Exception:
+            if cancellation is None:
+                raise
+    if cancellation is not None:
+        if not work.cancelled():
+            work.exception()
+        raise cancellation
+    return work.result()
 
 
 def _format_exception_message(exc: Exception) -> str:
@@ -167,7 +189,9 @@ class LocalStorage(StorageBackend):
 
             # Use async copy
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, shutil.copy2, str(local_path), str(dest))
+            await _await_io_settled(
+                loop.run_in_executor(None, shutil.copy2, str(local_path), str(dest))
+            )
 
             logger.info(f"Copied {local_path} to {dest}")
             return True, ""
@@ -181,7 +205,9 @@ class LocalStorage(StorageBackend):
             local_path.parent.mkdir(parents=True, exist_ok=True)
 
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, shutil.copy2, str(src), str(local_path))
+            await _await_io_settled(
+                loop.run_in_executor(None, shutil.copy2, str(src), str(local_path))
+            )
 
             return True
         except Exception as e:
@@ -1173,7 +1199,10 @@ class S3Storage(StorageBackend):
             if file_size < multipart_threshold:
                 # Botocore checksum/retry middleware requires a synchronous seekable body.
                 with open(local_path, "rb") as f:
-                    await client.put_object(Bucket=bucket, Key=key, Body=f)
+                    # Single PUT has no protocol-level abort once its bytes were accepted.
+                    await _await_io_settled(
+                        client.put_object(Bucket=bucket, Key=key, Body=f)
+                    )
                 logger.info(
                     "S3 upload successful: %s (%.1f MB)",
                     key,
@@ -1467,6 +1496,12 @@ class FTPStorage(StorageBackend):
                 await client.quit()
                 logger.info(f"FTP upload successful: {remote_path}")
                 return True, ""
+            except asyncio.CancelledError:
+                try:
+                    await _await_io_settled(client.abort())
+                except Exception as exc:
+                    logger.warning("FTP upload abort failed: %s", exc)
+                raise
             finally:
                 client.close()
         except Exception as e:
@@ -1483,6 +1518,12 @@ class FTPStorage(StorageBackend):
                 await client.download(full_path, local_path, write_into=True)
                 await client.quit()
                 return True
+            except asyncio.CancelledError:
+                try:
+                    await _await_io_settled(client.abort())
+                except Exception as exc:
+                    logger.warning("FTP download abort failed: %s", exc)
+                raise
             finally:
                 client.close()
         except Exception as e:
@@ -1606,17 +1647,52 @@ class RemoteStorageManager:
         """
         results: Dict[int, tuple[bool, str]] = {}
 
-        targets = storage_ids or list(self.backends.keys())
-
-        tasks = []
+        targets = list(self.backends.keys()) if storage_ids is None else storage_ids
         for storage_id in targets:
             backend = self.backends.get(storage_id)
-            if backend and self.configs[storage_id].enabled:
-                tasks.append((storage_id, backend.upload(local_path, remote_path)))
-
-        for storage_id, task in tasks:
+            if not backend or not self.configs[storage_id].enabled:
+                results[storage_id] = (False, "Storage is unavailable or disabled")
+                continue
             try:
-                results[storage_id] = await task
+                upload = backend.upload(local_path, remote_path)
+                # These providers settle their I/O or protocol abort themselves.
+                result = (
+                    await upload
+                    if isinstance(backend, (LocalStorage, S3Storage, FTPStorage))
+                    else await _await_io_settled(upload)
+                )
+                success = (
+                    result[0] is True if isinstance(result, tuple) else result is True
+                )
+                error = (
+                    result[1]
+                    if isinstance(result, tuple) and len(result) > 1
+                    else "Upload failed"
+                )
+                if success:
+                    with tempfile.TemporaryDirectory(
+                        prefix="dockervault-verify-"
+                    ) as directory:
+                        downloaded = Path(directory) / "artifact"
+                        if not await _await_io_settled(
+                            backend.download(remote_path, downloaded)
+                        ):
+                            raise OSError("Remote copy verification download failed")
+
+                        def digest(path):
+                            with path.open("rb") as stream:
+                                return hashlib.file_digest(stream, "sha256").digest()
+
+                        if await _await_io_settled(
+                            asyncio.to_thread(digest, local_path)
+                        ) != await _await_io_settled(
+                            asyncio.to_thread(digest, downloaded)
+                        ):
+                            raise OSError("Remote copy verification checksum mismatch")
+                results[storage_id] = (
+                    success,
+                    "" if success else str(error or "Upload failed")[:500],
+                )
             except Exception as e:
                 logger.error(f"Upload to storage {storage_id} failed: {e}")
                 results[storage_id] = (False, str(e)[:500])

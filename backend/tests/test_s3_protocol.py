@@ -174,6 +174,11 @@ async def test_small_s3_cancellation_closes_file(s3_service, tmp_path):
             "Upload must reach the actual HTTP service before cancellation"
         )
         task.cancel()
+        done, _ = await asyncio.wait([task], timeout=0.05)
+        assert not done, (
+            "A single PUT cannot be aborted after the server accepted its bytes"
+        )
+        state.release.set()
         with pytest.raises(asyncio.CancelledError):
             await task
         assert_file_closed(source)

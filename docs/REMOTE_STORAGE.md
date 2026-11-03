@@ -32,3 +32,45 @@ Connections use aioftp's supported 30-second connection and 60-second socket/rea
 timeouts. Each operation opens and closes its own client, including failed login,
 handshake, cancellation and data-operation failures; repeated calls are safe.
 Uploads return the same `(success, error_message)` tuple as other providers.
+
+## Verified synchronization
+
+The manual sync endpoint uses the automatic sync orchestration, including key
+sidecars and persistent per-storage outcomes. Only completed local archives and
+enabled destinations are accepted. A failed transfer returns an HTTP error, never
+a success message. Repeated requests update the same catalog record; a catalog
+path owned by another backup is rejected before transfer. The manual action never
+triggers the plan's automatic local-copy deletion option.
+
+The shared engine claims `(storage ID, concrete object path)` for both the
+archive and its sidecar in a global acquisition order, through transfer,
+verification and catalog commit. Distinct target IDs/names that normalize to the
+same destination therefore cannot both overwrite it and report success. Ownership
+is re-read after waiting; an existing foreign archive **or sidecar**, including a
+failed/partial catalog copy, rejects the operation with409. Cancelling a waiter
+releases any already-acquired keys before transfer starts. Once transfer starts,
+a child operation receives cancellation once and is joined before claims are
+released, including repeated cancellation. Abort-capable transfers receive the
+signal (S3 multipart and FTP ABOR); non-abortable copies, single PUTs and other
+provider writes settle at their I/O boundary first. Verification downloads and
+hash workers likewise finish before their temporary files are removed. Cancellation
+still propagates, rather than acknowledging an interrupted transfer as completed;
+cancelling an executor future alone cannot stop its writer.
+Independent storage/path identities remain
+independent. This uses the existing single application engine, not a distributed
+provider-side lock or external coordination service.
+
+Only the terminal `.enc` suffix maps to `.key`: `vault.enc/archive.enc.tar.enc`
+uses `vault.enc/archive.enc.tar.key`. Upload, download and restore use this same
+mapping even if the local sidecar has another basename; directory/stem substrings
+are never rewritten. Existing ambiguous remote copies are not renamed or adopted
+automatically; re-sync a verified local archive/key pair before deleting it.
+
+All synchronization uploads are downloaded to temporary disk and compared with
+the local artifact using SHA-256 before completion is recorded. This deliberately
+costs an extra download and temporary disk space up to the largest artifact; a
+provider success response alone is not evidence of a recoverable copy. The same
+verification applies to the encryption key sidecar. Hashing runs outside the event
+loop, reads bounded chunks, and temporary files are removed on failure/cancellation.
+Previous untracked copies are not trusted merely because an old version returned
+200: sync again from a verified local source to verify and catalog the copy.
