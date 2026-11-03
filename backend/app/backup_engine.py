@@ -1129,7 +1129,7 @@ class BackupEngine:
                         storage_id: (False, REMOTE_PATH_CONFLICT)
                         for storage_id in selected_ids
                     }
-            # Cancelling an executor future cannot stop its actual provider write.
+            # Deliver cancellation once, but keep claims until real I/O/abort settles.
             transfer = asyncio.create_task(
                 self._sync_to_remote_claimed(
                     backup_id,
@@ -1145,6 +1145,8 @@ class BackupEngine:
                 try:
                     await asyncio.shield(transfer)
                 except asyncio.CancelledError as exc:
+                    if cancellation is None:
+                        transfer.cancel()
                     cancellation = exc
             result = transfer.result()
             if cancellation is not None:
