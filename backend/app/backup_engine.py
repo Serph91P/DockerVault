@@ -1303,6 +1303,7 @@ class BackupEngine:
         backup_id: int,
     ) -> str:
         """Create the backup archive."""
+        archive_root = None
         # Determine source path
         if target.target_type == "volume":
             # Volume backup - get mountpoint
@@ -1311,8 +1312,10 @@ class BackupEngine:
             if not volume:
                 raise ValueError(f"Volume {target.volume_name} not found")
             source_path = volume.mountpoint
+            archive_root = os.path.basename(source_path)
         elif target.target_type == "path":
             source_path = target.host_path
+            archive_root = os.path.basename(source_path)
         elif target.target_type == "container":
             # Get all volume mounts from container
             containers = await docker_client.list_containers()
@@ -1386,6 +1389,12 @@ class BackupEngine:
             if record is None:
                 raise RuntimeError("Cannot create an archive without a backup owner")
             metadata = dict(record.backup_metadata or {})
+            single_source = target.target_type in ("path", "volume")
+            metadata["archive_layout"] = {
+                "version": 1,
+                "kind": "single" if single_source else "multi",
+                "root": archive_root,
+            }
             metadata["active_artifacts"] = [
                 str(Path(str(backup_path) + suffix).resolve())
                 for suffix in ("", ".enc", ".enc.tmp", ".key")
@@ -1955,9 +1964,21 @@ class BackupEngine:
                 is_compressed = backup_file_to_extract.endswith(".gz")
                 mode = "r:gz" if is_compressed else "r"
 
+                layout = (backup.backup_metadata or {}).get("archive_layout", {})
+                if layout.get("version") == 1:
+                    strip_root = (
+                        (layout.get("root") or "")
+                        if layout.get("kind") == "single"
+                        else None
+                    )
+                else:
+                    # Legacy app archives have the source basename as their root.
+                    strip_root = (
+                        "" if target.target_type in ("path", "volume") else None
+                    )
                 await self._run_executor_cancellation_safe(
                     lambda: self._extract_tar(
-                        backup_file_to_extract, restore_path, mode
+                        backup_file_to_extract, restore_path, mode, strip_root
                     ),
                 )
             except BaseException as exc:
@@ -1989,7 +2010,9 @@ class BackupEngine:
 
             return False
 
-    def _extract_tar(self, source: str, dest: str, mode: str):
+    def _extract_tar(
+        self, source: str, dest: str, mode: str, strip_root: str | None = None
+    ):
         """Extract tar archive safely.
 
         Validates that all extracted files stay within the destination
@@ -1998,8 +2021,43 @@ class BackupEngine:
         abs_dest = os.path.realpath(dest)
 
         with tarfile.open(source, mode) as tar:
-            # Validate all members before extraction
-            for member in tar.getmembers():
+            members = tar.getmembers()
+            for member in members:
+                if os.path.isabs(member.name):
+                    raise ValueError(
+                        f"Path traversal detected in archive: {member.name}"
+                    )
+            if strip_root is not None and members:
+                root = strip_root or members[0].name.split("/", 1)[0]
+                prefix = root + "/"
+                has_single_root = root not in ("", ".", "..") and all(
+                    (member.name == root and member.isdir())
+                    or member.name.startswith(prefix)
+                    for member in members
+                )
+                if strip_root and not has_single_root:
+                    raise ValueError("Archive members do not match the recorded layout")
+                if has_single_root:
+                    mapped = []
+                    for member in members:
+                        name = (
+                            "." if member.name == root else member.name[len(prefix) :]
+                        )
+                        linkname = member.linkname
+                        if member.islnk():
+                            if not linkname.startswith(prefix):
+                                raise ValueError(
+                                    "Hardlink escapes the single-source archive root"
+                                )
+                            linkname = linkname[len(prefix) :]
+                        mapped.append(
+                            member.replace(name=name, linkname=linkname, deep=False)
+                        )
+                    # tarfile resolves hardlinks through this cached member list.
+                    members = tar.members = mapped
+
+            # Validate all mapped members before writing any destination files.
+            for member in members:
                 member_path = os.path.join(dest, member.name)
                 abs_member = os.path.realpath(member_path)
 
@@ -2020,8 +2078,12 @@ class BackupEngine:
 
                 # Check for suspicious symlinks
                 if member.issym() or member.islnk():
-                    link_path = os.path.join(
-                        dest, os.path.dirname(member.name), member.linkname
+                    link_path = (
+                        os.path.join(dest, member.linkname)
+                        if member.islnk()
+                        else os.path.join(
+                            dest, os.path.dirname(member.name), member.linkname
+                        )
                     )
                     abs_link = os.path.realpath(link_path)
                     if not abs_link.startswith(abs_dest + os.sep):
@@ -2034,9 +2096,9 @@ class BackupEngine:
             import sys
 
             if sys.version_info >= (3, 12):
-                tar.extractall(dest, filter="data")
+                tar.extractall(dest, members=members, filter="data")
             else:
-                tar.extractall(dest)
+                tar.extractall(dest, members=members)
 
     async def _get_encryption_config(self) -> Optional[EncryptionConfig]:
         """Get encryption configuration if set up."""
