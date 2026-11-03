@@ -226,7 +226,7 @@ async def create_schedule(data: ScheduleCreate, request: Request):
     return response
 
 
-@router.get("/{schedule_id}", response_model=ScheduleWithTargets)
+@router.get("/{schedule_id:int}", response_model=ScheduleWithTargets)
 async def get_schedule(schedule_id: int):
     """Get a specific schedule with its assigned targets."""
     async with async_session() as session:
@@ -273,7 +273,7 @@ async def get_schedule(schedule_id: int):
         )
 
 
-@router.put("/{schedule_id}", response_model=ScheduleResponse)
+@router.put("/{schedule_id:int}", response_model=ScheduleResponse)
 async def update_schedule(schedule_id: int, data: ScheduleUpdate, request: Request):
     """Update a schedule."""
     async with async_session() as session:
@@ -346,7 +346,7 @@ async def update_schedule(schedule_id: int, data: ScheduleUpdate, request: Reque
     return response
 
 
-@router.delete("/{schedule_id}")
+@router.delete("/{schedule_id:int}")
 async def delete_schedule(schedule_id: int, request: Request):
     """Delete a schedule. Targets using this schedule will be unlinked."""
     async with async_session() as session:
