@@ -4,11 +4,20 @@ import asyncio
 import io
 import tarfile
 import threading
+import tracemalloc
 
 import pytest
 
 from app.database import Backup, BackupStatus, BackupTarget
 from tests.test_remote_object_ownership import test_engine  # noqa: F401
+
+
+@pytest.fixture(autouse=True)
+def isolated_browse_registry(monkeypatch):
+    from app.remote_storage import storage_manager
+
+    monkeypatch.setattr(storage_manager, "backends", {})
+    monkeypatch.setattr(storage_manager, "configs", {})
 
 
 @pytest.fixture
@@ -83,6 +92,195 @@ async def test_default_listing_is_bounded_and_backward_compatible(
         params={"limit": MAX_ARCHIVE_LISTING + 5000},
     )
     assert clamped.status_code == 422
+
+
+def test_scan_memory_is_bounded_with_real_large_archive(tmp_path):
+    from app.api.backups import _scan_archive_entries
+
+    peaks = []
+    for count in (1000, 30000):
+        archive = tmp_path / f"owned-{count}.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            for index in range(count):
+                tar.addfile(tarfile.TarInfo(f"owned/{index:06d}"))
+        tracemalloc.start()
+        try:
+            files, total = _scan_archive_entries(str(archive), "r:gz", 1, 0)
+            peaks.append(tracemalloc.get_traced_memory()[1])
+        finally:
+            tracemalloc.stop()
+        assert total == count and len(files) == 1
+    assert peaks[1] < 2_000_000, peaks
+    assert peaks[1] < peaks[0] + 1_000_000, peaks
+
+
+@pytest.mark.asyncio
+async def test_cancelled_listing_holds_capacity_and_files_until_threads_settle(
+    async_client, test_db, backup_record, populated_archive, monkeypatch
+):
+    from app.api import backups
+
+    monkeypatch.setattr(backups, "_archive_scan_semaphore", asyncio.Semaphore(4))
+    release = threading.Event()
+    lock = threading.Lock()
+    running = 0
+    peak = 0
+    preparations = 0
+    original = backups._scan_archive_entries
+    ensure = backups._ensure_backup_locally
+
+    async def prepare(backup):
+        nonlocal preparations
+        preparations += 1
+        return await ensure(backup)
+
+    def blocked_scan(*args):
+        nonlocal running, peak
+        with lock:
+            running += 1
+            peak = max(peak, running)
+        try:
+            assert release.wait(10)
+            assert populated_archive.exists()
+            return original(*args)
+        finally:
+            with lock:
+                running -= 1
+
+    monkeypatch.setattr(backups, "_scan_archive_entries", blocked_scan)
+    monkeypatch.setattr(backups, "_ensure_backup_locally", prepare)
+    tasks = [
+        asyncio.create_task(async_client.get(f"/api/v1/backups/{backup_record}/files"))
+        for _ in range(4)
+    ]
+    try:
+        async with asyncio.timeout(10):
+            while running != 4:
+                await asyncio.sleep(0.01)
+        for task in tasks:
+            task.cancel()
+        tasks.append(
+            asyncio.create_task(
+                async_client.get(f"/api/v1/backups/{backup_record}/files")
+            )
+        )
+        await asyncio.sleep(0.1)
+        assert peak == 4
+        assert preparations == 4, "remote/decryption preparation must share capacity"
+        assert all(not task.done() for task in tasks[:4]), "cancel must join real scans"
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    assert running == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "encrypted,remote", [(False, False), (False, True), (True, False), (True, True)]
+)
+async def test_large_real_archive_pages_health_and_cancel_cleanup(
+    async_client, test_db, tmp_path, monkeypatch, encrypted, remote
+):
+    from app.api import backups
+    from app.encryption import encrypt_backup, generate_key_pair
+
+    archive = tmp_path / "large-owned.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        for index in range(2005):
+            tar.addfile(tarfile.TarInfo(f"owned/{index:06d}"))
+    key = None
+    if encrypted:
+        key = await generate_key_pair()
+        result = await encrypt_backup(archive, key.public_key)
+        archive, key_path = result.encrypted_path, result.key_path
+    async with test_db() as session:
+        target = BackupTarget(
+            name="owned-large", target_type="path", host_path=str(tmp_path)
+        )
+        session.add(target)
+        await session.flush()
+        backup = Backup(
+            target_id=target.id,
+            status=BackupStatus.COMPLETED,
+            file_path=str(archive),
+            encrypted=encrypted,
+            encryption_key_path=str(key_path) if encrypted else None,
+        )
+        session.add(backup)
+        await session.commit()
+        bid = backup.id
+    if remote:
+        storage = await async_client.post(
+            "/api/v1/storage",
+            json={
+                "name": "owned-large",
+                "storage_type": "local",
+                "base_path": str(tmp_path / "remote"),
+            },
+        )
+        assert storage.status_code == 200
+        synced = await async_client.post(
+            f"/api/v1/storage/{storage.json()['id']}/sync/{bid}"
+        )
+        assert synced.status_code == 200, synced.text
+        archive.unlink()
+        if encrypted:
+            key_path.unlink()
+
+    async def listing(**params):
+        if encrypted:
+            return await async_client.post(
+                f"/api/v1/backups/{bid}/files",
+                json={"private_key": key.private_key},
+                params=params,
+            )
+        return await async_client.get(f"/api/v1/backups/{bid}/files", params=params)
+
+    first = await listing()
+    second = await listing(limit=2000, offset=2000)
+    assert first.status_code == second.status_code == 200
+    assert len(first.json()) == 2000 and len(second.json()) == 5
+    assert (
+        first.headers["X-Has-More"] == "true"
+        and second.headers["X-Has-More"] == "false"
+    )
+    assert first.headers["X-Total-Count"] == "2005"
+    assert len({item["path"] for item in first.json() + second.json()}) == 2005
+
+    entered = threading.Event()
+    release = threading.Event()
+    original = backups._scan_archive_entries
+    scanned_paths = []
+
+    def blocked_scan(path, *args):
+        from pathlib import Path
+
+        scanned_paths.append(Path(path))
+        entered.set()
+        assert release.wait(10)
+        assert Path(path).is_file(), "cancel must not remove a live worker's input"
+        return original(path, *args)
+
+    monkeypatch.setattr(backups, "_scan_archive_entries", blocked_scan)
+    task = asyncio.create_task(listing(limit=1))
+    try:
+        async with asyncio.timeout(10):
+            while not entered.is_set():
+                await asyncio.sleep(0.01)
+        # Real health handler must remain responsive during the blocking native scan.
+        health = await asyncio.wait_for(async_client.get("/health"), 1)
+        assert health.status_code == 200
+        task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        assert scanned_paths[0].exists()
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+    if remote or encrypted:
+        assert not scanned_paths[0].exists()
+    else:
+        assert archive.exists()
 
 
 @pytest.mark.asyncio

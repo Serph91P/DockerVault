@@ -39,9 +39,17 @@ def storage_errors(values) -> list[str]:
             (field == "webdav_url" and kind == "webdav")
             or (field == "s3_endpoint_url" and kind == "s3")
         ):
-            parsed = urlparse(value)
-            if parsed.scheme not in ("http", "https") or not parsed.hostname:
-                errors.append(f"{field} must be an http(s) URL with a hostname")
+            try:
+                parsed = urlparse(value)
+                valid = parsed.scheme in ("http", "https") and bool(parsed.hostname)
+                # urlparse defers invalid/non-numeric port errors until access.
+                parsed.port
+            except ValueError:
+                valid = False
+            if not valid:
+                errors.append(
+                    f"{field} must be an http(s) URL with a valid hostname and port"
+                )
     return errors
 
 
