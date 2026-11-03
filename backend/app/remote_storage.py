@@ -1175,7 +1175,8 @@ class S3Storage(StorageBackend):
         cancelled = False
         while not task.done():
             try:
-                await asyncio.shield(task)
+                with CancelScope(shield=cancelled):
+                    await asyncio.shield(task)
             except asyncio.CancelledError:
                 cancelled = True
         task.result()
