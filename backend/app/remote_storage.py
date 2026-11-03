@@ -27,6 +27,7 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import aiofiles
 import aiohttp
+from anyio import CancelScope
 
 from app.config import settings
 
@@ -39,7 +40,8 @@ async def _await_io_settled(operation: Awaitable[Any]) -> Any:
     cancellation = None
     while not work.done():
         try:
-            await asyncio.shield(work)
+            with CancelScope(shield=cancellation is not None):
+                await asyncio.shield(work)
         except asyncio.CancelledError as exc:
             cancellation = exc
         except Exception:
