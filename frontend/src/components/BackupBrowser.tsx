@@ -276,19 +276,25 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
   const shouldFetch = isEncrypted ? keySubmitted : true
   const trimmedKey = privateKey.trim()
 
-  const { data: files, isLoading, error } = useQuery({
-    queryKey: ['backup-files', backup.id, isEncrypted ? 'encrypted' : 'plain', keySubmitted ? trimmedKey : ''],
+  const [offset, setOffset] = useState(0)
+  const pageSize = 2000
+  const { data: page, isLoading, error } = useQuery({
+    queryKey: ['backup-files', backup.id, isEncrypted ? 'encrypted' : 'plain', keySubmitted ? trimmedKey : '', offset],
     queryFn: async () => {
-      if (isEncrypted) {
-        const response = await backupsApi.listFilesEncrypted(backup.id, trimmedKey)
-        return response.data as BackupFile[]
+      const response = isEncrypted
+        ? await backupsApi.listFilesEncrypted(backup.id, trimmedKey, pageSize, offset)
+        : await backupsApi.listFiles(backup.id, pageSize, offset)
+      return {
+        files: response.data as BackupFile[],
+        total: Number(response.headers['x-total-count']),
+        hasMore: response.headers['x-has-more'] === 'true',
       }
-      const response = await backupsApi.listFiles(backup.id)
-      return response.data as BackupFile[]
     },
     enabled: shouldFetch,
     retry: false,
+    gcTime: 0, // Do not retain an unbounded set of pages or decrypted filename indexes.
   })
+  const files = page?.files
 
   const handleKeySubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -299,6 +305,7 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
 
   const handleRetryKey = () => {
     setKeySubmitted(false)
+    setOffset(0)
     setPrivateKey('')
   }
 
@@ -519,7 +526,11 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
         {/* Footer */}
         <div className="flex items-center justify-between p-4 border-t border-dark-700">
           <div className="text-sm text-dark-400">
-            {files?.length || 0} items • {backup.file_size_human || '-'}
+            {page ? `${page.files.length ? offset + 1 : 0}-${offset + page.files.length} of ${page.total} items` : 'Loading items'} • {backup.file_size_human || '-'}
+          </div>
+          <div className="flex gap-2">
+            <button aria-label="Previous page" disabled={isLoading || offset === 0} onClick={() => setOffset(Math.max(0, offset - pageSize))} className="px-3 py-2 disabled:opacity-50">Previous</button>
+            <button aria-label="Next page" disabled={isLoading || !page?.hasMore} onClick={() => setOffset(offset + pageSize)} className="px-3 py-2 disabled:opacity-50">Next</button>
           </div>
           <button
             onClick={onClose}
