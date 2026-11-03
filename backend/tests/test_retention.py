@@ -70,7 +70,8 @@ async def test_keep_last_preserves_three_real_files_and_rows(
 def test_keep_last_unions_calendar_and_preserves_keep_one_fallback(
     keep_last, keep_daily, expected
 ):
-    now = datetime.now(timezone.utc)
+    # The two newest backups must share a calendar day, including during midnight CI.
+    now = datetime(2026, 6, 15, 12, tzinfo=timezone.utc)
     backups = [
         Backup(id=index + 1, created_at=now - timedelta(hours=hours))
         for index, hours in enumerate([0, 1, 25, 49])
@@ -83,4 +84,6 @@ def test_keep_last_unions_calendar_and_preserves_keep_one_fallback(
         keep_yearly=0,
         max_age_days=365,
     )
-    assert RetentionManager()._select_backups_to_keep(backups, policy) == expected
+    with patch("app.retention.datetime") as clock:
+        clock.now.return_value = now
+        assert RetentionManager()._select_backups_to_keep(backups, policy) == expected
