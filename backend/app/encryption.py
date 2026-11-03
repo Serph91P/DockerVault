@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 import aiofiles
+from anyio import CancelScope
 
 logger = logging.getLogger(__name__)
 
@@ -291,7 +292,8 @@ async def _crypt_file(
             settled = asyncio.create_task(process.communicate())
             while not settled.done():
                 try:
-                    await asyncio.shield(settled)
+                    with CancelScope(shield=True):
+                        await asyncio.shield(settled)
                 except asyncio.CancelledError:
                     continue
             settled.result()

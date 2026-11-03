@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from anyio import CancelScope
 from sqlalchemy import select, update
 
 from app.config import settings
@@ -235,7 +236,8 @@ class BackupEngine:
         cancellation = None
         while not cleanup_task.done():
             try:
-                await asyncio.shield(cleanup_task)
+                with CancelScope(shield=cancellation is not None):
+                    await asyncio.shield(cleanup_task)
             except asyncio.CancelledError as exc:
                 cancellation = exc
 
@@ -251,7 +253,8 @@ class BackupEngine:
         cancellation = None
         while not future.done():
             try:
-                await asyncio.shield(future)
+                with CancelScope(shield=cancellation is not None):
+                    await asyncio.shield(future)
             except asyncio.CancelledError as exc:
                 cancellation = exc
 
@@ -1143,7 +1146,8 @@ class BackupEngine:
             cancellation = None
             while not transfer.done():
                 try:
-                    await asyncio.shield(transfer)
+                    with CancelScope(shield=cancellation is not None):
+                        await asyncio.shield(transfer)
                 except asyncio.CancelledError as exc:
                     if cancellation is None:
                         transfer.cancel()
