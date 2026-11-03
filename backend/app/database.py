@@ -85,6 +85,8 @@ class BackupTarget(Base):
     enabled = Column(Boolean, default=True)
 
     # Retention
+    removed_at = Column(DateTime, nullable=True)
+
     retention_policy_id = Column(
         Integer, ForeignKey("retention_policies.id"), nullable=True
     )
@@ -432,6 +434,7 @@ async def run_migrations():
         _create_operation_journal,
         _ensure_target_foreign_keys,
         _create_operation_journal,
+        _add_plan_tombstone,
     )
     async with engine.connect() as conn:
         # SQLite's documented rebuild procedure requires this outside a transaction.
@@ -484,6 +487,18 @@ async def run_migrations():
             await conn.rollback()
             await conn.execute(text("PRAGMA foreign_keys=ON"))
             await conn.commit()
+
+
+async def _add_plan_tombstone(conn):
+    """Keep historical source identity when active automation is removed."""
+    columns = {
+        row[1]
+        for row in (await conn.execute(text("PRAGMA table_info(backup_targets)"))).all()
+    }
+    if "removed_at" not in columns:
+        await conn.execute(
+            text("ALTER TABLE backup_targets ADD COLUMN removed_at DATETIME")
+        )
 
 
 async def _ensure_target_foreign_keys(conn):

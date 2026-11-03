@@ -90,6 +90,10 @@ async def test_plan_removal_preserves_archive_and_actual_restore(
         plans = await async_client.get("/api/v1/targets")
         assert plans.status_code == 200
         assert target_id not in {plan["id"] for plan in plans.json()}
+        history = await async_client.get("/api/v1/targets?include_removed=true")
+        assert any(
+            plan["id"] == target_id and plan["removed_at"] for plan in history.json()
+        )
         detail = await async_client.get(f"/api/v1/backups/{backup_id}")
         assert detail.status_code == 200
         assert detail.json()["target_name"] == "retained history"
@@ -100,3 +104,83 @@ async def test_plan_removal_preserves_archive_and_actual_restore(
         )
         assert restored.status_code == 200, restored.text
         assert (source / "payload.txt").read_bytes() == payload
+
+
+@pytest.mark.asyncio
+async def test_removal_between_api_validation_and_creation_returns_conflict(
+    async_client, test_db, monkeypatch
+):
+    from app.backup_engine import backup_engine
+
+    async with test_db() as db:
+        target = BackupTarget(name="racing", target_type="path", host_path="/unused")
+        db.add(target)
+        await db.commit()
+        target_id = target.id
+    original = backup_engine.create_backup
+
+    async def remove_before_create(target, backup_type):
+        assert (
+            await async_client.delete(f"/api/v1/targets/{target_id}")
+        ).status_code == 200
+        return await original(target, backup_type)
+
+    monkeypatch.setattr(backup_engine, "create_backup", remove_before_create)
+    response = await async_client.post("/api/v1/backups", json={"target_id": target_id})
+    assert response.status_code == 409
+    assert (await async_client.get("/api/v1/backups")).json() == []
+
+
+@pytest.mark.asyncio
+async def test_removed_plan_is_not_an_assigned_schedule_target(async_client, test_db):
+    from app.database import Schedule
+
+    async with test_db() as db:
+        schedule = Schedule(name="active schedule", cron_expression="0 2 * * *")
+        db.add(schedule)
+        await db.flush()
+        target = BackupTarget(
+            name="old scheduled plan", target_type="path", schedule_id=schedule.id
+        )
+        db.add(target)
+        await db.commit()
+        target_id, schedule_id = target.id, schedule.id
+    assert (
+        await async_client.delete(f"/api/v1/targets/{target_id}")
+    ).status_code == 200
+    response = await async_client.get(f"/api/v1/schedules/{schedule_id}")
+    assert response.json()["target_count"] == 0 and response.json()["targets"] == []
+
+
+@pytest.mark.asyncio
+async def test_removed_plan_cannot_be_edited_started_or_retained(async_client, test_db):
+    from app.backup_engine import backup_engine
+    from app.retention import retention_manager
+    from app.scheduler import BackupScheduler
+
+    async with test_db() as db:
+        target = BackupTarget(name="removed", target_type="path", host_path="/unused")
+        db.add(target)
+        await db.commit()
+        target_id = target.id
+    assert (
+        await async_client.delete(f"/api/v1/targets/{target_id}")
+    ).status_code == 200
+    assert (await async_client.get(f"/api/v1/targets/{target_id}")).status_code == 404
+    assert (
+        await async_client.put(f"/api/v1/targets/{target_id}", json={"enabled": True})
+    ).status_code == 404
+    assert (
+        await async_client.post("/api/v1/backups", json={"target_id": target_id})
+    ).status_code == 404
+    assert not await BackupScheduler().trigger_backup_now(target_id)
+    async with test_db() as db:
+        historical = await db.get(BackupTarget, target_id)
+        assert historical is not None and historical.removed_at is not None
+        with pytest.raises(ValueError, match="removed"):
+            await backup_engine.create_backup(historical)
+    stats = await retention_manager.apply_retention(target_id)
+    assert stats["deleted"] == 0 and stats["error"] == "Plan removed"
+    assert (await async_client.delete(f"/api/v1/targets/{target_id}")).json()[
+        "status"
+    ] == "already_removed"

@@ -86,6 +86,7 @@ async def async_client(test_db, monkeypatch):
     with (
         patch("app.database.async_session", test_db),
         patch("app.api.backups.async_session", test_db),
+        patch("app.copy_removal.async_session", test_db),
         patch("app.api.targets.async_session", test_db),
         patch("app.api.schedules.async_session", test_db),
         patch("app.api.retention.async_session", test_db),

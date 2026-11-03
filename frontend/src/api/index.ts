@@ -51,6 +51,7 @@ export interface Stack {
 }
 
 export interface BackupTarget {
+  removed_at?: string | null
   id: number
   name: string
   target_type: 'container' | 'volume' | 'path' | 'stack'
@@ -227,7 +228,7 @@ export const dockerApi = {
 
 // Targets API
 export const targetsApi = {
-  list: () => api.get<BackupTarget[]>('/targets'),
+  list: (includeRemoved = false) => api.get<BackupTarget[]>('/targets', { params: { include_removed: includeRemoved } }),
   get: (id: number) => api.get<BackupTarget>(`/targets/${id}`),
   create: (data: Partial<BackupTarget>) => api.post<BackupTarget>('/targets', data),
   update: (id: number, data: Partial<BackupTarget>) => api.put<BackupTarget>(`/targets/${id}`, data),
@@ -235,7 +236,38 @@ export const targetsApi = {
 }
 
 // Backups API
+export type RemovalScope = 'local' | 'remote' | 'all'
+export interface RemovalItem {
+  backup_id: number
+  target_id: number
+  target_name: string
+  copy: 'local' | 'remote'
+  storage_id: number | null
+  label: string
+  outcome?: 'succeeded' | 'failed' | 'skipped' | 'retained'
+  message?: string
+}
+export interface RemovalPreview {
+  token: string
+  scope: RemovalScope
+  archive_count: number
+  copy_count: number
+  items: RemovalItem[]
+  retained: RemovalItem[]
+}
+export interface RemovalResult {
+  status: 'completed' | 'incomplete'
+  succeeded: number
+  failed: number
+  skipped: number
+  warning?: string
+  items: RemovalItem[]
+  retry_token: string | null
+}
 export const backupsApi = {
+  previewRemoval: (selection: { scope: RemovalScope; backup_ids?: number[]; target_id?: number; status?: string }) =>
+    api.post<RemovalPreview>('/backups/removal/preview', selection),
+  executeRemoval: (token: string) => api.post<RemovalResult>('/backups/removal/execute', { token }),
   list: (params?: { target_id?: number; status?: string; limit?: number }) => 
     api.get<Backup[]>('/backups', { params }),
   get: (id: number) => api.get<Backup>(`/backups/${id}`),

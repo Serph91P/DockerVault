@@ -50,7 +50,12 @@ class RetentionManager:
         Apply retention policy to a target's backups.
         Returns dict with counts of kept and deleted backups.
         """
-        async with async_session() as session:
+        from app.backup_engine import backup_engine
+
+        async with (
+            backup_engine._get_target_lock(target_id),
+            async_session() as session,
+        ):
             # Get target with retention policy
             result = await session.execute(
                 select(BackupTarget).where(BackupTarget.id == target_id)
@@ -59,6 +64,8 @@ class RetentionManager:
 
             if not target:
                 return {"kept": 0, "deleted": 0, "error": "Target not found"}
+            if target.removed_at is not None:
+                return {"kept": 0, "deleted": 0, "error": "Plan removed"}
 
             # Get retention policy
             if target.retention_policy_id:
