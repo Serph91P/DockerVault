@@ -79,6 +79,17 @@ it('does not run old mutation presentation callbacks after a boundary', async ()
   expect(queryClient.getMutationCache().getAll()).toHaveLength(0)
 })
 
+it('does not repopulate or overwrite the next session from a late protected query', async () => {
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const old = queryClient.fetchQuery({ queryKey: ['protected'], queryFn: async () => { await gate; return { owner: 'prior' } } }).catch(() => undefined)
+  clearSession()
+  queryClient.setQueryData(['protected'], { owner: 'next' })
+  release()
+  await old
+  expect(queryClient.getQueryData(['protected'])).toEqual({ owner: 'next' })
+})
+
 it('preserves only same-operator nonsensitive drafts on reload, never after logout', () => {
   localStorage.setItem('dockervault-wizard-draft', JSON.stringify({ ownerId: 701, data: { targetName: 'Useful draft' } }))
   clearSession(701)
