@@ -48,7 +48,11 @@ verification and catalog commit. Distinct target IDs/names that normalize to the
 same destination therefore cannot both overwrite it and report success. Ownership
 is re-read after waiting; an existing foreign archive **or sidecar**, including a
 failed/partial catalog copy, rejects the operation with409. Cancelling a waiter
-releases any already-acquired keys. Independent storage/path identities remain
+releases any already-acquired keys before transfer starts. Once transfer starts,
+a protected child operation is awaited through actual provider I/O, verification
+and catalog commit before cancellation propagates or claims are released (including
+repeated cancellation); cancelling an executor future alone cannot stop its writer.
+Independent storage/path identities remain
 independent. This uses the existing single application engine, not a distributed
 provider-side lock or external coordination service.
 
