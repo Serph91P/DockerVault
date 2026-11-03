@@ -3,6 +3,7 @@ Backups API endpoints.
 """
 
 import logging
+import asyncio
 import os
 import re
 import shutil
@@ -12,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -1061,6 +1062,47 @@ class BackupFileInfo(BaseModel):
     mtime: str
 
 
+# Ceiling for a single unbounded compatibility listing, independent of archive size.
+MAX_ARCHIVE_LISTING = 2000
+# Bound on concurrent archive scans so a burst of large listings cannot exhaust
+# the worker pool or monopolize the event loop.
+_archive_scan_semaphore = asyncio.Semaphore(4)
+
+
+def _member_to_info(member: tarfile.TarInfo) -> BackupFileInfo:
+    """Serialize one archive member without touching the event loop."""
+    return BackupFileInfo(
+        name=os.path.basename(member.name) or member.name,
+        path=member.name,
+        size=member.size,
+        size_human=_format_file_size(member.size),
+        is_dir=member.isdir(),
+        mode=oct(member.mode)[2:] if member.mode else "0",
+        mtime=(
+            datetime.fromtimestamp(member.mtime).isoformat() if member.mtime else ""
+        ),
+    )
+
+
+def _scan_archive_entries(archive_path: str, mode: str, limit: int, offset: int):
+    """Blocking archive scan returning (members, total). Runs in a worker thread."""
+    with tarfile.open(archive_path, mode) as tar:
+        members = tar.getmembers()
+    total = len(members)
+    window = members[offset : offset + limit]
+    return [_member_to_info(member) for member in window], total
+
+
+async def _list_archive_entries(
+    archive_path: str, mode: str, limit: int, offset: int
+) -> tuple[List[BackupFileInfo], int]:
+    """Run the blocking tar scan off-loop under a bounded concurrency gate."""
+    async with _archive_scan_semaphore:
+        return await asyncio.to_thread(
+            _scan_archive_entries, archive_path, mode, limit, offset
+        )
+
+
 def _format_file_size(size_bytes: int) -> str:
     """Format size in human readable format."""
     for unit in ["B", "KB", "MB", "GB", "TB"]:
@@ -1307,7 +1349,13 @@ class BrowseEncryptedRequest(BaseModel):
 
 
 @router.post("/{backup_id}/files", response_model=List[BackupFileInfo])
-async def list_encrypted_backup_files(backup_id: int, body: BrowseEncryptedRequest):
+async def list_encrypted_backup_files(
+    backup_id: int,
+    body: BrowseEncryptedRequest,
+    response: Response,
+    limit: int = Query(default=MAX_ARCHIVE_LISTING, ge=1, le=MAX_ARCHIVE_LISTING),
+    offset: int = Query(default=0, ge=0),
+):
     """List files in an encrypted backup archive using the provided private key."""
     async with async_session() as session:
         result = await session.execute(select(Backup).where(Backup.id == backup_id))
@@ -1340,25 +1388,9 @@ async def list_encrypted_backup_files(backup_id: int, body: BrowseEncryptedReque
             backup, body.private_key
         )
 
-        files: List[BackupFileInfo] = []
-        with tarfile.open(archive_path, mode) as tar:
-            for member in tar.getmembers():
-                files.append(
-                    BackupFileInfo(
-                        name=os.path.basename(member.name) or member.name,
-                        path=member.name,
-                        size=member.size,
-                        size_human=_format_file_size(member.size),
-                        is_dir=member.isdir(),
-                        mode=oct(member.mode)[2:] if member.mode else "0",
-                        mtime=(
-                            datetime.fromtimestamp(member.mtime).isoformat()
-                            if member.mtime
-                            else ""
-                        ),
-                    )
-                )
-
+        files, total = await _list_archive_entries(archive_path, mode, limit, offset)
+        response.headers["X-Total-Count"] = str(total)
+        response.headers["X-Has-More"] = "true" if offset + limit < total else "false"
         return files
 
     except tarfile.TarError as e:
@@ -1475,7 +1507,12 @@ async def download_encrypted_backup_file(
 
 
 @router.get("/{backup_id}/files", response_model=List[BackupFileInfo])
-async def list_backup_files(backup_id: int):
+async def list_backup_files(
+    backup_id: int,
+    response: Response,
+    limit: int = Query(default=MAX_ARCHIVE_LISTING, ge=1, le=MAX_ARCHIVE_LISTING),
+    offset: int = Query(default=0, ge=0),
+):
     """List all files in a backup archive.
 
     Returns a flat list of all files and directories in the backup
@@ -1511,26 +1548,9 @@ async def list_backup_files(backup_id: int):
             )
 
         mode = _get_tar_mode(archive_path)
-        files: List[BackupFileInfo] = []
-
-        with tarfile.open(archive_path, mode) as tar:
-            for member in tar.getmembers():
-                files.append(
-                    BackupFileInfo(
-                        name=os.path.basename(member.name) or member.name,
-                        path=member.name,
-                        size=member.size,
-                        size_human=_format_file_size(member.size),
-                        is_dir=member.isdir(),
-                        mode=oct(member.mode)[2:] if member.mode else "0",
-                        mtime=(
-                            datetime.fromtimestamp(member.mtime).isoformat()
-                            if member.mtime
-                            else ""
-                        ),
-                    )
-                )
-
+        files, total = await _list_archive_entries(archive_path, mode, limit, offset)
+        response.headers["X-Total-Count"] = str(total)
+        response.headers["X-Has-More"] = "true" if offset + limit < total else "false"
         return files
 
     except tarfile.TarError as e:
