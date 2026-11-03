@@ -16,8 +16,9 @@ from app.database import Backup, BackupStatus, BackupTarget
 @pytest.mark.asyncio
 @pytest.mark.parametrize("target_type", ["path", "volume"])
 @pytest.mark.parametrize("custom", [False, True])
+@pytest.mark.parametrize("compression", [True, False])
 async def test_real_backup_modify_restore_maps_single_source_root(
-    test_db, tmp_path, target_type, custom
+    test_db, tmp_path, target_type, custom, compression
 ):
     source = tmp_path / ("source" if target_type == "path" else "_data")
     source.mkdir()
@@ -29,7 +30,7 @@ async def test_real_backup_modify_restore_maps_single_source_root(
             target_type=target_type,
             host_path=str(source),
             volume_name="owned-volume" if target_type == "volume" else None,
-            compression_enabled=True,
+            compression_enabled=compression,
             stop_container=False,
             dependencies=[],
         )
@@ -55,6 +56,11 @@ async def test_real_backup_modify_restore_maps_single_source_root(
         ),
     ):
         assert await engine.run_backup(backup_id, skip_validation=True) is True
+        async with test_db() as session:
+            saved = await session.get(Backup, backup_id)
+            assert saved.status == BackupStatus.COMPLETED
+            assert saved.file_path.endswith(".tar.gz" if compression else ".tar")
+            assert tarfile.is_tarfile(saved.file_path)
         (source / "payload").write_bytes(b"modified bytes")
         assert (
             await engine.restore_backup(
