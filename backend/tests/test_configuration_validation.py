@@ -161,6 +161,49 @@ async def test_legacy_invalid_records_are_readable_with_repair_guidance(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind,field", [("webdav", "webdav_url"), ("s3", "s3_endpoint_url")]
+)
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://[",
+        "https://[::1",
+        "https://example.test:invalid",
+        "https://example.test:65536",
+    ],
+)
+@pytest.mark.parametrize("operation", ["create", "update"])
+async def test_malformed_provider_urls_are_atomic_4xx(
+    async_client, test_db, registry, monkeypatch, kind, field, url, operation
+):
+    monkeypatch.setattr(async_client._transport, "raise_app_exceptions", False)
+    payload = {"name": "owned-url", "storage_type": kind, **VALID[kind]}
+    if operation == "create":
+        response = await async_client.post(
+            "/api/v1/storage", json={**payload, field: url}
+        )
+        assert 400 <= response.status_code < 500, response.text
+        async with test_db() as session:
+            assert (
+                await session.execute(select(RemoteStorageModel))
+            ).scalars().all() == []
+        assert registry.backends == {}
+    else:
+        created = await async_client.post("/api/v1/storage", json=payload)
+        assert created.status_code == 200
+        sid = created.json()["id"]
+        before = (await async_client.get(f"/api/v1/storage/{sid}")).json()
+        backend = registry.get_backend(sid)
+        response = await async_client.put(
+            f"/api/v1/storage/{sid}", json={field: url, "name": "must-not-persist"}
+        )
+        assert 400 <= response.status_code < 500, response.text
+        assert (await async_client.get(f"/api/v1/storage/{sid}")).json() == before
+        assert registry.get_backend(sid) is backend
+
+
+@pytest.mark.asyncio
 async def test_unknown_backup_status_is_deliberate_4xx(async_client, monkeypatch):
     monkeypatch.setattr(async_client._transport, "raise_app_exceptions", False)
     response = await async_client.get("/api/v1/backups", params={"status": "unknown"})
