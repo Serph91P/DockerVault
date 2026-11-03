@@ -14,6 +14,7 @@ from sqlalchemy.orm import selectinload
 from app.backup_engine import backup_engine
 from app.database import BackupTarget, Schedule, async_session
 from app.scheduler import BackupScheduler, DisabledBackupTargetError
+from app.api._scheduler import reconcile_after_commit
 
 router = APIRouter()
 
@@ -153,7 +154,7 @@ async def create_schedule(data: ScheduleCreate, request: Request):
         await session.commit()
         await session.refresh(schedule)
 
-        return ScheduleResponse(
+        response = ScheduleResponse(
             id=schedule.id,
             name=schedule.name,
             cron_expression=schedule.cron_expression,
@@ -164,6 +165,8 @@ async def create_schedule(data: ScheduleCreate, request: Request):
             created_at=schedule.created_at.isoformat(),
             updated_at=schedule.updated_at.isoformat(),
         )
+    await reconcile_after_commit(request)
+    return response
 
 
 @router.get("/{schedule_id}", response_model=ScheduleWithTargets)
@@ -261,14 +264,6 @@ async def update_schedule(schedule_id: int, data: ScheduleUpdate, request: Reque
         await session.commit()
         await session.refresh(schedule)
 
-        # Update scheduler for all targets using this schedule
-        scheduler: BackupScheduler = request.app.state.scheduler
-        for target in schedule.targets:
-            if schedule.enabled and target.enabled:
-                await scheduler.add_schedule(target)
-            else:
-                await scheduler.remove_schedule(target.id)
-
         scheduler_obj = BackupScheduler()
         next_run = None
         if schedule.cron_expression and schedule.enabled:
@@ -277,7 +272,7 @@ async def update_schedule(schedule_id: int, data: ScheduleUpdate, request: Reque
             except Exception:
                 pass
 
-        return ScheduleResponse(
+        response = ScheduleResponse(
             id=schedule.id,
             name=schedule.name,
             cron_expression=schedule.cron_expression,
@@ -288,6 +283,8 @@ async def update_schedule(schedule_id: int, data: ScheduleUpdate, request: Reque
             created_at=schedule.created_at.isoformat(),
             updated_at=schedule.updated_at.isoformat(),
         )
+    await reconcile_after_commit(request)
+    return response
 
 
 @router.delete("/{schedule_id}")
@@ -304,16 +301,23 @@ async def delete_schedule(schedule_id: int, request: Request):
         if not schedule:
             raise HTTPException(status_code=404, detail="Schedule not found")
 
-        # Unlink targets and remove from scheduler
-        scheduler: BackupScheduler = request.app.state.scheduler
+        # Jobs change only after this unlink/delete transaction commits.
+        unlinked_targets = len(schedule.targets)
         for target in schedule.targets:
             target.schedule_id = None
-            await scheduler.remove_schedule(target.id)
 
         await session.delete(schedule)
         await session.commit()
 
-        return {"status": "deleted", "unlinked_targets": len(schedule.targets)}
+    await reconcile_after_commit(request)
+    return {"status": "deleted", "unlinked_targets": unlinked_targets}
+
+
+@router.post("/reload")
+async def reload_schedules(request: Request):
+    """Retry live scheduling from persisted state without another configuration save."""
+    await reconcile_after_commit(request)
+    return {"status": "reloaded"}
 
 
 # ============================================
@@ -348,11 +352,15 @@ async def list_schedules_legacy():
             if not cron:
                 continue
 
+            effective_enabled = target.enabled and bool(
+                scheduler._get_target_cron(target)
+            )
             next_run = None
-            try:
-                next_run = scheduler.get_next_run(cron)
-            except Exception:
-                pass
+            if effective_enabled:
+                try:
+                    next_run = scheduler.get_next_run(cron)
+                except Exception:
+                    pass
 
             schedules.append(
                 LegacyScheduleResponse(
@@ -362,7 +370,7 @@ async def list_schedules_legacy():
                     cron_expression=cron,
                     next_run=next_run.isoformat() if next_run else None,
                     last_run=None,
-                    enabled=target.enabled,
+                    enabled=effective_enabled,
                 )
             )
 

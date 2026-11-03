@@ -2,6 +2,7 @@
 Backup scheduler using APScheduler.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
@@ -35,6 +36,7 @@ class BackupScheduler:
             timezone=settings.TZ,
         )
         self._running = False
+        self._reconcile_lock = asyncio.Lock()
 
     async def start(self):
         """Start the scheduler and load existing jobs."""
@@ -73,28 +75,70 @@ class BackupScheduler:
             logger.info("Backup scheduler stopped")
 
     async def _load_schedules(self):
-        """Load all enabled schedules from database."""
-        async with async_session() as session:
-            # Load targets with schedule relationship
-            result = await session.execute(
-                select(BackupTarget)
-                .where(BackupTarget.enabled.is_(True))
-                .where(
-                    (BackupTarget.schedule_id.isnot(None))
-                    | (BackupTarget.schedule_cron.isnot(None))
-                )
-                .options(selectinload(BackupTarget.schedule))
+        """Reconcile existing records without requiring a user re-save."""
+        try:
+            await self.reconcile()
+        except Exception:
+            logger.exception(
+                "Startup schedule reconciliation incomplete; retry POST /api/v1/schedules/reload"
             )
-            targets = result.scalars().all()
 
+    async def reconcile(self):
+        """Project freshly committed effective state into owned backup jobs."""
+        async with self._reconcile_lock:
+            async with async_session() as session:
+                result = await session.execute(
+                    select(BackupTarget).options(selectinload(BackupTarget.schedule))
+                )
+                targets = result.scalars().all()
+            desired = {}
+            failures = []
             for target in targets:
-                await self.add_schedule(target)
+                try:
+                    cron = self._get_target_cron(target) if target.enabled else None
+                    if cron:
+                        desired[f"backup_target_{target.id}"] = (
+                            target,
+                            self._trigger(cron),
+                        )
+                except Exception as exc:
+                    failures.append(target.id)
+                    logger.error("Cannot reconcile target %s: %s", target.id, exc)
+            for job in self.scheduler.get_jobs():
+                if job.id.startswith("backup_target_") and job.id not in desired:
+                    self.scheduler.remove_job(job.id)
+            for job_id, (target, trigger) in desired.items():
+                try:
+                    current = self.scheduler.get_job(job_id)
+                    if (
+                        current
+                        and str(current.trigger) == str(trigger)
+                        and current.trigger.timezone == trigger.timezone
+                    ):
+                        if current.name != f"Backup: {target.name}":
+                            self.scheduler.modify_job(
+                                job_id, name=f"Backup: {target.name}"
+                            )
+                    elif not await self.add_schedule(target):
+                        raise RuntimeError("Could not install committed schedule")
+                except Exception as exc:
+                    if self.scheduler.get_job(job_id):
+                        self.scheduler.remove_job(job_id)
+                    failures.append(target.id)
+                    logger.error("Cannot reconcile target %s: %s", target.id, exc)
+            if failures:
+                raise RuntimeError(
+                    f"Schedule reconciliation failed for targets {failures}"
+                )
+
+    def _trigger(self, cron_expr):
+        return CronTrigger.from_crontab(cron_expr)
 
     def _get_target_cron(self, target: BackupTarget) -> Optional[str]:
         """Get the cron expression for a target (from schedule or legacy field)."""
         # Prefer schedule relationship
-        if target.schedule and target.schedule.enabled:
-            return target.schedule.cron_expression
+        if target.schedule:
+            return target.schedule.cron_expression if target.schedule.enabled else None
         # Fall back to legacy schedule_cron
         return target.schedule_cron
 
@@ -108,7 +152,7 @@ class BackupScheduler:
 
         try:
             # Parse cron expression
-            trigger = CronTrigger.from_crontab(cron_expr)
+            trigger = self._trigger(cron_expr)
 
             # Add job
             self.scheduler.add_job(
