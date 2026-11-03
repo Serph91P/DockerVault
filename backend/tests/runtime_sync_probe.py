@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -25,7 +26,10 @@ from app.api.backups import _ensure_backup_locally, _download_key_from_remote
 
 async def run(mode, root):
     await init_db()
-    archive, key = root / "archive.tar.enc", root / "archive.tar.key"
+    special = os.environ.get("SYNC_SPECIAL_NAMES") == "1"
+    stem = "archive.enc" if special else "archive"
+    archive = root / (stem + ".tar.enc")
+    key = root / ("different-local.key" if special else stem + ".tar.key")
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="https://owned-test"
     ) as client:
@@ -34,7 +38,9 @@ async def run(mode, root):
             key.write_bytes(b"owned persisted key")
             async with async_session() as db:
                 target = BackupTarget(
-                    name="owned", target_type="path", host_path=str(root)
+                    name="owned.enc" if special else "owned",
+                    target_type="path",
+                    host_path=str(root),
                 )
                 storage = RemoteStorage(
                     name="owned", storage_type="local", base_path=str(root / "remote")

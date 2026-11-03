@@ -8,8 +8,15 @@ This is not an import/export or recovery-bundle feature.
 
 `schema_migrations` records ordered versions: **1** baselines the legacy columns
 and applies the historic remote-sync flag rewrite once; **2** quarantines orphan
-log/sync metadata under the catalog lifecycle in `CATALOG.md`; **3** adds the
-independent workload-operation journal described in `RECOVERY.md`. Completed data
+log/sync metadata under the catalog lifecycle in `CATALOG.md`; **3** is the
+historically published independent workload-operation journal (`RECOVERY.md`).
+Forward convergence versions **4** (target schedule/retention FKs) and **5**
+(idempotent journal creation) support both that historical v3 database and the
+intermediate #174 correction that already recorded target FKs as v3. An applied
+ledger entry is never replayed/reinterpreted; the new steps converge the actual
+schema to both invariants. The rebuild preserves extension columns, target/backup
+IDs, indexes and triggers. Invalid existing references fail startup with original
+rows/ledger unchanged rather than guessing a policy. Completed data
 transformations are never replayed, including when a user subsequently disables
 remote sync. A future/gapped ledger or unresolved foreign-key violation prevents
 startup instead of serving a partially understood database.
@@ -18,7 +25,11 @@ All pending DDL, data changes and ledger entries execute under one explicit
 SQLite `BEGIN IMMEDIATE` transaction. This is necessary because the sqlite3
 legacy driver does not automatically begin a transaction for DDL. An exception,
 cancellation or process exit rolls back the pending upgrade; retry starts from
-the same committed ledger. The FastAPI lifespan cannot become ready before the
+the same committed ledger. Only the migration connection temporarily disables FK
+enforcement outside that transaction for SQLite's documented table-rebuild path;
+`foreign_key_check` must pass before commit and enforcement is restored before
+returning the connection, including on failure. All ordinary connections remain
+FK-enforced. The FastAPI lifespan cannot become ready before the
 required migration finishes. Other startup responsibilities (credential wrapping
 and recovery of interrupted backup jobs) are separate from this schema ledger.
 
