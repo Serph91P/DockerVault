@@ -42,6 +42,22 @@ a success message. Repeated requests update the same catalog record; a catalog
 path owned by another backup is rejected before transfer. The manual action never
 triggers the plan's automatic local-copy deletion option.
 
+The shared engine claims `(storage ID, concrete object path)` for both the
+archive and its sidecar in a global acquisition order, through transfer,
+verification and catalog commit. Distinct target IDs/names that normalize to the
+same destination therefore cannot both overwrite it and report success. Ownership
+is re-read after waiting; an existing foreign archive **or sidecar**, including a
+failed/partial catalog copy, rejects the operation with409. Cancelling a waiter
+releases any already-acquired keys. Independent storage/path identities remain
+independent. This uses the existing single application engine, not a distributed
+provider-side lock or external coordination service.
+
+Only the terminal `.enc` suffix maps to `.key`: `vault.enc/archive.enc.tar.enc`
+uses `vault.enc/archive.enc.tar.key`. Upload, download and restore use this same
+mapping even if the local sidecar has another basename; directory/stem substrings
+are never rewritten. Existing ambiguous remote copies are not renamed or adopted
+automatically; re-sync a verified local archive/key pair before deleting it.
+
 All synchronization uploads are downloaded to temporary disk and compared with
 the local artifact using SHA-256 before completion is recorded. This deliberately
 costs an extra download and temporary disk space up to the largest artifact; a
