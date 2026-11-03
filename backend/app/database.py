@@ -5,6 +5,7 @@ Database configuration and models using SQLAlchemy with async support.
 import enum
 from datetime import datetime, timezone
 
+from anyio import CancelScope
 from sqlalchemy import JSON, Boolean, Column, DateTime
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import ForeignKey, Integer, String, Text, event, text
@@ -825,8 +826,13 @@ async def has_remote_copies(session, backup_id: int) -> bool:
 
 async def get_session() -> AsyncSession:
     """Get database session."""
-    async with async_session() as session:
+    session = async_session()
+    try:
         yield session
+    finally:
+        # Keep scopes out of the dependency yield; SQLAlchemy joins repeated edges.
+        with CancelScope(shield=True):
+            await session.__aexit__(None, None, None)
 
 
 # Alias for backwards compatibility
