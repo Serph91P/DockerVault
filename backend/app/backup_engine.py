@@ -743,7 +743,9 @@ class BackupEngine:
                     original_states[
                         container_name
                     ] = await docker_client.get_container_state(container_name)
-                operation_id = await journal.begin(backup_id, "backup", original_states)
+                operation_id = await journal.begin(
+                    backup_id, "backup", original_states, start_order=start_order
+                )
                 if containers_to_stop:
                     # Stop containers in order
                     await self._log(
@@ -2052,7 +2054,10 @@ class BackupEngine:
                         container_name
                     ] = await docker_client.get_container_state(container_name)
                 operation_id = await journal.begin(
-                    backup_id, "restore", original_states
+                    backup_id,
+                    "restore",
+                    original_states,
+                    start_order=list(reversed(containers_to_stop)),
                 )
                 # Stop containers
                 for container_name in containers_to_stop:
