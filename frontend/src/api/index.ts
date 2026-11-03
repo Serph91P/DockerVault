@@ -264,9 +264,9 @@ export const backupsApi = {
       } 
     }),
   getStats: (id: number) => api.get(`/backups/${id}/stats`),
-  listFiles: (id: number) => api.get(`/backups/${id}/files`),
-  listFilesEncrypted: (id: number, privateKey: string) =>
-    api.post(`/backups/${id}/files`, { private_key: privateKey }),
+  listFiles: (id: number, limit = 2000, offset = 0) => api.get(`/backups/${id}/files`, { params: { limit, offset } }),
+  listFilesEncrypted: (id: number, privateKey: string, limit = 2000, offset = 0) =>
+    api.post(`/backups/${id}/files`, { private_key: privateKey }, { params: { limit, offset } }),
   retrySync: (id: number) => api.post(`/backups/${id}/retry-sync`),
   getLogs: (id: number) => api.get<BackupLogEntry[]>(`/backups/${id}/logs`),
 }

@@ -3,6 +3,7 @@ Backups API endpoints.
 """
 
 import logging
+import asyncio
 import os
 import re
 import shutil
@@ -12,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -33,7 +34,12 @@ from app.database import (
 )
 from app.encryption import DecryptionError, decrypt_backup, key_sidecar_path
 from app.rate_limit import limiter
-from app.remote_storage import StorageConfig, StorageType, storage_manager
+from app.remote_storage import (
+    StorageConfig,
+    StorageType,
+    storage_manager,
+    _await_io_settled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +181,9 @@ async def _ensure_backup_locally(
                             )
 
                     return str(local_path), temp_dir
+            except asyncio.CancelledError:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                raise
             except Exception as e:
                 logger.warning(
                     "Failed to download backup %s from storage %s: %s",
@@ -184,6 +193,7 @@ async def _ensure_backup_locally(
                 )
                 shutil.rmtree(temp_dir, ignore_errors=True)
                 continue
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     return None, None
 
@@ -1061,6 +1071,86 @@ class BackupFileInfo(BaseModel):
     mtime: str
 
 
+# Ceiling for a single unbounded compatibility listing, independent of archive size.
+MAX_ARCHIVE_LISTING = 2000
+# Bound on concurrent archive scans so a burst of large listings cannot exhaust
+# the worker pool or monopolize the event loop.
+_archive_scan_semaphore = asyncio.Semaphore(4)
+
+
+def _member_to_info(member: tarfile.TarInfo) -> BackupFileInfo:
+    """Serialize one archive member without touching the event loop."""
+    return BackupFileInfo(
+        name=os.path.basename(member.name) or member.name,
+        path=member.name,
+        size=member.size,
+        size_human=_format_file_size(member.size),
+        is_dir=member.isdir(),
+        mode=oct(member.mode)[2:] if member.mode else "0",
+        mtime=(
+            datetime.fromtimestamp(member.mtime).isoformat() if member.mtime else ""
+        ),
+    )
+
+
+def _scan_archive_entries(archive_path: str, mode: str, limit: int, offset: int):
+    """Blocking archive scan returning (members, total). Runs in a worker thread."""
+    window = []
+    total = 0
+    # Native stream=True disables TarFile's otherwise unbounded TarInfo cache.
+    with tarfile.open(archive_path, mode, stream=True) as tar:
+        for member in tar:
+            if offset <= total < offset + limit:
+                window.append(_member_to_info(member))
+            total += 1
+    return window, total
+
+
+async def _list_archive_entries(
+    archive_path: str, mode: str, limit: int, offset: int
+) -> tuple[List[BackupFileInfo], int]:
+    """Join the real scan before the caller releases its slot or deletes input."""
+    return await _await_io_settled(
+        asyncio.to_thread(_scan_archive_entries, archive_path, mode, limit, offset)
+    )
+
+
+async def _browse_archive(backup, limit, offset, private_key=None):
+    """One capacity owner for remote preparation, decryption, scan and cleanup."""
+    async with _archive_scan_semaphore:
+        remote_temp_dir = None
+        temp_path = None
+        try:
+            resolved, remote_temp_dir = await _ensure_backup_locally(backup)
+            if not resolved:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Backup file not found locally or on any remote storage.",
+                )
+            backup.file_path = resolved
+            if private_key is not None:
+                archive, mode, temp_path = await _get_decrypted_archive_path(
+                    backup, private_key
+                )
+            else:
+                if backup.encrypted:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Cannot browse encrypted backups without private key. Use POST endpoint with your private key.",
+                    )
+                archive, mode = resolved, _get_tar_mode(resolved)
+            return await _list_archive_entries(archive, mode, limit, offset)
+        except tarfile.TarError as exc:
+            raise HTTPException(
+                status_code=500, detail="Failed to read backup archive"
+            ) from exc
+        finally:
+            if temp_path:
+                temp_path.unlink(missing_ok=True)
+            if remote_temp_dir:
+                shutil.rmtree(remote_temp_dir, ignore_errors=True)
+
+
 def _format_file_size(size_bytes: int) -> str:
     """Format size in human readable format."""
     for unit in ["B", "KB", "MB", "GB", "TB"]:
@@ -1275,6 +1365,9 @@ async def _get_decrypted_archive_path(
         else:
             detail = "Decryption failed. Is the private key correct?"
         raise HTTPException(status_code=400, detail=detail)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
 
     decrypted_path = str(temp_path)
     mode = _get_tar_mode(decrypted_path)
@@ -1307,7 +1400,13 @@ class BrowseEncryptedRequest(BaseModel):
 
 
 @router.post("/{backup_id}/files", response_model=List[BackupFileInfo])
-async def list_encrypted_backup_files(backup_id: int, body: BrowseEncryptedRequest):
+async def list_encrypted_backup_files(
+    backup_id: int,
+    body: BrowseEncryptedRequest,
+    response: Response,
+    limit: int = Query(default=MAX_ARCHIVE_LISTING, ge=1, le=MAX_ARCHIVE_LISTING),
+    offset: int = Query(default=0, ge=0),
+):
     """List files in an encrypted backup archive using the provided private key."""
     async with async_session() as session:
         result = await session.execute(select(Backup).where(Backup.id == backup_id))
@@ -1325,50 +1424,10 @@ async def list_encrypted_backup_files(backup_id: int, body: BrowseEncryptedReque
                 detail="Backup is not encrypted. Use GET endpoint instead.",
             )
 
-    remote_temp_dir: Path | None = None
-    temp_path: Path | None = None
-    try:
-        resolved_path, remote_temp_dir = await _ensure_backup_locally(backup)
-        if not resolved_path:
-            raise HTTPException(
-                status_code=404,
-                detail="Backup file not found locally or on any remote storage.",
-            )
-        backup.file_path = resolved_path
-
-        archive_path, mode, temp_path = await _get_decrypted_archive_path(
-            backup, body.private_key
-        )
-
-        files: List[BackupFileInfo] = []
-        with tarfile.open(archive_path, mode) as tar:
-            for member in tar.getmembers():
-                files.append(
-                    BackupFileInfo(
-                        name=os.path.basename(member.name) or member.name,
-                        path=member.name,
-                        size=member.size,
-                        size_human=_format_file_size(member.size),
-                        is_dir=member.isdir(),
-                        mode=oct(member.mode)[2:] if member.mode else "0",
-                        mtime=(
-                            datetime.fromtimestamp(member.mtime).isoformat()
-                            if member.mtime
-                            else ""
-                        ),
-                    )
-                )
-
-        return files
-
-    except tarfile.TarError as e:
-        logger.error("Failed to read decrypted archive: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to read backup archive")
-    finally:
-        if temp_path and temp_path.exists():
-            temp_path.unlink(missing_ok=True)
-        if remote_temp_dir:
-            shutil.rmtree(remote_temp_dir, ignore_errors=True)
+    files, total = await _browse_archive(backup, limit, offset, body.private_key)
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Has-More"] = "true" if offset + limit < total else "false"
+    return files
 
 
 @router.post("/{backup_id}/files/{file_path:path}")
@@ -1475,7 +1534,12 @@ async def download_encrypted_backup_file(
 
 
 @router.get("/{backup_id}/files", response_model=List[BackupFileInfo])
-async def list_backup_files(backup_id: int):
+async def list_backup_files(
+    backup_id: int,
+    response: Response,
+    limit: int = Query(default=MAX_ARCHIVE_LISTING, ge=1, le=MAX_ARCHIVE_LISTING),
+    offset: int = Query(default=0, ge=0),
+):
     """List all files in a backup archive.
 
     Returns a flat list of all files and directories in the backup
@@ -1492,53 +1556,10 @@ async def list_backup_files(backup_id: int):
         if backup.status != BackupStatus.COMPLETED:
             raise HTTPException(status_code=400, detail="Backup is not completed")
 
-    remote_temp_dir: Path | None = None
-    try:
-        resolved_path, remote_temp_dir = await _ensure_backup_locally(backup)
-        if not resolved_path:
-            raise HTTPException(
-                status_code=404,
-                detail="Backup file not found locally or on any remote storage.",
-            )
-        backup.file_path = resolved_path
-
-        # Handle encrypted backups
-        archive_path = backup.file_path
-        if backup.encrypted and archive_path.endswith(".enc"):
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot browse encrypted backups without private key. Use POST endpoint with your private key.",
-            )
-
-        mode = _get_tar_mode(archive_path)
-        files: List[BackupFileInfo] = []
-
-        with tarfile.open(archive_path, mode) as tar:
-            for member in tar.getmembers():
-                files.append(
-                    BackupFileInfo(
-                        name=os.path.basename(member.name) or member.name,
-                        path=member.name,
-                        size=member.size,
-                        size_human=_format_file_size(member.size),
-                        is_dir=member.isdir(),
-                        mode=oct(member.mode)[2:] if member.mode else "0",
-                        mtime=(
-                            datetime.fromtimestamp(member.mtime).isoformat()
-                            if member.mtime
-                            else ""
-                        ),
-                    )
-                )
-
-        return files
-
-    except tarfile.TarError as e:
-        logger.error("Failed to read archive: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to read backup archive")
-    finally:
-        if remote_temp_dir:
-            shutil.rmtree(remote_temp_dir, ignore_errors=True)
+    files, total = await _browse_archive(backup, limit, offset)
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Has-More"] = "true" if offset + limit < total else "false"
+    return files
 
 
 @router.get("/{backup_id}/files/{file_path:path}")
