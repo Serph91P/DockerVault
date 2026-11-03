@@ -42,7 +42,7 @@ def run(image):
         )
     except BaseException:
         if started:
-            subprocess.run(["docker", "logs", "--tail", "120", name], check=False)
+            subprocess.run(["docker", "logs", "--tail", "1500", name], check=False)
         raise
     finally:
         if started:
