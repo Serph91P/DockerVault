@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import docker
+from anyio import CancelScope
 
 from app.config import settings
 
@@ -252,7 +253,8 @@ class DockerClientWrapper:
             cancellation = None
             while not stop.done():
                 try:
-                    await asyncio.shield(stop)
+                    with CancelScope(shield=cancellation is not None):
+                        await asyncio.shield(stop)
                 except asyncio.CancelledError as exc:
                     if cancellation is None:
                         cancellation = exc
