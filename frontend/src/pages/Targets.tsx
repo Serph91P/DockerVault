@@ -11,7 +11,7 @@ import LoadingSkeleton from '../components/LoadingSkeleton'
 function TargetCard({ target, schedules, onEdit }: { target: BackupTarget; schedules: ScheduleEntity[]; onEdit: (target: BackupTarget) => void }) {
   const queryClient = useQueryClient()
   const [editingSchedule, setEditingSchedule] = useState(false)
-  const [selectedScheduleId, setSelectedScheduleId] = useState<number | undefined>(target.schedule_id)
+  const [selectedScheduleId, setSelectedScheduleId] = useState<number | undefined>(target.schedule_id ?? undefined)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
   const triggerBackupMutation = useMutation({
@@ -38,7 +38,7 @@ function TargetCard({ target, schedules, onEdit }: { target: BackupTarget; sched
 
   const updateScheduleMutation = useMutation({
     mutationFn: (schedule_id: number | undefined) => 
-      targetsApi.update(target.id, { schedule_id: schedule_id ?? null } as Partial<BackupTarget>),
+      targetsApi.update(target.id, { schedule_id: schedule_id ?? null, schedule_cron: schedule_id == null ? null : undefined }),
     onSuccess: () => {
       toast.success('Schedule updated')
       queryClient.invalidateQueries({ queryKey: ['targets'] })
@@ -63,7 +63,7 @@ function TargetCard({ target, schedules, onEdit }: { target: BackupTarget; sched
   }
 
   const handleCancelSchedule = () => {
-    setSelectedScheduleId(target.schedule_id)
+    setSelectedScheduleId(target.schedule_id ?? undefined)
     setEditingSchedule(false)
   }
 

@@ -63,6 +63,7 @@ export default function StepSchedule({ data, updateData, schedules, isLoadingSch
   }, [schedules, isLoadingSchedules, data.scheduleId, data.newSchedule, updateData])
 
   const handleScheduleSelect = (scheduleId: string) => {
+    hasAutoSelected.current = true
     if (scheduleId === 'none') {
       updateData({ scheduleId: null, newSchedule: null })
     } else if (scheduleId === 'new') {

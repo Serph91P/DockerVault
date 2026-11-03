@@ -59,15 +59,15 @@ export interface BackupTarget {
   volume_name?: string
   host_path?: string
   stack_name?: string
-  schedule_id?: number  // NEW: Reference to Schedule entity
+  schedule_id?: number | null  // Explicit null removes the reference on update
   schedule?: {  // NEW: Embedded schedule info
     id: number
     name: string
     cron_expression: string
   }
-  schedule_cron?: string  // DEPRECATED: Keep for backwards compatibility
+  schedule_cron?: string | null  // DEPRECATED: Keep for backwards compatibility
   enabled: boolean
-  retention_policy_id?: number
+  retention_policy_id?: number | null
   retention_policy?: RetentionPolicyInfo  // Embedded retention policy info
   dependencies: string[]
   // Volume selection for container/stack backups
@@ -77,8 +77,8 @@ export interface BackupTarget {
   exclude_paths: string[]  // Exclude these paths/patterns
   // Per-volume path rules (overrides global for specific volumes)
   per_volume_rules: Record<string, { include_paths: string[]; exclude_paths: string[] }>
-  pre_backup_command?: string
-  post_backup_command?: string
+  pre_backup_command?: string | null
+  post_backup_command?: string | null
   stop_container: boolean
   compression_enabled: boolean
   // Remote storage sync

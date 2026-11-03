@@ -476,7 +476,8 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
         volume_name: data.targetType === 'volume' ? data.volumeName : undefined,
         host_path: data.targetType === 'path' ? data.hostPath : undefined,
         stack_name: data.targetType === 'stack' ? data.stackName : undefined,
-        schedule_id: scheduleId || undefined,
+        schedule_id: scheduleId ?? (isEditing ? null : undefined),
+        schedule_cron: isEditing && scheduleId == null ? null : undefined,
         enabled: data.enabled,
         dependencies: data.dependencies,
         // Volume selection and path filtering
@@ -493,9 +494,9 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
         ),
         stop_container: data.stopContainer,
         compression_enabled: data.compression !== 'none',
-        pre_backup_command: data.preCommand || undefined,
-        post_backup_command: data.postCommand || undefined,
-        retention_policy_id: retentionPolicyId || undefined,
+        pre_backup_command: data.preCommand || (isEditing ? null : undefined),
+        post_backup_command: data.postCommand || (isEditing ? null : undefined),
+        retention_policy_id: retentionPolicyId ?? (isEditing ? null : undefined),
         remote_storage_ids: data.remoteStorageIds,
         delete_local_after_sync: data.deleteLocalAfterSync,
       }
