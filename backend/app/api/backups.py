@@ -1218,11 +1218,11 @@ async def _get_decrypted_archive_path(
 
     # 2. Derive .key path from the resolved archive path (.enc -> .key)
     if not resolved_key:
-        resolved_key = _try_key_candidate(resolved_archive.replace(".enc", ".key"))
+        resolved_key = _try_key_candidate(key_sidecar_path(resolved_archive))
 
     # 3. Derive from the original DB path (handles legacy naming)
     if not resolved_key:
-        potential_key = backup.file_path.replace(".enc", ".key")
+        potential_key = key_sidecar_path(backup.file_path)
         resolved_key = _try_key_candidate(_resolve_backup_path(potential_key))
 
     # 4. Look for .key in the same directory as the resolved archive
