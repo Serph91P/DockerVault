@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 
 from app.config import settings
 from app.database import (
@@ -22,6 +22,24 @@ from app.database import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _known_artifact_paths(session) -> set[str]:
+    rows = await session.execute(
+        select(
+            Backup.file_path,
+            Backup.encryption_key_path,
+            Backup.backup_metadata,
+            Backup.status,
+        )
+    )
+    known = set()
+    for archive, key, metadata, status in rows:
+        paths = [archive, key]
+        if status == BackupStatus.RUNNING and isinstance(metadata, dict):
+            paths.extend(metadata.get("active_artifacts") or [])
+        known.update(str(Path(path).resolve()) for path in paths if path)
+    return known
 
 
 class RetentionManager:
@@ -235,31 +253,27 @@ class RetentionManager:
             return {"deleted": 0, "freed_bytes": 0}
 
         async with async_session() as session:
-            # Get all known backup file paths AND encryption key paths
-            result = await session.execute(
-                select(Backup.file_path).where(Backup.file_path.isnot(None))
-            )
-            known_paths = set(row[0] for row in result.fetchall())
-
-            key_result = await session.execute(
-                select(Backup.encryption_key_path).where(
-                    Backup.encryption_key_path.isnot(None)
-                )
-            )
-            known_paths.update(row[0] for row in key_result.fetchall())
+            known_paths = await _known_artifact_paths(session)
 
         deleted = 0
         freed_bytes = 0
 
         # Walk through backup directory
         for file_path in backup_dir.rglob("*.tar*"):
-            if str(file_path) not in known_paths:
+            if str(file_path.resolve()) not in known_paths:
                 try:
-                    size = file_path.stat().st_size
-                    file_path.unlink()
-                    deleted += 1
-                    freed_bytes += size
-                    logger.info(f"Deleted orphaned backup: {file_path}")
+                    async with async_session() as session:
+                        await session.execute(text("BEGIN IMMEDIATE"))
+                        # Inventory can be stale: coordinate the final check with
+                        # writers committing reservations before creating files.
+                        known_paths = await _known_artifact_paths(session)
+                        if str(file_path.resolve()) in known_paths:
+                            continue
+                        size = file_path.stat().st_size
+                        file_path.unlink()
+                        deleted += 1
+                        freed_bytes += size
+                        logger.info(f"Deleted orphaned backup: {file_path}")
                 except Exception as e:
                     logger.error(f"Failed to delete orphaned file {file_path}: {e}")
 
