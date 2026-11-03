@@ -82,8 +82,9 @@ async def test_exact_local_key_lookup_never_prefers_foreign_decoy(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["upload", "verification"])
 async def test_cancelled_real_copy_cannot_overwrite_later_acknowledged_identity(
-    async_client, test_db, tmp_path, monkeypatch
+    async_client, test_db, tmp_path, monkeypatch, phase
 ):
     from unittest.mock import patch
 
@@ -120,9 +121,19 @@ async def test_cancelled_real_copy_cannot_overwrite_later_acknowledged_identity(
     release = threading.Event()
     loop = asyncio.get_running_loop()
     original_copy = shutil.copy2
+    held_source = (
+        paths[0]
+        if phase == "upload"
+        else remote
+        / backup_engine._sanitize_path_name(targets[0].name)
+        / "snapshot.tar"
+    )
+    verification_destinations = []
 
     def copy(source, destination, *args, **kwargs):
-        if Path(source) == paths[0]:
+        if Path(source) == held_source:
+            if phase == "verification":
+                verification_destinations.append(Path(destination))
             loop.call_soon_threadsafe(entered.set)
             if not release.wait(15):
                 raise TimeoutError("owned copy fixture was not released")
@@ -188,7 +199,16 @@ async def test_cancelled_real_copy_cannot_overwrite_later_acknowledged_identity(
                 ].read_bytes(), (
                     "Cancelled executor overwrote an acknowledged different identity"
                 )
-            assert response.status_code == 409 and rows[0].backup_id == ids[0]
+            # Cancellation is not success: A may settle bytes but must not become completed.
+            assert (
+                response.status_code == 200
+                and len(rows) == 1
+                and rows[0].backup_id == ids[1]
+            )
+            assert all(
+                not destination.parent.exists()
+                for destination in verification_destinations
+            )
         finally:
             release.set()
             await asyncio.wait_for(settled.wait(), 10)
