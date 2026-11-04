@@ -1,5 +1,7 @@
 import { useState, useCallback } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import api from '../../api'
+import { usePrivateTargetEditor } from '../usePrivateTargetEditor'
 import { X, ChevronLeft, ChevronRight, Check, Loader2 } from 'lucide-react'
 import {
   dockerApi,
@@ -9,6 +11,7 @@ import {
   targetsApi,
 } from '../../api'
 import toast from 'react-hot-toast'
+import { useAuthStore } from '../../store/auth'
 
 import StepTargetSelect from './StepTargetSelect'
 import StepDependencies from './StepDependencies'
@@ -110,11 +113,19 @@ interface WizardDraft {
   data: WizardData
   currentStep: number
   savedAt: number
+  ownerId?: number
+}
+
+function sanitizedDraftData(data: WizardData): WizardData {
+  const safe = Object.fromEntries(Object.keys(initialData).map(name => [name, data[name as keyof WizardData] ?? initialData[name as keyof WizardData]])) as unknown as WizardData
+  safe.preCommand = ''
+  safe.postCommand = ''
+  return safe
 }
 
 function saveDraft(data: WizardData, currentStep: number) {
   try {
-    const draft: WizardDraft = { data, currentStep, savedAt: Date.now() }
+    const draft: WizardDraft = { data: sanitizedDraftData(data), currentStep, savedAt: Date.now(), ownerId: useAuthStore.getState().user?.id }
     localStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
   } catch { /* localStorage full or unavailable */ }
 }
@@ -129,6 +140,8 @@ function loadDraft(): WizardDraft | null {
       localStorage.removeItem(DRAFT_KEY)
       return null
     }
+    draft.data = sanitizedDraftData(draft.data)
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
     return draft
   } catch {
     return null
@@ -173,14 +186,19 @@ function targetToWizardData(target: import('../../api').BackupTarget): WizardDat
     retentionPolicyId: target.retention_policy_id || null,
     newRetentionPolicy: null,
     compression: target.compression_enabled ? 'gzip' : 'none',
-    preCommand: target.pre_backup_command || '',
-    postCommand: target.post_backup_command || '',
+    preCommand: '',
+    postCommand: '',
     enabled: target.enabled,
   }
 }
 
 export default function BackupWizard({ isOpen, onClose, editTarget, preselectedType, preselectedTarget }: BackupWizardProps) {
+  return isOpen ? <BackupWizardForm key={editTarget?.id ?? 'new'} isOpen={isOpen} onClose={onClose} editTarget={editTarget} preselectedType={preselectedType} preselectedTarget={preselectedTarget} /> : null
+}
+
+function BackupWizardForm({ isOpen, onClose, editTarget, preselectedType, preselectedTarget }: BackupWizardProps) {
   const queryClient = useQueryClient()
+  const editor = usePrivateTargetEditor(editTarget?.id)
   const isEditing = !!editTarget
   const [currentStep, setCurrentStep] = useState(1)
   const [data, setData] = useState<WizardData>(initialData)
@@ -289,51 +307,9 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
     enabled: isOpen,
   })
 
-  // Create schedule mutation (if new schedule needed)
-  const createScheduleMutation = useMutation({
-    mutationFn: (scheduleData: { name: string; cron_expression: string; description?: string }) =>
-      schedulesApi.create(scheduleData),
-  })
-
-  // Create retention policy mutation (if new policy needed)
-  const createRetentionPolicyMutation = useMutation({
-    mutationFn: (policyData: Partial<import('../../api').RetentionPolicy>) =>
-      retentionApi.createPolicy(policyData),
-  })
-
-  // Create target mutation
-  const createTargetMutation = useMutation({
-    mutationFn: (targetData: Parameters<typeof targetsApi.create>[0]) =>
-      targetsApi.create(targetData),
-    onSuccess: () => {
-      toast.success('Backup target created successfully!')
-      clearDraft()
-      queryClient.invalidateQueries({ queryKey: ['targets'] })
-      queryClient.invalidateQueries({ queryKey: ['schedules'] })
-      handleClose()
-    },
-    onError: (err: Error & { response?: { data?: { detail?: string } } }) => {
-      toast.error(err.response?.data?.detail || 'Failed to create backup target')
-    },
-  })
-
-  // Update target mutation
-  const updateTargetMutation = useMutation({
-    mutationFn: (targetData: Parameters<typeof targetsApi.update>[1]) =>
-      targetsApi.update(editTarget!.id, targetData),
-    onSuccess: () => {
-      toast.success('Backup target updated successfully!')
-      clearDraft()
-      queryClient.invalidateQueries({ queryKey: ['targets'] })
-      queryClient.invalidateQueries({ queryKey: ['schedules'] })
-      handleClose()
-    },
-    onError: (err: Error & { response?: { data?: { detail?: string } } }) => {
-      toast.error(err.response?.data?.detail || 'Failed to update backup target')
-    },
-  })
 
   const handleClose = () => {
+    editor.close()
     // W2: Save draft if user has made progress (has selected a target type)
     if (!isEditing && data.targetType) {
       saveDraft(data, currentStep)
@@ -439,32 +415,34 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
     }
   }
 
-  const isLoading = createScheduleMutation.isPending || createRetentionPolicyMutation.isPending || createTargetMutation.isPending || updateTargetMutation.isPending
+  const isLoading = editor.pending
 
   const handleSubmit = async () => {
-    try {
+    await editor.run(async (signal, current) => {
       let scheduleId = data.scheduleId
 
       // Create new schedule if specified
       if (data.newSchedule) {
-        const newSchedule = await createScheduleMutation.mutateAsync({
+        const newSchedule = await api.post('/schedules', {
           name: data.newSchedule.name,
           cron_expression: data.newSchedule.cronExpression,
           description: data.newSchedule.description || undefined,
-        })
+        }, { signal })
+        if (!current()) return
         scheduleId = newSchedule.data.id
       }
 
       // Create new retention policy if specified
       let retentionPolicyId = data.retentionPolicyId
       if (data.newRetentionPolicy) {
-        const newPolicy = await createRetentionPolicyMutation.mutateAsync({
+        const newPolicy = await api.post('/retention', {
           name: data.newRetentionPolicy.name,
           keep_last: data.newRetentionPolicy.keepLast,
           keep_daily: data.newRetentionPolicy.keepDaily,
           keep_weekly: data.newRetentionPolicy.keepWeekly,
           keep_monthly: data.newRetentionPolicy.keepMonthly,
-        })
+        }, { signal })
+        if (!current()) return
         retentionPolicyId = newPolicy.data.id
       }
 
@@ -476,7 +454,8 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
         volume_name: data.targetType === 'volume' ? data.volumeName : undefined,
         host_path: data.targetType === 'path' ? data.hostPath : undefined,
         stack_name: data.targetType === 'stack' ? data.stackName : undefined,
-        schedule_id: scheduleId || undefined,
+        schedule_id: scheduleId ?? (isEditing ? null : undefined),
+        schedule_cron: isEditing && scheduleId == null ? null : undefined,
         enabled: data.enabled,
         dependencies: data.dependencies,
         // Volume selection and path filtering
@@ -493,21 +472,27 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
         ),
         stop_container: data.stopContainer,
         compression_enabled: data.compression !== 'none',
-        pre_backup_command: data.preCommand || undefined,
-        post_backup_command: data.postCommand || undefined,
-        retention_policy_id: retentionPolicyId || undefined,
+        ...(editor.loaded ? { pre_backup_command: editor.hooks.pre || (isEditing ? null : undefined), post_backup_command: editor.hooks.post || (isEditing ? null : undefined) } : {}),
+        retention_policy_id: retentionPolicyId ?? (isEditing ? null : undefined),
         remote_storage_ids: data.remoteStorageIds,
         delete_local_after_sync: data.deleteLocalAfterSync,
       }
 
       if (isEditing) {
-        await updateTargetMutation.mutateAsync(targetData)
+        await api.put(`/targets/${editTarget!.id}`, targetData, { signal })
       } else {
-        await createTargetMutation.mutateAsync(targetData)
+        await api.post('/targets', targetData, { signal })
       }
-    } catch {
-      // Error handled in mutation
-    }
+    }, () => {
+      toast.success(isEditing ? 'Backup target updated successfully!' : 'Backup target created successfully!')
+      clearDraft()
+      void queryClient.invalidateQueries({ queryKey: ['targets'] })
+      void queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      void queryClient.invalidateQueries({ queryKey: ['retention-policies'] })
+      editor.close()
+      setData(initialData)
+      onClose()
+    })
   }
 
   if (!isOpen) return null
@@ -582,6 +567,9 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6">
+          {editor.saveError && <p role="alert">Could not save backup configuration. Check the current server state before retrying; cancellation does not undo a server change.</p>}
+          {editor.loading && <p role="status">Loading private hook commands…</p>}
+          {editor.loadError && <p role="alert">Could not load hook commands. Existing commands will be preserved. <button type="button" onClick={editor.retry}>Retry hook load</button></p>}
           {/* W2: Draft restoration banner */}
           {showDraftBanner && (
             <div className="mb-4 flex items-center gap-3 p-3 bg-primary-500/10 border border-primary-500/30 rounded-lg">
@@ -655,11 +643,17 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
             />
           )}
           {currentStep === 7 && (
-            <StepOptions data={data} updateData={updateData} />
+              <StepOptions hooksDisabled={editor.loading || !editor.loaded || editor.pending} data={{ ...data, preCommand: editor.hooks.pre, postCommand: editor.hooks.post }} updateData={updates => {
+                if (updates.preCommand !== undefined) editor.setHooks(prev => ({ ...prev, pre: updates.preCommand! }))
+                if (updates.postCommand !== undefined) editor.setHooks(prev => ({ ...prev, post: updates.postCommand! }))
+                const { preCommand: _pre, postCommand: _post, ...safeUpdates } = updates
+                updateData(safeUpdates)
+              }} />
+
           )}
           {currentStep === 8 && (
             <StepSummary
-              data={data}
+              data={{ ...data, preCommand: editor.hooks.pre, postCommand: editor.hooks.post }}
               schedules={schedules}
               policies={retentionPolicies}
               storages={remoteStorages}
@@ -693,7 +687,6 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
           <div className="flex gap-2">
             <button
               onClick={handleClose}
-              disabled={isLoading}
               className="px-4 py-2 text-dark-300 hover:text-dark-100 transition-colors"
             >
               Cancel

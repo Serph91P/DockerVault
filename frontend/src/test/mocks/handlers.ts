@@ -167,7 +167,9 @@ export const handlers = [
   }),
 
   http.delete('/api/v1/backups/:id', () => {
-    return new HttpResponse(null, { status: 204 })
+    // Backend contract: DELETE /backups/{id} returns 200 with a JSON body,
+    // not 204. See backend/app/api/backups.py delete_backup.
+    return HttpResponse.json({ status: 'deleted' })
   }),
 
   http.post('/api/v1/backups/:id/restore', async ({ request }) => {

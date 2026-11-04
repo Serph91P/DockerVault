@@ -3,6 +3,7 @@ Backups API endpoints.
 """
 
 import logging
+import asyncio
 import os
 import re
 import shutil
@@ -12,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -30,9 +31,20 @@ from app.database import (
     RemoteStorage,
     async_session,
 )
-from app.encryption import DecryptionError, decrypt_backup
+from app.encryption import DecryptionError, decrypt_backup, key_sidecar_path
 from app.rate_limit import limiter
-from app.remote_storage import StorageConfig, StorageType, storage_manager
+from app.copy_removal import (
+    RemovalSelection,
+    RemovalExecution,
+    preview_removal,
+    execute_removal,
+)
+from app.remote_storage import (
+    StorageConfig,
+    StorageType,
+    storage_manager,
+    _await_io_settled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -153,8 +165,8 @@ async def _ensure_backup_locally(
 
                     # Also download .key sidecar file for encrypted backups
                     if backup.encrypted:
-                        key_remote = sync.remote_path.replace(".enc", ".key")
-                        key_local = temp_dir / filename.replace(".enc", ".key")
+                        key_remote = key_sidecar_path(sync.remote_path)
+                        key_local = temp_dir / key_sidecar_path(filename)
                         try:
                             await backend.download(key_remote, key_local)
                             # Validate that the downloaded key file is non-empty
@@ -174,6 +186,9 @@ async def _ensure_backup_locally(
                             )
 
                     return str(local_path), temp_dir
+            except asyncio.CancelledError:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                raise
             except Exception as e:
                 logger.warning(
                     "Failed to download backup %s from storage %s: %s",
@@ -183,6 +198,7 @@ async def _ensure_backup_locally(
                 )
                 shutil.rmtree(temp_dir, ignore_errors=True)
                 continue
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     return None, None
 
@@ -322,44 +338,10 @@ def _build_backup_response(
     )
 
 
-async def _delete_remote_copies(session, backup_ids: list[int]) -> list[str]:
-    """Delete remote copies for the given backup IDs.
-
-    Returns a list of error messages for failed deletions.
-    """
-    from app.remote_storage import storage_manager
-
-    result = await session.execute(
-        select(BackupStorageSync).where(BackupStorageSync.backup_id.in_(backup_ids))
-    )
-    sync_records = result.scalars().all()
-
-    remote_errors: list[str] = []
-    for sync in sync_records:
-        if sync.remote_path and sync.sync_status == "completed":
-            backend = storage_manager.get_backend(sync.storage_id)
-            if backend:
-                try:
-                    await backend.delete(sync.remote_path)
-                except Exception as e:
-                    logger.warning(
-                        "Could not delete remote file %s from storage %s: %s",
-                        sync.remote_path,
-                        sync.storage_id,
-                        e,
-                    )
-                    remote_errors.append(
-                        f"storage:{sync.storage_id}/{sync.remote_path}"
-                    )
-        await session.delete(sync)
-
-    return remote_errors
-
-
 @router.get("", response_model=List[BackupResponse])
 async def list_backups(
     target_id: Optional[int] = None,
-    status: Optional[str] = None,
+    status: Optional[BackupStatus] = None,
     limit: int = Query(default=50, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ):
@@ -382,7 +364,7 @@ async def list_backups(
         if target_id:
             query = query.where(Backup.target_id == target_id)
         if status:
-            query = query.where(Backup.status == BackupStatus(status))
+            query = query.where(Backup.status == status)
 
         result = await session.execute(query)
         backups = result.scalars().all()
@@ -406,6 +388,18 @@ async def list_backups(
             )
             for b in backups
         ]
+
+
+@router.post("/removal/preview")
+async def preview_copy_removal(selection: RemovalSelection):
+    """Review authoritative, frozen archive/copy scope, never a paginated sample."""
+    return await preview_removal(selection)
+
+
+@router.post("/removal/execute")
+async def execute_copy_removal(execution: RemovalExecution):
+    """Execute only the exact copies in a live confirmation or failed-scope retry."""
+    return await execute_removal(execution.token)
 
 
 @router.get("/{backup_id}", response_model=BackupResponse)
@@ -436,187 +430,96 @@ async def get_backup(backup_id: int):
 
 @router.post("/{backup_id}/retry-sync")
 async def retry_remote_sync(backup_id: int):
-    """Retry remote sync for a backup that has failed storage uploads.
-
-    Re-runs the upload for every BackupStorageSync record with status 'failed'.
-    Returns updated sync details.
-    """
+    """Retry failed/missing copies through the same verified transfer service."""
     async with async_session() as session:
-        result = await session.execute(select(Backup).where(Backup.id == backup_id))
-        backup = result.scalar_one_or_none()
+        backup = await session.get(Backup, backup_id)
         if not backup:
             raise HTTPException(status_code=404, detail="Backup not found")
-        if backup.status != BackupStatus.COMPLETED:
-            raise HTTPException(
-                status_code=400,
-                detail="Only completed backups can be re-synced",
-            )
+        target_id = backup.target_id
 
-        resolved = _resolve_backup_path(backup.file_path)
-        if not resolved:
-            raise HTTPException(
-                status_code=400,
-                detail="Local backup file not available for re-sync",
-            )
-
-        # Get target for path sanitisation
-        target_result = await session.execute(
-            select(BackupTarget).where(BackupTarget.id == backup.target_id)
-        )
-        target = target_result.scalar_one_or_none()
-        if not target:
-            raise HTTPException(status_code=404, detail="Backup target not found")
-
-        # Find failed sync records
-        failed_result = await session.execute(
-            select(BackupStorageSync).where(
-                BackupStorageSync.backup_id == backup_id,
-                BackupStorageSync.sync_status == "failed",
-            )
-        )
-        failed_syncs = list(failed_result.scalars().all())
-
-        # Also find storage IDs that have no sync record at all
-        # (remote was configured after backup, or initial sync never ran)
-        missing_storage_ids: list[int] = []
-        if target.remote_storage_ids:
-            existing_result = await session.execute(
-                select(BackupStorageSync.storage_id).where(
-                    BackupStorageSync.backup_id == backup_id
-                )
-            )
-            existing_ids = {row[0] for row in existing_result}
-            missing_storage_ids = [
-                sid for sid in target.remote_storage_ids if sid not in existing_ids
-            ]
-
-        if not failed_syncs and not missing_storage_ids:
-            raise HTTPException(
-                status_code=400,
-                detail="No failed or missing sync records to retry",
-            )
-
-    # Re-upload to each failed storage
-    local_path = Path(resolved)
-    safe_name = backup_engine._sanitize_path_name(target.name)
-    retried: dict[int, bool] = {}
-
-    for sync in failed_syncs:
-        backend = storage_manager.get_backend(sync.storage_id)
-        if not backend:
-            async with async_session() as session:
-                storage = await session.get(RemoteStorage, sync.storage_id)
-                if not storage or not storage.enabled:
-                    retried[sync.storage_id] = False
-                    continue
-                config = _db_to_storage_config(storage)
-                backend = storage_manager.add_storage(config)
-
-        remote_path = sync.remote_path or f"{safe_name}/{local_path.name}"
-        error_msg = ""
-        try:
-            success, error_msg = await backend.upload(local_path, remote_path)
-        except Exception as e:
-            logger.warning(
-                "Retry sync failed for backup %s -> storage %s: %s",
-                backup_id,
-                sync.storage_id,
-                e,
-            )
-            success = False
-            error_msg = str(e)[:500]
-
-        retried[sync.storage_id] = success
-
-        # Update sync record
+    async with backup_engine._get_target_lock(target_id):
+        # Re-read after taking the lock: a concurrent retry may already be done.
         async with async_session() as session:
-            result = await session.execute(
-                select(BackupStorageSync).where(
-                    BackupStorageSync.backup_id == backup_id,
-                    BackupStorageSync.storage_id == sync.storage_id,
+            backup = await session.get(Backup, backup_id)
+            if not backup:
+                raise HTTPException(status_code=404, detail="Backup not found")
+            target = await session.get(BackupTarget, target_id)
+            if not target:
+                raise HTTPException(status_code=404, detail="Backup target not found")
+            resolved = _resolve_backup_path(backup.file_path)
+            if not resolved:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Local backup file not available for re-sync",
                 )
-            )
-            record = result.scalar_one_or_none()
-            if record:
-                if success:
-                    record.sync_status = "completed"
-                    record.synced_at = datetime.now(timezone.utc)
-                    record.error_message = None
-                else:
-                    record.error_message = (
-                        error_msg[:500] if error_msg else "Retry upload failed"
+            if backup.encrypted and (
+                not backup.encryption_key_path
+                or not Path(backup.encryption_key_path).is_file()
+            ):
+                raise HTTPException(
+                    status_code=409, detail="Encryption key sidecar not available"
+                )
+            rows = list(
+                (
+                    await session.execute(
+                        select(BackupStorageSync).where(
+                            BackupStorageSync.backup_id == backup_id
+                        )
                     )
-                await session.commit()
-
-        # Also upload .key sidecar for encrypted backups on success
-        if success and backup.encrypted and backup.encryption_key_path:
-            key_path = Path(backup.encryption_key_path)
-            if key_path.exists():
-                key_remote = remote_path.replace(".enc", ".key")
-                try:
-                    await backend.upload(key_path, key_remote)
-                except Exception:
-                    pass
-
-    # Handle storages with no sync record yet (remote configured after backup)
-    for storage_id in missing_storage_ids:
-        backend = storage_manager.get_backend(storage_id)
-        if not backend:
-            async with async_session() as session:
-                storage = await session.get(RemoteStorage, storage_id)
-                if not storage or not storage.enabled:
-                    retried[storage_id] = False
-                    continue
-                config = _db_to_storage_config(storage)
-                backend = storage_manager.add_storage(config)
-
-        remote_path = f"{safe_name}/{local_path.name}"
-        error_msg = ""
-        try:
-            success, error_msg = await backend.upload(local_path, remote_path)
-        except Exception as e:
-            logger.warning(
-                "Initial sync failed for backup %s -> storage %s: %s",
-                backup_id,
-                storage_id,
-                e,
+                ).scalars()
             )
-            success = False
-            error_msg = str(e)[:500]
+            existing_ids = {row.storage_id for row in rows}
+            ids = sorted(
+                {row.storage_id for row in rows if row.sync_status == "failed"}
+                | (set(target.remote_storage_ids or []) - existing_ids)
+            )
+            remote_only = backup.status == BackupStatus.FAILED
+            if remote_only:
+                proven = (
+                    bool(ids)
+                    and any(row.sync_status == "failed" for row in rows)
+                    and (backup.error_message or "").startswith(
+                        ("Remote sync failed:", "Remote storage sync failed:")
+                    )
+                    and backup.file_size == Path(resolved).stat().st_size
+                    and bool(backup.checksum)
+                    and await backup_engine._calculate_checksum(resolved)
+                    == backup.checksum
+                )
+                if not proven:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Failed backup has no verified remote-only failure",
+                    )
+            elif backup.status != BackupStatus.COMPLETED:
+                raise HTTPException(
+                    status_code=409, detail="Backup is not available for re-sync"
+                )
+            if not ids:
+                raise HTTPException(
+                    status_code=400, detail="No failed or missing sync records to retry"
+                )
 
-        retried[storage_id] = success
-
-        # Create new sync record
+        results = await backup_engine._sync_to_remote(
+            backup_id,
+            target,
+            resolved,
+            backup.encrypted,
+            backup.encryption_key_path,
+            storage_ids=ids,
+        )
+        succeeded = sum(1 for sid in ids if results.get(sid, (False, None))[0])
+        failed = len(ids) - succeeded
         async with async_session() as session:
-            sync_record = BackupStorageSync(
-                backup_id=backup_id,
-                storage_id=storage_id,
-                remote_path=remote_path,
-                synced_at=datetime.now(timezone.utc) if success else None,
-                sync_status="completed" if success else "failed",
-                error_message=None
-                if success
-                else (error_msg[:500] if error_msg else "Upload failed"),
-            )
-            session.add(sync_record)
-            await session.commit()
-
-        # Also upload .key sidecar for encrypted backups on success
-        if success and backup.encrypted and backup.encryption_key_path:
-            key_path = Path(backup.encryption_key_path)
-            if key_path.exists():
-                key_remote = remote_path.replace(".enc", ".key")
-                try:
-                    await backend.upload(key_path, key_remote)
-                except Exception:
-                    pass
-
-    succeeded = sum(1 for v in retried.values() if v)
-    failed = sum(1 for v in retried.values() if not v)
-
-    # Return updated sync details
-    async with async_session() as session:
-        sync_map = await _get_sync_details(session, [backup_id])
+            if remote_only and not failed:
+                record = await session.get(Backup, backup_id)
+                record.backup_metadata = dict(record.backup_metadata or {}) | {
+                    "recovered_remote_sync_error": record.error_message
+                }
+                record.status = BackupStatus.COMPLETED
+                record.error_message = None
+                await session.commit()
+            sync_map = await _get_sync_details(session, [backup_id])
 
     return {
         "message": f"Retry complete: {succeeded} succeeded, {failed} failed",
@@ -641,7 +544,7 @@ async def create_backup(request: Request, request_body: CreateBackupRequest):
         )
         target = result.scalar_one_or_none()
 
-        if not target:
+        if not target or target.removed_at is not None:
             logger.error("Target %s not found", request_body.target_id)
             raise HTTPException(status_code=404, detail="Target not found")
 
@@ -656,7 +559,10 @@ async def create_backup(request: Request, request_body: CreateBackupRequest):
         if request_body.backup_type == "full"
         else BackupType.INCREMENTAL
     )
-    backup = await backup_engine.create_backup(target, backup_type)
+    try:
+        backup = await backup_engine.create_backup(target, backup_type)
+    except ValueError as exc:
+        raise HTTPException(409, "Plan removed before backup could start") from exc
 
     logger.info(f"Created backup {backup.id}, starting backup task...")
 
@@ -752,6 +658,18 @@ async def get_restore_info(backup_id: int):
 async def restore_backup(
     request: Request, backup_id: int, restore_request: RestoreBackupRequest
 ):
+    async with async_session() as session:
+        backup = await session.get(Backup, backup_id)
+        if not backup:
+            raise HTTPException(404, "Backup not found")
+        target_id = backup.target_id
+    async with backup_engine._get_target_lock(target_id):
+        return await _restore_backup_claimed(backup_id, restore_request)
+
+
+async def _restore_backup_claimed(
+    backup_id: int, restore_request: RestoreBackupRequest
+):
     """Restore a backup.
 
     If target_path is provided, it must be within allowed restore directories
@@ -778,9 +696,34 @@ async def restore_backup(
                 detail="Invalid restore path: must be within allowed directories",
             )
 
-    success = await backup_engine.restore_backup(
-        backup_id, restore_request.target_path, restore_request.private_key
-    )
+    async with async_session() as session:
+        backup = await session.get(Backup, backup_id)
+        if not backup:
+            raise HTTPException(status_code=404, detail="Backup not found")
+    resolved, temporary = await _ensure_backup_locally(backup)
+    if not resolved:
+        raise HTTPException(
+            status_code=404,
+            detail="Backup archive is not available locally or remotely",
+        )
+    try:
+        key_path = _resolve_backup_path(backup.encryption_key_path)
+        if backup.encrypted and not key_path:
+            key_path = await _download_key_from_remote(backup, resolved)
+        if backup.encrypted and not key_path:
+            raise HTTPException(
+                status_code=400, detail="Encryption key sidecar not available"
+            )
+        success = await backup_engine.restore_backup(
+            backup_id,
+            restore_request.target_path,
+            restore_request.private_key,
+            archive_path=resolved,
+            key_path=key_path,
+        )
+    finally:
+        if temporary:
+            shutil.rmtree(temporary, ignore_errors=True)
 
     if not success:
         raise HTTPException(status_code=500, detail="Restore failed")
@@ -796,12 +739,7 @@ async def delete_backup(
     delete_local: bool = Query(True, description="Delete local backup file"),
     delete_remote: bool = Query(True, description="Delete remote copies"),
 ):
-    """Delete a backup. Use query params to control what gets deleted.
-
-    - delete_local=true (default): Removes local file and DB record.
-    - delete_remote=true (default): Removes remote copies.
-    - Both false is rejected (nothing to do).
-    """
+    """Compatibility entry point for one explicitly identified archive."""
     if not delete_local and not delete_remote:
         raise HTTPException(
             status_code=400,
@@ -809,67 +747,19 @@ async def delete_backup(
         )
 
     async with async_session() as session:
-        result = await session.execute(select(Backup).where(Backup.id == backup_id))
-        backup = result.scalar_one_or_none()
-
-        if not backup:
+        if await session.get(Backup, backup_id) is None:
             raise HTTPException(status_code=404, detail="Backup not found")
-
-        file_errors: list[str] = []
-
-        # Delete local file if requested
-        if delete_local and backup.file_path:
-            resolved = _resolve_backup_path(backup.file_path)
-            if resolved:
-                try:
-                    os.remove(resolved)
-                except OSError as e:
-                    logger.warning("Could not delete backup file %s: %s", resolved, e)
-                    file_errors.append(str(resolved))
-            # Also try to remove the .key sidecar file
-            if backup.encryption_key_path:
-                resolved_key = _resolve_backup_path(backup.encryption_key_path)
-                if resolved_key:
-                    try:
-                        os.remove(resolved_key)
-                    except OSError as e:
-                        logger.warning(
-                            "Could not delete key file %s: %s", resolved_key, e
-                        )
-                        file_errors.append(str(resolved_key))
-
-            # Try to remove the parent directory if it is now empty
-            if resolved and not file_errors:
-                parent = os.path.dirname(resolved)
-                try:
-                    if parent and os.path.isdir(parent) and not os.listdir(parent):
-                        os.rmdir(parent)
-                except OSError:
-                    pass  # non-critical
-
-        # Delete remote copies if requested
-        if delete_remote:
-            remote_errors = await _delete_remote_copies(session, [backup.id])
-            file_errors.extend(remote_errors)
-
-        # Only delete DB record when local is being removed (or already gone)
-        if delete_local:
-            await session.delete(backup)
-        elif delete_remote:
-            # Keep DB record but clear sync records (already done in _delete_remote_copies)
-            pass
-
-        await session.commit()
-
-        if file_errors:
-            return {
-                "status": "deleted",
-                "warning": (
-                    "Database record removed but some files could not be "
-                    f"deleted (permission denied): {file_errors}"
-                ),
-            }
-        return {"status": "deleted"}
+    scope = (
+        "all"
+        if delete_local and delete_remote
+        else "local"
+        if delete_local
+        else "remote"
+    )
+    preview = await preview_removal(
+        RemovalSelection(scope=scope, backup_ids=[backup_id])
+    )
+    return await execute_removal(preview["token"])
 
 
 @router.delete("")
@@ -882,96 +772,11 @@ async def delete_all_backups(
     delete_local: bool = Query(True, description="Delete local backup files"),
     delete_remote: bool = Query(True, description="Delete remote copies"),
 ):
-    """Delete all backups, optionally filtered by target_id.
-
-    Use delete_local/delete_remote to control scope.
-    """
-    if not delete_local and not delete_remote:
-        raise HTTPException(
-            status_code=400,
-            detail="At least one of delete_local or delete_remote must be true.",
-        )
-
-    async with async_session() as session:
-        query = select(Backup)
-        if target_id is not None:
-            query = query.where(Backup.target_id == target_id)
-
-        result = await session.execute(query)
-        backups = result.scalars().all()
-
-        if not backups:
-            return {"status": "deleted", "deleted_count": 0}
-
-        deleted_count = 0
-        file_errors: list[str] = []
-        backup_ids = [b.id for b in backups]
-
-        # Delete remote copies if requested
-        if delete_remote:
-            remote_errors = await _delete_remote_copies(session, backup_ids)
-            file_errors.extend(remote_errors)
-
-        for backup in backups:
-            # Delete local file if requested
-            if delete_local and backup.file_path:
-                resolved = _resolve_backup_path(backup.file_path)
-                if resolved:
-                    try:
-                        os.remove(resolved)
-                    except OSError as e:
-                        logger.warning(
-                            "Could not delete backup file %s: %s", resolved, e
-                        )
-                        file_errors.append(str(resolved))
-
-                # Delete .key sidecar
-                if backup.encryption_key_path:
-                    resolved_key = _resolve_backup_path(backup.encryption_key_path)
-                    if resolved_key:
-                        try:
-                            os.remove(resolved_key)
-                        except OSError as e:
-                            logger.warning(
-                                "Could not delete key file %s: %s",
-                                resolved_key,
-                                e,
-                            )
-                            file_errors.append(str(resolved_key))
-
-            if delete_local:
-                await session.delete(backup)
-                deleted_count += 1
-
-        await session.commit()
-
-        # Clean up empty target directories
-        if delete_local:
-            for backup in backups:
-                if backup.file_path:
-                    resolved = _resolve_backup_path(backup.file_path)
-                    if resolved:
-                        parent = os.path.dirname(resolved)
-                        try:
-                            if (
-                                parent
-                                and os.path.isdir(parent)
-                                and not os.listdir(parent)
-                            ):
-                                os.rmdir(parent)
-                        except OSError:
-                            pass
-
-        if not delete_local:
-            deleted_count = len(backups)
-
-        response: dict = {"status": "deleted", "deleted_count": deleted_count}
-        if file_errors:
-            response["warning"] = (
-                f"{deleted_count} record(s) processed but {len(file_errors)} "
-                f"file(s) could not be deleted: {file_errors}"
-            )
-        return response
+    """Filter-based deletion requires an explicit frozen confirmation."""
+    raise HTTPException(
+        409,
+        "Review POST /backups/removal/preview, then execute its token; unconfirmed bulk deletion is disabled",
+    )
 
 
 class BackupLogEntry(BaseModel):
@@ -1110,6 +915,86 @@ class BackupFileInfo(BaseModel):
     mtime: str
 
 
+# Ceiling for a single unbounded compatibility listing, independent of archive size.
+MAX_ARCHIVE_LISTING = 2000
+# Bound on concurrent archive scans so a burst of large listings cannot exhaust
+# the worker pool or monopolize the event loop.
+_archive_scan_semaphore = asyncio.Semaphore(4)
+
+
+def _member_to_info(member: tarfile.TarInfo) -> BackupFileInfo:
+    """Serialize one archive member without touching the event loop."""
+    return BackupFileInfo(
+        name=os.path.basename(member.name) or member.name,
+        path=member.name,
+        size=member.size,
+        size_human=_format_file_size(member.size),
+        is_dir=member.isdir(),
+        mode=oct(member.mode)[2:] if member.mode else "0",
+        mtime=(
+            datetime.fromtimestamp(member.mtime).isoformat() if member.mtime else ""
+        ),
+    )
+
+
+def _scan_archive_entries(archive_path: str, mode: str, limit: int, offset: int):
+    """Blocking archive scan returning (members, total). Runs in a worker thread."""
+    window = []
+    total = 0
+    # Native stream=True disables TarFile's otherwise unbounded TarInfo cache.
+    with tarfile.open(archive_path, mode, stream=True) as tar:
+        for member in tar:
+            if offset <= total < offset + limit:
+                window.append(_member_to_info(member))
+            total += 1
+    return window, total
+
+
+async def _list_archive_entries(
+    archive_path: str, mode: str, limit: int, offset: int
+) -> tuple[List[BackupFileInfo], int]:
+    """Join the real scan before the caller releases its slot or deletes input."""
+    return await _await_io_settled(
+        asyncio.to_thread(_scan_archive_entries, archive_path, mode, limit, offset)
+    )
+
+
+async def _browse_archive(backup, limit, offset, private_key=None):
+    """One capacity owner for remote preparation, decryption, scan and cleanup."""
+    async with _archive_scan_semaphore:
+        remote_temp_dir = None
+        temp_path = None
+        try:
+            resolved, remote_temp_dir = await _ensure_backup_locally(backup)
+            if not resolved:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Backup file not found locally or on any remote storage.",
+                )
+            backup.file_path = resolved
+            if private_key is not None:
+                archive, mode, temp_path = await _get_decrypted_archive_path(
+                    backup, private_key
+                )
+            else:
+                if backup.encrypted:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Cannot browse encrypted backups without private key. Use POST endpoint with your private key.",
+                    )
+                archive, mode = resolved, _get_tar_mode(resolved)
+            return await _list_archive_entries(archive, mode, limit, offset)
+        except tarfile.TarError as exc:
+            raise HTTPException(
+                status_code=500, detail="Failed to read backup archive"
+            ) from exc
+        finally:
+            if temp_path:
+                temp_path.unlink(missing_ok=True)
+            if remote_temp_dir:
+                shutil.rmtree(remote_temp_dir, ignore_errors=True)
+
+
 def _format_file_size(size_bytes: int) -> str:
     """Format size in human readable format."""
     for unit in ["B", "KB", "MB", "GB", "TB"]:
@@ -1165,11 +1050,11 @@ async def _download_key_from_remote(
 
         archive_dir = os.path.dirname(resolved_archive)
         archive_basename = os.path.basename(resolved_archive)
-        key_basename = archive_basename.replace(".enc", ".key")
+        key_basename = key_sidecar_path(archive_basename)
         key_local = os.path.join(archive_dir, key_basename)
 
         for sync in syncs:
-            key_remote = sync.remote_path.replace(".enc", ".key")
+            key_remote = key_sidecar_path(sync.remote_path)
             backend = storage_manager.get_backend(sync.storage_id)
             if not backend:
                 storage = await session.get(RemoteStorage, sync.storage_id)
@@ -1267,11 +1152,11 @@ async def _get_decrypted_archive_path(
 
     # 2. Derive .key path from the resolved archive path (.enc -> .key)
     if not resolved_key:
-        resolved_key = _try_key_candidate(resolved_archive.replace(".enc", ".key"))
+        resolved_key = _try_key_candidate(key_sidecar_path(resolved_archive))
 
     # 3. Derive from the original DB path (handles legacy naming)
     if not resolved_key:
-        potential_key = backup.file_path.replace(".enc", ".key")
+        potential_key = key_sidecar_path(backup.file_path)
         resolved_key = _try_key_candidate(_resolve_backup_path(potential_key))
 
     # 4. Look for .key in the same directory as the resolved archive
@@ -1279,7 +1164,7 @@ async def _get_decrypted_archive_path(
     if not resolved_key:
         archive_dir = os.path.dirname(resolved_archive)
         archive_basename = os.path.basename(resolved_archive)
-        key_basename = archive_basename.replace(".enc", ".key")
+        key_basename = key_sidecar_path(archive_basename)
         resolved_key = _try_key_candidate(os.path.join(archive_dir, key_basename))
 
     # 5. Download .key from remote storage as last resort
@@ -1324,6 +1209,9 @@ async def _get_decrypted_archive_path(
         else:
             detail = "Decryption failed. Is the private key correct?"
         raise HTTPException(status_code=400, detail=detail)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
 
     decrypted_path = str(temp_path)
     mode = _get_tar_mode(decrypted_path)
@@ -1356,7 +1244,13 @@ class BrowseEncryptedRequest(BaseModel):
 
 
 @router.post("/{backup_id}/files", response_model=List[BackupFileInfo])
-async def list_encrypted_backup_files(backup_id: int, body: BrowseEncryptedRequest):
+async def list_encrypted_backup_files(
+    backup_id: int,
+    body: BrowseEncryptedRequest,
+    response: Response,
+    limit: int = Query(default=MAX_ARCHIVE_LISTING, ge=1, le=MAX_ARCHIVE_LISTING),
+    offset: int = Query(default=0, ge=0),
+):
     """List files in an encrypted backup archive using the provided private key."""
     async with async_session() as session:
         result = await session.execute(select(Backup).where(Backup.id == backup_id))
@@ -1374,50 +1268,10 @@ async def list_encrypted_backup_files(backup_id: int, body: BrowseEncryptedReque
                 detail="Backup is not encrypted. Use GET endpoint instead.",
             )
 
-    remote_temp_dir: Path | None = None
-    temp_path: Path | None = None
-    try:
-        resolved_path, remote_temp_dir = await _ensure_backup_locally(backup)
-        if not resolved_path:
-            raise HTTPException(
-                status_code=404,
-                detail="Backup file not found locally or on any remote storage.",
-            )
-        backup.file_path = resolved_path
-
-        archive_path, mode, temp_path = await _get_decrypted_archive_path(
-            backup, body.private_key
-        )
-
-        files: List[BackupFileInfo] = []
-        with tarfile.open(archive_path, mode) as tar:
-            for member in tar.getmembers():
-                files.append(
-                    BackupFileInfo(
-                        name=os.path.basename(member.name) or member.name,
-                        path=member.name,
-                        size=member.size,
-                        size_human=_format_file_size(member.size),
-                        is_dir=member.isdir(),
-                        mode=oct(member.mode)[2:] if member.mode else "0",
-                        mtime=(
-                            datetime.fromtimestamp(member.mtime).isoformat()
-                            if member.mtime
-                            else ""
-                        ),
-                    )
-                )
-
-        return files
-
-    except tarfile.TarError as e:
-        logger.error("Failed to read decrypted archive: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to read backup archive")
-    finally:
-        if temp_path and temp_path.exists():
-            temp_path.unlink(missing_ok=True)
-        if remote_temp_dir:
-            shutil.rmtree(remote_temp_dir, ignore_errors=True)
+    files, total = await _browse_archive(backup, limit, offset, body.private_key)
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Has-More"] = "true" if offset + limit < total else "false"
+    return files
 
 
 @router.post("/{backup_id}/files/{file_path:path}")
@@ -1524,7 +1378,12 @@ async def download_encrypted_backup_file(
 
 
 @router.get("/{backup_id}/files", response_model=List[BackupFileInfo])
-async def list_backup_files(backup_id: int):
+async def list_backup_files(
+    backup_id: int,
+    response: Response,
+    limit: int = Query(default=MAX_ARCHIVE_LISTING, ge=1, le=MAX_ARCHIVE_LISTING),
+    offset: int = Query(default=0, ge=0),
+):
     """List all files in a backup archive.
 
     Returns a flat list of all files and directories in the backup
@@ -1541,53 +1400,10 @@ async def list_backup_files(backup_id: int):
         if backup.status != BackupStatus.COMPLETED:
             raise HTTPException(status_code=400, detail="Backup is not completed")
 
-    remote_temp_dir: Path | None = None
-    try:
-        resolved_path, remote_temp_dir = await _ensure_backup_locally(backup)
-        if not resolved_path:
-            raise HTTPException(
-                status_code=404,
-                detail="Backup file not found locally or on any remote storage.",
-            )
-        backup.file_path = resolved_path
-
-        # Handle encrypted backups
-        archive_path = backup.file_path
-        if backup.encrypted and archive_path.endswith(".enc"):
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot browse encrypted backups without private key. Use POST endpoint with your private key.",
-            )
-
-        mode = _get_tar_mode(archive_path)
-        files: List[BackupFileInfo] = []
-
-        with tarfile.open(archive_path, mode) as tar:
-            for member in tar.getmembers():
-                files.append(
-                    BackupFileInfo(
-                        name=os.path.basename(member.name) or member.name,
-                        path=member.name,
-                        size=member.size,
-                        size_human=_format_file_size(member.size),
-                        is_dir=member.isdir(),
-                        mode=oct(member.mode)[2:] if member.mode else "0",
-                        mtime=(
-                            datetime.fromtimestamp(member.mtime).isoformat()
-                            if member.mtime
-                            else ""
-                        ),
-                    )
-                )
-
-        return files
-
-    except tarfile.TarError as e:
-        logger.error("Failed to read archive: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to read backup archive")
-    finally:
-        if remote_temp_dir:
-            shutil.rmtree(remote_temp_dir, ignore_errors=True)
+    files, total = await _browse_archive(backup, limit, offset)
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Has-More"] = "true" if offset + limit < total else "false"
+    return files
 
 
 @router.get("/{backup_id}/files/{file_path:path}")

@@ -7,7 +7,6 @@ import { useKeyboardShortcuts } from './KeyboardShortcuts'
 import { NotificationBadge, NotificationCenter } from './NotificationCenter'
 import { Dialog, DialogContent, DialogTitle, DialogTrigger, DialogClose } from './ui/dialog'
 import { Button, IconButton } from './ui/button'
-import toast from 'react-hot-toast'
 
 const navigation = [
   { name: 'Overview', href: '/', icon: LayoutDashboard },
@@ -30,6 +29,7 @@ export default function Layout() {
   const section = sections[location.pathname.split('/')[2]]
   const title = current ? section || current.name : 'Page not found'
 
+
   useEffect(() => {
     document.title = `${title} · DockerVault`
     main.current?.focus({ preventScroll: true })
@@ -48,7 +48,7 @@ export default function Layout() {
 
   const account = <div className="shell-account">
     <p className="break-all text-sm text-dark-200">{user?.username || 'Account'}</p>
-    <Button variant="ghost" onClick={async () => { await logout(); toast.success('Logged out successfully') }}><LogOut className="size-4" />Log out</Button>
+    <Button variant="ghost" onClick={() => void logout()}><LogOut className="size-4" />Log out</Button>
   </div>
 
   return <div className="app-shell">

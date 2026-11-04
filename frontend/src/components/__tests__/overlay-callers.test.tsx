@@ -17,6 +17,7 @@ import { NotificationCenter } from '../NotificationCenter'
 import { useKeyboardShortcuts } from '../KeyboardShortcuts'
 import { Modal } from '../ui/dialog'
 import ConfirmDialog from '../ConfirmDialog'
+import RemovalDialog from '../RemovalDialog'
 
 const target: BackupTarget = { id:1,name:'Synthetic plan',target_type:'path',host_path:'/synthetic',enabled:true,dependencies:[],stop_container:false,compression_enabled:true,created_at:'2026-01-01',updated_at:'2026-01-01' }
 const backup: Backup = { id:1,target_id:1,status:'completed',backup_type:'full',created_at:'2026-01-01',file_path:'/synthetic/archive.tar' }
@@ -28,6 +29,8 @@ const cases: [string,(close:()=>void)=>ReactNode][] = [
  ['Restore Backup',close=><RestoreWizard backupId={1} onClose={close}/>],
  ['Browse Local',close=><StorageBrowser storage={{id:'local',name:'Local',storage_type:'local',base_path:'/synthetic'}} onClose={close}/>],
  ['Notifications',close=><NotificationCenter isOpen onClose={close}/>],
+ ['Remove protection plan',close=><RemovalDialog intent={{kind:'plan',targetId:1,name:'Synthetic plan'}} onClose={close} onChanged={()=>{}}/>],
+ ['Delete archive copies',close=><RemovalDialog intent={{kind:'copies',backupId:1,name:'Synthetic archive'}} onClose={close} onChanged={()=>{}}/>],
 ]
 function Harness({ content }: { content: (close:()=>void)=>ReactNode }) {
  const [open,setOpen]=useState(false)
@@ -48,6 +51,7 @@ describe('complete overlay caller contract',()=> {
   const trigger=screen.getByRole('button',{name:'Open fixture'});await user.click(trigger)
   const dialog=await screen.findByRole('dialog',{name:title})
   await waitFor(()=>expect(dialog.contains(document.activeElement)).toBe(true))
+  expect(screen.queryByRole('link',{name:'Background action'})).not.toBeInTheDocument()
   for(let index=0;index<6;index++){await user.tab({shift:index%2===0});await waitFor(()=>expect(dialog.contains(document.activeElement)).toBe(true))}
   await user.keyboard('gb?')
   expect(screen.getByTestId('path')).toHaveTextContent('/')
@@ -55,6 +59,26 @@ describe('complete overlay caller contract',()=> {
   await user.keyboard('{Escape}')
   await waitFor(()=>expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   await waitFor(()=>expect(trigger).toHaveFocus())
+ })
+ it('keeps removal pending focus inside while blocking dismissal until the server responds',async()=> {
+  let release!:()=>void
+  const gate=new Promise<void>(resolve=>{release=resolve})
+  server.use(http.post('/api/v1/backups/removal/preview',async()=>{await gate;return HttpResponse.json({token:'preview',scope:'all',archive_count:0,copy_count:0,items:[],retained:[]})}))
+  const user=userEvent.setup();renderCase(close=><RemovalDialog intent={{kind:'plan',targetId:1,name:'Synthetic plan'}} onClose={close} onChanged={()=>{}}/>)
+  try {
+   await user.click(screen.getByRole('button',{name:'Open fixture'}))
+   await user.click(screen.getByRole('button',{name:'Review exact scope'}))
+   const dialog=screen.getByRole('dialog',{name:'Remove protection plan'})
+   expect(dialog).toHaveAttribute('aria-busy','true')
+   expect(dialog.contains(document.activeElement)).toBe(true)
+   await user.keyboard('{Escape}');await user.tab()
+   expect(dialog).toBeInTheDocument()
+   await waitFor(()=>expect(dialog.contains(document.activeElement)).toBe(true))
+  } finally {release()}
+  await screen.findByRole('button',{name:'Remove plan only — keep recovery points'})
+  await user.keyboard('{Escape}')
+  await waitFor(()=>expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  expect(screen.getByRole('button',{name:'Open fixture'})).toHaveFocus()
  })
  it('escapes only the top nested confirmation, then returns to the parent trigger',async()=> {
   function Nested({close}:{close:()=>void}) {

@@ -21,6 +21,7 @@ from ..database import get_db
 from ..remote_storage import StorageConfig, StorageType, storage_manager
 from ..credential_encryption import decrypt_value, encrypt_value
 from ..config import settings
+from ..storage_validation import storage_errors, stored_storage_errors
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -46,13 +47,13 @@ def _validate_ssh_key_path(path: str) -> str:
 class StorageCreate(BaseModel):
     """Create a new remote storage configuration"""
 
-    name: str
+    name: str = Field(min_length=1, max_length=255)
     storage_type: StorageType
     enabled: bool = True
 
     # Connection settings
     host: Optional[str] = None
-    port: Optional[int] = None
+    port: Optional[int] = Field(default=None, ge=1, le=65535)
     username: Optional[str] = None
     password: Optional[str] = None
 
@@ -79,10 +80,10 @@ class StorageCreate(BaseModel):
 class StorageUpdate(BaseModel):
     """Update remote storage configuration"""
 
-    name: Optional[str] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     enabled: Optional[bool] = None
     host: Optional[str] = None
-    port: Optional[int] = None
+    port: Optional[int] = Field(default=None, ge=1, le=65535)
     username: Optional[str] = None
     password: Optional[str] = None
     base_path: Optional[str] = None
@@ -115,6 +116,7 @@ class StorageResponse(BaseModel):
     rclone_remote: Optional[str]
     created_at: str
     updated_at: str
+    validation_errors: List[str] = []
 
     class Config:
         from_attributes = True
@@ -148,6 +150,7 @@ async def list_storage(db: AsyncSession = Depends(get_db)):
             s3_endpoint_url=s.s3_endpoint_url,
             webdav_url=s.webdav_url,
             rclone_remote=s.rclone_remote,
+            validation_errors=stored_storage_errors(s),
             created_at=s.created_at.isoformat(),
             updated_at=s.updated_at.isoformat(),
         )
@@ -184,8 +187,8 @@ async def list_storage_types():
             "optional": ["s3_region", "s3_endpoint_url", "base_path"],
         },
         "ftp": {
-            "name": "FTP/FTPS",
-            "description": "FTP or FTPS server",
+            "name": "FTP (unencrypted)",
+            "description": "Plain FTP server; use SSH/SFTP for secure transport. FTPS is not supported.",
             "required": ["host", "username", "password", "base_path"],
             "optional": ["port"],
         },
@@ -489,6 +492,12 @@ async def install_ssh_key(name: str, data: SSHKeyInstallRequest):
 @router.post("", response_model=StorageResponse)
 async def create_storage(data: StorageCreate, db: AsyncSession = Depends(get_db)):
     """Create a new remote storage configuration"""
+    errors = storage_errors(data.model_dump())
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Invalid storage configuration", "errors": errors},
+        )
     validated_ssh_key_path = None
     if data.ssh_key_path:
         validated_ssh_key_path = _validate_ssh_key_path(data.ssh_key_path)
@@ -539,6 +548,7 @@ async def create_storage(data: StorageCreate, db: AsyncSession = Depends(get_db)
         s3_endpoint_url=storage.s3_endpoint_url,
         webdav_url=storage.webdav_url,
         rclone_remote=storage.rclone_remote,
+        validation_errors=stored_storage_errors(storage),
         created_at=storage.created_at.isoformat(),
         updated_at=storage.updated_at.isoformat(),
     )
@@ -566,6 +576,7 @@ async def get_storage(storage_id: int, db: AsyncSession = Depends(get_db)):
         s3_endpoint_url=storage.s3_endpoint_url,
         webdav_url=storage.webdav_url,
         rclone_remote=storage.rclone_remote,
+        validation_errors=stored_storage_errors(storage),
         created_at=storage.created_at.isoformat(),
         updated_at=storage.updated_at.isoformat(),
     )
@@ -580,13 +591,29 @@ async def update_storage(
     if not storage:
         raise HTTPException(status_code=404, detail="Storage not found")
 
-    for field, value in data.model_dump(exclude_unset=True).items():
-        if isinstance(value, str) and value == "":
-            continue
+    updates = data.model_dump(exclude_unset=True)
+    # Blank edit credentials mean keep stored secret; null is an explicit clear.
+    updates = {
+        field: value
+        for field, value in updates.items()
+        if not (field in ("password", "s3_access_key", "s3_secret_key") and value == "")
+    }
+    effective = {
+        column.name: getattr(storage, column.name)
+        for column in storage.__table__.columns
+    }
+    errors = storage_errors({**effective, **updates})
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Invalid storage configuration", "errors": errors},
+        )
+    if updates.get("ssh_key_path"):
+        updates["ssh_key_path"] = _validate_ssh_key_path(updates["ssh_key_path"])
+    for field, value in updates.items():
         if field in ("password", "s3_access_key", "s3_secret_key") and value:
             value = encrypt_value(value)
-        if field == "ssh_key_path" and value:
-            value = _validate_ssh_key_path(value)
+
         setattr(storage, field, value)
 
     await db.commit()
@@ -612,6 +639,7 @@ async def update_storage(
         s3_endpoint_url=storage.s3_endpoint_url,
         webdav_url=storage.webdav_url,
         rclone_remote=storage.rclone_remote,
+        validation_errors=stored_storage_errors(storage),
         created_at=storage.created_at.isoformat(),
         updated_at=storage.updated_at.isoformat(),
     )
@@ -624,6 +652,18 @@ async def delete_storage(storage_id: int, db: AsyncSession = Depends(get_db)):
     if not storage:
         raise HTTPException(status_code=404, detail="Storage not found")
 
+    from ..database import BackupStorageSync
+
+    references = await db.execute(
+        select(BackupStorageSync.id)
+        .where(BackupStorageSync.storage_id == storage_id)
+        .limit(1)
+    )
+    if references.first() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Remove backup sync records before deleting their storage configuration",
+        )
     await db.delete(storage)
     await db.commit()
 
@@ -822,7 +862,10 @@ async def list_files(
         backend = storage_manager.add_storage(config)
 
     safe_path = _validate_remote_path(path) if path else path
-    files = await backend.list_files(safe_path)
+    try:
+        files = await backend.list_files(safe_path)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Remote listing failed") from exc
     return {"files": files, "path": safe_path}
 
 
@@ -983,41 +1026,54 @@ async def bulk_download_files(
 async def sync_backup_to_storage(
     storage_id: int, backup_id: int, db: AsyncSession = Depends(get_db)
 ):
-    """Manually sync a specific backup to remote storage"""
-    from pathlib import Path
-
-    from ..database import Backup, BackupTarget
+    """Use the automatic transfer/catalog path without deleting the local copy."""
+    from ..backup_engine import REMOTE_PATH_CONFLICT, backup_engine
+    from ..database import Backup, BackupStatus, BackupTarget
+    from .backups import _resolve_backup_path
 
     storage = await db.get(RemoteStorageModel, storage_id)
     if not storage:
         raise HTTPException(status_code=404, detail="Storage not found")
-
+    if not storage.enabled:
+        raise HTTPException(status_code=409, detail="Storage is disabled")
     backup = await db.get(Backup, backup_id)
     if not backup:
         raise HTTPException(status_code=404, detail="Backup not found")
-
-    if not backup.file_path:
-        raise HTTPException(status_code=400, detail="Backup has no file")
-
+    if backup.status != BackupStatus.COMPLETED:
+        raise HTTPException(
+            status_code=409, detail="Only completed backups can be synced"
+        )
+    resolved = _resolve_backup_path(backup.file_path)
+    if not resolved:
+        raise HTTPException(status_code=400, detail="Local backup file not available")
+    if backup.encrypted and (
+        not backup.encryption_key_path or not Path(backup.encryption_key_path).is_file()
+    ):
+        raise HTTPException(
+            status_code=400, detail="Encryption key sidecar not available"
+        )
     target = await db.get(BackupTarget, backup.target_id)
-
-    backend = storage_manager.get_backend(storage_id)
-    if not backend:
-        config = _db_to_config(storage)
-        backend = storage_manager.add_storage(config)
-
-    local_path = Path(backup.file_path)
-    remote_path = f"{target.name}/{local_path.name}"
-
-    success = await backend.upload(local_path, remote_path)
-
-    if success:
-        return {
-            "message": f"Backup synced to {storage.name}",
-            "remote_path": remote_path,
-        }
-    else:
-        raise HTTPException(status_code=500, detail="Sync failed")
+    if not target:
+        raise HTTPException(status_code=404, detail="Backup target not found")
+    remote_path = (
+        f"{backup_engine._sanitize_path_name(target.name)}/{Path(resolved).name}"
+    )
+    async with backup_engine._get_target_lock(target.id):
+        results = await backup_engine._sync_to_remote(
+            backup_id,
+            target,
+            resolved,
+            backup.encrypted,
+            backup.encryption_key_path,
+            storage_ids=[storage_id],
+        )
+    success, error = results.get(storage_id, (False, "Upload result missing"))
+    if not success:
+        raise HTTPException(
+            status_code=409 if error == REMOTE_PATH_CONFLICT else 502,
+            detail=error or "Sync failed",
+        )
+    return {"message": f"Backup synced to {storage.name}", "remote_path": remote_path}
 
 
 def _db_to_config(storage: RemoteStorageModel) -> StorageConfig:

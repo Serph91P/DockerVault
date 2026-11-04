@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import api from '../api';
+import { clearSession, onSessionExpired } from './session';
+import { onSocketSessionExpired } from './websocket';
 
 interface User {
   id: number;
@@ -14,76 +16,94 @@ interface AuthState {
   isAuthenticated: boolean;
   isLoading: boolean;
   setupRequired: boolean;
-  
-  // Actions
+  statusError: string | null;
+  logoutError: string | null;
   checkAuthStatus: () => Promise<void>;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   setup: (username: string, password: string) => Promise<void>;
 }
 
+let authGeneration = 0;
+
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   isAuthenticated: false,
   isLoading: true,
   setupRequired: false,
-  
+  statusError: null,
+  logoutError: null,
+
   checkAuthStatus: async () => {
-    set({ isLoading: true });
+    const generation = ++authGeneration;
+    set({ isLoading: true, statusError: null });
     try {
       const response = await api.get('/auth/status');
+      if (generation !== authGeneration) return;
       const { authenticated, setup_complete, user } = response.data;
-      
+      if (typeof authenticated !== 'boolean' || typeof setup_complete !== 'boolean') {
+        throw new Error('Invalid authentication status');
+      }
+      if (!authenticated || useAuthStore.getState().user?.id !== user?.id) clearSession(authenticated ? user?.id : undefined);
       set({
         isAuthenticated: authenticated,
-        setupRequired: !setup_complete,
-        user: user || null,
+        setupRequired: setup_complete === false,
+        user: authenticated ? user || null : null,
         isLoading: false,
       });
     } catch {
+      if (generation !== authGeneration) return;
+      clearSession();
       set({
         isAuthenticated: false,
-        setupRequired: true,
+        setupRequired: false,
         user: null,
         isLoading: false,
+        statusError: 'Unable to check authentication status. Please retry.',
       });
     }
   },
-  
-  login: async (username: string, password: string) => {
+
+  login: async (username, password) => {
+    const generation = ++authGeneration;
+    clearSession();
+    set({ user: null, isAuthenticated: false, logoutError: null });
     const response = await api.post('/auth/login', { username, password });
-    const { user } = response.data;
-    
-    set({
-      isAuthenticated: true,
-      user,
-      setupRequired: false,
-    });
+    if (generation !== authGeneration) throw new Error('Session changed');
+    set({ isAuthenticated: true, user: response.data.user, setupRequired: false, statusError: null });
   },
-  
+
   logout: async () => {
+    const generation = ++authGeneration;
+    set({ isAuthenticated: false, user: null, setupRequired: false, isLoading: true, statusError: null, logoutError: null });
+    clearSession();
+    // Local isolation happens immediately, even if server revocation fails.
     try {
       await api.post('/auth/logout');
+    } catch {
+      if (generation === authGeneration) set({ logoutError: 'Local session cleared, but server sign-out could not be confirmed. Retry sign-out before leaving this browser.' });
     } finally {
-      set({
-        isAuthenticated: false,
-        user: null,
-      });
+      if (generation === authGeneration) set({ isLoading: false });
     }
   },
-  
-  setup: async (username: string, password: string) => {
+
+  setup: async (username, password) => {
+    const generation = ++authGeneration;
+    clearSession();
     const response = await api.post('/auth/setup', {
       username,
       password,
       confirm_password: password,
     });
-    const { user } = response.data;
-    
-    set({
-      isAuthenticated: true,
-      user,
-      setupRequired: false,
-    });
+    if (generation !== authGeneration) throw new Error('Session changed');
+    set({ isAuthenticated: true, user: response.data.user, setupRequired: false, statusError: null });
   },
 }));
+
+function expireLocalSession() {
+  ++authGeneration;
+  useAuthStore.setState({ isAuthenticated: false, user: null, setupRequired: false, isLoading: false, statusError: null });
+  clearSession();
+}
+onSessionExpired(expireLocalSession);
+onSocketSessionExpired(expireLocalSession);

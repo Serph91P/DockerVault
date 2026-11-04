@@ -15,6 +15,7 @@ function renderPath(path: string) {
 beforeEach(() => {
   useAuthStore.setState({ isAuthenticated: true, isLoading: false, setupRequired: false, user: { id: 1, username: 'operator', created_at: '', is_admin: true, last_login: null } })
   server.use(http.get('/api/v1/auth/status', () => HttpResponse.json({ setup_complete: true, authenticated: true, user: { id: 1, username: 'operator' } })))
+  server.use(http.get('/api/v1/encryption/status', () => HttpResponse.json({ setup_completed: true, encryption_enabled: true, onboarding_deferred: false })))
 })
 describe('workspace routes', () => {
   it.each([['/protection', 'Protection'], ['/history', 'History & Restore'], ['/protection/schedules', 'Schedules'], ['/protection/retention', 'Retention Policies']])('renders the working destination at %s', async (path, title) => {

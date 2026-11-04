@@ -20,6 +20,9 @@ interface WebSocketStore {
 
 let ws: WebSocket | null = null
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
+let socketGeneration = 0
+let expireSession: () => void = () => undefined
+export function onSocketSessionExpired(handler: () => void) { expireSession = handler }
 
 export const useWebSocketStore = create<WebSocketStore>((set, get) => ({
   connected: false,
@@ -27,7 +30,7 @@ export const useWebSocketStore = create<WebSocketStore>((set, get) => ({
   recentBackups: [],
 
   connect: () => {
-    if (ws?.readyState === WebSocket.OPEN) return
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
     if (typeof window === 'undefined' || !window.location) return
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -37,19 +40,26 @@ export const useWebSocketStore = create<WebSocketStore>((set, get) => ({
     // Instead, the browser automatically sends cookies on same-origin
     // WebSocket connections and the backend reads the cookie directly.
     ws = new WebSocket(`${protocol}//${host}/ws/updates`)
+    const socket = ws
+    const generation = ++socketGeneration
+    const current = () => generation === socketGeneration && ws === socket
 
     ws.onopen = () => {
+      if (!current()) return
       console.log('WebSocket connected')
       set({ connected: true })
     }
 
     ws.onclose = (event) => {
+      if (!current()) return
+      ws = null
       console.log('WebSocket disconnected')
       set({ connected: false })
 
       // 4001 = authentication failure — do not reconnect
       if (event?.code === 4001) {
         console.warn('WebSocket auth failed, not reconnecting')
+        expireSession()
         return
       }
       
@@ -60,10 +70,12 @@ export const useWebSocketStore = create<WebSocketStore>((set, get) => ({
     }
 
     ws.onerror = (error) => {
+      if (!current()) return
       console.error('WebSocket error:', error)
     }
 
     ws.onmessage = (event) => {
+      if (!current()) return
       try {
         const data = JSON.parse(event.data)
         handleMessage(data, set, get)
@@ -74,6 +86,7 @@ export const useWebSocketStore = create<WebSocketStore>((set, get) => ({
   },
 
   disconnect: () => {
+    ++socketGeneration
     if (reconnectTimeout) {
       clearTimeout(reconnectTimeout)
     }
@@ -81,7 +94,7 @@ export const useWebSocketStore = create<WebSocketStore>((set, get) => ({
       ws.close()
       ws = null
     }
-    set({ connected: false })
+    set({ connected: false, backupProgress: new Map(), recentBackups: [] })
   },
 
   updateProgress: (progress) => {
@@ -149,18 +162,6 @@ function handleMessage(
   }
 }
 
-// Auto-connect on import (cancellable for test cleanup)
-let autoConnectTimer: ReturnType<typeof setTimeout> | null = null
-if (typeof window !== 'undefined') {
-  autoConnectTimer = setTimeout(() => {
-    useWebSocketStore.getState().connect()
-  }, 1000)
-}
-
 export function cleanupWebSocket() {
-  if (autoConnectTimer) {
-    clearTimeout(autoConnectTimer)
-    autoConnectTimer = null
-  }
   useWebSocketStore.getState().disconnect()
 }

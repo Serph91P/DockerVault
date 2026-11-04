@@ -1,0 +1,881 @@
+{
+  "policy": "Only these exact current package versions, advisory identities, ranges and severities are temporarily deferred. New/changed high or critical advisories and audit errors fail closed. No dependency was upgraded or security finding declared safe.",
+  "exceptions": {
+    "axios": {
+      "expires": "2026-12-03",
+      "tracking_issue": "https://github.com/Serph91P/DockerVault/issues/178",
+      "reason": "Browser-bundled dependency: Node adapter SSRF/file-protocol paths are not shipped as a service here, but browser-side advisories still represent residual runtime risk. No claim of blanket unreachability; bounded existing-version debt only, tracked for dependency remediation.",
+      "signature": {
+        "severity": "high",
+        "range": "1.0.0 - 1.19.0",
+        "via": [
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-6chq-wfr3-2hj9",
+            "range": ">=1.0.0 <1.15.1",
+            "severity": "high"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-pf86-5x62-jrwf",
+            "range": ">=1.0.0 <1.15.1",
+            "severity": "high"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-pmwg-cvhr-8vh7",
+            "range": ">=1.0.0 <1.15.1",
+            "severity": "high"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-xhjh-pmcv-23jw",
+            "range": ">=1.0.0 <1.15.1",
+            "severity": "low"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-445q-vr5w-6q77",
+            "range": ">=1.0.0 <1.15.1",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-5c9x-8gcm-mpgx",
+            "range": ">=1.0.0 <1.15.1",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-62hf-57xw-28j9",
+            "range": ">=1.0.0 <1.15.1",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-m7pr-hjqh-92cm",
+            "range": ">=1.0.0 <1.15.1",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-vf2m-468p-8v99",
+            "range": ">=1.0.0 <1.15.1",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-w9j2-pvgh-6h63",
+            "range": ">=1.0.0 <1.15.1",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-xx6v-rp6x-q39c",
+            "range": ">=1.0.0 <1.15.1",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-3g43-6gmg-66jw",
+            "range": ">=1.0.0 <1.15.2",
+            "severity": "high"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-q8qp-cvcw-x6jj",
+            "range": ">=1.0.0 <1.15.2",
+            "severity": "high"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-3w6x-2g7m-8v23",
+            "range": ">=1.0.0 <1.15.2",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-35jp-ww65-95wh",
+            "range": ">=1.0.0 <1.16.0",
+            "severity": "high"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-hfxv-24rg-xrqf",
+            "range": ">=1.0.0 <1.16.0",
+            "severity": "high"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-j5f8-grm9-p9fc",
+            "range": ">=1.0.0 <1.16.0",
+            "severity": "high"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-p92q-9vqr-4j8v",
+            "range": ">=1.0.0 <1.16.0",
+            "severity": "high"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-898c-q2cr-xwhg",
+            "range": ">=1.0.0 <1.16.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-42h9-826w-cgv3",
+            "range": ">=1.0.0 <1.18.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-7q8q-rj6j-mhjq",
+            "range": ">=1.0.0 <1.18.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-mmx7-hfxf-jppx",
+            "range": ">=1.0.0 <1.18.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-pmv8-rq9r-6j72",
+            "range": ">=1.0.0 <1.18.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-9fr6-4gfg-395g",
+            "range": ">=1.0.0 <1.20.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-j8rh-479h-cp32",
+            "range": ">=1.0.0 <1.20.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-4hqw-qxg8-jxx2",
+            "range": ">=1.12.0 <1.20.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-mwf2-3pr3-8698",
+            "range": ">=1.13.0 <1.18.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-3pq3-5fj3-cg6v",
+            "range": ">=1.13.0 <1.20.0",
+            "severity": "high"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-542g-h47m-68v8",
+            "range": ">=1.13.0 <1.20.0",
+            "severity": "high"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-pjwm-pj3p-43mv",
+            "range": ">=1.15.0 <1.16.0",
+            "severity": "high"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-f4gw-2p7v-4548",
+            "range": ">=1.15.0 <1.18.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-mghh-pgcx-3jjj",
+            "range": ">=1.15.0 <1.20.0",
+            "severity": "high"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-44g4-m2mj-wpvx",
+            "range": ">=1.15.0 <1.20.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-777c-7fjr-54vf",
+            "range": ">=1.7.0 <1.16.0",
+            "severity": "high"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-jqh4-m9w3-8hp9",
+            "range": ">=1.7.0 <1.18.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "axios",
+            "url": "https://github.com/advisories/GHSA-vh66-26gq-q6x8",
+            "range": ">=1.7.0 <1.20.0",
+            "severity": "moderate"
+          }
+        ],
+        "installed": {
+          "node_modules/axios": "1.15.0"
+        }
+      }
+    },
+    "brace-expansion": {
+      "expires": "2026-12-03",
+      "tracking_issue": "https://github.com/Serph91P/DockerVault/issues/178",
+      "reason": "Existing development/build tool dependency; not executed by the deployed static nginx frontend. CI/build inputs may still exercise it; this is exact-version deferred dependency debt, not a declaration of unreachability or security success.",
+      "signature": {
+        "severity": "high",
+        "range": "<=1.1.20 || 3.0.0 - 5.0.11",
+        "via": [
+          {
+            "name": "brace-expansion",
+            "url": "https://github.com/advisories/GHSA-f886-m6hf-6m8v",
+            "range": "<1.1.13",
+            "severity": "moderate"
+          },
+          {
+            "name": "brace-expansion",
+            "url": "https://github.com/advisories/GHSA-3jxr-9vmj-r5cp",
+            "range": "<1.1.16",
+            "severity": "high"
+          },
+          {
+            "name": "brace-expansion",
+            "url": "https://github.com/advisories/GHSA-mh99-v99m-4gvg",
+            "range": "<1.1.17",
+            "severity": "high"
+          },
+          {
+            "name": "brace-expansion",
+            "url": "https://github.com/advisories/GHSA-rgw5-rvv9-x895",
+            "range": "<1.1.18",
+            "severity": "high"
+          },
+          {
+            "name": "brace-expansion",
+            "url": "https://github.com/advisories/GHSA-6j4f-fj2g-mc7p",
+            "range": "<1.1.19",
+            "severity": "high"
+          },
+          {
+            "name": "brace-expansion",
+            "url": "https://github.com/advisories/GHSA-qhr7-859c-m2p7",
+            "range": "<1.1.20",
+            "severity": "high"
+          },
+          {
+            "name": "brace-expansion",
+            "url": "https://github.com/advisories/GHSA-q2hr-2g5m-vwhr",
+            "range": "<1.1.21",
+            "severity": "moderate"
+          },
+          {
+            "name": "brace-expansion",
+            "url": "https://github.com/advisories/GHSA-3jxr-9vmj-r5cp",
+            "range": ">=3.0.0 <5.0.7",
+            "severity": "high"
+          },
+          {
+            "name": "brace-expansion",
+            "url": "https://github.com/advisories/GHSA-6j4f-fj2g-mc7p",
+            "range": ">=4.0.0 <5.0.10",
+            "severity": "high"
+          },
+          {
+            "name": "brace-expansion",
+            "url": "https://github.com/advisories/GHSA-qhr7-859c-m2p7",
+            "range": ">=4.0.0 <5.0.11",
+            "severity": "high"
+          },
+          {
+            "name": "brace-expansion",
+            "url": "https://github.com/advisories/GHSA-q2hr-2g5m-vwhr",
+            "range": ">=4.0.0 <5.0.12",
+            "severity": "moderate"
+          },
+          {
+            "name": "brace-expansion",
+            "url": "https://github.com/advisories/GHSA-mh99-v99m-4gvg",
+            "range": ">=4.0.0 <5.0.8",
+            "severity": "high"
+          },
+          {
+            "name": "brace-expansion",
+            "url": "https://github.com/advisories/GHSA-rgw5-rvv9-x895",
+            "range": ">=4.0.0 <5.0.9",
+            "severity": "high"
+          },
+          {
+            "name": "brace-expansion",
+            "url": "https://github.com/advisories/GHSA-jxxr-4gwj-5jf2",
+            "range": ">=5.0.0 <5.0.6",
+            "severity": "moderate"
+          }
+        ],
+        "installed": {
+          "node_modules/@typescript-eslint/typescript-estree/node_modules/brace-expansion": "5.0.5",
+          "node_modules/brace-expansion": "1.1.12"
+        }
+      }
+    },
+    "browserslist": {
+      "expires": "2026-12-03",
+      "tracking_issue": "https://github.com/Serph91P/DockerVault/issues/178",
+      "reason": "Existing development/build tool dependency; not executed by the deployed static nginx frontend. CI/build inputs may still exercise it; this is exact-version deferred dependency debt, not a declaration of unreachability or security success.",
+      "signature": {
+        "severity": "high",
+        "range": "<=4.28.6",
+        "via": [
+          {
+            "name": "browserslist",
+            "url": "https://github.com/advisories/GHSA-73wf-gq98-2v4g",
+            "range": "<=4.28.6",
+            "severity": "high"
+          },
+          {
+            "name": "browserslist",
+            "url": "https://github.com/advisories/GHSA-c83g-rgw3-j3cx",
+            "range": "<=4.28.6",
+            "severity": "high"
+          }
+        ],
+        "installed": {
+          "node_modules/browserslist": "4.28.1"
+        }
+      }
+    },
+    "flatted": {
+      "expires": "2026-12-03",
+      "tracking_issue": "https://github.com/Serph91P/DockerVault/issues/178",
+      "reason": "Existing development/build tool dependency; not executed by the deployed static nginx frontend. CI/build inputs may still exercise it; this is exact-version deferred dependency debt, not a declaration of unreachability or security success.",
+      "signature": {
+        "severity": "high",
+        "range": "<=3.4.1",
+        "via": [
+          {
+            "name": "flatted",
+            "url": "https://github.com/advisories/GHSA-25h7-pfq9-p65f",
+            "range": "<3.4.0",
+            "severity": "high"
+          },
+          {
+            "name": "flatted",
+            "url": "https://github.com/advisories/GHSA-rf6f-7fwh-wjgh",
+            "range": "<=3.4.1",
+            "severity": "high"
+          }
+        ],
+        "installed": {
+          "node_modules/flatted": "3.3.4"
+        }
+      }
+    },
+    "form-data": {
+      "expires": "2026-12-03",
+      "tracking_issue": "https://github.com/Serph91P/DockerVault/issues/178",
+      "reason": "Existing transitive Axios Node multipart dependency. DockerVault frontend runs in the browser; no Node multipart server/client is deployed. Build-chain risk remains.",
+      "signature": {
+        "severity": "high",
+        "range": "4.0.0 - 4.0.5",
+        "via": [
+          {
+            "name": "form-data",
+            "url": "https://github.com/advisories/GHSA-hmw2-7cc7-3qxx",
+            "range": ">=4.0.0 <4.0.6",
+            "severity": "high"
+          }
+        ],
+        "installed": {
+          "node_modules/form-data": "4.0.5"
+        }
+      }
+    },
+    "js-yaml": {
+      "expires": "2026-12-03",
+      "tracking_issue": "https://github.com/Serph91P/DockerVault/issues/178",
+      "reason": "Existing development/build tool dependency; not executed by the deployed static nginx frontend. CI/build inputs may still exercise it; this is exact-version deferred dependency debt, not a declaration of unreachability or security success.",
+      "signature": {
+        "severity": "high",
+        "range": "4.0.0 - 4.3.1",
+        "via": [
+          {
+            "name": "js-yaml",
+            "url": "https://github.com/advisories/GHSA-52cp-r559-cp3m",
+            "range": ">=4.0.0 <4.3.0",
+            "severity": "high"
+          },
+          {
+            "name": "js-yaml",
+            "url": "https://github.com/advisories/GHSA-5p4m-2wfm-xmqj",
+            "range": ">=4.0.0 <4.3.1",
+            "severity": "high"
+          },
+          {
+            "name": "js-yaml",
+            "url": "https://github.com/advisories/GHSA-2883-xcg3-v3hh",
+            "range": ">=4.0.0 <4.3.2",
+            "severity": "high"
+          },
+          {
+            "name": "js-yaml",
+            "url": "https://github.com/advisories/GHSA-h67p-54hq-rp68",
+            "range": ">=4.0.0 <=4.1.1",
+            "severity": "moderate"
+          }
+        ],
+        "installed": {
+          "node_modules/js-yaml": "4.1.1"
+        }
+      }
+    },
+    "nanoid": {
+      "expires": "2026-12-03",
+      "tracking_issue": "https://github.com/Serph91P/DockerVault/issues/178",
+      "reason": "Existing development/build tool dependency; not executed by the deployed static nginx frontend. CI/build inputs may still exercise it; this is exact-version deferred dependency debt, not a declaration of unreachability or security success.",
+      "signature": {
+        "severity": "high",
+        "range": "<=3.3.17",
+        "via": [
+          {
+            "name": "nanoid",
+            "url": "https://github.com/advisories/GHSA-xwg4-73v4-xw9w",
+            "range": "<3.3.12",
+            "severity": "high"
+          },
+          {
+            "name": "nanoid",
+            "url": "https://github.com/advisories/GHSA-28wg-ghj8-5hjv",
+            "range": "<3.3.16",
+            "severity": "high"
+          },
+          {
+            "name": "nanoid",
+            "url": "https://github.com/advisories/GHSA-2v37-7h3g-55p8",
+            "range": "<3.3.18",
+            "severity": "high"
+          }
+        ],
+        "installed": {
+          "node_modules/nanoid": "3.3.11"
+        }
+      }
+    },
+    "postcss": {
+      "expires": "2026-12-03",
+      "tracking_issue": "https://github.com/Serph91P/DockerVault/issues/178",
+      "reason": "Existing development/build tool dependency; not executed by the deployed static nginx frontend. CI/build inputs may still exercise it; this is exact-version deferred dependency debt, not a declaration of unreachability or security success.",
+      "signature": {
+        "severity": "high",
+        "range": "<=8.5.22",
+        "via": [
+          {
+            "name": "postcss",
+            "url": "https://github.com/advisories/GHSA-qx2v-qp2m-jg93",
+            "range": "<8.5.10",
+            "severity": "moderate"
+          },
+          {
+            "name": "postcss",
+            "url": "https://github.com/advisories/GHSA-6g55-p6wh-862q",
+            "range": "<=8.5.11",
+            "severity": "high"
+          },
+          {
+            "name": "postcss",
+            "url": "https://github.com/advisories/GHSA-r28c-9q8g-f849",
+            "range": "<=8.5.17",
+            "severity": "high"
+          },
+          {
+            "name": "postcss",
+            "url": "https://github.com/advisories/GHSA-fxqj-rqcc-2cmp",
+            "range": "<=8.5.22",
+            "severity": "moderate"
+          }
+        ],
+        "installed": {
+          "node_modules/postcss": "8.5.9"
+        }
+      }
+    },
+    "react-router": {
+      "expires": "2026-12-03",
+      "tracking_issue": "https://github.com/Serph91P/DockerVault/issues/178",
+      "reason": "Browser bundle uses client routing, not a React Router server/framework. Server-only advisories are not exercised; remaining browser URL/redirect risks are retained explicitly as dependency debt.",
+      "signature": {
+        "severity": "high",
+        "range": "6.0.0 - 7.18.1",
+        "via": [
+          {
+            "name": "react-router",
+            "url": "https://github.com/advisories/GHSA-wrjc-x8rr-h8h6",
+            "range": ">=6.0.0 <7.18.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "react-router",
+            "url": "https://github.com/advisories/GHSA-337j-9hxr-rhxg",
+            "range": ">=6.4.0 <7.18.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "react-router",
+            "url": "https://github.com/advisories/GHSA-2j2x-hqr9-3h42",
+            "range": ">=7.0.0 <7.14.1",
+            "severity": "moderate"
+          },
+          {
+            "name": "react-router",
+            "url": "https://github.com/advisories/GHSA-8x6r-g9mw-2r78",
+            "range": ">=7.0.0 <7.15.0",
+            "severity": "high"
+          },
+          {
+            "name": "react-router",
+            "url": "https://github.com/advisories/GHSA-chx6-hx7r-mcp5",
+            "range": ">=7.0.0 <7.18.0",
+            "severity": "high"
+          },
+          {
+            "name": "react-router",
+            "url": "https://github.com/advisories/GHSA-49rj-9fvp-4h2h",
+            "range": ">=7.0.0 <=7.14.1",
+            "severity": "high"
+          },
+          {
+            "name": "react-router",
+            "url": "https://github.com/advisories/GHSA-h8fp-f39c-q6mh",
+            "range": ">=7.11.0 <7.18.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "react-router",
+            "url": "https://github.com/advisories/GHSA-84g9-w2xq-vcv6",
+            "range": ">=7.12.0 <7.15.1",
+            "severity": "low"
+          },
+          {
+            "name": "react-router",
+            "url": "https://github.com/advisories/GHSA-qwww-vcr4-c8h2",
+            "range": ">=7.12.0 <7.18.2",
+            "severity": "high"
+          }
+        ],
+        "installed": {
+          "node_modules/react-router": "7.14.0"
+        }
+      }
+    },
+    "react-router-dom": {
+      "expires": "2026-12-03",
+      "tracking_issue": "https://github.com/Serph91P/DockerVault/issues/178",
+      "reason": "Existing client-router wrapper inherits react-router advisories. Same browser-only scope and residual runtime risk; no additional advisory or version is allowed.",
+      "signature": {
+        "severity": "high",
+        "range": "7.0.0-pre.0 - 7.14.1",
+        "via": [
+          "react-router"
+        ],
+        "installed": {
+          "node_modules/react-router-dom": "7.14.0"
+        }
+      }
+    },
+    "source-map-js": {
+      "expires": "2026-12-03",
+      "tracking_issue": "https://github.com/Serph91P/DockerVault/issues/178",
+      "reason": "Existing source-map/build dependency. Production nginx serves generated static assets; no Node source-map processing service is deployed. Build-chain risk remains.",
+      "signature": {
+        "severity": "high",
+        "range": "1.0.0 - 1.2.1",
+        "via": [
+          {
+            "name": "source-map-js",
+            "url": "https://github.com/advisories/GHSA-68fv-2mgg-jv7q",
+            "range": ">=1.0.0 <1.2.2",
+            "severity": "high"
+          }
+        ],
+        "installed": {
+          "node_modules/source-map-js": "1.2.1"
+        }
+      }
+    },
+    "undici": {
+      "expires": "2026-12-03",
+      "tracking_issue": "https://github.com/Serph91P/DockerVault/issues/178",
+      "reason": "Existing development/build tool dependency; not executed by the deployed static nginx frontend. CI/build inputs may still exercise it; this is exact-version deferred dependency debt, not a declaration of unreachability or security success.",
+      "signature": {
+        "severity": "high",
+        "range": "7.0.0 - 7.30.0",
+        "via": [
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-vxpw-j846-p89q",
+            "range": ">=7.0.0 <7.28.0",
+            "severity": "high"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-35p6-xmwp-9g52",
+            "range": ">=7.0.0 <7.28.0",
+            "severity": "low"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-g8m3-5g58-fq7m",
+            "range": ">=7.0.0 <7.28.0",
+            "severity": "low"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-p88m-4jfj-68fv",
+            "range": ">=7.0.0 <7.28.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-pr7r-676h-xcf6",
+            "range": ">=7.0.0 <7.28.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-4cwx-7wf7-3272",
+            "range": ">=7.0.0 <7.29.0",
+            "severity": "high"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-8xcm-r25x-g524",
+            "range": ">=7.0.0 <7.29.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-jr45-8vmc-qm54",
+            "range": ">=7.0.0 <7.29.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-m8rv-5g2x-5cg5",
+            "range": ">=7.0.0 <7.29.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-v3r7-h72x-cjcm",
+            "range": ">=7.0.0 <7.29.0",
+            "severity": "moderate"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-rfgv-xxqx-mfg5",
+            "range": ">=7.0.0 <7.29.1",
+            "severity": "high"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-8436-99hf-9mmv",
+            "range": ">=7.0.0 <7.29.1",
+            "severity": "low"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-r53p-7pc4-xj5r",
+            "range": ">=7.0.0 <7.29.1",
+            "severity": "low"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-2jfj-6hjv-fm6j",
+            "range": ">=7.0.0 <7.29.1",
+            "severity": "moderate"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-rx4f-c7p8-82vq",
+            "range": ">=7.0.0 <7.29.1",
+            "severity": "moderate"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-2m5v-pch6-74hx",
+            "range": ">=7.0.0 <7.30.1",
+            "severity": "high"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-4w7w-5xrc-9h26",
+            "range": ">=7.0.0 <7.30.1",
+            "severity": "high"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-qrxm-fqhp-jwvm",
+            "range": ">=7.0.0 <7.30.1",
+            "severity": "high"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-4qv8-2p9j-2685",
+            "range": ">=7.0.0 <7.30.1",
+            "severity": "moderate"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-9fm3-97px-rjf6",
+            "range": ">=7.0.0 <7.30.1",
+            "severity": "moderate"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-2gqq-gqf2-x968",
+            "range": ">=7.1.0 <7.29.1",
+            "severity": "low"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-pmjh-fq2x-6v4x",
+            "range": ">=7.11.0 <7.29.1",
+            "severity": "moderate"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-3xpg-4rpp-hhhm",
+            "range": ">=7.15.0 <7.29.1",
+            "severity": "moderate"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-55wc-3pg8-jfw6",
+            "range": ">=7.15.0 <7.30.1",
+            "severity": "moderate"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-f72v-6w45-q472",
+            "range": ">=7.15.0 <7.30.1",
+            "severity": "moderate"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-xjj6-f33q-929c",
+            "range": ">=7.18.0 <7.30.1",
+            "severity": "high"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-hm92-r4w5-c3mj",
+            "range": ">=7.23.0 <7.28.0",
+            "severity": "high"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-vmh5-mc38-953g",
+            "range": ">=7.23.0 <7.28.0",
+            "severity": "high"
+          },
+          {
+            "name": "undici",
+            "url": "https://github.com/advisories/GHSA-w293-vg96-wgc3",
+            "range": ">=7.24.1 <7.29.1",
+            "severity": "high"
+          }
+        ],
+        "installed": {
+          "node_modules/undici": "7.25.0"
+        }
+      }
+    },
+    "vite": {
+      "expires": "2026-12-03",
+      "tracking_issue": "https://github.com/Serph91P/DockerVault/issues/178",
+      "reason": "Existing development/build tool dependency; not executed by the deployed static nginx frontend. CI/build inputs may still exercise it; this is exact-version deferred dependency debt, not a declaration of unreachability or security success.",
+      "signature": {
+        "severity": "high",
+        "range": "8.0.0 - 8.1.5",
+        "via": [
+          {
+            "name": "vite",
+            "url": "https://github.com/advisories/GHSA-fx2h-pf6j-xcff",
+            "range": ">=8.0.0 <=8.0.15",
+            "severity": "moderate"
+          },
+          {
+            "name": "vite",
+            "url": "https://github.com/advisories/GHSA-v6wh-96g9-6wx3",
+            "range": ">=8.0.0 <=8.0.15",
+            "severity": "moderate"
+          },
+          {
+            "name": "vite",
+            "url": "https://github.com/advisories/GHSA-587h-7wmj-h5pm",
+            "range": ">=8.0.0 <=8.1.5",
+            "severity": "high"
+          },
+          {
+            "name": "vite",
+            "url": "https://github.com/advisories/GHSA-9jrq-w75r-8gcw",
+            "range": ">=8.0.0 <=8.1.5",
+            "severity": "low"
+          },
+          {
+            "name": "vite",
+            "url": "https://github.com/advisories/GHSA-698v-4r3x-3vcv",
+            "range": ">=8.0.0 <=8.1.5",
+            "severity": "moderate"
+          },
+          {
+            "name": "vite",
+            "url": "https://github.com/advisories/GHSA-r825-w8mm-5pxw",
+            "range": ">=8.0.0 <=8.1.5",
+            "severity": "moderate"
+          },
+          {
+            "name": "vite",
+            "url": "https://github.com/advisories/GHSA-rq7h-c2jc-7f22",
+            "range": ">=8.0.0 <=8.1.5",
+            "severity": "moderate"
+          }
+        ],
+        "installed": {
+          "node_modules/vite": "8.0.8"
+        }
+      }
+    },
+    "zod": {
+      "expires": "2026-12-03",
+      "tracking_issue": "https://github.com/Serph91P/DockerVault/issues/178",
+      "reason": "Browser validation library, not a Node HTTP/server workload. Residual crafted-input validation/DoS risk remains; this exception is exact-version debt, not a safety verdict.",
+      "signature": {
+        "severity": "high",
+        "range": "<4.6.6",
+        "via": [
+          {
+            "name": "zod",
+            "url": "https://github.com/advisories/GHSA-mrhx-c7xc-m3w5",
+            "range": "<4.6.6",
+            "severity": "high"
+          }
+        ],
+        "installed": {
+          "node_modules/zod": "4.3.6"
+        }
+      }
+    }
+  }
+}

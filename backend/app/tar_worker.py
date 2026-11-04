@@ -181,8 +181,11 @@ def _add_source_to_tar(
             dirnames.clear()
             continue
 
-        # Add files
-        for filename in filenames:
+        # os.walk lists directory symlinks in dirnames but never visits them.
+        symlink_dirs = [
+            name for name in dirnames if os.path.islink(os.path.join(dirpath, name))
+        ]
+        for filename in filenames + symlink_dirs:
             filepath = os.path.join(dirpath, filename)
             file_rel = os.path.join(rel_dir, filename) if rel_dir else filename
             arcpath = os.path.join(arc_dir, filename)

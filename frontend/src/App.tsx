@@ -10,13 +10,20 @@ import Settings from './pages/Settings'
 import Login from './pages/Login'
 import SetupWizard from './pages/SetupWizard'
 import { useAuthStore } from './store/auth'
+import EncryptionOnboarding from './components/EncryptionOnboarding'
+import { cleanupWebSocket, useWebSocketStore } from './store/websocket'
 
 function App() {
-  const { isAuthenticated, isLoading, setupRequired, checkAuthStatus } = useAuthStore()
+  const { isAuthenticated, isLoading, setupRequired, statusError, user, checkAuthStatus } = useAuthStore()
   
   useEffect(() => {
     checkAuthStatus()
   }, [checkAuthStatus])
+
+  useEffect(() => {
+    if (isAuthenticated) useWebSocketStore.getState().connect()
+    return cleanupWebSocket
+  }, [isAuthenticated, user?.id])
   
   // Loading state
   if (isLoading) {
@@ -30,6 +37,8 @@ function App() {
     )
   }
   
+  if (statusError) return <main className="min-h-screen bg-dark-900 p-6" role="alert">{statusError} <button onClick={() => void checkAuthStatus()}>Retry</button></main>
+
   // Setup required
   if (setupRequired) {
     return <SetupWizard />
@@ -42,6 +51,7 @@ function App() {
   
   // Authenticated - show main app
   return (
+    <EncryptionOnboarding key={user?.id}>
     <Routes>
       <Route path="/" element={<Layout />}>
         <Route index element={<Dashboard />} />
@@ -57,6 +67,7 @@ function App() {
         <Route path="*" element={<section className="space-y-4"><h1 className="text-2xl font-semibold">Page not found</h1><p>This address does not identify an available workspace or resource.</p><Link to="/" className="underline text-primary-300">Return to Overview</Link></section>} />
       </Route>
     </Routes>
+    </EncryptionOnboarding>
   )
 }
 

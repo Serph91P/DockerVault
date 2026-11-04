@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   X,
   RotateCcw,
@@ -14,7 +14,8 @@ import {
   Server,
   ArrowRight,
 } from 'lucide-react'
-import { backupsApi, RestoreInfo } from '../api'
+import api, { RestoreInfo } from '../api'
+import { ownsSession, sessionGeneration, sessionSignal } from '../store/session'
 import { clsx } from 'clsx'
 import toast from 'react-hot-toast'
 
@@ -41,6 +42,9 @@ export default function RestoreWizard({ backupId, onClose }: RestoreWizardProps)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [step, setStep] = useState(0)
+  const [restoring, setRestoring] = useState(false)
+  const busy = useRef(false)
+  const requests = useRef(new AbortController())
   const [state, setState] = useState<RestoreState>({
     destination: 'original',
     targetVolume: '',
@@ -54,10 +58,12 @@ export default function RestoreWizard({ backupId, onClose }: RestoreWizardProps)
 
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
+    requests.current = controller
     async function load() {
       try {
         setLoading(true)
-        const res = await backupsApi.getRestoreInfo(backupId)
+        const res = await api.get<RestoreInfo>(`/backups/${backupId}/restore-info`, { signal: controller.signal })
         if (!cancelled) {
           setInfo(res.data)
           if (res.data.target.target_type === 'volume' && res.data.target.volume_name) {
@@ -72,11 +78,16 @@ export default function RestoreWizard({ backupId, onClose }: RestoreWizardProps)
       }
     }
     load()
-    return () => { cancelled = true }
+    return () => { cancelled = true; controller.abort() }
   }, [backupId])
 
-  const restoreMutation = useMutation({
-    mutationFn: () => {
+  const restore = async () => {
+    if (busy.current) return
+    busy.current = true
+    const owner = sessionGeneration()
+    const signal = AbortSignal.any([requests.current.signal, sessionSignal()])
+    setRestoring(true)
+    try {
       const opts: { target_path?: string; private_key?: string } = {}
       if (state.destination === 'path' && state.targetPath) {
         opts.target_path = state.targetPath
@@ -87,15 +98,24 @@ export default function RestoreWizard({ backupId, onClose }: RestoreWizardProps)
       if (isEncrypted && state.privateKey) {
         opts.private_key = state.privateKey
       }
-      return backupsApi.restore(backupId, opts)
-    },
-    onSuccess: () => {
-      toast.success('Restore started successfully')
+      const result = await api.post(`/backups/${backupId}/restore`, opts, { signal })
+      if (result.data.status !== 'restored') throw new Error('Restore not confirmed')
+      if (!ownsSession(owner) || signal.aborted) return
+      setState(s => ({ ...s, privateKey: '' }))
+      toast.success('Restore completed successfully')
       queryClient.invalidateQueries({ queryKey: ['backups'] })
       onClose()
-    },
-    onError: () => toast.error('Restore failed — check backup logs for details'),
-  })
+    } catch {
+      if (ownsSession(owner) && !signal.aborted) {
+        setState(s => ({ ...s, privateKey: '' }))
+        setStep(isEncrypted ? 1 : 0)
+        toast.error('Restore failed — enter your key again to retry; check backup logs for details')
+      }
+    } finally {
+      busy.current = false
+      if (ownsSession(owner) && !signal.aborted) setRestoring(false)
+    }
+  }
 
   const canProceed = useCallback((): boolean => {
     const currentStepName = steps[step]
@@ -112,7 +132,7 @@ export default function RestoreWizard({ backupId, onClose }: RestoreWizardProps)
 
   const handleNext = () => {
     if (isLastStep) {
-      restoreMutation.mutate()
+      void restore()
     } else {
       setStep((s) => s + 1)
     }
@@ -154,7 +174,7 @@ export default function RestoreWizard({ backupId, onClose }: RestoreWizardProps)
   }
 
   return (
-    <Modal title="Restore Backup" onClose={onClose} pending={restoreMutation.isPending}>
+    <Modal title="Restore Backup" onClose={onClose} pending={restoring}>
       <div
         className="bg-dark-800 border border-dark-600 rounded-xl shadow-2xl w-full max-w-lg mx-4"
         onClick={(e) => e.stopPropagation()}
@@ -165,7 +185,7 @@ export default function RestoreWizard({ backupId, onClose }: RestoreWizardProps)
             <RotateCcw className="w-5 h-5 text-primary-500" />
             <h2 className="text-lg font-semibold text-dark-100">Restore Backup</h2>
           </div>
-          <button onClick={onClose} disabled={restoreMutation.isPending} aria-label="Close restore" className="p-2 text-dark-400 hover:text-dark-200 rounded">
+          <button onClick={onClose} disabled={restoring} aria-label="Close restore" className="p-2 text-dark-400 hover:text-dark-200 rounded">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -213,7 +233,7 @@ export default function RestoreWizard({ backupId, onClose }: RestoreWizardProps)
         <div className="flex items-center justify-between px-6 py-4 border-t border-dark-600">
           <button
             onClick={() => (step === 0 ? onClose() : setStep((s) => s - 1))}
-            disabled={restoreMutation.isPending}
+            disabled={restoring}
             className="flex items-center gap-1 px-4 py-2 text-sm text-dark-300 hover:text-dark-100 transition-colors"
           >
             <ChevronLeft className="w-4 h-4" />
@@ -221,7 +241,7 @@ export default function RestoreWizard({ backupId, onClose }: RestoreWizardProps)
           </button>
           <button
             onClick={handleNext}
-            disabled={!canProceed() || restoreMutation.isPending}
+            disabled={!canProceed() || restoring}
             className={clsx(
               'flex items-center gap-1 px-5 py-2 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
               isLastStep
@@ -229,7 +249,7 @@ export default function RestoreWizard({ backupId, onClose }: RestoreWizardProps)
                 : 'bg-primary-600 hover:bg-primary-500 text-white',
             )}
           >
-            {restoreMutation.isPending ? (
+            {restoring ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
                 Restoring…

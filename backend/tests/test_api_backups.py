@@ -203,13 +203,10 @@ class TestBackupsAPI:
         assert response.status_code == 404
         assert "Backup not found" in response.json()["detail"]
 
-    @patch("os.path.exists")
-    @patch("os.remove")
-    async def test_delete_backup(
-        self, mock_remove, mock_exists, async_client: AsyncClient, db_session
-    ):
+    async def test_delete_backup(self, async_client: AsyncClient, db_session, tmp_path):
         """Test backup deletion."""
-        mock_exists.return_value = True
+        archive = tmp_path / "test.tar.gz"
+        archive.write_bytes(b"synthetic copy")
 
         # Create target and backup
         target = BackupTarget(
@@ -226,7 +223,7 @@ class TestBackupsAPI:
             target_id=target.id,
             backup_type=BackupType.FULL,
             status=BackupStatus.COMPLETED,
-            file_path="/backups/test.tar.gz",
+            file_path=str(archive),
             backup_metadata={"target_name": "test-target"},
         )
         db_session.add(backup)
@@ -235,10 +232,9 @@ class TestBackupsAPI:
 
         response = await async_client.delete(f"/api/v1/backups/{backup.id}")
         assert response.status_code == 200
-        assert response.json()["status"] == "deleted"
+        assert response.json()["status"] == "completed"
 
-        # Verify file deletion was attempted
-        mock_remove.assert_called_once_with("/backups/test.tar.gz")
+        assert not archive.exists()
 
         # Verify backup was removed from database
         response = await async_client.get(f"/api/v1/backups/{backup.id}")
@@ -281,7 +277,7 @@ class TestBackupsAPI:
 
     @patch("app.api.backups.backup_engine")
     async def test_restore_backup_success(
-        self, mock_engine, async_client: AsyncClient, db_session
+        self, mock_engine, async_client: AsyncClient, db_session, tmp_path
     ):
         """Test successful backup restoration."""
         # Create target and backup
@@ -307,6 +303,10 @@ class TestBackupsAPI:
         await db_session.refresh(backup)
 
         # Mock restore operation - must be AsyncMock returning True directly
+        archive = tmp_path / "test.tar.gz"
+        archive.write_bytes(b"owned route fixture")
+        backup.file_path = str(archive)
+        await db_session.commit()
         mock_engine.restore_backup = AsyncMock(return_value=True)
 
         # Send empty JSON body since endpoint expects RestoreBackupRequest
@@ -319,7 +319,9 @@ class TestBackupsAPI:
         assert data["status"] == "restored"
 
         # Verify restore was called with target_path=None and private_key=None
-        mock_engine.restore_backup.assert_called_once_with(backup.id, None, None)
+        mock_engine.restore_backup.assert_called_once_with(
+            backup.id, None, None, archive_path=str(archive), key_path=None
+        )
 
     async def test_restore_backup_path_traversal_prevention(
         self, async_client: AsyncClient, db_session

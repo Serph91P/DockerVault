@@ -1,5 +1,7 @@
 import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import api from '../api'
+import { usePrivateTargetEditor } from './usePrivateTargetEditor'
 import {
   X,
   Save,
@@ -20,7 +22,7 @@ import {
   AlertTriangle,
 } from 'lucide-react'
 import {
-  targetsApi,
+
   schedulesApi,
   retentionApi,
   storageApi,
@@ -46,7 +48,13 @@ const COMPRESSION_OPTIONS = [
 ]
 
 export default function BackupEditDialog({ target, isOpen, onClose }: BackupEditDialogProps) {
+  return isOpen ? <BackupEditForm key={target.id} target={target} isOpen={isOpen} onClose={onClose} /> : null
+}
+
+function BackupEditForm({ target, isOpen, onClose }: BackupEditDialogProps) {
   const queryClient = useQueryClient()
+  const editor = usePrivateTargetEditor(target.id)
+  const handleClose = () => { editor.close(); onClose() }
   const [showAdvanced, setShowAdvanced] = useState(false)
   
   // Helper to create initial form data from target
@@ -60,8 +68,7 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
     compression: target.compression_enabled ? 'gzip' : 'none',
     include_paths: target.include_paths || [],
     exclude_paths: target.exclude_paths || [],
-    pre_backup_command: target.pre_backup_command || '',
-    post_backup_command: target.post_backup_command || '',
+
     stop_container: target.stop_container,
   })
   
@@ -101,36 +108,26 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
     enabled: isOpen,
   })
 
-  // Update mutation
-  const updateMutation = useMutation({
-    mutationFn: (data: Partial<BackupTarget>) => targetsApi.update(target.id, data),
-    onSuccess: () => {
-      toast.success('Backup configuration updated')
-      queryClient.invalidateQueries({ queryKey: ['targets'] })
-      onClose()
-    },
-    onError: (err: Error & { response?: { data?: { detail?: string } } }) => {
-      toast.error(err.response?.data?.detail || 'Failed to update backup')
-    },
-  })
-
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    
-    updateMutation.mutate({
+    void editor.run(async signal => { await api.put(`/targets/${target.id}`, {
       name: formData.name,
       enabled: formData.enabled,
-      schedule_id: formData.schedule_id || undefined,
-      retention_policy_id: formData.retention_policy_id || undefined,
+      schedule_id: formData.schedule_id ?? null,
+      schedule_cron: formData.schedule_id == null ? null : undefined,
+      retention_policy_id: formData.retention_policy_id ?? null,
       compression_enabled: formData.compression !== 'none',
       include_paths: formData.include_paths,
       exclude_paths: formData.exclude_paths,
-      pre_backup_command: formData.pre_backup_command || undefined,
-      post_backup_command: formData.post_backup_command || undefined,
+      ...(editor.loaded ? { pre_backup_command: editor.hooks.pre || null, post_backup_command: editor.hooks.post || null } : {}),
       stop_container: formData.stop_container,
       remote_storage_ids: formData.remote_storage_ids,
       delete_local_after_sync:
         formData.remote_storage_ids.length > 0 ? formData.delete_local_after_sync : false,
+    }, { signal }) }, () => {
+      toast.success('Backup configuration updated')
+      void queryClient.invalidateQueries({ queryKey: ['targets'] })
+      handleClose()
     })
   }
 
@@ -185,7 +182,7 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
   if (!isOpen) return null
 
   return (
-    <Modal title="Edit Backup" onClose={onClose} pending={updateMutation.isPending}>
+    <Modal title="Edit Backup" onClose={handleClose} pending={editor.pending}>
 
       {/* Dialog */}
       <div className="relative bg-dark-800 rounded-2xl border border-dark-700 w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
@@ -198,8 +195,8 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
             </p>
           </div>
           <button
-            onClick={onClose}
-            disabled={updateMutation.isPending}
+            onClick={handleClose}
+            disabled={editor.pending}
             aria-label="Close backup editor"
             className="p-2 text-dark-400 hover:text-dark-200 hover:bg-dark-700 rounded-lg transition-colors"
           >
@@ -209,6 +206,9 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
 
         {/* Content */}
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-6">
+          {editor.saveError && <p role="alert">Could not save backup configuration. Check the current server state before retrying; cancellation does not undo a server change.</p>}
+          {editor.loading && <p role="status">Loading private hook commands…</p>}
+          {editor.loadError && <p role="alert">Could not load hook commands. Existing commands will be preserved. <button type="button" onClick={editor.retry}>Retry hook load</button></p>}
           {/* Name & Status */}
           <div className="grid grid-cols-2 gap-4">
             <TextField label="Name" value={formData.name} onChange={(event) => setFormData((prev) => ({ ...prev, name: event.target.value }))} required />
@@ -574,9 +574,10 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
                 </label>
                 <input
                   type="text"
-                  value={formData.pre_backup_command}
+                  disabled={!editor.loaded || editor.loading || editor.pending}
+                  value={editor.hooks.pre}
                   onChange={(e) =>
-                    setFormData((prev) => ({ ...prev, pre_backup_command: e.target.value }))
+                    editor.setHooks(prev => ({ ...prev, pre: e.target.value }))
                   }
                   placeholder="e.g., docker exec db mysqldump -u root > /backup/dump.sql"
                   className="w-full px-3 py-2 bg-dark-900 border border-dark-600 rounded-lg text-dark-100 focus:outline-none focus:border-primary-500 text-sm font-mono"
@@ -588,9 +589,10 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
                 </label>
                 <input
                   type="text"
-                  value={formData.post_backup_command}
+                  disabled={!editor.loaded || editor.loading || editor.pending}
+                  value={editor.hooks.post}
                   onChange={(e) =>
-                    setFormData((prev) => ({ ...prev, post_backup_command: e.target.value }))
+                    editor.setHooks(prev => ({ ...prev, post: e.target.value }))
                   }
                   placeholder="e.g., rm /backup/dump.sql"
                   className="w-full px-3 py-2 bg-dark-900 border border-dark-600 rounded-lg text-dark-100 focus:outline-none focus:border-primary-500 text-sm font-mono"
@@ -604,18 +606,17 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
         <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-dark-700 bg-dark-850">
           <button
             type="button"
-            onClick={onClose}
-            disabled={updateMutation.isPending}
+            onClick={handleClose}
             className="px-4 py-2 text-dark-300 hover:text-dark-100 transition-colors"
           >
             Cancel
           </button>
           <button
             onClick={handleSubmit}
-            disabled={updateMutation.isPending || !formData.name}
+            disabled={editor.pending || !formData.name}
             className="flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors disabled:opacity-50"
           >
-            {updateMutation.isPending ? (
+            {editor.pending ? (
               <Loader2 className="w-4 h-4 animate-spin" />
             ) : (
               <Save className="w-4 h-4" />

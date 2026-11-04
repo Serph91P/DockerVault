@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 
 from app.config import settings
 from app.database import (
@@ -18,9 +18,28 @@ from app.database import (
     BackupTarget,
     RetentionPolicy,
     async_session,
+    has_remote_copies,
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _known_artifact_paths(session) -> set[str]:
+    rows = await session.execute(
+        select(
+            Backup.file_path,
+            Backup.encryption_key_path,
+            Backup.backup_metadata,
+            Backup.status,
+        )
+    )
+    known = set()
+    for archive, key, metadata, status in rows:
+        paths = [archive, key]
+        if status == BackupStatus.RUNNING and isinstance(metadata, dict):
+            paths.extend(metadata.get("active_artifacts") or [])
+        known.update(str(Path(path).resolve()) for path in paths if path)
+    return known
 
 
 class RetentionManager:
@@ -31,7 +50,12 @@ class RetentionManager:
         Apply retention policy to a target's backups.
         Returns dict with counts of kept and deleted backups.
         """
-        async with async_session() as session:
+        from app.backup_engine import backup_engine
+
+        async with (
+            backup_engine._get_target_lock(target_id),
+            async_session() as session,
+        ):
             # Get target with retention policy
             result = await session.execute(
                 select(BackupTarget).where(BackupTarget.id == target_id)
@@ -40,6 +64,8 @@ class RetentionManager:
 
             if not target:
                 return {"kept": 0, "deleted": 0, "error": "Target not found"}
+            if target.removed_at is not None:
+                return {"kept": 0, "deleted": 0, "error": "Plan removed"}
 
             # Get retention policy
             if target.retention_policy_id:
@@ -82,21 +108,28 @@ class RetentionManager:
             deleted_count = 0
             for backup in to_delete:
                 try:
+                    preserve_remote = await has_remote_copies(session, backup.id)
                     # Delete backup file and encryption key sidecar
                     if backup.file_path and os.path.exists(backup.file_path):
                         os.remove(backup.file_path)
                         logger.info(f"Deleted backup file: {backup.file_path}")
                     # Clean up .key sidecar for encrypted backups
-                    if backup.encryption_key_path and os.path.exists(
-                        backup.encryption_key_path
+                    if (
+                        not preserve_remote
+                        and backup.encryption_key_path
+                        and os.path.exists(backup.encryption_key_path)
                     ):
                         os.remove(backup.encryption_key_path)
                         logger.info(
                             f"Deleted encryption key: {backup.encryption_key_path}"
                         )
 
-                    # Delete record
-                    await session.execute(delete(Backup).where(Backup.id == backup.id))
+                    if preserve_remote:
+                        backup.file_path = None
+                    else:
+                        await session.execute(
+                            delete(Backup).where(Backup.id == backup.id)
+                        )
                     deleted_count += 1
                 except Exception as e:
                     logger.error(f"Failed to delete backup {backup.id}: {e}")
@@ -120,7 +153,8 @@ class RetentionManager:
         now = datetime.now(timezone.utc)
         max_age = now - timedelta(days=policy.max_age_days)
 
-        to_keep = set()
+        # keep_last protects recovery points independently of age/calendar buckets.
+        to_keep = {backup.id for backup in backups[: max(0, policy.keep_last or 0)]}
 
         # Group backups by time periods
         daily: Dict[str, Backup] = {}  # YYYY-MM-DD -> newest backup
@@ -226,31 +260,27 @@ class RetentionManager:
             return {"deleted": 0, "freed_bytes": 0}
 
         async with async_session() as session:
-            # Get all known backup file paths AND encryption key paths
-            result = await session.execute(
-                select(Backup.file_path).where(Backup.file_path.isnot(None))
-            )
-            known_paths = set(row[0] for row in result.fetchall())
-
-            key_result = await session.execute(
-                select(Backup.encryption_key_path).where(
-                    Backup.encryption_key_path.isnot(None)
-                )
-            )
-            known_paths.update(row[0] for row in key_result.fetchall())
+            known_paths = await _known_artifact_paths(session)
 
         deleted = 0
         freed_bytes = 0
 
         # Walk through backup directory
         for file_path in backup_dir.rglob("*.tar*"):
-            if str(file_path) not in known_paths:
+            if str(file_path.resolve()) not in known_paths:
                 try:
-                    size = file_path.stat().st_size
-                    file_path.unlink()
-                    deleted += 1
-                    freed_bytes += size
-                    logger.info(f"Deleted orphaned backup: {file_path}")
+                    async with async_session() as session:
+                        await session.execute(text("BEGIN IMMEDIATE"))
+                        # Inventory can be stale: coordinate the final check with
+                        # writers committing reservations before creating files.
+                        known_paths = await _known_artifact_paths(session)
+                        if str(file_path.resolve()) in known_paths:
+                            continue
+                        size = file_path.stat().st_size
+                        file_path.unlink()
+                        deleted += 1
+                        freed_bytes += size
+                        logger.info(f"Deleted orphaned backup: {file_path}")
                 except Exception as e:
                     logger.error(f"Failed to delete orphaned file {file_path}: {e}")
 

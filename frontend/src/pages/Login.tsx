@@ -1,28 +1,33 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Lock, User, AlertCircle, LogIn } from 'lucide-react';
 import { useAuthStore } from '../store/auth';
-import toast from 'react-hot-toast';
+
 
 export default function Login() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const busy = useRef(false);
+  const logoutError = useAuthStore(state => state.logoutError);
   
   const login = useAuthStore((state) => state.login);
   
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (busy.current) return;
+    busy.current = true;
     setError('');
     setIsLoading(true);
     
     try {
       await login(username, password);
-      toast.success('Login successful');
     } catch (err: unknown) {
       const error = err as { response?: { data?: { detail?: string } } };
       setError(error.response?.data?.detail || 'Login failed');
     } finally {
+      busy.current = false;
+      setPassword('');
       setIsLoading(false);
     }
   };
@@ -41,6 +46,7 @@ export default function Login() {
         
         {/* Login Form */}
         <form onSubmit={handleSubmit} className="bg-dark-800 rounded-xl border border-dark-700 p-6 space-y-6">
+          {logoutError && <div role="alert" className="text-amber-400">{logoutError} <button type="button" onClick={() => void useAuthStore.getState().logout()}>Retry sign-out</button></div>}
           {error && (
             <div className="flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm">
               <AlertCircle className="w-4 h-4 flex-shrink-0" />
@@ -49,12 +55,13 @@ export default function Login() {
           )}
           
           <div>
-            <label className="block text-sm font-medium text-dark-300 mb-2">
+            <label htmlFor="login-username" className="block text-sm font-medium text-dark-300 mb-2">
               Username
             </label>
             <div className="relative">
               <User className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-dark-500" />
               <input
+                id="login-username"
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
@@ -67,12 +74,13 @@ export default function Login() {
           </div>
           
           <div>
-            <label className="block text-sm font-medium text-dark-300 mb-2">
+            <label htmlFor="login-password" className="block text-sm font-medium text-dark-300 mb-2">
               Password
             </label>
             <div className="relative">
               <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-dark-500" />
               <input
+                id="login-password"
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}

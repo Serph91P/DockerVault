@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { ownsSession, sessionGeneration, sessionSignal } from '../store/session';
 import {
   Shield,
   Key,
@@ -18,6 +19,7 @@ import api from '../api';
 interface EncryptionStatus {
   setup_completed: boolean;
   encryption_enabled: boolean;
+  onboarding_deferred?: boolean;
   public_key?: string;
   key_created_at?: string;
 }
@@ -37,62 +39,76 @@ export default function EncryptionSetup() {
   const [showInstructions, setShowInstructions] = useState(false);
   const [showRegenerateWarning, setShowRegenerateWarning] = useState(false);
 
-  const { data: status, isLoading } = useQuery<EncryptionStatus>({
+  const closeCustody = () => {
+    setSetupData(null);
+    setShowSetupModal(false);
+    setDownloadedKey(false);
+    void refetch();
+  };
+
+  const [operation, setOperation] = useState<string | null>(null);
+  const [operationError, setOperationError] = useState('');
+  const busy = useRef(false);
+  const alive = useRef(true);
+  const requests = useRef(new AbortController());
+  useEffect(() => {
+    alive.current = true;
+    requests.current = new AbortController();
+    return () => { alive.current = false; requests.current.abort(); };
+  }, []);
+
+  const { data: status, isLoading, isError, refetch } = useQuery<EncryptionStatus>({
     queryKey: ['encryption-status'],
-    queryFn: async () => {
-      const res = await api.get('/encryption/status');
-      return res.data;
-    },
+    queryFn: async ({ signal }) => (await api.get('/encryption/status', { signal })).data,
+    retry: false,
   });
 
-  const setupMutation = useMutation<SetupResponse, Error, void>({
-    mutationFn: async () => {
-      const res = await api.post('/encryption/setup');
-      return res.data as SetupResponse;
-    },
-    onSuccess: (data: SetupResponse) => {
-      setSetupData(data);
-      setShowSetupModal(true);
-    },
-  });
-
-  const confirmMutation = useMutation({
-    mutationFn: async () => {
-      await api.post('/encryption/confirm-setup', { confirmed: true });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['encryption-status'] });
-      setShowSetupModal(false);
-      setSetupData(null);
-      setDownloadedKey(false);
-    },
-  });
-
-  const toggleMutation = useMutation({
-    mutationFn: async (enabled: boolean) => {
-      await api.post(`/encryption/toggle?enabled=${enabled}`);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['encryption-status'] });
-    },
-  });
-
-  const regenerateMutation = useMutation<SetupResponse, Error, void>({
-    mutationFn: async () => {
-      const res = await api.post('/encryption/regenerate', { confirm_data_loss: true });
-      return res.data as SetupResponse;
-    },
-    onSuccess: (data: SetupResponse) => {
-      setSetupData(data);
-      setShowSetupModal(true);
-      setShowRegenerateWarning(false);
-    },
-  });
+  // One-time responses never enter a Mutation cache (including Axios config/errors).
+  const run = async (kind: string, path: string, body?: unknown) => {
+    if (busy.current) return;
+    if ((kind === 'setup' || kind === 'regenerate') && setupData) return;
+    if (kind === 'setup' && status?.public_key) return;
+    busy.current = true;
+    const owner = sessionGeneration();
+    setOperation(kind);
+    setOperationError('');
+    try {
+      const res = await api.post(path, body, { signal: AbortSignal.any([requests.current.signal, sessionSignal()]) });
+      if (!alive.current || !ownsSession(owner)) return;
+      if (kind === 'setup' || kind === 'regenerate') {
+        setSetupData(res.data as SetupResponse);
+        setDownloadedKey(false);
+        setShowSetupModal(true);
+        setShowRegenerateWarning(false);
+      } else {
+        if (kind === 'confirm') {
+          setSetupData(null);
+          setShowSetupModal(false);
+          setDownloadedKey(false);
+        }
+        await queryClient.invalidateQueries({ queryKey: ['encryption-status'] });
+      }
+    } catch {
+      if (!alive.current || !ownsSession(owner)) return;
+      setOperationError('Encryption request failed. Check the current status before retrying.');
+      // A lost response may have committed a pending public identity. Never replay setup.
+      if (kind === 'setup' || kind === 'regenerate') await refetch();
+    } finally {
+      busy.current = false;
+      if (alive.current && ownsSession(owner)) setOperation(null);
+    }
+  };
+  const setupMutation = { isPending: operation === 'setup', mutate: () => void run('setup', '/encryption/setup') };
+  const regenerateMutation = { isPending: operation === 'regenerate', mutate: () => void run('regenerate', '/encryption/regenerate', { confirm_data_loss: true }) };
+  const confirmMutation = { isPending: operation === 'confirm', mutate: () => void run('confirm', '/encryption/confirm-setup', { confirmed: true }) };
+  const toggleMutation = { isPending: operation === 'toggle', mutate: (enabled: boolean) => void run('toggle', `/encryption/toggle?enabled=${enabled}`) };
 
   const copyToClipboard = async (text: string) => {
-    await navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    const owner = sessionGeneration();
+    try {
+      await navigator.clipboard.writeText(text);
+      if (alive.current && ownsSession(owner)) setCopied(true);
+    } catch { if (alive.current && ownsSession(owner)) setOperationError('Clipboard unavailable. Save the key file instead.'); }
   };
 
   const downloadPrivateKey = () => {
@@ -108,17 +124,21 @@ export default function EncryptionSetup() {
 ${setupData.private_key}
 
 # Recovery Instructions:
-${setupData.recovery_instructions}
+${setupData.recovery_instructions.split('\n').map(line => `# ${line}`).join('\n')}
 `;
     
-    const blob = new Blob([content], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `dockervault-private-key-${Date.now()}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-    setDownloadedKey(true);
+    let url: string | undefined;
+    try {
+      url = URL.createObjectURL(new Blob([content], { type: 'text/plain' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `dockervault-private-key-${Date.now()}.txt`;
+      a.click();
+      setDownloadedKey(true);
+    } catch {
+      setDownloadedKey(false);
+      setOperationError('Export did not start. Retry and verify the saved file before confirming custody.');
+    } finally { if (url) URL.revokeObjectURL(url); }
   };
 
   if (isLoading) {
@@ -129,8 +149,12 @@ ${setupData.recovery_instructions}
     );
   }
 
+  if (isError || !status) return <div role="alert">Unable to load encryption status. <button onClick={() => void refetch()}>Retry</button></div>;
+
   return (
     <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
+      {status.onboarding_deferred && !status.setup_completed && <p className="text-amber-400">Encryption deliberately deferred. New backups are unencrypted.</p>}
+      {operationError && <p role="alert" className="text-red-400">{operationError}</p>}
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
@@ -150,7 +174,7 @@ ${setupData.recovery_instructions}
 
       {/* Status Content */}
       <div>
-        {!status?.setup_completed ? (
+        {!status.setup_completed && !status.public_key ? (
           // Not configured
           <div className="text-center py-8">
             <div className="mx-auto w-16 h-16 bg-amber-500/10 rounded-full flex items-center justify-center mb-4">
@@ -168,7 +192,7 @@ ${setupData.recovery_instructions}
             </p>
             <button
               onClick={() => setupMutation.mutate()}
-              disabled={setupMutation.isPending}
+              disabled={setupMutation.isPending || setupData !== null}
               className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-colors"
             >
               {setupMutation.isPending ? 'Generating Keys...' : 'Set Up Encryption'}
@@ -192,16 +216,16 @@ ${setupData.recovery_instructions}
                 </div>
                 <div>
                   <p className="font-medium text-dark-100">
-                    {status.encryption_enabled ? 'Encryption Enabled' : 'Encryption Disabled'}
+                    {!status.setup_completed ? 'Key custody pending' : status.encryption_enabled ? 'Encryption Enabled' : 'Encryption Disabled'}
                   </p>
                   <p className="text-sm text-dark-400">
-                    {status.encryption_enabled
+                    {!status.setup_completed ? 'This key cannot be retrieved after reload. If it was lost, explicitly regenerate; keep old keys for old archives.' : status.encryption_enabled
                       ? 'New backups will be encrypted'
                       : 'New backups will NOT be encrypted'}
                   </p>
                 </div>
               </div>
-              <button
+              {status.setup_completed && <button
                 onClick={() => toggleMutation.mutate(!status.encryption_enabled)}
                 disabled={toggleMutation.isPending}
                 className={`px-4 py-2 rounded-lg font-medium transition-colors ${
@@ -211,7 +235,7 @@ ${setupData.recovery_instructions}
                 }`}
               >
                 {status.encryption_enabled ? 'Disable' : 'Enable'}
-              </button>
+              </button>}
             </div>
 
             <div className="border-t border-dark-700 pt-4">
@@ -259,14 +283,14 @@ ${setupData.recovery_instructions}
 
       {/* Setup Modal */}
       {showSetupModal && setupData && (
-        <Modal title="Save Your Private Key" onClose={() => {}} pending={confirmMutation.isPending}>
+        <Modal title="Save Your Private Key" onClose={closeCustody} pending={confirmMutation.isPending}>
           <div className="bg-dark-800 border border-dark-700 rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
             <div className="px-6 py-4 border-b border-dark-700">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-indigo-500/10 rounded-lg">
                   <Key className="w-5 h-5 text-indigo-400" />
                 </div>
-                <h2 className="text-lg font-semibold text-dark-100">
+                <h2 id="custody-title" className="text-lg font-semibold text-dark-100">
                   Save Your Private Key
                 </h2>
               </div>
@@ -319,7 +343,7 @@ ${setupData.recovery_instructions}
                 {downloadedKey ? (
                   <>
                     <Check className="w-5 h-5" />
-                    Key Downloaded
+                    Export started — verify your saved file
                   </>
                 ) : (
                   <>
@@ -331,9 +355,11 @@ ${setupData.recovery_instructions}
 
               <div className="border-t border-dark-700 pt-4">
                 <p className="text-sm text-dark-400 mb-4">
-                  The downloaded file includes recovery instructions for restoring backups
+                  Export initiation cannot prove the file was saved. Confirm only after checking your secure copy. The file includes recovery instructions for restoring backups
                   without the DockerVault app.
                 </p>
+                {operationError && <p role="alert" className="text-red-400">{operationError}</p>}
+                <button className="text-dark-300 mb-4" onClick={closeCustody}>Close and clear private key (custody remains incomplete)</button>
                 <button
                   onClick={() => confirmMutation.mutate()}
                   disabled={!downloadedKey || confirmMutation.isPending}
@@ -408,11 +434,14 @@ ${setupData.recovery_instructions}
               {/* Steps */}
               <div>
                 <h3 className="text-sm font-semibold text-dark-200 mb-3">Recovery Steps</h3>
+                <p className="text-sm text-dark-300 mb-3">Run these blocks in the same Bash shell. Save <a href="/recover_backup.py" download className="underline">recover_backup.py</a> with your exported key. It needs Python 3, age and OpenSSL, but no running app or Python packages. New archives are authenticated before plaintext is released; legacy CBC requires an independently trusted checksum.</p>
                 <div className="space-y-4">
                   <div>
                     <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">1.</span> Save your private key to a file:</p>
                     <pre tabIndex={0} className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
-{`cat > private_key.txt << 'EOF'
+{`set -euo pipefail
+umask 077
+cat > private_key.txt << 'EOF'
 AGE-SECRET-KEY-1XXXXXX...
 EOF
 chmod 600 private_key.txt`}
@@ -420,19 +449,17 @@ chmod 600 private_key.txt`}
                   </div>
 
                   <div>
-                    <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">2.</span> Decrypt the DEK (Data Encryption Key):</p>
+                    <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">2.</span> Check your saved recovery script:</p>
                     <pre tabIndex={0} className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
-{`age -d -i private_key.txt backup.tar.gz.key > dek.txt`}
+{`test -f recover_backup.py`}
                     </pre>
                   </div>
 
                   <div>
                     <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">3.</span> Decrypt the backup:</p>
                     <pre tabIndex={0} className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
-{`openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 \\
-    -in backup.tar.gz.enc \\
-    -out backup.tar.gz \\
-    -pass file:dek.txt`}
+{`python3 recover_backup.py --identity private_key.txt --key backup.tar.gz.key \\
+    --archive backup.tar.gz.enc --output backup.tar.gz`}
                     </pre>
                   </div>
 
@@ -446,7 +473,8 @@ chmod 600 private_key.txt`}
                   <div>
                     <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">5.</span> Clean up:</p>
                     <pre tabIndex={0} className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
-{`rm dek.txt  # Don't leave the DEK lying around`}
+{`# The script automatically removes temporary secrets on success or error.
+# Keep your private key secure; delete this working copy when finished.`}
                     </pre>
                   </div>
                 </div>
@@ -458,7 +486,7 @@ chmod 600 private_key.txt`}
                 <ul className="space-y-1 text-sm text-amber-400/80">
                   <li>• Keep your private key secure and backed up separately</li>
                   <li>• Never share your private key</li>
-                  <li>• The encrypted backups are safe to store anywhere</li>
+                  <li>• New archives authenticate ciphertext; legacy CBC has no authenticity guarantee</li>
                   <li>• Each backup has a unique encryption key</li>
                 </ul>
               </div>

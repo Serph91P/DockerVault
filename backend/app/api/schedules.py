@@ -7,13 +7,16 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import AwareDatetime, BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.backup_engine import backup_engine
 from app.database import BackupTarget, Schedule, async_session
 from app.scheduler import BackupScheduler, DisabledBackupTargetError
+from app.api._scheduler import reconcile_after_commit
+from app.config import settings
+from app.cron import CONTRACT, cron_warnings
 
 router = APIRouter()
 
@@ -53,6 +56,7 @@ class ScheduleResponse(BaseModel):
     next_run: Optional[str] = None
     created_at: str
     updated_at: str
+    cron_warnings: List[str] = []
 
 
 class ScheduleWithTargets(ScheduleResponse):
@@ -80,6 +84,58 @@ class EstimateRequest(BaseModel):
     cron_expression: str
 
 
+class PreviewRequest(BaseModel):
+    cron_expression: str
+    base_time: Optional[AwareDatetime] = None
+    count: int = Field(default=3, ge=1, le=10)
+
+
+@router.post("/preview")
+async def preview_cron(data: PreviewRequest):
+    scheduler = BackupScheduler()
+    runs = []
+    base = data.base_time
+    try:
+        for _ in range(data.count):
+            base = scheduler.get_next_run(data.cron_expression, base)
+            runs.append(base.isoformat())
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid cron expression: {exc}")
+    return {
+        "next_runs": runs,
+        "timezone": settings.TZ,
+        "contract": CONTRACT,
+        "warnings": cron_warnings(data.cron_expression),
+    }
+
+
+@router.get("/compatibility/inventory")
+async def cron_inventory():
+    """Expose incompatible/ambiguous stored intent without changing execution."""
+    async with async_session() as session:
+        schedules = (await session.execute(select(Schedule))).scalars().all()
+        targets = (await session.execute(select(BackupTarget))).scalars().all()
+        items = []
+        for kind, rows, field in (
+            ("schedule", schedules, "cron_expression"),
+            ("target_legacy", targets, "schedule_cron"),
+        ):
+            for row in rows:
+                expression = getattr(row, field)
+                warnings = cron_warnings(expression)
+                if warnings:
+                    items.append(
+                        {
+                            "kind": kind,
+                            "id": row.id,
+                            "name": row.name,
+                            "expression": expression,
+                            "warnings": warnings,
+                        }
+                    )
+    return {"contract": CONTRACT, "timezone": settings.TZ, "items": items}
+
+
 # ============================================
 # Schedule CRUD Endpoints
 # ============================================
@@ -90,7 +146,9 @@ async def list_schedules():
     """List all schedules with target counts."""
     async with async_session() as session:
         result = await session.execute(
-            select(Schedule).options(selectinload(Schedule.targets))
+            select(Schedule).options(
+                selectinload(Schedule.targets.and_(BackupTarget.removed_at.is_(None)))
+            )
         )
         schedules = result.scalars().all()
 
@@ -110,6 +168,7 @@ async def list_schedules():
                     id=schedule.id,
                     name=schedule.name,
                     cron_expression=schedule.cron_expression,
+                    cron_warnings=cron_warnings(schedule.cron_expression),
                     description=schedule.description,
                     enabled=schedule.enabled,
                     target_count=len(schedule.targets),
@@ -153,10 +212,11 @@ async def create_schedule(data: ScheduleCreate, request: Request):
         await session.commit()
         await session.refresh(schedule)
 
-        return ScheduleResponse(
+        response = ScheduleResponse(
             id=schedule.id,
             name=schedule.name,
             cron_expression=schedule.cron_expression,
+            cron_warnings=cron_warnings(schedule.cron_expression),
             description=schedule.description,
             enabled=schedule.enabled,
             target_count=0,
@@ -164,16 +224,20 @@ async def create_schedule(data: ScheduleCreate, request: Request):
             created_at=schedule.created_at.isoformat(),
             updated_at=schedule.updated_at.isoformat(),
         )
+    await reconcile_after_commit(request)
+    return response
 
 
-@router.get("/{schedule_id}", response_model=ScheduleWithTargets)
+@router.get("/{schedule_id:int}", response_model=ScheduleWithTargets)
 async def get_schedule(schedule_id: int):
     """Get a specific schedule with its assigned targets."""
     async with async_session() as session:
         result = await session.execute(
             select(Schedule)
             .where(Schedule.id == schedule_id)
-            .options(selectinload(Schedule.targets))
+            .options(
+                selectinload(Schedule.targets.and_(BackupTarget.removed_at.is_(None)))
+            )
         )
         schedule = result.scalar_one_or_none()
 
@@ -202,6 +266,7 @@ async def get_schedule(schedule_id: int):
             id=schedule.id,
             name=schedule.name,
             cron_expression=schedule.cron_expression,
+            cron_warnings=cron_warnings(schedule.cron_expression),
             description=schedule.description,
             enabled=schedule.enabled,
             target_count=len(targets),
@@ -212,14 +277,16 @@ async def get_schedule(schedule_id: int):
         )
 
 
-@router.put("/{schedule_id}", response_model=ScheduleResponse)
+@router.put("/{schedule_id:int}", response_model=ScheduleResponse)
 async def update_schedule(schedule_id: int, data: ScheduleUpdate, request: Request):
     """Update a schedule."""
     async with async_session() as session:
         result = await session.execute(
             select(Schedule)
             .where(Schedule.id == schedule_id)
-            .options(selectinload(Schedule.targets))
+            .options(
+                selectinload(Schedule.targets.and_(BackupTarget.removed_at.is_(None)))
+            )
         )
         schedule = result.scalar_one_or_none()
 
@@ -261,14 +328,6 @@ async def update_schedule(schedule_id: int, data: ScheduleUpdate, request: Reque
         await session.commit()
         await session.refresh(schedule)
 
-        # Update scheduler for all targets using this schedule
-        scheduler: BackupScheduler = request.app.state.scheduler
-        for target in schedule.targets:
-            if schedule.enabled and target.enabled:
-                await scheduler.add_schedule(target)
-            else:
-                await scheduler.remove_schedule(target.id)
-
         scheduler_obj = BackupScheduler()
         next_run = None
         if schedule.cron_expression and schedule.enabled:
@@ -277,10 +336,11 @@ async def update_schedule(schedule_id: int, data: ScheduleUpdate, request: Reque
             except Exception:
                 pass
 
-        return ScheduleResponse(
+        response = ScheduleResponse(
             id=schedule.id,
             name=schedule.name,
             cron_expression=schedule.cron_expression,
+            cron_warnings=cron_warnings(schedule.cron_expression),
             description=schedule.description,
             enabled=schedule.enabled,
             target_count=len(schedule.targets),
@@ -288,15 +348,18 @@ async def update_schedule(schedule_id: int, data: ScheduleUpdate, request: Reque
             created_at=schedule.created_at.isoformat(),
             updated_at=schedule.updated_at.isoformat(),
         )
+    await reconcile_after_commit(request)
+    return response
 
 
-@router.delete("/{schedule_id}")
+@router.delete("/{schedule_id:int}")
 async def delete_schedule(schedule_id: int, request: Request):
     """Delete a schedule. Targets using this schedule will be unlinked."""
     async with async_session() as session:
         result = await session.execute(
             select(Schedule)
             .where(Schedule.id == schedule_id)
+            # Display counts exclude removed plans; relational cleanup must not.
             .options(selectinload(Schedule.targets))
         )
         schedule = result.scalar_one_or_none()
@@ -304,16 +367,23 @@ async def delete_schedule(schedule_id: int, request: Request):
         if not schedule:
             raise HTTPException(status_code=404, detail="Schedule not found")
 
-        # Unlink targets and remove from scheduler
-        scheduler: BackupScheduler = request.app.state.scheduler
+        # Jobs change only after this unlink/delete transaction commits.
+        unlinked_targets = len(schedule.targets)
         for target in schedule.targets:
             target.schedule_id = None
-            await scheduler.remove_schedule(target.id)
 
         await session.delete(schedule)
         await session.commit()
 
-        return {"status": "deleted", "unlinked_targets": len(schedule.targets)}
+    await reconcile_after_commit(request)
+    return {"status": "deleted", "unlinked_targets": unlinked_targets}
+
+
+@router.post("/reload")
+async def reload_schedules(request: Request):
+    """Retry live scheduling from persisted state without another configuration save."""
+    await reconcile_after_commit(request)
+    return {"status": "reloaded"}
 
 
 # ============================================
@@ -328,8 +398,9 @@ async def list_schedules_legacy():
         result = await session.execute(
             select(BackupTarget)
             .where(
+                BackupTarget.removed_at.is_(None),
                 (BackupTarget.schedule_id.isnot(None))
-                | (BackupTarget.schedule_cron.isnot(None))
+                | (BackupTarget.schedule_cron.isnot(None)),
             )
             .options(selectinload(BackupTarget.schedule))
         )
@@ -348,11 +419,15 @@ async def list_schedules_legacy():
             if not cron:
                 continue
 
+            effective_enabled = target.enabled and bool(
+                scheduler._get_target_cron(target)
+            )
             next_run = None
-            try:
-                next_run = scheduler.get_next_run(cron)
-            except Exception:
-                pass
+            if effective_enabled:
+                try:
+                    next_run = scheduler.get_next_run(cron)
+                except Exception:
+                    pass
 
             schedules.append(
                 LegacyScheduleResponse(
@@ -362,7 +437,7 @@ async def list_schedules_legacy():
                     cron_expression=cron,
                     next_run=next_run.isoformat() if next_run else None,
                     last_run=None,
-                    enabled=target.enabled,
+                    enabled=effective_enabled,
                 )
             )
 
@@ -409,26 +484,32 @@ async def trigger_all_backups(schedule_id: int):
     import asyncio
 
     from app.backup_engine import BackupType
-    from app.config import settings as app_settings
+    from app.komodo_config import load_komodo_config
+
+    komodo_config = await load_komodo_config()
 
     async with async_session() as session:
         result = await session.execute(
             select(Schedule)
             .where(Schedule.id == schedule_id)
-            .options(selectinload(Schedule.targets))
+            .options(
+                selectinload(Schedule.targets.and_(BackupTarget.removed_at.is_(None)))
+            )
         )
         schedule = result.scalar_one_or_none()
 
         if not schedule:
             raise HTTPException(status_code=404, detail="Schedule not found")
 
-        enabled_targets = [t for t in schedule.targets if t.enabled]
+        enabled_targets = [
+            t for t in schedule.targets if t.enabled and t.removed_at is None
+        ]
         skipped = [t.id for t in schedule.targets if not t.enabled]
 
         # When Komodo is active, push targets whose stack/container name
         # contains "komodo" to the end so that Komodo keeps running
         # while every other backup goes through its stop/start cycle.
-        if app_settings.KOMODO_ENABLED:
+        if komodo_config.enabled:
 
             def _is_komodo_target(t: BackupTarget) -> bool:
                 name = (t.stack_name or t.container_name or "").lower()
@@ -440,7 +521,11 @@ async def trigger_all_backups(schedule_id: int):
         backup_ids: list[int] = []
         triggered: list[int] = []
         for target in enabled_targets:
-            backup = await backup_engine.create_backup(target, BackupType.FULL)
+            try:
+                backup = await backup_engine.create_backup(target, BackupType.FULL)
+            except ValueError:
+                skipped.append(target.id)
+                continue
             backup_ids.append(backup.id)
             triggered.append(target.id)
 
@@ -486,15 +571,17 @@ async def cron_help():
     """Get help for cron expressions."""
     return {
         "format": "minute hour day month weekday",
+        "contract": CONTRACT,
+        "timezone": settings.TZ,
         "examples": [
             {"expression": "0 2 * * *", "description": "Every day at 2:00 AM"},
-            {"expression": "0 3 * * 0", "description": "Every Sunday at 3:00 AM"},
+            {"expression": "0 3 * * sun", "description": "Every Sunday at 3:00 AM"},
             {
                 "expression": "0 4 1 * *",
                 "description": "First day of every month at 4:00 AM",
             },
             {"expression": "0 */6 * * *", "description": "Every 6 hours"},
-            {"expression": "30 1 * * 1-5", "description": "Weekdays at 1:30 AM"},
+            {"expression": "30 1 * * mon-fri", "description": "Weekdays at 1:30 AM"},
         ],
         "special": {
             "*": "Any value",
