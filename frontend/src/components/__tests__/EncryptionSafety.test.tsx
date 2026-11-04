@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { http, HttpResponse } from 'msw'
@@ -78,7 +78,7 @@ it('clears the one-time key when the keyboard closes the custody dialog', async 
   const user = userEvent.setup()
   await user.click(await screen.findByRole('button', { name: 'Set Up Encryption' }))
   const dialog = await screen.findByRole('dialog', { name: 'Save Your Private Key' })
-  expect(dialog.contains(document.activeElement)).toBe(true)
+  await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
   await user.keyboard('{Escape}')
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   expect(document.body.textContent?.includes(secret)).toBe(false)
