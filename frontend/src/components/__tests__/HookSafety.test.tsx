@@ -189,6 +189,8 @@ for (const wizard of [false, true]) {
     await save()
     await waitFor(() => expect(started).toBe(true))
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(view.close).toHaveBeenCalledOnce()
+    expect(screen.queryByDisplayValue(hooks.pre_backup_command)).not.toBeInTheDocument()
     release()
     await waitFor(() => expect(view.close).toHaveBeenCalledOnce())
     expect(screen.queryByDisplayValue(hooks.pre_backup_command)).not.toBeInTheDocument()

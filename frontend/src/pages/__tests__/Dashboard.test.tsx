@@ -30,7 +30,7 @@ describe('Dashboard Page', () => {
   it('should display dashboard title and description', async () => {
     render(<Dashboard />, { wrapper: createWrapper() })
     
-    expect(screen.getByText('Dashboard')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeInTheDocument()
     expect(screen.getByText('Overview of your Docker backups')).toBeInTheDocument()
   })
 
@@ -361,7 +361,7 @@ describe('Dashboard Page', () => {
     render(<Dashboard />, { wrapper: createWrapper() })
     
     // Check for main heading
-    const mainHeading = screen.getByRole('heading', { level: 1, name: 'Dashboard' })
+    const mainHeading = screen.getByRole('heading', { level: 1, name: 'Overview' })
     expect(mainHeading).toBeInTheDocument()
     
     await waitFor(() => {

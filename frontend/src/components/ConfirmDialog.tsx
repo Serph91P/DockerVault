@@ -1,4 +1,6 @@
 import { AlertTriangle, Loader2 } from 'lucide-react'
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from './ui/dialog'
+import { Button } from './ui/button'
 
 interface ConfirmDialogProps {
   isOpen: boolean
@@ -13,64 +15,23 @@ interface ConfirmDialogProps {
   children?: React.ReactNode
 }
 
-export default function ConfirmDialog({
-  isOpen,
-  onClose,
-  onConfirm,
-  title,
-  message,
-  confirmLabel = 'Confirm',
-  confirmVariant = 'danger',
-  isLoading = false,
-  confirmDisabled = false,
-  children,
-}: ConfirmDialogProps) {
-  if (!isOpen) return null
-
-  const confirmStyles =
-    confirmVariant === 'danger'
-      ? 'bg-red-500 hover:bg-red-600 text-white'
-      : 'bg-primary-500 hover:bg-primary-600 text-white'
-
-  return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-dark-800 rounded-2xl border border-dark-700 w-full max-w-md p-6">
-        <div className="flex items-start gap-4">
-          <div className="p-2 bg-red-500/10 rounded-lg">
-            <AlertTriangle className="w-6 h-6 text-red-400" />
-          </div>
-          <div className="flex-1">
-            <h3 className="text-lg font-semibold text-dark-100">{title}</h3>
-            <p className="text-sm text-dark-400 mt-2">{message}</p>
-            {children && <div className="mt-3">{children}</div>}
-          </div>
-        </div>
-
-        <div className="flex justify-end gap-3 mt-6">
-          <button
-            onClick={onClose}
-            disabled={isLoading}
-            className="px-4 py-2 text-dark-300 hover:text-dark-100 transition-colors disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={onConfirm}
-            disabled={isLoading || confirmDisabled}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors disabled:opacity-50 ${confirmStyles}`}
-          >
-            {isLoading ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Processing...
-              </>
-            ) : (
-              confirmLabel
-            )}
-          </button>
+export default function ConfirmDialog({ isOpen, onClose, onConfirm, title, message, confirmLabel = 'Confirm', confirmVariant = 'danger', isLoading = false, confirmDisabled = false, children }: ConfirmDialogProps) {
+  return <Dialog open={isOpen} onOpenChange={(open, details) => { if (!open) { if (isLoading) details.cancel(); else onClose() } }}>
+    <DialogContent className="w-full max-w-md rounded-xl border border-dark-600 bg-dark-800 p-6" aria-busy={isLoading || undefined}>
+      <div className="flex items-start gap-3">
+        <AlertTriangle className="size-6 shrink-0 text-amber-300" />
+        <div className="min-w-0">
+          <DialogTitle className="text-lg font-semibold text-dark-100">{title}</DialogTitle>
+          <DialogDescription className="mt-2 text-sm text-dark-300">{message}</DialogDescription>
+          {children && <div className="mt-3">{children}</div>}
         </div>
       </div>
-    </div>
-  )
+      <div className="mt-6 flex flex-wrap justify-end gap-3">
+        <Button variant="outline" onClick={onClose} disabled={isLoading}>Cancel</Button>
+        <Button variant={confirmVariant === 'danger' ? 'destructive' : 'default'} onClick={onConfirm} disabled={isLoading || confirmDisabled}>
+          {isLoading ? <><Loader2 className="size-4 animate-spin" />Processing...</> : confirmLabel}
+        </Button>
+      </div>
+    </DialogContent>
+  </Dialog>
 }

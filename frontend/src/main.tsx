@@ -14,7 +14,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       <BrowserRouter>
         <App />
         <Toaster
-          position="top-right"
+          position="bottom-right"
           toastOptions={{
             className: 'bg-dark-800 text-dark-100',
             style: {

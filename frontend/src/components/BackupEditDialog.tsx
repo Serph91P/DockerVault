@@ -6,7 +6,7 @@ import {
   X,
   Save,
   Loader2,
-  Calendar,
+
   Archive,
   Cloud,
   CloudOff,
@@ -182,9 +182,7 @@ function BackupEditForm({ target, isOpen, onClose }: BackupEditDialogProps) {
   if (!isOpen) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={handleClose} />
+    <Modal title="Edit Backup" onClose={handleClose} pending={editor.pending}>
 
       {/* Dialog */}
       <div className="relative bg-dark-800 rounded-2xl border border-dark-700 w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
@@ -198,6 +196,8 @@ function BackupEditForm({ target, isOpen, onClose }: BackupEditDialogProps) {
           </div>
           <button
             onClick={handleClose}
+            disabled={editor.pending}
+            aria-label="Close backup editor"
             className="p-2 text-dark-400 hover:text-dark-200 hover:bg-dark-700 rounded-lg transition-colors"
           >
             <X className="w-5 h-5" />
@@ -211,16 +211,7 @@ function BackupEditForm({ target, isOpen, onClose }: BackupEditDialogProps) {
           {editor.loadError && <p role="alert">Could not load hook commands. Existing commands will be preserved. <button type="button" onClick={editor.retry}>Retry hook load</button></p>}
           {/* Name & Status */}
           <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-dark-300 mb-2">Name</label>
-              <input
-                type="text"
-                value={formData.name}
-                onChange={(e) => setFormData((prev) => ({ ...prev, name: e.target.value }))}
-                className="w-full px-3 py-2 bg-dark-900 border border-dark-600 rounded-lg text-dark-100 focus:outline-none focus:border-primary-500"
-                required
-              />
-            </div>
+            <TextField label="Name" value={formData.name} onChange={(event) => setFormData((prev) => ({ ...prev, name: event.target.value }))} required />
             <div>
               <label className="block text-sm font-medium text-dark-300 mb-2">Status</label>
               <button
@@ -240,24 +231,7 @@ function BackupEditForm({ target, isOpen, onClose }: BackupEditDialogProps) {
 
           {/* Schedule */}
           <div>
-            <label className="flex items-center gap-2 text-sm font-medium text-dark-300 mb-2">
-              <Calendar className="w-4 h-4" />
-              Schedule
-            </label>
-            <select
-              value={formData.schedule_id || ''}
-              onChange={(e) =>
-                setFormData((prev) => ({ ...prev, schedule_id: e.target.value ? parseInt(e.target.value) : null }))
-              }
-              className="w-full px-3 py-2 bg-dark-900 border border-dark-600 rounded-lg text-dark-100 focus:outline-none focus:border-primary-500"
-            >
-              <option value="">No schedule (manual only)</option>
-              {schedules.map((schedule: ScheduleEntity) => (
-                <option key={schedule.id} value={schedule.id}>
-                  {schedule.name} ({schedule.cron_expression})
-                </option>
-              ))}
-            </select>
+            <SearchSelect label="Schedule" value={formData.schedule_id ? String(formData.schedule_id) : ''} onValueChange={(value) => setFormData((prev) => ({ ...prev, schedule_id: value ? Number(value) : null }))} options={[{ value: '', label: 'No schedule (manual only)' }, ...schedules.map((schedule: ScheduleEntity) => ({ value: String(schedule.id), label: `${schedule.name} (${schedule.cron_expression})` }))]} />
           </div>
 
           {/* Retention Policy */}
@@ -267,6 +241,7 @@ function BackupEditForm({ target, isOpen, onClose }: BackupEditDialogProps) {
               Retention Policy
             </label>
             <select
+              aria-label="Retention Policy"
               value={formData.retention_policy_id || ''}
               onChange={(e) =>
                 setFormData((prev) => ({
@@ -474,6 +449,7 @@ function BackupEditForm({ target, isOpen, onClose }: BackupEditDialogProps) {
                     <button
                       type="button"
                       onClick={() => removeIncludePath(path)}
+                      aria-label={`Remove include path ${path}`}
                       className="hover:text-green-300"
                     >
                       <X className="w-3 h-3" />
@@ -520,6 +496,7 @@ function BackupEditForm({ target, isOpen, onClose }: BackupEditDialogProps) {
                     <button
                       type="button"
                       onClick={() => removeExcludePath(path)}
+                      aria-label={`Remove exclude path ${path}`}
                       className="hover:text-orange-300"
                     >
                       <X className="w-3 h-3" />
@@ -648,6 +625,9 @@ function BackupEditForm({ target, isOpen, onClose }: BackupEditDialogProps) {
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }
+import { Modal } from './ui/dialog'
+import { SearchSelect } from './ui/select'
+import { TextField } from './ui/input'

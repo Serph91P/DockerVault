@@ -38,10 +38,7 @@ export default function EncryptionSetup() {
   const [downloadedKey, setDownloadedKey] = useState(false);
   const [showInstructions, setShowInstructions] = useState(false);
   const [showRegenerateWarning, setShowRegenerateWarning] = useState(false);
-  const custodyDialog = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (showSetupModal) custodyDialog.current?.querySelector('button')?.focus();
-  }, [showSetupModal]);
+
   const closeCustody = () => {
     setSetupData(null);
     setShowSetupModal(false);
@@ -234,7 +231,7 @@ ${setupData.recovery_instructions.split('\n').map(line => `# ${line}`).join('\n'
                 className={`px-4 py-2 rounded-lg font-medium transition-colors ${
                   status.encryption_enabled
                     ? 'bg-dark-700 text-dark-300 hover:bg-dark-600'
-                    : 'bg-green-600 text-white hover:bg-green-700'
+                    : 'bg-green-700 text-white hover:bg-green-800'
                 }`}
               >
                 {status.encryption_enabled ? 'Disable' : 'Enable'}
@@ -286,15 +283,8 @@ ${setupData.recovery_instructions.split('\n').map(line => `# ${line}`).join('\n'
 
       {/* Setup Modal */}
       {showSetupModal && setupData && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div ref={custodyDialog} role="dialog" aria-modal="true" aria-labelledby="custody-title" className="bg-dark-800 border border-dark-700 rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto" onKeyDown={event => {
-            if (event.key === 'Escape') { event.preventDefault(); closeCustody(); }
-            if (event.key !== 'Tab') return;
-            const controls = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
-            const first = controls[0], last = controls[controls.length - 1];
-            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-            if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-          }}>
+        <Modal title="Save Your Private Key" onClose={closeCustody} pending={confirmMutation.isPending}>
+          <div className="bg-dark-800 border border-dark-700 rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
             <div className="px-6 py-4 border-b border-dark-700">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-indigo-500/10 rounded-lg">
@@ -373,7 +363,7 @@ ${setupData.recovery_instructions.split('\n').map(line => `# ${line}`).join('\n'
                 <button
                   onClick={() => confirmMutation.mutate()}
                   disabled={!downloadedKey || confirmMutation.isPending}
-                  className="w-full px-4 py-3 bg-green-600 hover:bg-green-700 disabled:bg-dark-700 text-white disabled:text-dark-500 rounded-lg font-medium transition-colors"
+                  className="w-full px-4 py-3 bg-green-700 hover:bg-green-800 disabled:bg-dark-700 text-white disabled:text-dark-500 rounded-lg font-medium transition-colors"
                 >
                   {confirmMutation.isPending
                     ? 'Confirming...'
@@ -387,12 +377,12 @@ ${setupData.recovery_instructions.split('\n').map(line => `# ${line}`).join('\n'
               </div>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
 
       {/* Recovery Instructions Modal */}
       {showInstructions && status?.public_key && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <Modal title="Backup Recovery Instructions" onClose={() => setShowInstructions(false)}>
           <div className="bg-dark-800 border border-dark-700 rounded-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
             <div className="px-6 py-4 border-b border-dark-700 flex items-center justify-between">
               <h2 className="text-lg font-semibold text-dark-100">
@@ -400,6 +390,7 @@ ${setupData.recovery_instructions.split('\n').map(line => `# ${line}`).join('\n'
               </h2>
               <button
                 onClick={() => setShowInstructions(false)}
+                aria-label="Close recovery instructions"
                 className="text-dark-400 hover:text-dark-200"
               >
                 <X className="w-5 h-5" />
@@ -409,7 +400,7 @@ ${setupData.recovery_instructions.split('\n').map(line => `# ${line}`).join('\n'
               {/* Public Key */}
               <div>
                 <h3 className="text-sm font-semibold text-dark-200 mb-2">Your Public Key</h3>
-                <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
+                <pre tabIndex={0} className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
 {status.public_key}
                 </pre>
               </div>
@@ -447,7 +438,7 @@ ${setupData.recovery_instructions.split('\n').map(line => `# ${line}`).join('\n'
                 <div className="space-y-4">
                   <div>
                     <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">1.</span> Save your private key to a file:</p>
-                    <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
+                    <pre tabIndex={0} className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
 {`set -euo pipefail
 umask 077
 cat > private_key.txt << 'EOF'
@@ -459,14 +450,14 @@ chmod 600 private_key.txt`}
 
                   <div>
                     <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">2.</span> Check your saved recovery script:</p>
-                    <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
+                    <pre tabIndex={0} className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
 {`test -f recover_backup.py`}
                     </pre>
                   </div>
 
                   <div>
                     <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">3.</span> Decrypt the backup:</p>
-                    <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
+                    <pre tabIndex={0} className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
 {`python3 recover_backup.py --identity private_key.txt --key backup.tar.gz.key \\
     --archive backup.tar.gz.enc --output backup.tar.gz`}
                     </pre>
@@ -474,14 +465,14 @@ chmod 600 private_key.txt`}
 
                   <div>
                     <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">4.</span> Extract the backup:</p>
-                    <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
+                    <pre tabIndex={0} className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
 {`tar xzf backup.tar.gz`}
                     </pre>
                   </div>
 
                   <div>
                     <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">5.</span> Clean up:</p>
-                    <pre className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
+                    <pre tabIndex={0} className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
 {`# The script automatically removes temporary secrets on success or error.
 # Keep your private key secure; delete this working copy when finished.`}
                     </pre>
@@ -501,12 +492,12 @@ chmod 600 private_key.txt`}
               </div>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
 
       {/* Regenerate Warning Modal */}
       {showRegenerateWarning && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <Modal title="Regenerate Encryption Keys?" onClose={() => setShowRegenerateWarning(false)} pending={regenerateMutation.isPending}>
           <div className="bg-dark-800 border border-dark-700 rounded-xl max-w-md w-full">
             <div className="p-6">
               <div className="flex items-center gap-3 mb-4">
@@ -525,6 +516,7 @@ chmod 600 private_key.txt`}
               <div className="flex gap-3">
                 <button
                   onClick={() => setShowRegenerateWarning(false)}
+                  disabled={regenerateMutation.isPending}
                   className="flex-1 px-4 py-2 bg-dark-700 text-dark-300 rounded-lg font-medium hover:bg-dark-600 transition-colors"
                 >
                   Cancel
@@ -539,8 +531,9 @@ chmod 600 private_key.txt`}
               </div>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   );
 }
+import { Modal } from './ui/dialog'

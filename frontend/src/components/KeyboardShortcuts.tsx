@@ -2,6 +2,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Keyboard, X } from 'lucide-react'
+import { Modal } from './ui/dialog'
 
 const SHORTCUTS = [
   { key: 'g d', description: 'Go to Dashboard' },
@@ -17,8 +18,7 @@ function ShortcutHelp({ isOpen, onClose }: { isOpen: boolean; onClose: () => voi
   if (!isOpen) return null
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+    <Modal title="Keyboard Shortcuts" onClose={onClose}>
       <div className="relative bg-dark-800 rounded-2xl border border-dark-700 shadow-2xl w-full max-w-sm p-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-dark-100 flex items-center gap-2">
@@ -26,6 +26,7 @@ function ShortcutHelp({ isOpen, onClose }: { isOpen: boolean; onClose: () => voi
             Keyboard Shortcuts
           </h2>
           <button
+            aria-label="Close keyboard shortcuts"
             onClick={onClose}
             className="p-1 text-dark-400 hover:text-dark-200 rounded-lg hover:bg-dark-700 transition-colors"
           >
@@ -53,7 +54,7 @@ function ShortcutHelp({ isOpen, onClose }: { isOpen: boolean; onClose: () => voi
           Shortcuts are disabled when typing in input fields.
         </p>
       </div>
-    </div>
+    </Modal>
   )
 }
 
@@ -64,6 +65,10 @@ export function useKeyboardShortcuts() {
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
+      if (document.querySelector('[data-overlay][data-open], [data-overlay][data-ending-style]')) {
+        setPendingPrefix(null)
+        return
+      }
       // Ignore when typing in inputs, textareas, or contenteditable
       const target = e.target as HTMLElement
       if (
@@ -90,15 +95,15 @@ export function useKeyboardShortcuts() {
             return
           case 'b':
             e.preventDefault()
-            navigate('/backups')
+            navigate('/protection')
             return
           case 's':
             e.preventDefault()
-            navigate('/schedules')
+            navigate('/protection/schedules')
             return
           case 'r':
             e.preventDefault()
-            navigate('/retention')
+            navigate('/protection/retention')
             return
           case 'o':
             e.preventDefault()

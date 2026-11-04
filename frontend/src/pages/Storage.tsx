@@ -25,6 +25,7 @@ import api, { RemoteStorage } from '../api';
 import { storageApi, type SSHKeyInfo } from '../api';
 import StorageBrowser from '../components/StorageBrowser';
 import ConfirmDialog from '../components/ConfirmDialog';
+import { Modal } from '../components/ui/dialog';
 import SSHKeyManager from '../components/SSHKeyManager';
 
 interface StorageFormData {
@@ -136,6 +137,7 @@ export default function Storage() {
   const deleteMutation = useMutation({
     mutationFn: (id: number) => api.delete(`/storage/${id}`),
     onSuccess: () => {
+      setConfirmDialog(null);
       queryClient.invalidateQueries({ queryKey: ['storages'] });
     },
   });
@@ -211,6 +213,7 @@ export default function Storage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (formStep !== 3 || createMutation.isPending || updateMutation.isPending) return;
     const data = {
       ...formData,
       port: formData.port ? parseInt(formData.port) : null,
@@ -623,7 +626,7 @@ export default function Storage() {
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Local and Remote Storage</h1>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Storage</h1>
           <p className="text-slate-600 dark:text-slate-400">
             Browse local backups and configure external storage locations
           </p>
@@ -665,9 +668,9 @@ export default function Storage() {
               <HardDrive className="w-6 h-6 text-green-600 dark:text-green-400" />
             </div>
             <div>
-              <h3 className="font-medium text-slate-900 dark:text-white">
+              <h2 className="font-medium text-slate-900 dark:text-white">
                 Local Backups
-              </h3>
+              </h2>
               <p className="text-sm text-slate-500 dark:text-slate-400">
                 Browse the local backup directory
               </p>
@@ -729,7 +732,7 @@ export default function Storage() {
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
-                        <h3 className="font-medium text-slate-900 dark:text-white">{storage.name}</h3>
+                        <h2 className="font-medium text-slate-900 dark:text-white">{storage.name}</h2>
                         {!storage.enabled && (
                           <span className="px-2 py-0.5 text-xs rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-400">
                             Disabled
@@ -737,7 +740,7 @@ export default function Storage() {
                         )}
                       </div>
                       <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-                        <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-700 rounded text-xs">
+                        <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded text-xs">
                           {typeInfo?.label || storage.storage_type}
                         </span>
                         {storage.storage_type === 'ssh' && storage.host && (
@@ -855,14 +858,14 @@ export default function Storage() {
 
       {/* Add/Edit Form Modal - ST1: Step-based */}
       {showForm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <Modal title={editingStorage ? 'Edit Storage' : 'Add New Storage'} onClose={() => setShowForm(false)} pending={createMutation.isPending || updateMutation.isPending}>
           <div className="bg-white dark:bg-slate-800 rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
             {/* Header with step indicator */}
             <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700">
               <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
                 {editingStorage ? 'Edit Storage' : 'Add New Storage'}
               </h2>
-              <div className="flex items-center gap-2 mt-2">
+              <div className="flex flex-wrap items-center gap-2 mt-2">
                 {['Name & Type', 'Connection', 'Review'].map((label, i) => {
                   const step = i + 1;
                   return (
@@ -872,7 +875,7 @@ export default function Storage() {
                           ? 'bg-indigo-500 text-white'
                           : step < formStep
                           ? 'bg-green-500/20 text-green-400'
-                          : 'bg-slate-200 dark:bg-slate-700 text-slate-500'
+                          : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200'
                       }`}>
                         <span>{step}</span>
                         <span>{label}</span>
@@ -1007,6 +1010,7 @@ export default function Storage() {
                     <button
                       type="button"
                       onClick={() => setFormStep(formStep - 1)}
+                      disabled={createMutation.isPending || updateMutation.isPending}
                       className="flex items-center gap-1 px-4 py-2 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
                     >
                       <ChevronLeft className="w-4 h-4" />
@@ -1018,12 +1022,14 @@ export default function Storage() {
                   <button
                     type="button"
                     onClick={resetForm}
+                    disabled={createMutation.isPending || updateMutation.isPending}
                     className="px-4 py-2 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
                   >
                     Cancel
                   </button>
                   {formStep < 3 ? (
                     <button
+                      key="next"
                       type="button"
                       onClick={() => setFormStep(formStep + 1)}
                       disabled={formStep === 1 && !formData.name}
@@ -1034,6 +1040,7 @@ export default function Storage() {
                     </button>
                   ) : (
                     <button
+                      key="confirm"
                       type="submit"
                       disabled={createMutation.isPending || updateMutation.isPending}
                       className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
@@ -1051,17 +1058,16 @@ export default function Storage() {
               </div>
             </form>
           </div>
-        </div>
+        </Modal>
       )}
 
       {/* Confirm Delete Dialog */}
       <ConfirmDialog
         isOpen={!!confirmDialog}
-        onClose={() => setConfirmDialog(null)}
+        onClose={() => { setConfirmDialog(null); deleteMutation.reset(); }}
         onConfirm={() => {
           if (confirmDialog) {
             deleteMutation.mutate(confirmDialog.id);
-            setConfirmDialog(null);
           }
         }}
         title="Delete Storage"
@@ -1069,7 +1075,9 @@ export default function Storage() {
         confirmLabel="Delete"
         confirmVariant="danger"
         isLoading={deleteMutation.isPending}
-      />
+      >
+        {deleteMutation.isError && <p role="alert" className="text-red-300">Failed to delete storage. Retry or cancel.</p>}
+      </ConfirmDialog>
     </div>
   );
 }

@@ -110,7 +110,7 @@ export default function Dashboard() {
       {/* DA2: Quick Actions */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-dark-100">Dashboard</h1>
+          <h1 className="text-2xl font-bold text-dark-100">Overview</h1>
           <p className="text-dark-400 mt-1">Overview of your Docker backups</p>
         </div>
         <Link

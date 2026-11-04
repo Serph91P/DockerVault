@@ -1,5 +1,6 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { backupsApi, targetsApi, RemovalPreview, RemovalResult, RemovalScope } from '../api'
+import { Modal } from './ui/dialog'
 
 export type RemovalIntent = { kind: 'plan' | 'copies'; name: string; targetId?: number; backupId?: number }
 
@@ -11,15 +12,7 @@ export default function RemovalDialog({ intent, onClose, onChanged }: { intent: 
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const pending = useRef(false)
-  const panel = useRef<HTMLDivElement>(null)
-  const titleId = useId()
   const plan = intent.kind === 'plan'
-
-  useEffect(() => {
-    const trigger = document.activeElement as HTMLElement | null
-    panel.current?.querySelector<HTMLButtonElement>('button')?.focus()
-    return () => { if (trigger?.isConnected) trigger.focus() }
-  }, [])
 
   const run = async (action: () => Promise<void>) => {
     if (pending.current) return
@@ -62,18 +55,9 @@ export default function RemovalDialog({ intent, onClose, onChanged }: { intent: 
     onChanged()
   })
 
-  return <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4">
-    <div ref={panel} role="dialog" aria-modal="true" aria-labelledby={titleId} className="bg-dark-800 border border-dark-700 rounded-xl p-6 w-full max-w-2xl max-h-[90dvh] overflow-y-auto" onKeyDown={(event) => {
-      if (event.key === 'Escape' && !pending.current) { event.stopPropagation(); onClose() }
-      if (event.key === 'Tab') {
-        const controls = panel.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled)')
-        if (!controls?.length) return
-        const first = controls[0], last = controls[controls.length - 1]
-        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
-      }
-    }}>
-      <h2 id={titleId} className="text-xl font-semibold">{plan ? 'Remove protection plan' : 'Delete archive copies'}</h2>
+  return <Modal title={plan ? 'Remove protection plan' : 'Delete archive copies'} onClose={onClose} pending={busy}>
+    <div className="bg-dark-800 border border-dark-700 rounded-xl p-6 w-full max-w-2xl max-h-[90dvh] overflow-y-auto">
+      <h2 className="text-xl font-semibold">{plan ? 'Remove protection plan' : 'Delete archive copies'}</h2>
       <p className="my-3">{intent.name}{intent.targetId ? ` · Plan #${intent.targetId}` : ` · Archive #${intent.backupId}`}</p>
       <p>{plan ? 'Stop future automation and retention. All existing archives, keys, logs and local/remote recovery copies will be kept. Restore and browse remain available in retained history.' : 'Permanent deletion cannot be undone. Only the reviewed copies will be removed; later archives are never included.'}</p>
       {!preview && !plan && <fieldset disabled={busy} className="my-4 space-y-2"><legend>Copy scope</legend>
@@ -97,5 +81,5 @@ export default function RemovalDialog({ intent, onClose, onChanged }: { intent: 
       </div>
       {busy && <p role="status">Waiting for authoritative server result…</p>}
     </div>
-  </div>
+  </Modal>
 }

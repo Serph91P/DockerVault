@@ -1,5 +1,6 @@
-import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
-import { createPortal } from 'react-dom'
+import { useState, useMemo, useCallback } from 'react'
+import { Menu, MenuTrigger, MenuContent, MenuItem } from '../components/ui/menu'
+import { ChoiceSelect } from '../components/ui/select'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Archive,
@@ -68,36 +69,6 @@ function BackupRow({
   const [menuOpen, setMenuOpen] = useState(false)
   const [showRestore, setShowRestore] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
-  const menuRef = useRef<HTMLDivElement>(null)
-  const btnRef = useRef<HTMLButtonElement>(null)
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
-
-  // Position dropdown via portal when opened
-  useEffect(() => {
-    if (!menuOpen || !btnRef.current) return
-    const rect = btnRef.current.getBoundingClientRect()
-    setMenuPos({ top: rect.bottom + 4, left: rect.right - 176 })
-  }, [menuOpen])
-
-  // Close menu on outside click or scroll
-  useEffect(() => {
-    if (!menuOpen) return
-    const handleClick = (e: MouseEvent) => {
-      if (
-        menuRef.current && !menuRef.current.contains(e.target as Node) &&
-        btnRef.current && !btnRef.current.contains(e.target as Node)
-      ) {
-        setMenuOpen(false)
-      }
-    }
-    const handleScroll = () => setMenuOpen(false)
-    document.addEventListener('mousedown', handleClick)
-    window.addEventListener('scroll', handleScroll, true)
-    return () => {
-      document.removeEventListener('mousedown', handleClick)
-      window.removeEventListener('scroll', handleScroll, true)
-    }
-  }, [menuOpen])
 
   const retrySyncMutation = useMutation({
     mutationFn: () => backupsApi.retrySync(backup.id),
@@ -224,104 +195,18 @@ function BackupRow({
         </div>
       )}
 
-      {/* Action menu */}
-      <div className="relative">
-        <button
-          ref={btnRef}
-          onClick={(e) => {
-            e.stopPropagation()
-            setMenuOpen(!menuOpen)
-          }}
-          className="p-1.5 text-dark-400 hover:text-dark-200 hover:bg-dark-600 rounded transition-colors"
-          title="Actions"
-        >
-          <MoreVertical className="w-4 h-4" />
-        </button>
-        {menuOpen && createPortal(
-          <div
-            ref={menuRef}
-            className="fixed w-44 bg-dark-700 border border-dark-600 rounded-lg shadow-xl z-50 py-1"
-            style={{ top: menuPos.top, left: menuPos.left }}
-          >
-            {backup.status === 'completed' && (
-              <>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onBrowse(backup)
-                    setMenuOpen(false)
-                  }}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-dark-200 hover:bg-dark-600 transition-colors"
-                >
-                  <FolderOpen className="w-4 h-4" />
-                  Browse files
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setShowRestore(true)
-                    setMenuOpen(false)
-                  }}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-dark-200 hover:bg-dark-600 transition-colors"
-                >
-                  <RotateCcw className="w-4 h-4" />
-                  Restore
-                </button>
-              </>
-            )}
-            {hasSyncFailures && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  retrySyncMutation.mutate()
-                }}
-                disabled={retrySyncMutation.isPending}
-                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-orange-400 hover:bg-dark-600 transition-colors disabled:opacity-50"
-              >
-                <RefreshCw className={clsx('w-4 h-4', retrySyncMutation.isPending && 'animate-spin')} />
-                {retrySyncMutation.isPending ? 'Retrying...' : 'Retry sync'}
-              </button>
-            )}
-            {syncNotStarted && backup.status === 'completed' && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  retrySyncMutation.mutate()
-                }}
-                disabled={retrySyncMutation.isPending}
-                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-yellow-400 hover:bg-dark-600 transition-colors disabled:opacity-50"
-              >
-                <Cloud className={clsx('w-4 h-4', retrySyncMutation.isPending && 'animate-spin')} />
-                {retrySyncMutation.isPending ? 'Syncing...' : 'Sync to remote'}
-              </button>
-            )}
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                setShowLogs(true)
-                setMenuOpen(false)
-              }}
-              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-dark-200 hover:bg-dark-600 transition-colors"
-            >
-              <FileText className="w-4 h-4" />
-              View Logs
-            </button>
-            <div className="border-t border-dark-600 my-1" />
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                onDelete(backup)
-                setMenuOpen(false)
-              }}
-              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-400 hover:bg-dark-600 transition-colors"
-            >
-              <Trash2 className="w-4 h-4" />
-              Delete
-            </button>
-          </div>,
-          document.body
-        )}
-      </div>
+      <Menu open={menuOpen} onOpenChange={setMenuOpen}>
+        <MenuTrigger aria-label="Archive actions" className="p-3 text-dark-300 hover:bg-dark-600 rounded"><MoreVertical className="size-4" /></MenuTrigger>
+        <MenuContent>
+          {backup.status === 'completed' && <>
+            <MenuItem onClick={() => onBrowse(backup)}><FolderOpen className="size-4" />Browse files</MenuItem>
+            <MenuItem onClick={() => setShowRestore(true)}><RotateCcw className="size-4" />Restore</MenuItem>
+          </>}
+          {(hasSyncFailures || syncNotStarted) && <MenuItem disabled={retrySyncMutation.isPending} onClick={() => retrySyncMutation.mutate()}><RefreshCw className="size-4" />{hasSyncFailures ? 'Retry sync' : 'Sync to remote'}</MenuItem>}
+          <MenuItem onClick={() => setShowLogs(true)}><FileText className="size-4" />View Logs</MenuItem>
+          <MenuItem className="text-red-300" onClick={() => onDelete(backup)}><Trash2 className="size-4" />Delete</MenuItem>
+        </MenuContent>
+      </Menu>
 
       {showRestore && (
         <RestoreWizard backupId={backup.id} onClose={() => setShowRestore(false)} />
@@ -399,15 +284,19 @@ function TargetBackupCard({
       <div
         className="p-4 cursor-pointer hover:bg-dark-750 transition-colors"
         onClick={() => setExpanded(!expanded)}
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setExpanded(!expanded) } }}
       >
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
             <div className="w-10 h-10 bg-dark-700 rounded-lg flex items-center justify-center text-xl">
               {getTargetTypeIcon()}
             </div>
-            <div>
+            <div className="min-w-0 break-words">
               <div className="flex items-center gap-2">
-                <h3 className="text-base font-medium text-dark-100">{target.name}</h3>
+                <h2 className="text-base font-medium text-dark-100">{target.name}</h2>
                 {!target.enabled && (
                   <span className="px-1.5 py-0.5 rounded text-xs bg-yellow-500/10 text-yellow-400">
                     Disabled
@@ -423,7 +312,7 @@ function TargetBackupCard({
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             {/* B1: Last Backup Status - more info on collapsed card */}
             {lastBackup ? (
               <div className="flex items-center gap-2 text-sm">
@@ -590,7 +479,7 @@ function TargetBackupCard({
   )
 }
 
-export default function Backups() {
+export default function Backups({ workspace }: { workspace?: 'protection' | 'history' } = {}) {
   const queryClient = useQueryClient()
   const [wizardOpen, setWizardOpen] = useState(false)
   const [browsingBackup, setBrowsingBackup] = useState<Backup | null>(null)
@@ -702,40 +591,16 @@ export default function Backups() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-dark-100">Backups</h1>
+          <h1 className="text-2xl font-bold text-dark-100">{workspace === 'protection' ? 'Protection' : workspace === 'history' ? 'History & Restore' : 'Backups'}</h1>
           <p className="text-dark-400 mt-1">Manage your backup configurations and history</p>
+          {workspace && <p className="mt-2 text-sm text-dark-300">{workspace === 'history' ? 'Expand a plan to browse existing archives, view logs, download or restore. This shared view remains available while the dedicated history workspace is developed.' : 'Existing plans, creation and editing remain available here. Schedules and retention are shared protection policies.'}</p>}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {storages.length > 0 && (
-            <div className="relative group">
-              <button
-                className="flex items-center gap-2 px-3 py-2 bg-dark-800 border border-dark-700 text-dark-200 rounded-lg hover:bg-dark-700 transition-colors"
-                onClick={() => {
-                  if (storages.length === 1) {
-                    setBrowsingStorage(storages[0])
-                  }
-                }}
-              >
-                <Cloud className="w-4 h-4" />
-                Remote Storage
-                {storages.length > 1 && <ChevronDown className="w-3 h-3" />}
-              </button>
-              {storages.length > 1 && (
-                <div className="absolute right-0 mt-1 w-56 bg-dark-800 border border-dark-700 rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-20">
-                  {storages.map((s) => (
-                    <button
-                      key={s.id}
-                      onClick={() => setBrowsingStorage(s)}
-                      className="w-full text-left px-4 py-2.5 text-sm text-dark-200 hover:bg-dark-700 first:rounded-t-lg last:rounded-b-lg transition-colors flex items-center gap-2"
-                    >
-                      <Cloud className="w-3.5 h-3.5 text-dark-400" />
-                      {s.name}
-                      <span className="text-xs text-dark-500 ml-auto capitalize">{s.storage_type}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            <Menu>
+              <MenuTrigger className="flex min-h-11 items-center gap-2 rounded-lg border border-dark-600 bg-dark-800 px-3 py-2 text-dark-200"><Cloud className="size-4" />Remote Storage<ChevronDown className="size-4" /></MenuTrigger>
+              <MenuContent>{storages.map((storage) => <MenuItem key={storage.id} onClick={() => setBrowsingStorage(storage)}><Cloud className="size-4" />{storage.name}<span className="text-dark-300">{storage.storage_type}</span></MenuItem>)}</MenuContent>
+            </Menu>
           )}
           <button
             onClick={() => setWizardOpen(true)}
@@ -748,7 +613,7 @@ export default function Backups() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <button
           onClick={() => setStatsFilter(statsFilter === 'active' ? null : 'active')}
           className={`bg-dark-800 rounded-xl border p-4 text-left transition-colors ${
@@ -784,8 +649,8 @@ export default function Backups() {
 
       {/* Search & Filter Bar */}
       {targets && targets.length > 0 && (
-        <div className="flex items-center gap-3">
-          <div className="relative flex-1">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative min-w-40 flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-dark-500" />
             <input
               type="text"
@@ -825,16 +690,7 @@ export default function Backups() {
           </div>
           <div className="flex items-center gap-1.5">
             <ArrowUpDown className="w-3.5 h-3.5 text-dark-500" />
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
-              className="bg-dark-800 border border-dark-700 rounded-lg text-dark-300 text-xs py-1.5 px-2 focus:border-primary-500 focus:ring-1 focus:ring-primary-500 cursor-pointer"
-            >
-              <option value="name">Name</option>
-              <option value="type">Type</option>
-              <option value="last-backup">Last Backup</option>
-              <option value="created">Newest First</option>
-            </select>
+            <ChoiceSelect label="Sort plans" value={sortBy} onValueChange={setSortBy} options={[{ value: 'name', label: 'Name' }, { value: 'type', label: 'Type' }, { value: 'last-backup', label: 'Last Backup' }, { value: 'created', label: 'Newest First' }]} />
           </div>
         </div>
       )}

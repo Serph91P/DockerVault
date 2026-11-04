@@ -81,6 +81,7 @@ function SearchableList({ items, selectedId, onSelect, placeholder, emptyMessage
         {search && (
           <button
             onClick={() => setSearch('')}
+            aria-label="Clear resource search"
             className="absolute right-2 top-1/2 -translate-y-1/2 text-dark-500 hover:text-dark-300"
           >
             <X className="w-4 h-4" />
