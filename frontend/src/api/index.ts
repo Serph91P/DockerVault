@@ -368,15 +368,17 @@ export const storageApi = {
   delete: (id: number) => api.delete(`/storage/${id}`),
   test: (id: number) => api.post(`/storage/${id}/test`),
   getTypes: () => api.get('/storage/types'),
-  listFiles: (id: number, path?: string) => api.get(`/storage/${id}/files`, { params: { path: path || '' } }),
+  listFiles: (id: number, path?: string, signal?: AbortSignal) => api.get(`/storage/${id}/files`, { params: { path: path || '' }, signal }),
+  directorySize: (id: number | 'local', path: string, signal?: AbortSignal) =>
+    api.get<{ path: string; state: 'completed' | 'unavailable'; bytes: number | null }>(`/storage/${id}/files/size`, { params: { path }, signal }),
   deleteFile: (id: number, path: string) => api.delete(`/storage/${id}/files`, { params: { path } }),
   bulkDeleteFiles: (id: number, paths: string[]) =>
     api.post(`/storage/${id}/files/bulk-delete`, { paths }),
   bulkDownloadFiles: (id: number, paths: string[]) =>
     api.post(`/storage/${id}/files/bulk-download`, { paths }, { responseType: 'blob' }),
   // Local backup files
-  listLocalFiles: (path?: string) =>
-    api.get('/storage/local/files', { params: { path: path || '' } }),
+  listLocalFiles: (path?: string, signal?: AbortSignal) =>
+    api.get('/storage/local/files', { params: { path: path || '' }, signal }),
   deleteLocalFile: (path: string) =>
     api.delete('/storage/local/files', { params: { path } }),
   bulkDeleteLocalFiles: (paths: string[]) =>

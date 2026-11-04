@@ -214,34 +214,40 @@ class LocalStorage(StorageBackend):
             logger.error(f"Local download failed: {e}")
             return False
 
-    async def delete(self, remote_path: str) -> bool:
+    async def delete_result(
+        self, remote_path: str, *, missing_ok=False, allow_directories=True
+    ):
+        from .storage_operations import delete_local_target, directory_sizes
+
         try:
-            path = self._safe_resolve(remote_path)
-            if path.exists():
-                path.unlink()
-            return True
-        except Exception as e:
-            logger.error(f"Local delete failed: {e}")
-            return False
+            return await _await_io_settled(
+                asyncio.to_thread(
+                    delete_local_target,
+                    Path(self.config.base_path),
+                    remote_path,
+                    missing_ok=missing_ok,
+                    allow_directories=allow_directories,
+                )
+            )
+        finally:
+            directory_sizes.invalidate(Path(self.config.base_path))
+
+    async def delete(self, remote_path: str) -> bool:
+        # Internal archive cleanup is intentionally idempotent; browser deletes are not.
+        return (
+            await self.delete_result(
+                remote_path, missing_ok=True, allow_directories=False
+            )
+        ).success
 
     async def list_files(self, remote_path: str = "") -> List[Dict[str, Any]]:
-        try:
-            path = self._safe_resolve(remote_path)
-            files = []
-            if path.exists():
-                for f in path.iterdir():
-                    files.append(
-                        {
-                            "name": f.name,
-                            "size": f.stat().st_size if f.is_file() else 0,
-                            "is_dir": f.is_dir(),
-                            "modified": f.stat().st_mtime,
-                        }
-                    )
-            return files
-        except Exception as e:
-            logger.error(f"Local list failed: {e}")
-            return []
+        from .storage_operations import list_local_files
+
+        return await _await_io_settled(
+            asyncio.to_thread(
+                list_local_files, Path(self.config.base_path), remote_path
+            )
+        )
 
     async def test_connection(self) -> Dict[str, Any]:
         path = Path(self.config.base_path)
