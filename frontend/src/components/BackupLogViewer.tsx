@@ -1,11 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { queryKeys } from '../api/queryKeys'
+import { QueryFeedback } from './QueryFeedback'
 import {
   X,
   CheckCircle,
-  AlertTriangle,
+
   XCircle,
   Info,
-  Loader2,
+
   FileText,
   StopCircle,
   Archive,
@@ -15,7 +17,7 @@ import {
   Zap,
   Terminal,
 } from 'lucide-react'
-import { backupsApi, type BackupLogEntry } from '../api'
+import { backupsApi } from '../api'
 
 const STEP_META: Record<string, { label: string; icon: React.ElementType }> = {
   start: { label: 'Start', icon: Play },
@@ -45,29 +47,8 @@ interface Props {
 }
 
 export default function BackupLogViewer({ backupId, onClose }: Props) {
-  const [logs, setLogs] = useState<BackupLogEntry[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    const load = async () => {
-      try {
-        setLoading(true)
-        const res = await backupsApi.getLogs(backupId)
-        if (!cancelled) {
-          setLogs(res.data)
-          setError(null)
-        }
-      } catch {
-        if (!cancelled) setError('Failed to load logs')
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-    load()
-    return () => { cancelled = true }
-  }, [backupId])
+  const query = useQuery({ queryKey: queryKeys.backups.logs(backupId), queryFn: () => backupsApi.getLogs(backupId).then(response => response.data), retry: false })
+  const { data: logs = [] } = query
 
   const formatTime = (iso: string) => {
     const d = new Date(iso)
@@ -94,28 +75,15 @@ export default function BackupLogViewer({ backupId, onClose }: Props) {
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-5 py-4">
-          {loading && (
-            <div className="flex items-center justify-center py-12 text-dark-400">
-              <Loader2 size={24} className="animate-spin mr-2" />
-              Loading logs...
-            </div>
-          )}
-
-          {error && (
-            <div className="flex items-center justify-center py-12 text-red-400">
-              <AlertTriangle size={20} className="mr-2" />
-              {error}
-            </div>
-          )}
-
-          {!loading && !error && logs.length === 0 && (
+          <QueryFeedback name="Run logs" query={query} />
+          {query.isSuccess && logs.length === 0 && (
             <div className="flex items-center justify-center py-12 text-dark-500">
               <Info size={20} className="mr-2" />
               No log entries for this backup.
             </div>
           )}
 
-          {!loading && !error && logs.length > 0 && (
+          {logs.length > 0 && (
             <div className="relative">
               {/* Timeline line */}
               <div className="absolute left-[15px] top-2 bottom-2 w-px bg-dark-600" />

@@ -7,6 +7,9 @@ import { useKeyboardShortcuts } from './KeyboardShortcuts'
 import { NotificationBadge, NotificationCenter } from './NotificationCenter'
 import { Dialog, DialogContent, DialogTitle, DialogTrigger, DialogClose } from './ui/dialog'
 import { Button, IconButton } from './ui/button'
+import { startQueryFreshness } from '../store/freshness'
+import ConnectionSignals from './ConnectionSignals'
+import { useNotificationStore } from '../store/notifications'
 
 const navigation = [
   { name: 'Overview', href: '/', icon: LayoutDashboard },
@@ -20,6 +23,7 @@ const sections: Record<string, string> = { schedules: 'Schedules', retention: 'R
 export default function Layout() {
   const location = useLocation()
   const connected = useWebSocketStore((state) => state.connected)
+  const latest = useNotificationStore(state => state.notifications[0])
   const { user, logout } = useAuthStore()
   const { showHelp, setShowHelp, ShortcutHelp } = useKeyboardShortcuts()
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -28,6 +32,8 @@ export default function Layout() {
   const current = navigation.find((item) => item.href === '/' ? location.pathname === '/' : location.pathname === item.href || location.pathname.startsWith(`${item.href}/`))
   const section = sections[location.pathname.split('/')[2]]
   const title = current ? section || current.name : 'Page not found'
+
+  useEffect(startQueryFreshness, [])
 
 
   useEffect(() => {
@@ -53,6 +59,7 @@ export default function Layout() {
 
   return <div className="app-shell">
     <a href="#main-content" className="skip-link">Skip to main content</a>
+    <p role="status" className="sr-only">{latest ? `${latest.title}${latest.target ? `, ${latest.target.kind} ${latest.target.id}` : ''}` : ''}</p>
     <aside className="shell-sidebar" aria-label="Application sidebar">
       <Link to="/" className="shell-brand" aria-label="DockerVault overview"><Archive className="size-6 text-primary-300" /><span>DockerVault</span></Link>
       {links()}{account}
@@ -74,9 +81,10 @@ export default function Layout() {
         <nav aria-label="Breadcrumb" className="min-w-0 flex-1 text-sm text-dark-300"><Link to="/">DockerVault</Link><span aria-hidden="true"> / </span>{section ? <><Link to="/protection">Protection</Link><span aria-hidden="true"> / </span></> : null}<span aria-current="page">{title}</span></nav>
         <span role="status" className="connection-status" title="Live updates connection">{connected ? <Wifi className="size-4" /> : <WifiOff className="size-4" />}<span>{connected ? 'Live updates connected' : 'Live updates disconnected'}</span></span>
         <NotificationBadge onClick={() => setShowNotifications(true)} />
+        <ConnectionSignals />
         <IconButton label="Keyboard shortcuts" onClick={() => setShowHelp(true)}><Keyboard className="size-5" /></IconButton>
       </header>
-      <main id="main-content" ref={main} tabIndex={-1} className="shell-main"><Outlet /></main>
+      <main id="main-content" ref={main} tabIndex={-1} className="shell-main">{!connected && <p role="status" className="mb-4 rounded-lg border border-amber-500/40 p-3 text-amber-200">Live updates interrupted. HTTP data is refreshed while this tab is visible (10-30 seconds). Other service availability is measured separately.</p>}<Outlet /></main>
     </div>
     {!mobileOpen && <NotificationCenter isOpen={showNotifications} onClose={() => setShowNotifications(false)} />}
     {!mobileOpen && <ShortcutHelp isOpen={showHelp} onClose={() => setShowHelp(false)} />}

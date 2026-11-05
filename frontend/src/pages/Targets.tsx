@@ -18,7 +18,7 @@ function TargetCard({ target, schedules, onEdit, onRemove }: { target: BackupTar
     mutationFn: () => backupsApi.create(target.id),
     onSuccess: () => {
       toast.success('Backup started')
-      queryClient.invalidateQueries({ queryKey: ['backups'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.backups.all })
     },
     onError: (error: Error & { response?: { data?: { detail?: string } } }) => {
       const message = error.response?.data?.detail || 'Failed to start backup'
@@ -30,8 +30,8 @@ function TargetCard({ target, schedules, onEdit, onRemove }: { target: BackupTar
     mutationFn: () => targetsApi.update(target.id, { enabled: !target.enabled }),
     onSuccess: () => {
       toast.success(target.enabled ? 'Target disabled' : 'Target enabled')
-      queryClient.invalidateQueries({ queryKey: ['targets'] })
-      queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.targets.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.schedules.all })
     },
     onError: () => toast.error('Failed to update target'),
   })
@@ -41,8 +41,8 @@ function TargetCard({ target, schedules, onEdit, onRemove }: { target: BackupTar
       targetsApi.update(target.id, { schedule_id: schedule_id ?? null, schedule_cron: schedule_id == null ? null : undefined }),
     onSuccess: () => {
       toast.success('Schedule updated')
-      queryClient.invalidateQueries({ queryKey: ['targets'] })
-      queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.targets.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.schedules.all })
       setEditingSchedule(false)
     },
     onError: () => toast.error('Failed to update schedule'),
@@ -248,12 +248,12 @@ export default function Targets() {
   const [editingTarget, setEditingTarget] = useState<BackupTarget | null>(null)
   
   const { data: targets, isLoading } = useQuery({
-    queryKey: ['targets'],
+    queryKey: queryKeys.targets.list(),
     queryFn: () => targetsApi.list().then((r) => r.data),
   })
 
   const { data: schedules = [] } = useQuery({
-    queryKey: ['schedules'],
+    queryKey: queryKeys.schedules.list(),
     queryFn: () => schedulesApi.list().then((r) => r.data),
   })
 
@@ -305,10 +305,11 @@ export default function Targets() {
       {/* Backup Wizard Modal */}
       <BackupWizard isOpen={wizardOpen} onClose={handleWizardClose} editTarget={editingTarget} />
       {removal && <RemovalDialog intent={removal} onClose={() => setRemoval(null)} onChanged={() => {
-        queryClient.invalidateQueries({ queryKey: ['targets'] })
-        queryClient.invalidateQueries({ queryKey: ['backups'] })
-        queryClient.invalidateQueries({ queryKey: ['schedules'] })
+        queryClient.invalidateQueries({ queryKey: queryKeys.targets.all })
+        queryClient.invalidateQueries({ queryKey: queryKeys.backups.all })
+        queryClient.invalidateQueries({ queryKey: queryKeys.schedules.all })
       }} />}
     </div>
   )
 }
+import { queryKeys } from '../api/queryKeys'

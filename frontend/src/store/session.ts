@@ -2,8 +2,9 @@ import { QueryClient } from '@tanstack/react-query'
 import { CanceledError, type InternalAxiosRequestConfig } from 'axios'
 import toast from 'react-hot-toast'
 import api from '../api'
-import { isTargetRequest, protectTargetResponse } from '../api/targetPrivacy'
-import { useNotificationStore } from './notifications'
+import { protectTargetResponse } from '../api/targetPrivacy'
+import { safeRequestError } from '../api/responses'
+import { resetNotificationOwner } from './notifications'
 import { cleanupWebSocket } from './websocket'
 
 export const queryClient = new QueryClient({
@@ -20,7 +21,7 @@ export const sessionSignal = () => controller.signal
 export const ownsSession = (owner: number) => owner === generation
 export function onSessionExpired(handler: () => void) { expire = handler }
 
-export function clearSession(preserveDraftFor?: number) {
+export function clearSession(preserveDraftFor?: number, preserveNotificationOwner?: number) {
   ++generation
   controller.abort()
   controller = new AbortController()
@@ -31,7 +32,7 @@ export function clearSession(preserveDraftFor?: number) {
     mutation.setOptions({ ...mutation.options, mutationFn: async () => { throw new CanceledError('Session changed') }, onSuccess: undefined, onError: undefined, onSettled: undefined })
   }
   queryClient.clear()
-  useNotificationStore.getState().clearAll()
+  resetNotificationOwner(preserveNotificationOwner)
   toast.remove()
   try {
     let preserveDraft = false
@@ -59,6 +60,5 @@ api.interceptors.response.use((response) => {
   }
   if (error.response?.status === 401 && !error.config?.url?.startsWith('/auth/')) expire()
   // Validation errors can echo command bodies; never expose their Axios context.
-  if (isTargetRequest(error.config)) return Promise.reject(new Error('Target request failed. Check the current server state before retrying.'))
-  return Promise.reject(error)
+  return Promise.reject(safeRequestError(error))
 })

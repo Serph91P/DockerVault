@@ -16,6 +16,9 @@ import {
 } from 'lucide-react'
 import api, { RestoreInfo } from '../api'
 import { ownsSession, sessionGeneration, sessionSignal } from '../store/session'
+import { queryKeys } from '../api/queryKeys'
+import { operationOutcome } from '../api/outcomes'
+import { useNotificationStore } from '../store/notifications'
 import { clsx } from 'clsx'
 import toast from 'react-hot-toast'
 
@@ -87,6 +90,7 @@ export default function RestoreWizard({ backupId, onClose }: RestoreWizardProps)
     const owner = sessionGeneration()
     const signal = AbortSignal.any([requests.current.signal, sessionSignal()])
     setRestoring(true)
+    const startedAt = Date.now()
     try {
       const opts: { target_path?: string; private_key?: string } = {}
       if (state.destination === 'path' && state.targetPath) {
@@ -102,13 +106,18 @@ export default function RestoreWizard({ backupId, onClose }: RestoreWizardProps)
       if (result.data.status !== 'restored') throw new Error('Restore not confirmed')
       if (!ownsSession(owner) || signal.aborted) return
       setState(s => ({ ...s, privateKey: '' }))
-      toast.success('Restore completed successfully')
-      queryClient.invalidateQueries({ queryKey: ['backups'] })
+      const phase = operationOutcome(result.data)
+      if (phase !== 'completed' && phase !== 'partial') throw new Error('Restore outcome unavailable')
+      useNotificationStore.getState().addNotification({ type: phase === 'partial' ? 'warning' : 'success', title: 'Restore result', message: phase === 'partial' ? 'Restore returned warnings. Review the archive and actual destination before retrying.' : 'Backend confirmed restoration. Verify the destination content.', target: { kind: 'archive', id: backupId }, phase, startedAt })
+      if (phase === 'partial') toast('Restore completed with warnings', { icon: '!' })
+      else toast.success('Restore completed successfully')
+      queryClient.invalidateQueries({ queryKey: queryKeys.backups.all })
       onClose()
     } catch {
       if (ownsSession(owner) && !signal.aborted) {
         setState(s => ({ ...s, privateKey: '' }))
         setStep(isEncrypted ? 1 : 0)
+        useNotificationStore.getState().addNotification({ type: 'error', title: 'Restore result unknown', message: 'No final restore result was confirmed. Inspect the destination before submitting again.', target: { kind: 'archive', id: backupId }, phase: 'unknown', startedAt })
         toast.error('Restore failed — enter your key again to retry; check backup logs for details')
       }
     } finally {

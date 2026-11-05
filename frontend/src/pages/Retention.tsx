@@ -5,9 +5,10 @@ import toast from 'react-hot-toast'
 import { useState } from 'react'
 import ConfirmDialog from '../components/ConfirmDialog'
 import LoadingSkeleton from '../components/LoadingSkeleton'
+import { operationOutcome } from '../api/outcomes'
 import { Modal } from '../components/ui/dialog'
 
-function PolicyCard({ policy, targets, onEdit }: { policy: RetentionPolicy; targets: BackupTarget[]; onEdit: (policy: RetentionPolicy) => void }) {
+function PolicyCard({ policy, targets, usageKnown, onEdit }: { policy: RetentionPolicy; targets: BackupTarget[]; usageKnown: boolean; onEdit: (policy: RetentionPolicy) => void }) {
   const queryClient = useQueryClient()
   const [showConfirm, setShowConfirm] = useState(false)
 
@@ -19,7 +20,7 @@ function PolicyCard({ policy, targets, onEdit }: { policy: RetentionPolicy; targ
     onSuccess: () => {
       toast.success('Policy deleted')
       setShowConfirm(false)
-      queryClient.invalidateQueries({ queryKey: ['retention-policies'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.retention.all })
     },
     onError: (err: Error) => toast.error(err.message || 'Failed to delete policy'),
   })
@@ -35,7 +36,7 @@ function PolicyCard({ policy, targets, onEdit }: { policy: RetentionPolicy; targ
           {/* RE2: Used by badge */}
           <div className="flex items-center gap-1 mt-1">
             <Target className="w-3 h-3 text-dark-500" />
-            {usedByTargets.length > 0 ? (
+            {!usageKnown ? <span className="text-xs text-amber-200">Usage unknown</span> : usedByTargets.length > 0 ? (
               <span className="text-xs text-dark-400" title={usedByTargets.map(t => t.name).join(', ')}>
                 Used by {usedByTargets.length} target{usedByTargets.length !== 1 ? 's' : ''}
               </span>
@@ -121,16 +122,18 @@ function EditPolicyModal({ policy, onClose }: { policy: RetentionPolicy; onClose
     mutationFn: () => retentionApi.updatePolicy(policy.id, formData),
     onSuccess: () => {
       toast.success('Policy updated')
-      queryClient.invalidateQueries({ queryKey: ['retention-policies'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.retention.all })
       onClose()
     },
     onError: () => toast.error('Failed to update policy'),
   })
+  const validation = useValidationFeedback(updateMutation.error)
 
   return (
     <Modal title={`Edit Policy — ${policy.name}`} onClose={onClose} pending={updateMutation.isPending}>
       <div className="relative bg-dark-800 rounded-2xl border border-dark-700 shadow-2xl w-full max-w-lg p-6">
         <h2 className="text-lg font-semibold text-dark-100 mb-4">Edit Policy — {policy.name}</h2>
+        {validation.summary}
 
         <div className="space-y-4">
           <div>
@@ -140,6 +143,7 @@ function EditPolicyModal({ policy, onClose }: { policy: RetentionPolicy; onClose
               min={0}
               value={formData.keep_last}
               aria-label="Keep Last"
+              {...validation.field('keep_last')}
               onChange={(e) => setFormData({ ...formData, keep_last: parseInt(e.target.value) || 0 })}
               className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
             />
@@ -152,7 +156,7 @@ function EditPolicyModal({ policy, onClose }: { policy: RetentionPolicy; onClose
               <input
                 type="number"
                 min={0}
-                value={formData.keep_daily}
+                value={formData.keep_daily} {...validation.field('keep_daily')}
                 aria-label="Keep Daily"
                 onChange={(e) => setFormData({ ...formData, keep_daily: parseInt(e.target.value) || 0 })}
                 className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
@@ -163,7 +167,7 @@ function EditPolicyModal({ policy, onClose }: { policy: RetentionPolicy; onClose
               <input
                 type="number"
                 min={0}
-                value={formData.keep_weekly}
+                value={formData.keep_weekly} {...validation.field('keep_weekly')}
                 aria-label="Keep Weekly"
                 onChange={(e) => setFormData({ ...formData, keep_weekly: parseInt(e.target.value) || 0 })}
                 className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
@@ -174,7 +178,7 @@ function EditPolicyModal({ policy, onClose }: { policy: RetentionPolicy; onClose
               <input
                 type="number"
                 min={0}
-                value={formData.keep_monthly}
+                value={formData.keep_monthly} {...validation.field('keep_monthly')}
                 aria-label="Keep Monthly"
                 onChange={(e) => setFormData({ ...formData, keep_monthly: parseInt(e.target.value) || 0 })}
                 className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
@@ -185,7 +189,7 @@ function EditPolicyModal({ policy, onClose }: { policy: RetentionPolicy; onClose
               <input
                 type="number"
                 min={0}
-                value={formData.keep_yearly}
+                value={formData.keep_yearly} {...validation.field('keep_yearly')}
                 aria-label="Keep Yearly"
                 onChange={(e) => setFormData({ ...formData, keep_yearly: parseInt(e.target.value) || 0 })}
                 className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
@@ -198,7 +202,7 @@ function EditPolicyModal({ policy, onClose }: { policy: RetentionPolicy; onClose
             <input
               type="number"
               min={0}
-              value={formData.max_age_days}
+              value={formData.max_age_days} {...validation.field('max_age_days')}
               aria-label="Max Age (Days)"
               onChange={(e) => setFormData({ ...formData, max_age_days: parseInt(e.target.value) || 0 })}
               className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
@@ -243,16 +247,18 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
     mutationFn: () => retentionApi.createPolicy(formData),
     onSuccess: () => {
       toast.success('Policy created')
-      queryClient.invalidateQueries({ queryKey: ['retention-policies'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.retention.all })
       onClose()
     },
     onError: () => toast.error('Failed to create policy'),
   })
+  const validation = useValidationFeedback(createMutation.error)
 
   return (
     <Modal title="New Retention Policy" onClose={onClose} pending={createMutation.isPending}>
       <div className="relative bg-dark-800 rounded-2xl border border-dark-700 shadow-2xl w-full max-w-lg p-6">
       <h3 className="text-lg font-semibold text-dark-100 mb-4">New Retention Policy</h3>
+      {validation.summary}
 
       <div className="space-y-4">
         <div>
@@ -261,6 +267,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
             type="text"
             value={formData.name}
             aria-label="Name"
+            {...validation.field('name')}
             onChange={(e) => setFormData({ ...formData, name: e.target.value })}
             className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
             placeholder="e.g. aggressive, conservative"
@@ -275,6 +282,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
             min={0}
             value={formData.keep_last}
             aria-label="Keep Last"
+              {...validation.field('keep_last')}
             onChange={(e) => setFormData({ ...formData, keep_last: parseInt(e.target.value) || 0 })}
             className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
           />
@@ -286,7 +294,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
             <label className="block text-xs text-dark-400 mb-1">Daily</label>
             <input
               type="number"
-              value={formData.keep_daily}
+              value={formData.keep_daily} {...validation.field('keep_daily')}
               aria-label="Daily"
               onChange={(e) =>
                 setFormData({ ...formData, keep_daily: parseInt(e.target.value) })
@@ -298,7 +306,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
             <label className="block text-xs text-dark-400 mb-1">Weekly</label>
             <input
               type="number"
-              value={formData.keep_weekly}
+              value={formData.keep_weekly} {...validation.field('keep_weekly')}
               aria-label="Weekly"
               onChange={(e) =>
                 setFormData({ ...formData, keep_weekly: parseInt(e.target.value) })
@@ -310,7 +318,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
             <label className="block text-xs text-dark-400 mb-1">Monthly</label>
             <input
               type="number"
-              value={formData.keep_monthly}
+              value={formData.keep_monthly} {...validation.field('keep_monthly')}
               aria-label="Monthly"
               onChange={(e) =>
                 setFormData({ ...formData, keep_monthly: parseInt(e.target.value) })
@@ -322,7 +330,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
             <label className="block text-xs text-dark-400 mb-1">Yearly</label>
             <input
               type="number"
-              value={formData.keep_yearly}
+              value={formData.keep_yearly} {...validation.field('keep_yearly')}
               aria-label="Yearly"
               onChange={(e) =>
                 setFormData({ ...formData, keep_yearly: parseInt(e.target.value) })
@@ -336,7 +344,7 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
           <label className="block text-xs text-dark-400 mb-1">Max Age (Days)</label>
           <input
             type="number"
-            value={formData.max_age_days}
+            value={formData.max_age_days} {...validation.field('max_age_days')}
             aria-label="Max Age (Days)"
             onChange={(e) =>
               setFormData({ ...formData, max_age_days: parseInt(e.target.value) })
@@ -368,27 +376,35 @@ function CreatePolicyForm({ onClose }: { onClose: () => void }) {
 }
 
 export default function Retention() {
+  const queryClient = useQueryClient()
   const [showCreate, setShowCreate] = useState(false)
   const [showCleanupConfirm, setShowCleanupConfirm] = useState(false)
   const [editingPolicy, setEditingPolicy] = useState<RetentionPolicy | null>(null)
   const [showGfsInfo, setShowGfsInfo] = useState(false)
 
-  const { data: policies, isLoading } = useQuery({
-    queryKey: ['retention-policies'],
+  const { data: policies, isLoading, ...policiesQuery } = useQuery({
+    queryKey: queryKeys.retention.list(),
     queryFn: () => retentionApi.listPolicies().then((r) => r.data),
   })
 
   // RE2: Fetch targets to show usage info
-  const { data: targets = [] } = useQuery({
-    queryKey: ['targets'],
+  const { data: targets = [], ...targetsQuery } = useQuery({
+    queryKey: queryKeys.targets.list(),
     queryFn: () => targetsApi.list().then((r) => r.data),
   })
 
   const cleanupMutation = useMutation({
-    mutationFn: () => retentionApi.cleanupOrphaned(),
+    mutationFn: async () => { const { data } = await retentionApi.cleanupOrphaned(); return { deleted: Number.isSafeInteger(data?.deleted) && data.deleted >= 0 ? data.deleted : undefined, outcome: operationOutcome(data) } },
     onSuccess: (data) => {
+      const deleted = data.deleted
+      if (typeof deleted !== 'number' || !Number.isSafeInteger(deleted) || deleted < 0) { toast.error('Cleanup result unknown. Inspect current files before retrying.'); return }
+      const message = `Backend reports ${deleted} deleted files. Overall cleanup: ${data.outcome}. UI-session observation only; inspect storage before repeating.`
+      useNotificationStore.getState().addNotification({ type: data.outcome === 'completed' ? 'success' : data.outcome === 'failed' ? 'error' : 'warning', title: 'Cleanup result', message, phase: data.outcome })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.backups.all })
+      void queryClient.invalidateQueries({ queryKey: ['storage-files'] })
+      void queryClient.invalidateQueries({ queryKey: ['storage-size'] })
       setShowCleanupConfirm(false)
-      toast.success(`${data.data.deleted} orphaned files deleted`)
+      toast(message)
     },
     onError: () => toast.error('Failed to cleanup'),
   })
@@ -465,12 +481,15 @@ export default function Retention() {
       {showCreate && <CreatePolicyForm onClose={() => setShowCreate(false)} />}
 
       {/* Policies Grid */}
+      <QueryFeedback name="Retention policies" query={policiesQuery} />
+      <QueryFeedback name="Plan usage" query={targetsQuery} />
+      {policies?.length === 0 && !policiesQuery.isError && <p>No retention policies configured.</p>}
       {isLoading ? (
         <LoadingSkeleton count={2} layout="grid-3" />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {policies?.map((policy) => (
-            <PolicyCard key={policy.id} policy={policy} targets={targets} onEdit={setEditingPolicy} />
+            <PolicyCard key={policy.id} policy={policy} targets={targets} usageKnown={!targetsQuery.isError && !targetsQuery.isPending} onEdit={setEditingPolicy} />
           ))}
         </div>
       )}
@@ -497,3 +516,7 @@ export default function Retention() {
     </div>
   )
 }
+import { queryKeys } from '../api/queryKeys'
+import { QueryFeedback } from '../components/QueryFeedback'
+import { useValidationFeedback } from '../components/ValidationFeedback'
+import { useNotificationStore } from '../store/notifications'

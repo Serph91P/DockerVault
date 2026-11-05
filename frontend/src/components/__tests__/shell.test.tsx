@@ -3,9 +3,10 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
 import Layout from '../Layout'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 function Shell({ path = '/' }: { path?: string }) {
-  return <MemoryRouter initialEntries={[path]}><Routes><Route element={<Layout />}><Route path="*" element={<button>Page action</button>} /></Route></Routes></MemoryRouter>
+  return <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })}><MemoryRouter initialEntries={[path]}><Routes><Route element={<Layout />}><Route path="*" element={<button>Page action</button>} /></Route></Routes></MemoryRouter></QueryClientProvider>
 }
 describe('task-oriented shell', () => {
   it('provides named navigation, skip link and nested current section', () => {

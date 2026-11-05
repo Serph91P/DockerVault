@@ -4,11 +4,14 @@ import { dockerApi, settingsApi } from '../api'
 import toast from 'react-hot-toast'
 import EncryptionSetup from '../components/EncryptionSetup'
 import { useState, useMemo } from 'react'
+import { operationOutcome, type Outcome } from '../api/outcomes'
+import { useNotificationStore } from '../store/notifications'
+import { useValidationFeedback } from '../components/ValidationFeedback'
 
 function StorageSettingsCard() {
   const queryClient = useQueryClient()
-  const { data: storageSettings, isLoading } = useQuery({
-    queryKey: ['storage-settings'],
+  const { data: storageSettings, ...storageQuery } = useQuery({
+    queryKey: queryKeys.settings.storage,
     queryFn: () => settingsApi.getStorageSettings().then((r) => r.data),
   })
 
@@ -17,18 +20,11 @@ function StorageSettingsCard() {
       settingsApi.updateStorageSettings(data),
     onSuccess: () => {
       toast.success('Storage settings saved')
-      queryClient.invalidateQueries({ queryKey: ['storage-settings'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.settings.storage })
     },
     onError: () => toast.error('Failed to save storage settings'),
   })
 
-  if (isLoading) {
-    return (
-      <div className="bg-dark-800 rounded-xl border border-dark-700 p-6 animate-pulse">
-        <div className="h-6 bg-dark-700 rounded w-1/3 mb-4" />
-      </div>
-    )
-  }
 
   return (
     <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
@@ -42,7 +38,8 @@ function StorageSettingsCard() {
         </div>
       </div>
 
-      <div className="space-y-4">
+      <QueryFeedback name="Storage settings" query={storageQuery} />
+      <div className="space-y-4" hidden={!storageSettings}>
         <div className="flex items-center justify-between">
           <div>
             <label className="text-sm text-dark-300">Check quota before upload</label>
@@ -88,8 +85,9 @@ function KomodoSettingsCard() {
   const [isEditing, setIsEditing] = useState(false)
   const [showApiKey, setShowApiKey] = useState(false)
   const [showApiSecret, setShowApiSecret] = useState(false)
-  const { data: komodoSettings, isLoading, refetch } = useQuery({
-    queryKey: ['komodo-settings'],
+  const [testResult, setTestResult] = useState<{ outcome: Outcome; at: number } | null>(null)
+  const { data: komodoSettings, isLoading, refetch, ...komodoQuery } = useQuery({
+    queryKey: queryKeys.settings.komodo,
     queryFn: () => settingsApi.getKomodo().then((r) => r.data),
   })
 
@@ -116,11 +114,11 @@ function KomodoSettingsCard() {
   }
 
   const updateMutation = useMutation({
-    mutationFn: (data: { enabled: boolean; api_url?: string; api_key?: string; api_secret?: string }) =>
-      settingsApi.updateKomodo(data),
+    mutationFn: () => settingsApi.updateKomodo({ enabled: formData.enabled, api_url: formData.api_url || undefined, api_key: formData.api_key || undefined, api_secret: formData.api_secret || undefined }).then(r => r.data),
     onSuccess: () => {
       toast.success('Komodo settings saved')
-      queryClient.invalidateQueries({ queryKey: ['komodo-settings'] })
+      setTestResult(null)
+      queryClient.invalidateQueries({ queryKey: queryKeys.settings.komodo })
       setIsEditing(false)
       setFormData((prev) => ({ ...prev, api_key: '', api_secret: '' }))
     },
@@ -128,48 +126,26 @@ function KomodoSettingsCard() {
   })
 
   const testMutation = useMutation({
-    mutationFn: () => settingsApi.testKomodo(),
+    mutationFn: async () => ({ outcome: operationOutcome((await settingsApi.testKomodo()).data) }),
     onSuccess: (response) => {
-      const result = response.data
-      if (result.success) {
-        toast.success(`Connection successful! Version: ${result.version || 'unknown'}`)
-      } else {
-        toast.error(result.message)
-      }
+      const outcome = response.outcome
+      setTestResult({ outcome, at: Date.now() })
+      useNotificationStore.getState().addNotification({ type: outcome === 'completed' ? 'success' : 'warning', title: 'Komodo test result', message: 'Connection test observed in this UI session only. Configuration changes invalidate this observation.', phase: outcome })
+      if (outcome === 'completed') toast.success('Komodo connection confirmed')
+      else toast.error(outcome === 'partial' ? 'Komodo test returned warnings' : 'Komodo connection not confirmed')
       refetch()
     },
-    onError: () => toast.error('Connection test failed'),
+    onError: () => { setTestResult({ outcome: 'unknown', at: Date.now() }); toast.error('Connection test response unavailable') },
   })
+  const validation = useValidationFeedback(updateMutation.error)
 
-  const handleSave = () => {
-    const data: { enabled: boolean; api_url?: string; api_key?: string; api_secret?: string } = {
-      enabled: formData.enabled,
-    }
-    if (formData.api_url) {
-      data.api_url = formData.api_url
-    }
-    if (formData.api_key) {
-      data.api_key = formData.api_key
-    }
-    if (formData.api_secret) {
-      data.api_secret = formData.api_secret
-    }
-    updateMutation.mutate(data)
-  }
+  const handleSave = () => { if (!updateMutation.isPending) updateMutation.mutate() }
 
   const handleCancel = () => {
     setFormData(initialFormData)
     setIsEditing(false)
   }
 
-  if (isLoading) {
-    return (
-      <div className="bg-dark-800 rounded-xl border border-dark-700 p-6 animate-pulse">
-        <div className="h-6 bg-dark-700 rounded w-1/3 mb-4" />
-        <div className="h-4 bg-dark-700 rounded w-2/3" />
-      </div>
-    )
-  }
 
   return (
     <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
@@ -196,6 +172,10 @@ function KomodoSettingsCard() {
         </div>
       </div>
 
+      <QueryFeedback name="Komodo settings" query={{ ...komodoQuery, refetch }} />
+      {testResult && <p role="status">Komodo test: {testResult.outcome}; measured {new Date(testResult.at).toLocaleString()} (UI session only).</p>}
+      {validation.summary}
+      <div hidden={!komodoSettings && !isEditing}>
       {isEditing ? (
         <div className="space-y-4">
           {/* Enable/Disable */}
@@ -223,7 +203,7 @@ function KomodoSettingsCard() {
             <label className="block text-sm text-dark-400 mb-1">API URL</label>
             <input
               type="text"
-              value={formData.api_url}
+              value={formData.api_url} aria-label="Komodo API URL" {...validation.field('api_url')}
               onChange={(e) => setFormData((prev) => ({ ...prev, api_url: e.target.value }))}
               placeholder="https://komodo.example.com"
               className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
@@ -238,7 +218,7 @@ function KomodoSettingsCard() {
             <div className="relative">
               <input
                 type={showApiKey ? 'text' : 'password'}
-                value={formData.api_key}
+                value={formData.api_key} aria-label="Komodo API key" {...validation.field('api_key')}
                 onChange={(e) => setFormData((prev) => ({ ...prev, api_key: e.target.value }))}
                 placeholder={komodoSettings?.has_api_key ? '••••••••' : 'Enter API key'}
                 className="w-full px-3 py-2 pr-10 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
@@ -262,7 +242,7 @@ function KomodoSettingsCard() {
             <div className="relative">
               <input
                 type={showApiSecret ? 'text' : 'password'}
-                value={formData.api_secret}
+                value={formData.api_secret} aria-label="Komodo API secret" {...validation.field('api_secret')}
                 onChange={(e) => setFormData((prev) => ({ ...prev, api_secret: e.target.value }))}
                 placeholder={komodoSettings?.has_api_secret ? '••••••••' : 'Enter API secret'}
                 className="w-full px-3 py-2 pr-10 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
@@ -371,6 +351,7 @@ function KomodoSettingsCard() {
           </div>
         </div>
       )}
+      </div>
     </div>
   )
 }
@@ -392,8 +373,8 @@ function formatUptime(seconds: number): string {
 }
 
 function SystemInfoCard() {
-  const { data: systemInfo } = useQuery({
-    queryKey: ['system-info'],
+  const { data: systemInfo, ...systemQuery } = useQuery({
+    queryKey: queryKeys.systemInfo,
     queryFn: () => settingsApi.getSystemInfo().then((r) => r.data),
     refetchInterval: 30000,
   })
@@ -417,6 +398,7 @@ function SystemInfoCard() {
         )}
       </div>
 
+      <QueryFeedback name="System information" query={systemQuery} />
       {systemInfo ? (
         <>
           {/* Disk Usage Bar */}
@@ -508,9 +490,9 @@ function SystemInfoCard() {
 }
 
 export default function Settings() {
-  const { data: dockerHealth, refetch: refetchDocker } = useQuery({
+  const { data: dockerHealth, refetch: refetchDocker, ...dockerQuery } = useQuery({
     queryKey: ['docker-health'],
-    queryFn: () => dockerApi.getHealth().then(() => true).catch(() => false),
+    queryFn: () => dockerApi.getHealth().then(response => response.data.status === 'healthy'),
     refetchInterval: 30000,
   })
 
@@ -543,7 +525,8 @@ export default function Settings() {
         </div>
 
         <div className="flex items-center gap-2">
-          {dockerHealth ? (
+          <QueryFeedback name="Docker" query={{ ...dockerQuery, refetch: refetchDocker }} />
+          {dockerHealth === undefined ? <span>Unknown</span> : dockerHealth ? (
             <>
               <Check className="w-5 h-5 text-green-500" />
               <span className="text-green-400">Connected</span>
@@ -575,3 +558,5 @@ export default function Settings() {
     </div>
   )
 }
+import { queryKeys } from '../api/queryKeys'
+import { QueryFeedback } from '../components/QueryFeedback'

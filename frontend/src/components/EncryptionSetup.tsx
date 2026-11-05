@@ -15,6 +15,7 @@ import {
   X,
 } from 'lucide-react';
 import api from '../api';
+import { QueryFeedback } from './QueryFeedback';
 
 interface EncryptionStatus {
   setup_completed: boolean;
@@ -57,11 +58,12 @@ export default function EncryptionSetup() {
     return () => { alive.current = false; requests.current.abort(); };
   }, []);
 
-  const { data: status, isLoading, isError, refetch } = useQuery<EncryptionStatus>({
+  const statusQuery = useQuery<EncryptionStatus>({
     queryKey: ['encryption-status'],
     queryFn: async ({ signal }) => (await api.get('/encryption/status', { signal })).data,
     retry: false,
   });
+  const { data: status, refetch } = statusQuery;
 
   // One-time responses never enter a Mutation cache (including Axios config/errors).
   const run = async (kind: string, path: string, body?: unknown) => {
@@ -141,18 +143,11 @@ ${setupData.recovery_instructions.split('\n').map(line => `# ${line}`).join('\n'
     } finally { if (url) URL.revokeObjectURL(url); }
   };
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center p-8">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
-      </div>
-    );
-  }
-
-  if (isError || !status) return <div role="alert">Unable to load encryption status. <button onClick={() => void refetch()}>Retry</button></div>;
+  if (!status) return <QueryFeedback name="Encryption status" query={statusQuery} />;
 
   return (
     <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
+      <QueryFeedback name="Encryption status" query={statusQuery} />
       {status.onboarding_deferred && !status.setup_completed && <p className="text-amber-400">Encryption deliberately deferred. New backups are unencrypted.</p>}
       {operationError && <p role="alert" className="text-red-400">{operationError}</p>}
       {/* Header */}

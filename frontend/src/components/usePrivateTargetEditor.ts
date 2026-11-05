@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import api, { type BackupTarget } from '../api'
 import type { PrivateTargetConfig } from '../api/targetPrivacy'
 import { ownsSession, sessionGeneration, sessionSignal } from '../store/session'
+import { ResponseError } from '../api/responses'
 
 // Component-private lifecycle, never a Query/Mutation record or persisted draft.
 export function usePrivateTargetEditor(targetId?: number) {
@@ -12,6 +13,7 @@ export function usePrivateTargetEditor(targetId?: number) {
   const [attempt, setAttempt] = useState(0)
   const [pending, setPending] = useState(false)
   const [saveError, setSaveError] = useState(false)
+  const [saveFailure, setSaveFailure] = useState<ResponseError | null>(null)
   const busy = useRef(false)
   const context = useRef<AbortController | null>(null)
   const close = () => {
@@ -19,6 +21,7 @@ export function usePrivateTargetEditor(targetId?: number) {
     setHooks({ pre: '', post: '' })
     setLoaded(false)
     setPending(false)
+    setSaveFailure(null)
   }
 
   useEffect(() => {
@@ -27,7 +30,7 @@ export function usePrivateTargetEditor(targetId?: number) {
     const owner = sessionGeneration()
     const session = sessionSignal()
     const current = () => !requests.signal.aborted && ownsSession(owner)
-    const clear = () => { requests.abort(); setHooks({ pre: '', post: '' }); setLoaded(false); setLoading(false); setPending(false) }
+    const clear = () => { requests.abort(); setHooks({ pre: '', post: '' }); setLoaded(false); setLoading(false); setPending(false); setSaveFailure(null) }
     session.addEventListener('abort', clear, { once: true })
     if (targetId) {
       setLoading(true)
@@ -50,11 +53,12 @@ export function usePrivateTargetEditor(targetId?: number) {
     const current = () => !requests.signal.aborted && ownsSession(owner)
     setPending(true)
     setSaveError(false)
+    setSaveFailure(null)
     try {
       await action(AbortSignal.any([requests.signal, sessionSignal()]), current)
       if (current()) success()
-    } catch { if (current()) setSaveError(true) }
+    } catch (error) { if (current()) { setSaveError(true); setSaveFailure(error instanceof ResponseError ? error : new ResponseError()) } }
     finally { busy.current = false; if (current()) setPending(false) }
   }
-  return { hooks, setHooks, loaded, loading, loadError, retry: () => setAttempt(value => value + 1), pending, saveError, run, close }
+  return { hooks, setHooks, loaded, loading, loadError, retry: () => setAttempt(value => value + 1), pending, saveError, saveFailure, run, close }
 }

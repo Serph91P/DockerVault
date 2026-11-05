@@ -90,7 +90,7 @@ describe('durable storage browser', () => {
   })
 
   it('does not present an old terminal result as current when refresh fails', async () => {
-    listings(() => [operation({ state: 'completed', completed: 2, succeeded: 2 })])
+    listings(() => [operation({ state: 'completed', completed: 2, succeeded: 2, items: [{ path: 'folder', state: 'succeeded', error: null }, { path: 'file', state: 'succeeded', error: null }] })])
     mount()
     await screen.findByText('durable-one')
     server.use(http.get('/api/v1/operations', () => HttpResponse.json({}, { status: 503 })))
@@ -115,7 +115,7 @@ describe('durable storage browser', () => {
   })
 
   it('does not create a second retry intent after an accepted fast response', async () => {
-    listings(() => [operation({ state: 'failed', completed: 2, succeeded: 1, failed: 1 })])
+    listings(() => [operation({ state: 'failed', completed: 2, succeeded: 1, failed: 1, items: [{ path: 'folder', state: 'succeeded', error: null }, { path: 'file', state: 'failed', error: 'Synthetic failure' }] })])
     const requests: { request_id: string }[] = []
     server.use(http.post('/api/v1/operations/durable-one/retry', async ({ request }) => {
       requests.push(await request.json() as { request_id: string })
@@ -131,7 +131,7 @@ describe('durable storage browser', () => {
   })
 
   it('shows the existing child on reopen rather than offering the original failed scope again', async () => {
-    listings(() => [operation({ state: 'failed', completed: 2, succeeded: 1, failed: 1 }), operation({ id: 'finished-child', parent_id: 'durable-one', state: 'completed', total: 1, completed: 1, succeeded: 1 })])
+    listings(() => [operation({ state: 'failed', completed: 2, succeeded: 1, failed: 1, items: [{ path: 'folder', state: 'succeeded', error: null }, { path: 'file', state: 'failed', error: 'Synthetic failure' }] }), operation({ id: 'finished-child', parent_id: 'durable-one', state: 'completed', total: 1, completed: 1, succeeded: 1, items: [{ path: 'file', state: 'succeeded', error: null }] })])
     mount()
     await screen.findByText('finished-child')
     expect(within(screen.getByRole('article', { name: 'Operation durable-one' })).queryByRole('button', { name: 'Retry failed items' })).not.toBeInTheDocument()

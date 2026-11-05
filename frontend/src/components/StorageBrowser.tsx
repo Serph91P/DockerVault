@@ -19,12 +19,13 @@ import {
 } from 'lucide-react'
 import { RemoteStorage, storageApi } from '../api'
 import toast from 'react-hot-toast'
-import { isAxiosError } from 'axios'
+import { responseStatus } from '../api/responses'
 import { clsx } from 'clsx'
 import ConfirmDialog from './ConfirmDialog'
 import { ownsSession, sessionGeneration, sessionSignal } from '../store/session'
 import { operationsApi, operationActive, type CreateStorageOperation, type StorageOperation } from '../api/operations'
 import StorageOperationResults from './StorageOperationResults'
+import { queryKeys } from '../api/queryKeys'
 
 const NO_OPERATIONS: StorageOperation[] = []
 
@@ -82,7 +83,7 @@ function getFileIcon(name: string, isDir: boolean) {
 
 function DirectorySize({ storage, path, revision }: { storage: StorageBrowserTarget; path: string; revision: number }) {
   const { data, isPending } = useQuery({
-    queryKey: ['storage-size', storage.id, storage.base_path, path, revision, sessionGeneration()],
+    queryKey: queryKeys.storageSize(storage.id, storage.base_path, path, revision, sessionGeneration()),
     queryFn: async ({ signal }) => (await storageApi.directorySize(storage.id, path, signal)).data,
     retry: false,
     staleTime: 0,
@@ -112,7 +113,7 @@ function StorageBrowserContent({ storage, onClose }: StorageBrowserProps) {
     currentPath ? `${currentPath}/${name}` : name
 
   const { data, dataUpdatedAt, isLoading, error, refetch } = useQuery({
-    queryKey: ['storage-files', storage.id, currentPath, storage.base_path, sessionGeneration()],
+    queryKey: queryKeys.storageFiles(storage.id, currentPath, storage.base_path, sessionGeneration()),
     queryFn: async ({ signal }) => {
       const response = isLocal
         ? await storageApi.listLocalFiles(currentPath, signal)
@@ -127,7 +128,7 @@ function StorageBrowserContent({ storage, onClose }: StorageBrowserProps) {
   const unfinishedRequest = useRef<CreateStorageOperation | null>(null)
   const retryRequests = useRef(new Map<string, string>())
   const settled = useRef(new Set<string>())
-  const operationsKey = ['storage-operations', storage.id, owner]
+  const operationsKey = queryKeys.storageOperations(storage.id, owner)
   const operations = useQuery({
     queryKey: operationsKey,
     queryFn: async ({ signal }) => (await operationsApi.list(storage.id, signal)).data,
@@ -151,18 +152,7 @@ function StorageBrowserContent({ storage, onClose }: StorageBrowserProps) {
       void queryClient.invalidateQueries({ queryKey: ['storage-size', storage.id] })
     }
   }, [jobs, operations.isError, queryClient, storage.id])
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const update = () => {
-      if (timer || !ownsSession(owner)) return
-      timer = setTimeout(() => {
-        timer = undefined
-        if (ownsSession(owner)) void queryClient.invalidateQueries({ queryKey: ['storage-operations', storage.id, owner] })
-      }, 150)
-    }
-    window.addEventListener('storage-operation-update', update)
-    return () => { window.removeEventListener('storage-operation-update', update); clearTimeout(timer) }
-  }, [owner, queryClient, storage.id])
+
   const refreshOperations = async () => {
     if (!mounted.current || !ownsSession(owner)) return
     // Invalidation alone reuses an initial in-flight read with no cached data.
@@ -189,7 +179,7 @@ function StorageBrowserContent({ storage, onClose }: StorageBrowserProps) {
     onError: (error, request) => {
       if (!mounted.current || !ownsSession(owner)) return
       // These API rejections precede admission; transport/timeouts/5xx remain ambiguous.
-      if (request.kind === 'create' && isAxiosError(error) && [400, 401, 403, 404, 409, 422, 429].includes(error.response?.status ?? 0)) unfinishedRequest.current = null
+      if (request.kind === 'create' && [400, 401, 403, 404, 409, 422, 429].includes(responseStatus(error) ?? 0)) unfinishedRequest.current = null
       setDeleteTarget(null)
       setBulkDeleteTarget(null)
       void refreshOperations()

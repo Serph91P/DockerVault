@@ -1,3 +1,6 @@
+import { queryKeys } from '../api/queryKeys'
+import { QueryFeedback } from '../components/QueryFeedback'
+import { operationOutcome } from '../api/outcomes'
 import { useQuery } from '@tanstack/react-query'
 import { Archive, Container, HardDrive, Clock, AlertCircle, CheckCircle, AlertTriangle, ShieldCheck, Plus, ArrowRight, Cloud, Shield, Layers, FolderOpen } from 'lucide-react'
 import { dockerApi, backupsApi, targetsApi, schedulesApi, settingsApi } from '../api'
@@ -38,47 +41,47 @@ function formatBytes(bytes: number): string {
 }
 
 export default function Dashboard() {
-  const { data: containers } = useQuery({
-    queryKey: ['containers'],
+  const { data: containers, ...containersQuery } = useQuery({
+    queryKey: queryKeys.containers.list(),
     queryFn: () => dockerApi.listContainers().then((r) => r.data),
   })
 
-  const { data: volumes } = useQuery({
-    queryKey: ['volumes'],
+  const { data: volumes, ...volumesQuery } = useQuery({
+    queryKey: queryKeys.volumes.list(),
     queryFn: () => dockerApi.listVolumes().then((r) => r.data),
   })
 
-  const { data: targets } = useQuery({
-    queryKey: ['targets'],
+  const { data: targets, ...targetsQuery } = useQuery({
+    queryKey: queryKeys.targets.list(),
     queryFn: () => targetsApi.list().then((r) => r.data),
   })
 
-  const { data: backups } = useQuery({
-    queryKey: ['backups'],
+  const { data: backups, ...backupsQuery } = useQuery({
+    queryKey: queryKeys.backups.list({ limit: 10 }),
     queryFn: () => backupsApi.list({ limit: 10 }).then((r) => r.data),
   })
 
-  const { data: schedules } = useQuery({
-    queryKey: ['schedules'],
+  const { data: schedules, ...schedulesQuery } = useQuery({
+    queryKey: queryKeys.schedules.list(),
     queryFn: () => schedulesApi.list().then((r) => r.data),
   })
 
-  const { data: stacks } = useQuery({
-    queryKey: ['stacks'],
+  const { data: stacks, ...stacksQuery } = useQuery({
+    queryKey: queryKeys.stacks.list(),
     queryFn: () => dockerApi.listStacks().then((r) => r.data),
   })
 
   // DA5: Fetch system info for disk usage
-  const { data: systemInfo } = useQuery({
-    queryKey: ['system-info'],
+  const { data: systemInfo, ...systemQuery } = useQuery({
+    queryKey: queryKeys.systemInfo,
     queryFn: () => settingsApi.getSystemInfo().then((r) => r.data),
     refetchInterval: 60000,
   })
 
-  const runningContainers = containers?.filter((c) => c.status === 'running').length ?? 0
+  const runningContainers = containers?.filter((c) => c.status === 'running').length ?? 'Unknown'
   const activeTargets = targets?.filter((t) => t.enabled).length ?? 0
-  const completedBackups = backups?.filter((b) => b.status === 'completed').length ?? 0
-  const failedBackups = backups?.filter((b) => b.status === 'failed').length ?? 0
+  const completedBackups = backups?.filter((b) => operationOutcome(b) === 'completed').length ?? 'Unknown'
+  const failedBackups = backups?.filter((b) => b.status === 'failed').length ?? 'Unknown'
 
   // DA1: Calculate actionable insights
   const backedUpContainerNames = new Set(
@@ -123,6 +126,13 @@ export default function Dashboard() {
       </div>
 
       {/* DA4: Alert Banner */}
+      <QueryFeedback name="Plans" query={targetsQuery} />
+      <QueryFeedback name="Archives" query={backupsQuery} />
+      <QueryFeedback name="Containers" query={containersQuery} />
+      <QueryFeedback name="Volumes" query={volumesQuery} />
+      <QueryFeedback name="Stacks" query={stacksQuery} />
+      <QueryFeedback name="Schedules" query={schedulesQuery} />
+      <QueryFeedback name="System information" query={systemQuery} />
       {recentFailures.length > 0 && (
         <Link
           to="/backups"
@@ -192,19 +202,19 @@ export default function Dashboard() {
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         <StatCard
           title="Containers"
-          value={`${backedUpContainers}/${containers?.length ?? 0}`}
+          value={containers && targets ? `${backedUpContainers}/${containers.length}` : 'Unknown'}
           icon={Container}
           color="bg-blue-500"
         />
         <StatCard
           title="Volumes"
-          value={`${backedUpVolumes}/${volumes?.length ?? 0}`}
+          value={volumes && targets ? `${backedUpVolumes}/${volumes.length}` : 'Unknown'}
           icon={HardDrive}
           color="bg-purple-500"
         />
         <StatCard
           title="Stacks"
-          value={`${backedUpStacks}/${stacks?.length ?? 0}`}
+          value={stacks && targets ? `${backedUpStacks}/${stacks.length}` : 'Unknown'}
           icon={Layers}
           color="bg-cyan-500"
         />
@@ -218,13 +228,13 @@ export default function Dashboard() {
         )}
         <StatCard
           title="Targets"
-          value={`${activeTargets}${targets ? `/${targets.length}` : ''}`}
+          value={targets ? `${activeTargets}/${targets.length}` : 'Unknown'}
           icon={Archive}
           color="bg-green-500"
         />
         <StatCard
           title="Scheduled"
-          value={schedules?.filter((s) => s.enabled).length ?? 0}
+          value={schedules?.filter((s) => s.enabled).length ?? 'Unknown'}
           icon={Clock}
           color="bg-orange-500"
         />
@@ -280,7 +290,7 @@ export default function Dashboard() {
             {backups?.slice(0, 5).map((backup) => (
               <div key={backup.id} className="px-6 py-4 flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  {backup.status === 'completed' ? (
+                  {operationOutcome(backup) === 'completed' ? (
                     <CheckCircle className="w-5 h-5 text-green-500" />
                   ) : backup.status === 'failed' ? (
                     <AlertCircle className="w-5 h-5 text-red-500" />
@@ -291,6 +301,7 @@ export default function Dashboard() {
                     <p className="text-sm font-medium text-dark-100">
                       {backup.target_name || `Target #${backup.target_id}`}
                     </p>
+                    <p className="text-sm text-dark-200">{operationOutcome(backup)}</p>
                     <p className="text-xs text-dark-400">
                       {formatDistanceToNowStrict(new Date(backup.created_at), {
                         addSuffix: true,
@@ -306,7 +317,7 @@ export default function Dashboard() {
                 </div>
               </div>
             ))}
-            {(!backups || backups.length === 0) && (
+            {backups?.length === 0 && !backupsQuery.isError && (
               <div className="px-6 py-8 text-center text-dark-400">
                 No backups yet
               </div>
@@ -346,7 +357,7 @@ export default function Dashboard() {
                   </div>
                 </div>
               ))}
-            {(!schedules || schedules.filter((s) => s.enabled).length === 0) && (
+            {schedules && !schedulesQuery.isError && schedules.filter((s) => s.enabled).length === 0 && (
               <div className="px-6 py-8 text-center text-dark-400">
                 No scheduled backups
               </div>
@@ -372,7 +383,7 @@ export default function Dashboard() {
             <p className="text-sm text-dark-400">Active Containers</p>
           </div>
           <div className="text-center">
-            <p className="text-3xl font-bold text-purple-500">{volumes?.length ?? 0}</p>
+            <p className="text-3xl font-bold text-purple-500">{volumes?.length ?? 'Unknown'}</p>
             <p className="text-sm text-dark-400">Volumes</p>
           </div>
         </div>

@@ -30,7 +30,7 @@ export interface CreateStorageOperation {
 }
 export const operationsApi = {
   create: (request: CreateStorageOperation) => api.post<{ operation_id: string }>('/operations', request),
-  list: (storage_id: StorageId, signal?: AbortSignal) => api.get<StorageOperation[]>('/operations', { params: { storage_id, limit: 100 }, signal }),
+  list: (storage_id?: StorageId, signal?: AbortSignal) => api.get<StorageOperation[]>('/operations', { params: { storage_id, limit: 100 }, signal }),
   get: (id: string, signal?: AbortSignal) => api.get<StorageOperation>(`/operations/${id}`, { signal }),
   cancel: (id: string) => api.post<StorageOperation>(`/operations/${id}/cancel`),
   retry: (id: string, request_id: string) => api.post<{ operation_id: string }>(`/operations/${id}/retry`, { request_id }),

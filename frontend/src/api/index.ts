@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { validateRead, validateWrite } from './responses'
 
 const api = axios.create({
   baseURL: '/api/v1',
@@ -7,6 +8,12 @@ const api = axios.create({
   },
   // Include credentials (cookies) for authentication
   withCredentials: true,
+})
+
+api.interceptors.response.use(response => {
+  if (response.config.method === 'get') validateRead(response.config.url, response.data)
+  if (response.config.method === 'post' || response.config.method === 'put') validateWrite(response.config.url, response.data)
+  return response
 })
 
 // Types

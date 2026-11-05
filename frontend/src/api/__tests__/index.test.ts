@@ -174,6 +174,8 @@ describe('API Layer', () => {
           expect(params.id).toBe('1')
           return HttpResponse.json({
             id: 1,
+            name: 'Updated synthetic plan',
+            target_type: 'volume',
             ...body,
             updated_at: new Date().toISOString(),
           })
@@ -206,7 +208,10 @@ describe('API Layer', () => {
             {
               id: 1,
               target_id: 1,
-              target_name: 'test-volume',
+              name: 'Test schedule',
+              target_count: 1,
+              created_at: '2024-01-01T00:00:00Z',
+              updated_at: '2024-01-01T00:00:00Z',
               cron_expression: '0 2 * * *',
               enabled: true,
               next_run: '2024-01-02T02:00:00Z',

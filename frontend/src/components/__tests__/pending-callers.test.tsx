@@ -7,6 +7,7 @@ import { http, HttpResponse } from 'msw'
 import { server } from '../../test/mocks/server'
 import Retention from '../../pages/Retention'
 import Storage from '../../pages/Storage'
+import { MemoryRouter } from 'react-router-dom'
 
 const cases = [
   { title: 'Delete Retention Policy', trigger: 'Delete policy Synthetic policy', confirm: 'Delete', method: 'delete', url: '/api/v1/retention/982', Page: Retention },
@@ -34,7 +35,7 @@ describe('real confirmation callers retain pending state until the result', () =
     }))
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
     const user = userEvent.setup()
-    render(<StrictMode><QueryClientProvider client={client}><Page /></QueryClientProvider></StrictMode>)
+    render(<StrictMode><QueryClientProvider client={client}><MemoryRouter><Page /></MemoryRouter></QueryClientProvider></StrictMode>)
     await user.click(await screen.findByRole('button', { name: trigger, exact: true }))
     const dialog = screen.getByRole('dialog', { name: title })
     await user.click(within(dialog).getByRole('button', { name: confirm, exact: true }))
@@ -63,7 +64,7 @@ describe('real confirmation callers retain pending state until the result', () =
     server.use(http[method](url, () => { requests++; return HttpResponse.json({ deleted: 0 }) }))
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const user = userEvent.setup()
-    render(<QueryClientProvider client={client}><Page /></QueryClientProvider>)
+    render(<QueryClientProvider client={client}><MemoryRouter><Page /></MemoryRouter></QueryClientProvider>)
     const opener = await screen.findByRole('button', { name: trigger, exact: true })
     await user.click(opener)
     await user.click(within(screen.getByRole('dialog', { name: title })).getByRole('button', { name: 'Cancel' }))

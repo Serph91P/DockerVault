@@ -1,5 +1,10 @@
-import { useState } from 'react';
-import axios from 'axios';
+import { queryKeys } from '../api/queryKeys'
+import { QueryFeedback } from '../components/QueryFeedback'
+import NotificationContext from '../components/NotificationContext'
+import { useNotificationStore } from '../store/notifications'
+import { useValidationFeedback } from '../components/ValidationFeedback'
+import { useEffect, useState } from 'react';
+import { operationOutcome, type Outcome } from '../api/outcomes'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Cloud,
@@ -66,18 +71,14 @@ export default function Storage() {
   const [showForm, setShowForm] = useState(false);
   const [editingStorage, setEditingStorage] = useState<RemoteStorage | null>(null);
   const [testingId, setTestingId] = useState<number | null>(null);
+  useEffect(() => { try { localStorage.removeItem('storage-test-results') } catch { /* Never load unscoped provider results. */ } }, [])
 
-  // ST3: Persistent test results via localStorage
-  const [testResults, setTestResults] = useState<Record<number, { success: boolean; message: string; testedAt: string }>>(() => {
-    try {
-      const stored = localStorage.getItem('storage-test-results');
-      return stored ? JSON.parse(stored) : {};
-    } catch { return {}; }
-  });
-  const saveTestResult = (id: number, result: { success: boolean; message: string }) => {
+  const [testResults, setTestResults] = useState<Record<number, { success: boolean; outcome: Outcome; message: string; testedAt: string; revision?: string }>>({});
+  const saveTestResult = (id: number, result: { success: boolean; outcome: Outcome; message: string }, revision = queryClient.getQueryData<RemoteStorage[]>(queryKeys.storages.list())?.find(storage => storage.id === id)?.updated_at) => {
+    useNotificationStore.getState().addNotification({ type: result.success ? 'success' : 'warning', title: `Storage #${id} test result`, message: result.message, phase: result.outcome })
     setTestResults((prev) => {
-      const next = { ...prev, [id]: { ...result, testedAt: new Date().toISOString() } };
-      localStorage.setItem('storage-test-results', JSON.stringify(next));
+      const next = { ...prev, [id]: { ...result, revision, testedAt: new Date().toISOString() } };
+
       return next;
     });
   };
@@ -105,31 +106,32 @@ export default function Storage() {
     rclone_remote: '',
   });
 
-  const { data: storages, isLoading } = useQuery<RemoteStorage[]>({
-    queryKey: ['storages'],
+  const { data: storages, isLoading, ...storagesQuery } = useQuery<RemoteStorage[]>({
+    queryKey: queryKeys.storages.list(),
     queryFn: async () => {
       const res = await api.get('/storage');
       return res.data;
     },
   });
 
-  const { data: sshKeys } = useQuery<SSHKeyInfo[]>({
-    queryKey: ['ssh-keys'],
+  const { data: sshKeys, ...sshQuery } = useQuery<SSHKeyInfo[]>({
+    queryKey: queryKeys.sshKeys.list(),
     queryFn: async () => (await storageApi.listSSHKeys()).data,
   });
 
   const createMutation = useMutation({
-    mutationFn: (data: object) => api.post('/storage', data),
+    mutationFn: () => api.post('/storage', { ...formData, port: formData.port ? parseInt(formData.port) : null }).then(r => r.data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['storages'] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.storages.all });
       resetForm();
     },
   });
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: number; data: object }) => api.put(`/storage/${id}`, data),
+    mutationFn: () => api.put(`/storage/${editingStorage!.id}`, { ...formData, port: formData.port ? parseInt(formData.port) : null }).then(r => r.data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['storages'] });
+      setTestResults({});
+      queryClient.invalidateQueries({ queryKey: queryKeys.storages.all });
       resetForm();
     },
   });
@@ -138,27 +140,25 @@ export default function Storage() {
     mutationFn: (id: number) => api.delete(`/storage/${id}`),
     onSuccess: () => {
       setConfirmDialog(null);
-      queryClient.invalidateQueries({ queryKey: ['storages'] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.storages.all });
     },
   });
 
+  const validation = useValidationFeedback(createMutation.error ?? updateMutation.error)
   const testMutation = useMutation({
     mutationFn: async (id: number) => {
       setTestingId(id);
+      const revision = queryClient.getQueryData<RemoteStorage[]>(queryKeys.storages.list())?.find(storage => storage.id === id)?.updated_at
       const res = await api.post(`/storage/${id}/test`);
-      return { id, ...res.data };
+      return { id, revision, outcome: operationOutcome(res.data) };
     },
     onSuccess: (data) => {
-      saveTestResult(data.id, { success: data.success ?? true, message: data.message || 'Connection successful' });
       setTestingId(null);
+      if (queryClient.getQueryData<RemoteStorage[]>(queryKeys.storages.list())?.find(storage => storage.id === data.id)?.updated_at !== data.revision) return
+      saveTestResult(data.id, { success: data.outcome === 'completed', outcome: data.outcome, message: data.outcome === 'completed' ? 'Connection confirmed in this UI session' : data.outcome === 'partial' ? 'Partial result; test reported warnings' : data.outcome === 'failed' ? 'Connection test failed' : 'Connection result unknown; retry the test' }, data.revision);
     },
-    onError: (error: Error, id) => {
-      let message = error.message;
-      if (axios.isAxiosError(error)) {
-        const data = error.response?.data as { message?: string; detail?: string } | undefined;
-        message = data?.message || data?.detail || error.message;
-      }
-      saveTestResult(id, { success: false, message });
+    onError: (_error: Error, id) => {
+      saveTestResult(id, { success: false, outcome: 'unknown', message: 'Test response unavailable; no connection result confirmed' });
       setTestingId(null);
     },
   });
@@ -214,15 +214,10 @@ export default function Storage() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (formStep !== 3 || createMutation.isPending || updateMutation.isPending) return;
-    const data = {
-      ...formData,
-      port: formData.port ? parseInt(formData.port) : null,
-    };
-
     if (editingStorage) {
-      updateMutation.mutate({ id: editingStorage.id, data });
+      updateMutation.mutate();
     } else {
-      createMutation.mutate(data);
+      createMutation.mutate();
     }
   };
 
@@ -236,7 +231,7 @@ export default function Storage() {
             </label>
             <input
               type="text"
-              value={formData.base_path}
+              value={formData.base_path} aria-label="Base path" {...validation.field('base_path')}
               onChange={(e) => setFormData({ ...formData, base_path: e.target.value })}
               placeholder="/mnt/backup-storage"
               className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -254,7 +249,7 @@ export default function Storage() {
                 </label>
                 <input
                   type="text"
-                  value={formData.host}
+                  value={formData.host} aria-label="Host" {...validation.field('host')}
                   onChange={(e) => setFormData({ ...formData, host: e.target.value })}
                   placeholder="backup-server.local"
                   className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -266,7 +261,7 @@ export default function Storage() {
                 </label>
                 <input
                   type="number"
-                  value={formData.port}
+                  value={formData.port} aria-label="Port" {...validation.field('port')}
                   onChange={(e) => setFormData({ ...formData, port: e.target.value })}
                   placeholder="22"
                   className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -280,7 +275,7 @@ export default function Storage() {
                 </label>
                 <input
                   type="text"
-                  value={formData.username}
+                  value={formData.username} aria-label="Username" {...validation.field('username')}
                   onChange={(e) => setFormData({ ...formData, username: e.target.value })}
                   placeholder="backup"
                   className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -292,7 +287,7 @@ export default function Storage() {
                 </label>
                 <input
                   type="password"
-                  value={formData.password}
+                  value={formData.password} aria-label="Password" {...validation.field('password')}
                   onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                   placeholder="••••••••"
                   className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -343,7 +338,7 @@ export default function Storage() {
                     {isCustom && (
                       <input
                         type="text"
-                        value={formData.ssh_key_path}
+                        value={formData.ssh_key_path} aria-label="SSH key path" {...validation.field('ssh_key_path')}
                         onChange={(e) =>
                           setFormData({ ...formData, ssh_key_path: e.target.value })
                         }
@@ -366,7 +361,7 @@ export default function Storage() {
               </label>
               <input
                 type="text"
-                value={formData.base_path}
+                value={formData.base_path} aria-label="Base path" {...validation.field('base_path')}
                 onChange={(e) => setFormData({ ...formData, base_path: e.target.value })}
                 placeholder="/home/backup/docker-backups"
                 className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -385,7 +380,7 @@ export default function Storage() {
                 </label>
                 <input
                   type="text"
-                  value={formData.s3_bucket}
+                  value={formData.s3_bucket} aria-label="S3 bucket" {...validation.field('s3_bucket')}
                   onChange={(e) => setFormData({ ...formData, s3_bucket: e.target.value })}
                   placeholder="my-backups"
                   className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -397,7 +392,7 @@ export default function Storage() {
                 </label>
                 <input
                   type="text"
-                  value={formData.s3_region}
+                  value={formData.s3_region} aria-label="S3 region" {...validation.field('s3_region')}
                   onChange={(e) => setFormData({ ...formData, s3_region: e.target.value })}
                   placeholder="eu-central-1"
                   className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -411,7 +406,7 @@ export default function Storage() {
                 </label>
                 <input
                   type="text"
-                  value={formData.s3_access_key}
+                  value={formData.s3_access_key} aria-label="S3 access key" {...validation.field('s3_access_key')}
                   onChange={(e) => setFormData({ ...formData, s3_access_key: e.target.value })}
                   placeholder="AKIAIOSFODNN7EXAMPLE"
                   className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -423,7 +418,7 @@ export default function Storage() {
                 </label>
                 <input
                   type="password"
-                  value={formData.s3_secret_key}
+                  value={formData.s3_secret_key} aria-label="S3 secret key" {...validation.field('s3_secret_key')}
                   onChange={(e) => setFormData({ ...formData, s3_secret_key: e.target.value })}
                   placeholder="••••••••"
                   className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -436,7 +431,7 @@ export default function Storage() {
               </label>
               <input
                 type="text"
-                value={formData.s3_endpoint_url}
+                value={formData.s3_endpoint_url} aria-label="S3 endpoint URL" {...validation.field('s3_endpoint_url')}
                 onChange={(e) => setFormData({ ...formData, s3_endpoint_url: e.target.value })}
                 placeholder="https://s3.eu-central-003.backblazeb2.com"
                 className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -448,7 +443,7 @@ export default function Storage() {
               </label>
               <input
                 type="text"
-                value={formData.base_path}
+                value={formData.base_path} aria-label="Base path" {...validation.field('base_path')}
                 onChange={(e) => setFormData({ ...formData, base_path: e.target.value })}
                 placeholder="docker-backups/"
                 className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -466,7 +461,7 @@ export default function Storage() {
               </label>
               <input
                 type="text"
-                value={formData.webdav_url}
+                value={formData.webdav_url} aria-label="WebDAV URL" {...validation.field('webdav_url')}
                 onChange={(e) => setFormData({ ...formData, webdav_url: e.target.value })}
                 placeholder="https://cloud.example.com/remote.php/dav/files/user/"
                 className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -479,7 +474,7 @@ export default function Storage() {
                 </label>
                 <input
                   type="text"
-                  value={formData.username}
+                  value={formData.username} aria-label="Username" {...validation.field('username')}
                   onChange={(e) => setFormData({ ...formData, username: e.target.value })}
                   placeholder="admin"
                   className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -491,7 +486,7 @@ export default function Storage() {
                 </label>
                 <input
                   type="password"
-                  value={formData.password}
+                  value={formData.password} aria-label="Password" {...validation.field('password')}
                   onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                   placeholder="••••••••"
                   className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -504,7 +499,7 @@ export default function Storage() {
               </label>
               <input
                 type="text"
-                value={formData.base_path}
+                value={formData.base_path} aria-label="Base path" {...validation.field('base_path')}
                 onChange={(e) => setFormData({ ...formData, base_path: e.target.value })}
                 placeholder="Backups/Docker"
                 className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -523,7 +518,7 @@ export default function Storage() {
                 </label>
                 <input
                   type="text"
-                  value={formData.host}
+                  value={formData.host} aria-label="Host" {...validation.field('host')}
                   onChange={(e) => setFormData({ ...formData, host: e.target.value })}
                   placeholder="ftp.example.com"
                   className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -535,7 +530,7 @@ export default function Storage() {
                 </label>
                 <input
                   type="number"
-                  value={formData.port}
+                  value={formData.port} aria-label="Port" {...validation.field('port')}
                   onChange={(e) => setFormData({ ...formData, port: e.target.value })}
                   placeholder="21"
                   className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -549,7 +544,7 @@ export default function Storage() {
                 </label>
                 <input
                   type="text"
-                  value={formData.username}
+                  value={formData.username} aria-label="Username" {...validation.field('username')}
                   onChange={(e) => setFormData({ ...formData, username: e.target.value })}
                   placeholder="backup"
                   className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -561,7 +556,7 @@ export default function Storage() {
                 </label>
                 <input
                   type="password"
-                  value={formData.password}
+                  value={formData.password} aria-label="Password" {...validation.field('password')}
                   onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                   placeholder="••••••••"
                   className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -574,7 +569,7 @@ export default function Storage() {
               </label>
               <input
                 type="text"
-                value={formData.base_path}
+                value={formData.base_path} aria-label="Base path" {...validation.field('base_path')}
                 onChange={(e) => setFormData({ ...formData, base_path: e.target.value })}
                 placeholder="/backups/docker"
                 className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -592,7 +587,7 @@ export default function Storage() {
               </label>
               <input
                 type="text"
-                value={formData.rclone_remote}
+                value={formData.rclone_remote} aria-label="Rclone remote" {...validation.field('rclone_remote')}
                 onChange={(e) => setFormData({ ...formData, rclone_remote: e.target.value })}
                 placeholder="gdrive"
                 className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -607,7 +602,7 @@ export default function Storage() {
               </label>
               <input
                 type="text"
-                value={formData.base_path}
+                value={formData.base_path} aria-label="Base path" {...validation.field('base_path')}
                 onChange={(e) => setFormData({ ...formData, base_path: e.target.value })}
                 placeholder="backups/docker"
                 className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
@@ -641,9 +636,10 @@ export default function Storage() {
       </div>
 
       {/* Storage Type Overview */}
+      <NotificationContext domain="storage" />
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         {STORAGE_TYPES.map(({ value, label, icon: Icon, description }) => {
-          const count = storages?.filter((s) => s.storage_type === value).length || 0;
+          const count = storages?.filter((s) => s.storage_type === value).length ?? 'Unknown';
           return (
             <div
               key={value}
@@ -695,6 +691,8 @@ export default function Storage() {
           <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Configured Storage Locations</h2>
         </div>
 
+        <QueryFeedback name="Storage locations" query={storagesQuery} />
+        <QueryFeedback name="SSH keys" query={sshQuery} />
         {isLoading ? (
           <div className="p-6 space-y-3">
             {[...Array(2)].map((_, i) => (
@@ -763,7 +761,7 @@ export default function Storage() {
                   </div>
                   <div className="flex flex-col items-end gap-1">
                     <div className="flex items-center gap-2">
-                      {testResults[storage.id] && (
+                      {testResults[storage.id] && testResults[storage.id].revision === storage.updated_at && (
                         <span
                           className={`flex items-center gap-1 text-sm ${
                             testResults[storage.id].success ? 'text-green-600' : 'text-red-600'
@@ -775,7 +773,7 @@ export default function Storage() {
                           ) : (
                             <XCircle className="w-4 h-4" />
                           )}
-                          {testResults[storage.id].success ? 'Connected' : 'Error'}
+                          {testResults[storage.id].success ? 'Connected' : testResults[storage.id].outcome === 'partial' ? 'Partial' : testResults[storage.id].outcome === 'failed' ? 'Failed' : 'Unknown'}
                         </span>
                       )}
                       <button
@@ -812,7 +810,7 @@ export default function Storage() {
                         <Trash2 className="w-5 h-5" />
                       </button>
                     </div>
-                    {testResults[storage.id]?.message && (
+                    {testResults[storage.id]?.message && testResults[storage.id].revision === storage.updated_at && (
                       <p
                         className={`max-w-xs text-right text-xs ${
                           testResults[storage.id].success ? 'text-green-600' : 'text-red-600'
@@ -826,13 +824,13 @@ export default function Storage() {
               );
             })}
           </div>
-        ) : (
+        ) : storages && !storagesQuery.isError ? (
           <div className="p-8 text-center text-slate-500 dark:text-slate-400">
             <Wifi className="w-12 h-12 mx-auto mb-4 opacity-50" />
             <p className="text-lg font-medium">No remote storages configured</p>
             <p className="text-sm">Add a storage location to backup off-site</p>
           </div>
-        )}
+        ) : null}
       </div>
 
       {/* Storage Browser Modal */}
@@ -888,6 +886,7 @@ export default function Storage() {
             </div>
 
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
+              {validation.summary}
               {/* Step 1: Name & Type */}
               {formStep === 1 && (
                 <>
@@ -897,7 +896,7 @@ export default function Storage() {
                     </label>
                     <input
                       type="text"
-                      value={formData.name}
+                      value={formData.name} aria-label="Name" {...validation.field('name')}
                       onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                       placeholder="My Backup Storage"
                       className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-white"

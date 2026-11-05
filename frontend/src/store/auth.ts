@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import api from '../api';
 import { clearSession, onSessionExpired } from './session';
 import { onSocketSessionExpired } from './websocket';
+import { bindNotificationOwner } from './notifications';
 
 interface User {
   id: number;
@@ -44,7 +45,10 @@ export const useAuthStore = create<AuthState>((set) => ({
       if (typeof authenticated !== 'boolean' || typeof setup_complete !== 'boolean') {
         throw new Error('Invalid authentication status');
       }
-      if (!authenticated || useAuthStore.getState().user?.id !== user?.id) clearSession(authenticated ? user?.id : undefined);
+      if (authenticated && (!user || !Number.isSafeInteger(user.id) || user.id <= 0)) throw new Error('Invalid authenticated user');
+      const previousUser = useAuthStore.getState().user;
+      if (!authenticated || previousUser?.id !== user?.id) clearSession(authenticated ? user?.id : undefined, authenticated && previousUser === null ? user.id : undefined);
+      if (authenticated) bindNotificationOwner(user.id);
       set({
         isAuthenticated: authenticated,
         setupRequired: setup_complete === false,
@@ -70,6 +74,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ user: null, isAuthenticated: false, logoutError: null });
     const response = await api.post('/auth/login', { username, password });
     if (generation !== authGeneration) throw new Error('Session changed');
+    bindNotificationOwner(response.data.user.id);
     set({ isAuthenticated: true, user: response.data.user, setupRequired: false, statusError: null });
   },
 
@@ -96,6 +101,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       confirm_password: password,
     });
     if (generation !== authGeneration) throw new Error('Session changed');
+    bindNotificationOwner(response.data.user.id);
     set({ isAuthenticated: true, user: response.data.user, setupRequired: false, statusError: null });
   },
 }));
