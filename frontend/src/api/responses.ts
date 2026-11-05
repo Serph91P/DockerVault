@@ -9,10 +9,17 @@ const validationFields = new Set(['target_type', 'container_name', 'stack_name',
 const validationMessages: Record<string, string> = { missing: 'This field is required.', greater_than: 'Value is outside the allowed range.', greater_than_equal: 'Value is outside the allowed range.', less_than: 'Value is outside the allowed range.', less_than_equal: 'Value is outside the allowed range.', int_parsing: 'Enter a whole number.', int_type: 'Enter a whole number.', string_too_short: 'The value is too short.', string_too_long: 'The value is too long.', value_error: 'Check this value.', url_parsing: 'Enter a valid URL.' }
 export function safeRequestError(error: { response?: { status?: number; data?: unknown } }) {
   const fields: Record<string, string> = {}
-  const detail = (error.response?.data as { detail?: unknown } | undefined)?.detail
-  if (error.response?.status === 422 && Array.isArray(detail)) for (const item of detail) {
-    if (!item || !Array.isArray(item.loc) || item.loc.length !== 2 || item.loc[0] !== 'body' || !validationFields.has(item.loc[1])) continue
-    fields[item.loc[1]] = Object.prototype.hasOwnProperty.call(validationMessages, item.type) ? validationMessages[item.type] : 'Check this value.'
+  const data = error.response?.data
+  if (error.response?.status === 422 && object(data)) {
+    if (Array.isArray(data.detail)) for (const item of data.detail) {
+      if (!object(item) || !Array.isArray(item.loc) || item.loc.length !== 2 || item.loc[0] !== 'body' || typeof item.loc[1] !== 'string' || !validationFields.has(item.loc[1])) continue
+      fields[item.loc[1]] = typeof item.type === 'string' && Object.prototype.hasOwnProperty.call(validationMessages, item.type) ? validationMessages[item.type] : 'Check this value.'
+    }
+    if (Array.isArray(data.errors)) for (const item of data.errors) {
+      if (!object(item) || !Object.prototype.hasOwnProperty.call(item, 'field') || typeof item.field !== 'string' || !item.field.startsWith('body.')) continue
+      const field = item.field.slice(5)
+      if (validationFields.has(field)) fields[field] = 'Check this value.'
+    }
   }
   return new ResponseError(error.response?.status, fields)
 }

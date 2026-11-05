@@ -42,6 +42,12 @@ interface Props {
   preselectedTarget?: string | null
 }
 const GROUPS = ['Source & scope', 'Strategy', 'Execution & review']
+interface CandidateReadback {
+  generation: number
+  kind: NonNullable<WizardData['unconfirmed']>
+  candidates: Array<{ id: number; label: string }>
+  error: boolean
+}
 const same = (a: unknown, b: unknown): boolean => {
   if (Array.isArray(a)) return Array.isArray(b) && a.length === b.length && a.every((v, i) => same(v, b[i]))
   if (a && typeof a === 'object')
@@ -87,8 +93,8 @@ function PlanEditor({ onClose, onSaved, editTarget, preselectedType, preselected
   const [errors, setErrors] = useState<string[]>([])
 
   const [conflict, setConflict] = useState<BackupTarget | null>(null)
-  const [candidates, setCandidates] = useState<Array<{ id: number; label: string }>>([])
-  const [candidateError, setCandidateError] = useState(false)
+  const [readback, setReadback] = useState<CandidateReadback | null>(null)
+  const readbackGeneration = useRef(0)
   const [reconciled, setReconciled] = useState(false)
   const finished = useRef(false)
   const errorFocus = useRef<HTMLDivElement>(null)
@@ -121,6 +127,13 @@ function PlanEditor({ onClose, onSaved, editTarget, preselectedType, preselected
     queryFn: () => storageApi.list().then((r) => r.data),
   })
 
+  const invalidateReadback = () => {
+    readbackGeneration.current++
+    setReadback(null)
+    setReconciled(false)
+  }
+  useEffect(() => () => { readbackGeneration.current++ }, [])
+
   useEffect(() => {
     if (touched && !draft && !finished.current) writer?.queue(data, group)
     return () => writer?.cancel()
@@ -129,6 +142,7 @@ function PlanEditor({ onClose, onSaved, editTarget, preselectedType, preselected
     const signal = sessionSignal()
     const revoke = () => {
       finished.current = true
+      invalidateReadback()
       writer?.clear()
     }
     signal.addEventListener('abort', revoke, { once: true })
@@ -142,6 +156,7 @@ function PlanEditor({ onClose, onSaved, editTarget, preselectedType, preselected
   }, [errors, editor.saveError])
 
   const updateData = (updates: Partial<WizardData>) => {
+    invalidateReadback()
     setTouched(true)
     setData((prev) =>
       ['targetType', 'containerName', 'stackName', 'volumeName', 'hostPath'].some(
@@ -153,16 +168,19 @@ function PlanEditor({ onClose, onSaved, editTarget, preselectedType, preselected
   }
   const checkpoint = (next: WizardData, revision = baseline) => {
     if (finished.current) return
+    invalidateReadback()
     setData(next)
     setTouched(true)
     writer?.checkpoint(next, group, revision)
   }
   const cancel = () => {
+    invalidateReadback()
     writer?.cancel()
     editor.close()
     onClose()
   }
   const discard = () => {
+    invalidateReadback()
     writer?.clear()
     editor.retry()
     setErrors([])
@@ -173,6 +191,7 @@ function PlanEditor({ onClose, onSaved, editTarget, preselectedType, preselected
   }
   const restore = () => {
     if (!draft) return
+    invalidateReadback()
     if (editTarget && draft.revision !== editTarget.updated_at) {
       setConflict(editTarget)
       return
@@ -193,60 +212,61 @@ function PlanEditor({ onClose, onSaved, editTarget, preselectedType, preselected
     setTouched(true)
   }
   const readCandidates = async () => {
-    setCandidateError(false)
-    setCandidates([])
+    const kind = data.unconfirmed
+    if (!kind || finished.current) return
+    const generation = ++readbackGeneration.current
+    const result: CandidateReadback = { kind, generation, candidates: [], error: false }
+    setReadback({ ...result })
     try {
-      const kind = data.unconfirmed
       if (kind === 'target') {
         const rows = (await targetsApi.list()).data
-        setCandidates(
-          rows
-            .filter((t) => t.name === data.targetName)
-            .map((t) => ({
-              id: t.id,
-              label: `${t.name} (#${t.id}) — ${t.target_type}; ${t.container_name || t.stack_name || t.volume_name || t.host_path}; updated ${t.updated_at || 'unknown'}`,
-            }))
-        )
+        result.candidates = rows
+          .filter((t) => t.name === data.targetName)
+          .map((t) => ({
+            id: t.id,
+            label: `${t.name} (#${t.id}) — ${t.target_type}; ${t.container_name || t.stack_name || t.volume_name || t.host_path}; updated ${t.updated_at || 'unknown'}`,
+          }))
       } else if (kind === 'schedule') {
         const rows = (await schedulesApi.list()).data
-        setCandidates(
-          rows
-            .filter((s) => s.name === data.newSchedule?.name)
-            .map((s) => ({
-              id: s.id,
-              label: `${s.name} (#${s.id}): ${s.cron_expression}; ${s.description || ''}; enabled ${s.enabled}`,
-            }))
-        )
-      } else if (kind === 'retention') {
+        result.candidates = rows
+          .filter((s) => s.name === data.newSchedule?.name)
+          .map((s) => ({
+            id: s.id,
+            label: `${s.name} (#${s.id}): ${s.cron_expression}; ${s.description || ''}; enabled ${s.enabled}`,
+          }))
+      } else {
         const rows = (await retentionApi.listPolicies()).data
-        setCandidates(
-          rows
-            .filter((p) => p.name === data.newRetentionPolicy?.name)
-            .map((p) => ({
-              id: p.id,
-              label: `${p.name} (#${p.id}): last ${p.keep_last}, daily ${p.keep_daily}, weekly ${p.keep_weekly}, monthly ${p.keep_monthly}, yearly ${p.keep_yearly}, age ${p.max_age_days}`,
-            }))
-        )
+        result.candidates = rows
+          .filter((p) => p.name === data.newRetentionPolicy?.name)
+          .map((p) => ({
+            id: p.id,
+            label: `${p.name} (#${p.id}): last ${p.keep_last}, daily ${p.keep_daily}, weekly ${p.keep_weekly}, monthly ${p.keep_monthly}, yearly ${p.keep_yearly}, age ${p.max_age_days}`,
+          }))
       }
     } catch {
-      setCandidateError(true)
+      result.error = true
     }
+    if (generation === readbackGeneration.current && !finished.current) setReadback({ ...result })
   }
-  const chooseCandidate = async (id: number) => {
+  const chooseCandidate = async (selection: CandidateReadback, id: number) => {
+    const currentSelection = () =>
+      selection.generation === readbackGeneration.current && selection.kind === data.unconfirmed && !finished.current
+    if (!currentSelection() || !selection.candidates.some(candidate => candidate.id === id)) return
     await editor.run(
       async (signal, current) => {
-        const kind = data.unconfirmed
+        const kind = selection.kind
         if (kind === 'target') {
           await api.get(`/targets/${id}`, { signal })
-          if (!current()) return
+          if (!current() || !currentSelection()) return
           // Explicit user choice opens the canonical detail, never silently overwrites a candidate.
           finished.current = true
+          invalidateReadback()
           writer?.clear()
           onSaved?.(id)
           if (!onSaved) onClose()
         } else {
           await api.get(`/${kind === 'schedule' ? 'schedules' : 'retention'}/${id}`, { signal })
-          if (current())
+          if (current() && currentSelection())
             checkpoint({
               ...data,
               unconfirmed: null,
@@ -263,17 +283,19 @@ function PlanEditor({ onClose, onSaved, editTarget, preselectedType, preselected
     )
   }
 
-  const reloadScheduler = () =>
-    editor.run(
+  const reloadScheduler = () => {
+    const generation = readbackGeneration.current
+    return editor.run(
       async (signal, current) => {
         await api.post('/schedules/reload', undefined, { signal })
         await api.get('/schedules/jobs', { signal })
-        if (current()) setReconciled(true)
+        if (current() && generation === readbackGeneration.current) setReconciled(true)
       },
       () => {
         void client.invalidateQueries({ queryKey: queryKeys.schedules.all })
       }
     )
+  }
 
   const save = async () => {
     const invalid = validateEditor(data)
@@ -366,7 +388,10 @@ function PlanEditor({ onClose, onSaved, editTarget, preselectedType, preselected
         const payload = {
           ...safePayload,
           ...(editor.loaded
-            ? { pre_backup_command: editor.hooks.pre || null, post_backup_command: editor.hooks.post || null }
+            ? {
+                pre_backup_command: editor.hooks.pre.trim() ? editor.hooks.pre : null,
+                post_backup_command: editor.hooks.post.trim() ? editor.hooks.post : null,
+              }
             : {}),
         }
         let schedulerFailed = false
@@ -472,6 +497,7 @@ function PlanEditor({ onClose, onSaved, editTarget, preselectedType, preselected
             type="button"
             className="btn-secondary"
             onClick={() => {
+              invalidateReadback()
               setBaseline(conflict.updated_at)
               setData((prev) => ({
                 ...(draft?.data || prev),
@@ -492,6 +518,7 @@ function PlanEditor({ onClose, onSaved, editTarget, preselectedType, preselected
             type="button"
             className="btn-secondary"
             onClick={() => {
+              invalidateReadback()
               setData({ ...targetToWizardData(conflict), confirmedTargetId: editTarget ? null : conflict.id })
               setBaseline(conflict.updated_at)
               setConflict(null)
@@ -540,12 +567,12 @@ function PlanEditor({ onClose, onSaved, editTarget, preselectedType, preselected
           >
             Reload scheduler and read jobs
           </button>
-          {candidateError && <p>Candidate readback unavailable. Retry; no new resource has been requested.</p>}
+          {readback?.kind === data.unconfirmed && readback.error && <p>Candidate readback unavailable. Retry; no new resource has been requested.</p>}
           <ul>
-            {candidates.map((candidate) => (
+            {readback?.kind === data.unconfirmed && readback.candidates.map((candidate) => (
               <li key={candidate.id} className="space-y-2 break-all">
                 <p>{candidate.label}</p>
-                <button type="button" className="btn-secondary" onClick={() => void chooseCandidate(candidate.id)}>
+                <button type="button" className="btn-secondary" disabled={editor.pending} onClick={() => void chooseCandidate(readback, candidate.id)}>
                   {data.unconfirmed === 'target' ? 'Open and inspect' : 'Use explicitly selected'} #{candidate.id}
                 </button>
               </li>
@@ -667,6 +694,7 @@ function PlanEditor({ onClose, onSaved, editTarget, preselectedType, preselected
               hooksDisabled={editor.loading || !editor.loaded || editor.pending}
               data={{ ...data, preCommand: editor.hooks.pre, postCommand: editor.hooks.post }}
               updateData={(updates) => {
+                invalidateReadback()
                 if (updates.preCommand !== undefined) editor.setHooks((prev) => ({ ...prev, pre: updates.preCommand! }))
                 if (updates.postCommand !== undefined)
                   editor.setHooks((prev) => ({ ...prev, post: updates.postCommand! }))

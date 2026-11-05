@@ -190,6 +190,8 @@ try {
   await page.route('**/api/v1/schedules',lostPolicy)
   await group('Execution & review');await page.getByRole('button',{name:'Save plan',exact:true}).click()
   await page.getByRole('heading',{name:'Unconfirmed schedule creation',exact:true}).waitFor()
+  // The checkpoint is visible before POST finishes; assert durable effects only after its lost-response outcome.
+  await page.getByText(/Could not save backup configuration/).waitFor()
   check(schedulePosts===1&&(await api('/schedules')).length===schedulesBefore+1&&await page.getByRole('button',{name:'Save plan',exact:true}).isDisabled(),'lost policy POST really commits once and blocks blind replay')
   await page.unroute('**/api/v1/schedules',lostPolicy)
   await page.getByRole('button',{name:'Read back candidates',exact:true}).click()
@@ -209,6 +211,7 @@ try {
   await page.route('**/api/v1/targets',lostTarget)
   await group('Execution & review');await page.getByRole('button',{name:'Save plan',exact:true}).click()
   await page.getByRole('heading',{name:'Unconfirmed target creation',exact:true}).waitFor()
+  await page.getByText(/Could not save backup configuration/).waitFor()
   check(targetPosts===1&&(await api('/targets')).length===beforeUnknown+1,'503 after real create commit remains unconfirmed without second POST')
   await page.unroute('**/api/v1/targets',lostTarget)
   await page.getByRole('button',{name:'Reload scheduler and read jobs',exact:true}).click()

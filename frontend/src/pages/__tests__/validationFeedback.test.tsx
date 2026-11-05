@@ -47,9 +47,12 @@ it('storage validation keeps the stepped form and associates a safe name error o
   expect(name).toHaveAttribute('aria-invalid', 'true')
   expect(name).toHaveAccessibleDescription(/check this value/i)
 })
-it('retains form input and associates static field validation without caching server echoes', async () => {
+it.each(['detail', 'errors'])('retains form input and associates static %s validation without caching server echoes', async envelope => {
   const marker = 'SYNTHETIC-PRIVATE-INPUT'
-  server.use(http.post('/api/v1/retention', () => HttpResponse.json({ detail: [{ loc: ['body', 'keep_last'], type: 'greater_than_equal', msg: marker, input: marker, ctx: { value: marker } }, { loc: ['body', marker], type: marker, msg: marker }] }, { status: 422 })))
+  const body = envelope === 'detail'
+    ? { detail: [{ loc: ['body', 'keep_last'], type: 'greater_than_equal', msg: marker, input: marker, ctx: { value: marker } }, { loc: ['body', marker], type: marker, msg: marker }] }
+    : { detail: 'Validation error', errors: [{ field: 'body.keep_last', message: marker, msg: marker, input: marker, ctx: { value: marker } }, { field: 'body.' + marker, message: marker }] }
+  server.use(http.post('/api/v1/retention', () => HttpResponse.json(body, { status: 422 })))
   render(<QueryClientProvider client={queryClient}><Retention /></QueryClientProvider>)
   const user = userEvent.setup()
   await user.click(screen.getByRole('button', { name: 'New Policy' }))
@@ -57,7 +60,7 @@ it('retains form input and associates static field validation without caching se
   await user.click(screen.getByRole('button', { name: 'Create', exact: true }))
   const field = screen.getByRole('spinbutton', { name: 'Keep Last' })
   await waitFor(() => expect(field).toHaveAttribute('aria-invalid', 'true'))
-  expect(field).toHaveAccessibleDescription(/outside the allowed range/i)
+  expect(field).toHaveAccessibleDescription(envelope === 'detail' ? /outside the allowed range/i : /check this value/i)
   expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Retained policy input')
   expect(screen.getByRole('alert')).toHaveTextContent(/review the highlighted fields/i)
   const errors = queryClient.getMutationCache().getAll().map(m => m.state.error)
