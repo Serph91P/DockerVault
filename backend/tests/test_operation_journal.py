@@ -181,7 +181,7 @@ async def test_version_three_upgrade_rolls_back_then_retries(test_engine):
             await connection.execute(
                 text("SELECT version FROM schema_migrations ORDER BY version")
             )
-        ).scalars().all() == [1, 2, 3, 4, 5, 6]
+        ).scalars().all() == [1, 2, 3, 4, 5, 6, 7]
         assert (
             await connection.execute(text("SELECT count(*) FROM workload_operations"))
         ).scalar_one() == 0

@@ -118,6 +118,9 @@ function handleMessage(
   get: () => WebSocketStore
 ) {
   switch (data.type) {
+    case 'operation_update':
+      if (typeof data.operation_id === 'string') window.dispatchEvent(new CustomEvent('storage-operation-update', { detail: { operation_id: data.operation_id } }))
+      break
     case 'connected':
       console.log('WebSocket handshake complete')
       break

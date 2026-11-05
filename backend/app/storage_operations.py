@@ -45,12 +45,16 @@ def validate_relative_path(path: str, *, allow_root: bool = False) -> str:
 
 
 @contextmanager
-def open_local_directory(root: Path, relative_path: str = ""):
+def open_local_directory(root: Path, relative_path: str = "", *, expected_root=None):
     """Pin each parent with O_NOFOLLOW; replacement names cannot redirect I/O."""
     path = validate_relative_path(relative_path, allow_root=True)
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     fd = os.open(root, flags)
     try:
+        if expected_root is not None:
+            info = os.fstat(fd)
+            if [info.st_dev, info.st_ino] != list(expected_root):
+                raise ValueError("Storage root changed")
         for part in path.split("/") if path else ():
             child = os.open(part, flags, dir_fd=fd)
             os.close(fd)
@@ -66,12 +70,13 @@ def delete_local_target(
     *,
     missing_ok: bool = False,
     allow_directories: bool = True,
+    expected_root=None,
 ) -> DeleteResult:
     kind: Literal["file", "directory", "symlink"] | None = None
     try:
         path = validate_relative_path(relative_path)
         parent, _, name = path.rpartition("/")
-        with open_local_directory(root, parent) as fd:
+        with open_local_directory(root, parent, expected_root=expected_root) as fd:
             info = os.stat(name, dir_fd=fd, follow_symlinks=False)
             kind = (
                 "symlink"
