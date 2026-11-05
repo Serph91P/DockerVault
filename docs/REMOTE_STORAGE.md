@@ -19,6 +19,40 @@ A collision may already have overwritten the older bytes; metadata/renaming cann
 recover them. Do not delete the last verified local copy based on a previously
 acknowledged upload alone.
 
+## Local storage browser deletion and sizes
+
+Local backups and configured local/network-mounted roots use the same descriptor-
+anchored deletion service. Browser deletion accepts files, leaf symlinks and nested
+directories, but rejects absolute paths, traversal, symlink parents and the root
+itself. A leaf symlink is removed without touching its target. Missing targets and
+permission failures remain errors; bulk responses preserve each item's outcome.
+Internal archive cleanup remains idempotent and file-only, so a directory replacing
+an archive is not recursively deleted without a browser confirmation.
+
+Listings are shallow. `GET /storage/local/files/size?path=folder` and
+`GET /storage/{id}/files/size?path=folder` separately return
+`{"path":"folder","state":"completed","bytes":123}` or
+`{"path":"folder","state":"unavailable","bytes":null}`. These use the normal
+authenticated `/api/v1` prefix. Remote providers without this capability report
+unavailable, not zero. Symlinks do not contribute target bytes or get traversed.
+
+Size scans run outside the event loop with two workers at most. Disconnects and
+cancelled requests signal the worker and join it before releasing its concurrency
+slot. The process-local LRU cache holds at most 128 entries for five seconds,
+keyed by storage/root identity and relative path. Cache hits revalidate every
+recorded file/directory's non-following inode, mode, size and nanosecond timestamps,
+so nested edits, additions and permission changes do not rely on root mtime alone.
+Trees above 4096 metadata records are measured but not retained in the cache.
+Deletion invalidates the root's cached sizes. The UI cancels/discards inactive size
+queries on navigation, target changes and session teardown; refresh reloads sizes.
+Sizes describe observed filesystem metadata, not an atomic snapshot of a live writer.
+
+The isolated production-image/browser regression is reproducible with
+`python backend/tests/run_storage_browser.py PRODUCT_IMAGE PLAYWRIGHT_RUNNER_IMAGE`.
+The runner image must provide Playwright in `/runner`. Both containers are disposable,
+share only an isolated network namespace, and never mount production data or a Docker
+socket. The test reads final disk contents, including the unchanged external sentinel.
+
 ## FTP transport
 
 `ftp` means plain, **unencrypted FTP**, including credentials and backup contents.

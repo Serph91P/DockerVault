@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -717,6 +717,101 @@ def _get_local_backend():
     return LocalStorage(config)
 
 
+async def _delete_browser_target(backend, path: str):
+    from ..remote_storage import LocalStorage
+    from ..storage_operations import DeleteResult, validate_relative_path
+
+    try:
+        safe_path = validate_relative_path(path)
+        if isinstance(backend, LocalStorage):
+            return await backend.delete_result(safe_path)
+        success = await backend.delete(safe_path)
+        return DeleteResult(
+            path,
+            success,
+            error=None if success else "Delete failed",
+            status_code=200 if success else 502,
+        )
+    except ValueError:
+        return DeleteResult(path, False, error="Invalid file path", status_code=400)
+    except Exception:
+        logger.exception("Storage browser delete failed")
+        return DeleteResult(path, False, error="Delete failed", status_code=500)
+
+
+async def _delete_browser_single(backend, path: str):
+    result = await _delete_browser_target(backend, path)
+    if not result.success:
+        raise HTTPException(status_code=result.status_code, detail=result.error)
+    return {"message": "Deleted target", "kind": result.kind}
+
+
+async def _delete_browser_bulk(backend, paths: list[str]):
+    results = []
+    for path in paths:
+        result = await _delete_browser_target(backend, path)
+        results.append(
+            {
+                "path": path,
+                "success": result.success,
+                "kind": result.kind,
+                "error": result.error,
+            }
+        )
+    succeeded = sum(r["success"] for r in results)
+    return {
+        "results": results,
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
+    }
+
+
+async def _list_browser_files(backend, path: str):
+    from ..remote_storage import LocalStorage
+    from ..storage_operations import validate_relative_path
+
+    try:
+        safe_path = validate_relative_path(path, allow_root=True)
+        return {"files": await backend.list_files(safe_path), "path": safe_path}
+    except (ValueError, NotADirectoryError):
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Directory not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    except Exception:
+        raise HTTPException(
+            status_code=500 if isinstance(backend, LocalStorage) else 502,
+            detail="Listing failed"
+            if isinstance(backend, LocalStorage)
+            else "Remote listing failed",
+        )
+
+
+async def _browser_directory_size(backend, path: str, request: Request):
+    from ..remote_storage import LocalStorage, _await_io_settled
+    from ..storage_operations import directory_sizes
+
+    if not isinstance(backend, LocalStorage):
+        return {"path": path, "state": "unavailable", "bytes": None}
+    work = asyncio.create_task(
+        directory_sizes.get(backend.config.id, Path(backend.config.base_path), path)
+    )
+    try:
+        while not work.done():
+            await asyncio.wait({work}, timeout=0.05)
+            if await request.is_disconnected():
+                raise asyncio.CancelledError
+        return work.result()
+    finally:
+        if not work.done():
+            work.cancel()
+            try:
+                await _await_io_settled(work)
+            except asyncio.CancelledError:
+                pass
+
+
 class BulkDeleteRequest(BaseModel):
     paths: list[str]
 
@@ -728,10 +823,13 @@ class BulkDownloadRequest(BaseModel):
 @router.get("/local/files")
 async def list_local_files(path: str = ""):
     """List files in the local backup directory."""
-    backend = _get_local_backend()
-    safe_path = _validate_remote_path(path) if path else ""
-    files = await backend.list_files(safe_path)
-    return {"files": files, "path": safe_path}
+    return await _list_browser_files(_get_local_backend(), path)
+
+
+@router.get("/local/files/size")
+async def local_directory_size(request: Request, path: str):
+    """Calculate recursive bytes separately from listing; disconnect cancels work."""
+    return await _browser_directory_size(_get_local_backend(), path, request)
 
 
 @router.get("/local/files/download")
@@ -769,39 +867,14 @@ async def download_local_file(path: str):
 
 @router.delete("/local/files")
 async def delete_local_file(path: str):
-    """Delete a file from the local backup directory."""
-    backend = _get_local_backend()
-    safe_path = _validate_remote_path(path)
-
-    try:
-        success = await backend.delete(safe_path)
-        if not success:
-            raise HTTPException(status_code=500, detail="Delete failed")
-        return {"message": f"Deleted {safe_path}"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Local delete failed: {e}")
-        raise HTTPException(status_code=500, detail="Delete failed")
+    """Delete a file, leaf symlink or directory below the local backup root."""
+    return await _delete_browser_single(_get_local_backend(), path)
 
 
 @router.post("/local/files/bulk-delete")
 async def bulk_delete_local_files(request: BulkDeleteRequest):
-    """Delete multiple files from local backup directory."""
-    backend = _get_local_backend()
-
-    results = []
-    for path in request.paths:
-        safe_path = _validate_remote_path(path)
-        try:
-            success = await backend.delete(safe_path)
-            results.append({"path": path, "success": success})
-        except Exception as e:
-            results.append({"path": path, "success": False, "error": str(e)})
-
-    succeeded = sum(1 for r in results if r["success"])
-    failed = len(results) - succeeded
-    return {"results": results, "succeeded": succeeded, "failed": failed}
+    """Preserve every actual outcome, including invalid or missing items."""
+    return await _delete_browser_bulk(_get_local_backend(), request.paths)
 
 
 @router.post("/local/files/bulk-download")
@@ -861,12 +934,21 @@ async def list_files(
         config = _db_to_config(storage)
         backend = storage_manager.add_storage(config)
 
-    safe_path = _validate_remote_path(path) if path else path
-    try:
-        files = await backend.list_files(safe_path)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail="Remote listing failed") from exc
-    return {"files": files, "path": safe_path}
+    return await _list_browser_files(backend, path)
+
+
+@router.get("/{storage_id}/files/size")
+async def directory_size(
+    storage_id: int, request: Request, path: str, db: AsyncSession = Depends(get_db)
+):
+    """Local/network roots support recursive sizes; other providers are unavailable."""
+    storage = await db.get(RemoteStorageModel, storage_id)
+    if not storage:
+        raise HTTPException(status_code=404, detail="Storage not found")
+    backend = storage_manager.get_backend(storage_id)
+    if not backend:
+        backend = storage_manager.add_storage(_db_to_config(storage))
+    return await _browser_directory_size(backend, path, request)
 
 
 @router.get("/{storage_id}/files/download")
@@ -923,18 +1005,7 @@ async def delete_file(storage_id: int, path: str, db: AsyncSession = Depends(get
         config = _db_to_config(storage)
         backend = storage_manager.add_storage(config)
 
-    safe_path = _validate_remote_path(path)
-
-    try:
-        success = await backend.delete(safe_path)
-        if not success:
-            raise HTTPException(status_code=500, detail="Delete failed")
-        return {"message": f"Deleted {safe_path}"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Remote storage delete failed: {e}")
-        raise HTTPException(status_code=500, detail="Delete failed")
+    return await _delete_browser_single(backend, path)
 
 
 @router.post("/{storage_id}/files/bulk-delete")
@@ -953,18 +1024,7 @@ async def bulk_delete_files(
         config = _db_to_config(storage)
         backend = storage_manager.add_storage(config)
 
-    results = []
-    for path in request.paths:
-        safe_path = _validate_remote_path(path)
-        try:
-            success = await backend.delete(safe_path)
-            results.append({"path": path, "success": success})
-        except Exception as e:
-            results.append({"path": path, "success": False, "error": str(e)})
-
-    succeeded = sum(1 for r in results if r["success"])
-    failed = len(results) - succeeded
-    return {"results": results, "succeeded": succeeded, "failed": failed}
+    return await _delete_browser_bulk(backend, request.paths)
 
 
 @router.post("/{storage_id}/files/bulk-download")

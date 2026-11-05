@@ -21,10 +21,11 @@ import { RemoteStorage, storageApi } from '../api'
 import toast from 'react-hot-toast'
 import { clsx } from 'clsx'
 import ConfirmDialog from './ConfirmDialog'
+import { sessionGeneration } from '../store/session'
 
 interface StorageFile {
   name: string
-  size: number
+  size: number | null
   is_dir: boolean
   modified: number | string
 }
@@ -41,8 +42,9 @@ interface StorageBrowserProps {
   onClose: () => void
 }
 
-function formatSize(bytes: number): string {
-  if (!bytes || bytes <= 0) return '—'
+function formatSize(bytes: number | null): string {
+  if (bytes === null || bytes < 0) return 'Unavailable'
+  if (bytes === 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.floor(Math.log(bytes) / Math.log(1024))
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`
@@ -67,6 +69,17 @@ function getFileIcon(name: string, isDir: boolean) {
   return File
 }
 
+function DirectorySize({ storage, path, revision }: { storage: StorageBrowserTarget; path: string; revision: number }) {
+  const { data, isPending } = useQuery({
+    queryKey: ['storage-size', storage.id, storage.base_path, path, revision, sessionGeneration()],
+    queryFn: async ({ signal }) => (await storageApi.directorySize(storage.id, path, signal)).data,
+    retry: false,
+    staleTime: 0,
+    gcTime: 0,
+  })
+  return <>{isPending ? 'Loading size...' : data?.state === 'completed' && data.bytes !== null ? formatSize(data.bytes) : 'Unavailable'}</>
+}
+
 export default function StorageBrowser({ storage, onClose }: StorageBrowserProps) {
   const queryClient = useQueryClient()
   const [currentPath, setCurrentPath] = useState('')
@@ -80,12 +93,12 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
   const buildFilePath = (name: string) =>
     currentPath ? `${currentPath}/${name}` : name
 
-  const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['storage-files', storage.id, currentPath],
-    queryFn: async () => {
+  const { data, dataUpdatedAt, isLoading, error, refetch } = useQuery({
+    queryKey: ['storage-files', storage.id, currentPath, storage.base_path],
+    queryFn: async ({ signal }) => {
       const response = isLocal
-        ? await storageApi.listLocalFiles(currentPath)
-        : await storageApi.listFiles(storage.id as number, currentPath)
+        ? await storageApi.listLocalFiles(currentPath, signal)
+        : await storageApi.listFiles(storage.id as number, currentPath, signal)
       return response.data as { files: StorageFile[]; path: string }
     },
   })
@@ -412,7 +425,7 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
                       </td>
                       <td className="px-4 py-2.5 text-right">
                         <span className="text-xs text-dark-500">
-                          {file.is_dir ? '—' : formatSize(file.size)}
+                          {file.is_dir ? <DirectorySize storage={storage} path={buildFilePath(file.name)} revision={dataUpdatedAt} /> : formatSize(file.size)}
                         </span>
                       </td>
                       <td className="px-4 py-2.5 text-right">
