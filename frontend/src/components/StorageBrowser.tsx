@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   X,
@@ -19,9 +19,20 @@ import {
 } from 'lucide-react'
 import { RemoteStorage, storageApi } from '../api'
 import toast from 'react-hot-toast'
+import { isAxiosError } from 'axios'
 import { clsx } from 'clsx'
 import ConfirmDialog from './ConfirmDialog'
-import { sessionGeneration } from '../store/session'
+import { ownsSession, sessionGeneration, sessionSignal } from '../store/session'
+import { operationsApi, operationActive, type CreateStorageOperation, type StorageOperation } from '../api/operations'
+import StorageOperationResults from './StorageOperationResults'
+
+const NO_OPERATIONS: StorageOperation[] = []
+
+function subscribeSession(listener: () => void) {
+  const signal = sessionSignal()
+  signal.addEventListener('abort', listener)
+  return () => signal.removeEventListener('abort', listener)
+}
 
 interface StorageFile {
   name: string
@@ -80,7 +91,14 @@ function DirectorySize({ storage, path, revision }: { storage: StorageBrowserTar
   return <>{isPending ? 'Loading size...' : data?.state === 'completed' && data.bytes !== null ? formatSize(data.bytes) : 'Unavailable'}</>
 }
 
-export default function StorageBrowser({ storage, onClose }: StorageBrowserProps) {
+export default function StorageBrowser(props: StorageBrowserProps) {
+  const generation = useSyncExternalStore(subscribeSession, sessionGeneration)
+  const [owner] = useState(generation)
+  if (generation !== owner) return null
+  return <StorageBrowserContent key={`${props.storage.id}:${props.storage.base_path}:${owner}`} {...props} />
+}
+
+function StorageBrowserContent({ storage, onClose }: StorageBrowserProps) {
   const queryClient = useQueryClient()
   const [currentPath, setCurrentPath] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
@@ -94,7 +112,7 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
     currentPath ? `${currentPath}/${name}` : name
 
   const { data, dataUpdatedAt, isLoading, error, refetch } = useQuery({
-    queryKey: ['storage-files', storage.id, currentPath, storage.base_path],
+    queryKey: ['storage-files', storage.id, currentPath, storage.base_path, sessionGeneration()],
     queryFn: async ({ signal }) => {
       const response = isLocal
         ? await storageApi.listLocalFiles(currentPath, signal)
@@ -103,44 +121,90 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
     },
   })
 
-  const deleteMutation = useMutation({
-    mutationFn: (filePath: string) =>
-      isLocal
-        ? storageApi.deleteLocalFile(filePath)
-        : storageApi.deleteFile(storage.id as number, filePath),
-    onSuccess: (_data, filePath) => {
-      const fileName = filePath.split('/').pop()
-      toast.success(`Deleted ${fileName}`)
-      queryClient.invalidateQueries({ queryKey: ['storage-files', storage.id] })
-      setDeleteTarget(null)
-    },
-    onError: () => {
-      toast.error('Failed to delete file')
-      setDeleteTarget(null)
-    },
+  const [owner] = useState(sessionGeneration)
+  const mounted = useRef(true)
+  const submitting = useRef(false)
+  const unfinishedRequest = useRef<CreateStorageOperation | null>(null)
+  const retryRequests = useRef(new Map<string, string>())
+  const settled = useRef(new Set<string>())
+  const operationsKey = ['storage-operations', storage.id, owner]
+  const operations = useQuery({
+    queryKey: operationsKey,
+    queryFn: async ({ signal }) => (await operationsApi.list(storage.id, signal)).data,
+    retry: 2,
+    retryDelay: attempt => Math.min(1000 * 2 ** attempt, 4000),
+    refetchInterval: query => query.state.status === 'error' ? false : query.state.data?.some(operationActive) ? 2000 : false,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    staleTime: 0,
   })
-
-  const bulkDeleteMutation = useMutation({
-    mutationFn: (paths: string[]) =>
-      isLocal
-        ? storageApi.bulkDeleteLocalFiles(paths)
-        : storageApi.bulkDeleteFiles(storage.id as number, paths),
-    onSuccess: (response) => {
-      const { succeeded, failed } = response.data
-      if (failed > 0) {
-        toast.error(`Deleted ${succeeded} files, ${failed} failed`)
-      } else {
-        toast.success(`Deleted ${succeeded} files`)
+  const jobs = operations.data ?? NO_OPERATIONS
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
+  useEffect(() => {
+    const terminal = jobs.filter(job => !operationActive(job) && !settled.current.has(job.id))
+    if (terminal.length && !operations.isError) {
+      terminal.forEach(job => settled.current.add(job.id))
+      void queryClient.invalidateQueries({ queryKey: ['storage-files', storage.id] })
+      void queryClient.invalidateQueries({ queryKey: ['storage-size', storage.id] })
+    }
+  }, [jobs, operations.isError, queryClient, storage.id])
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const update = () => {
+      if (timer || !ownsSession(owner)) return
+      timer = setTimeout(() => {
+        timer = undefined
+        if (ownsSession(owner)) void queryClient.invalidateQueries({ queryKey: ['storage-operations', storage.id, owner] })
+      }, 150)
+    }
+    window.addEventListener('storage-operation-update', update)
+    return () => { window.removeEventListener('storage-operation-update', update); clearTimeout(timer) }
+  }, [owner, queryClient, storage.id])
+  const refreshOperations = async () => {
+    if (!mounted.current || !ownsSession(owner)) return
+    // Invalidation alone reuses an initial in-flight read with no cached data.
+    await queryClient.cancelQueries({ queryKey: operationsKey })
+    if (mounted.current && ownsSession(owner)) await queryClient.invalidateQueries({ queryKey: operationsKey })
+  }
+  const command = useMutation({
+    mutationFn: async (request: { kind: 'create'; data: CreateStorageOperation } | { kind: 'retry'; id: string; request_id: string } | { kind: 'cancel'; id: string }) => {
+      if (request.kind === 'create') return operationsApi.create(request.data)
+      if (request.kind === 'retry') return operationsApi.retry(request.id, request.request_id)
+      return operationsApi.cancel(request.id)
+    },
+    onSuccess: (_response, request) => {
+      if (!mounted.current || !ownsSession(owner)) return
+      if (request.kind === 'create') {
+        unfinishedRequest.current = null
+        setDeleteTarget(null)
+        setBulkDeleteTarget(null)
+        setSelectedFiles(new Set())
       }
-      queryClient.invalidateQueries({ queryKey: ['storage-files', storage.id] })
-      setSelectedFiles(new Set())
-      setBulkDeleteTarget(null)
+
+      void refreshOperations()
     },
-    onError: () => {
-      toast.error('Bulk delete failed')
+    onError: (error, request) => {
+      if (!mounted.current || !ownsSession(owner)) return
+      // These API rejections precede admission; transport/timeouts/5xx remain ambiguous.
+      if (request.kind === 'create' && isAxiosError(error) && [400, 401, 403, 404, 409, 422, 429].includes(error.response?.status ?? 0)) unfinishedRequest.current = null
+      setDeleteTarget(null)
       setBulkDeleteTarget(null)
+      void refreshOperations()
     },
+    onSettled: () => { submitting.current = false },
   })
+  const startDelete = (paths: string[]) => {
+    if (submitting.current || !ownsSession(owner)) return
+    submitting.current = true
+    unfinishedRequest.current ??= { action: 'storage_delete', storage_id: storage.id, path: currentPath, paths, request_id: crypto.randomUUID() }
+    command.mutate({ kind: 'create', data: unfinishedRequest.current })
+  }
+  const conflicts = (path: string) => jobs.some(job => operationActive(job) && job.items.some(item =>
+    (item.state === 'pending' || item.state === 'running') && (item.path === path || item.path.startsWith(`${path}/`) || path.startsWith(`${item.path}/`))))
+
 
   const handleNavigate = (dirName: string) => {
     const newPath = currentPath ? `${currentPath}/${dirName}` : dirName
@@ -184,19 +248,18 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
   }
 
   const selectAll = () => {
-    if (selectedFiles.size === sortedFiles.length) {
-      setSelectedFiles(new Set())
-    } else {
-      setSelectedFiles(new Set(sortedFiles.map((f) => f.name)))
-    }
+    setIsSelecting(true)
+    setSelectedFiles(new Set(sortedFiles.map((f) => f.name)))
   }
 
   const handleBulkDownload = async () => {
+    const downloadOwner = sessionGeneration()
     const paths = Array.from(selectedFiles).map(buildFilePath)
     try {
       const response = isLocal
         ? await storageApi.bulkDownloadLocalFiles(paths)
         : await storageApi.bulkDownloadFiles(storage.id as number, paths)
+      if (!mounted.current || !ownsSession(downloadOwner)) return
       const url = window.URL.createObjectURL(new Blob([response.data]))
       const a = document.createElement('a')
       a.href = url
@@ -209,7 +272,7 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
       document.body.removeChild(a)
       window.URL.revokeObjectURL(url)
     } catch {
-      toast.error('Bulk download failed')
+      if (mounted.current && ownsSession(downloadOwner)) toast.error('Bulk download failed')
     }
   }
 
@@ -312,6 +375,14 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
           ))}
         </div>
 
+        <div className="flex flex-wrap gap-3 items-center p-3 border-b border-dark-700">
+          <input type="checkbox" aria-label="Select all entries" checked={sortedFiles.length > 0 && selectedFiles.size === sortedFiles.length}
+            ref={element => { if (element) element.indeterminate = selectedFiles.size > 0 && selectedFiles.size < sortedFiles.length }}
+            onChange={event => { if (event.target.checked) selectAll(); else setSelectedFiles(new Set()) }} />
+          <button type="button" className="btn-secondary" disabled={!sortedFiles.length} onClick={selectAll}>Select All</button>
+          <button type="button" className="btn-secondary" disabled={!selectedFiles.size} onClick={() => setSelectedFiles(new Set())}>Clear Selection</button>
+          <span className="text-sm" aria-live="polite">{selectedFiles.size} selected</span>
+        </div>
         {/* Content */}
         <div className="flex-1 overflow-y-auto">
           {isLoading ? (
@@ -322,7 +393,7 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
           ) : error ? (
             <div className="text-center py-16">
               <AlertTriangle className="w-10 h-10 text-red-400 mx-auto mb-3" />
-              <p className="text-red-400 font-medium">Failed to list files</p>
+              <p role="alert" className="text-red-400 font-medium">Failed to list files</p>
               <p className="text-sm text-dark-500 mt-1">
                 Check that the storage connection is working
               </p>
@@ -451,11 +522,11 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
                               )}
                               <button
                                 onClick={() => handleDelete(file.name)}
-                                disabled={deleteMutation.isPending}
+                                disabled={command.isPending || conflicts(buildFilePath(file.name)) || !!unfinishedRequest.current}
                                 className="p-1.5 rounded transition-colors text-dark-400 hover:text-red-400 hover:bg-dark-600"
                                 title="Delete"
                               >
-                                {deleteMutation.isPending ? (
+                                {command.isPending ? (
                                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
                                 ) : (
                                   <Trash2 className="w-3.5 h-3.5" />
@@ -476,18 +547,7 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
         {/* Selection action bar */}
         {selectedFiles.size > 0 && (
           <div className="border-t border-dark-700 px-4 py-3 flex items-center justify-between bg-dark-800">
-            <span className="text-sm text-dark-300">
-              {selectedFiles.size} selected
-            </span>
-            <div className="flex gap-2">
-              <button
-                onClick={selectAll}
-                className="text-xs text-dark-400 hover:text-dark-200 transition-colors"
-              >
-                {selectedFiles.size === sortedFiles.length
-                  ? 'Deselect all'
-                  : 'Select all'}
-              </button>
+            <div className="flex flex-wrap gap-2">
               <button
                 onClick={handleBulkDownload}
                 className="px-3 py-1.5 bg-dark-700 hover:bg-dark-600 text-dark-200 rounded-lg text-sm flex items-center gap-1 transition-colors"
@@ -500,6 +560,7 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
                     Array.from(selectedFiles).map(buildFilePath)
                   )
                 }
+                disabled={command.isPending || !!unfinishedRequest.current || Array.from(selectedFiles).some(name => conflicts(buildFilePath(name)))}
                 className="px-3 py-1.5 bg-red-600/10 hover:bg-red-600/20 text-red-400 rounded-lg text-sm flex items-center gap-1 transition-colors"
               >
                 <Trash2 className="w-3.5 h-3.5" /> Delete
@@ -508,6 +569,12 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
           </div>
         )}
 
+        {command.isError && unfinishedRequest.current && <button type="button" className="btn-secondary" disabled={command.isPending} onClick={() => startDelete(unfinishedRequest.current!.paths)}>Retry request with same ID</button>}
+        <StorageOperationResults operations={jobs} loading={operations.isPending} stale={operations.isError} pending={command.isPending} error={command.isError}
+          onRefresh={() => { void refreshOperations() }}
+          onFolder={path => { setCurrentPath(path); setSelectedFiles(new Set()); setDeleteTarget(null); setBulkDeleteTarget(null) }}
+          onCancel={id => { if (!submitting.current) { submitting.current = true; command.mutate({ kind: 'cancel', id }) } }}
+          onRetry={id => { if (!submitting.current) { submitting.current = true; const request_id = retryRequests.current.get(id) ?? crypto.randomUUID(); retryRequests.current.set(id, request_id); command.mutate({ kind: 'retry', id, request_id }) } }} />
         {/* Footer */}
         {selectedFiles.size === 0 && (
           <div className="flex items-center justify-between p-4 border-t border-dark-700">
@@ -529,13 +596,13 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
         isOpen={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}
         onConfirm={() => {
-          if (deleteTarget) deleteMutation.mutate(deleteTarget)
+          if (deleteTarget) startDelete([deleteTarget])
         }}
         title="Delete File"
         message={`Delete "${deleteTarget?.split('/').pop()}"? This cannot be undone.`}
         confirmLabel="Delete"
         confirmVariant="danger"
-        isLoading={deleteMutation.isPending}
+        isLoading={command.isPending}
       />
 
       {/* Bulk delete confirm */}
@@ -543,13 +610,13 @@ export default function StorageBrowser({ storage, onClose }: StorageBrowserProps
         isOpen={bulkDeleteTarget !== null}
         onClose={() => setBulkDeleteTarget(null)}
         onConfirm={() => {
-          if (bulkDeleteTarget) bulkDeleteMutation.mutate(bulkDeleteTarget)
+          if (bulkDeleteTarget) startDelete(bulkDeleteTarget)
         }}
         title="Delete Files"
         message={`Delete ${bulkDeleteTarget?.length} files? This cannot be undone.`}
         confirmLabel="Delete"
         confirmVariant="danger"
-        isLoading={bulkDeleteMutation.isPending}
+        isLoading={command.isPending}
       />
     </Modal>
   )

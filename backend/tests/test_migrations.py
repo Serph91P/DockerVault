@@ -93,7 +93,7 @@ async def test_fresh_database_has_ordered_migration_ledger(tmp_path):
                     await connection.execute(
                         text("SELECT version FROM schema_migrations ORDER BY version")
                     )
-                ).scalars().all() == [1, 2, 3, 4, 5, 6]
+                ).scalars().all() == [1, 2, 3, 4, 5, 6, 7]
     finally:
         await engine.dispose()
 
@@ -124,7 +124,7 @@ async def test_supported_legacy_upgrade_preserves_rows_and_does_not_replay(
             await connection.execute(
                 text("SELECT version FROM schema_migrations ORDER BY version")
             )
-        ).scalars().all() == [1, 2, 3, 4, 5, 6]
+        ).scalars().all() == [1, 2, 3, 4, 5, 6, 7]
         assert (
             await connection.execute(
                 text(
@@ -194,7 +194,7 @@ async def test_failed_upgrade_rolls_back_ddl_data_and_ledger_then_retries(
             await connection.execute(
                 text("SELECT version FROM schema_migrations ORDER BY version")
             )
-        ).scalars().all() == [1, 2, 3, 4, 5, 6]
+        ).scalars().all() == [1, 2, 3, 4, 5, 6, 7]
         assert (
             await connection.execute(text("SELECT count(*) FROM catalog_quarantine"))
         ).scalar_one() == 2
@@ -220,7 +220,7 @@ async def test_failed_required_migration_prevents_lifespan_readiness(legacy_data
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("versions", [(2,), (1, 2, 3, 4, 5, 6, 7)])
+@pytest.mark.parametrize("versions", [(2,), (1, 2, 3, 4, 5, 6, 7, 8)])
 async def test_unknown_or_gapped_ledger_fails_without_mutation(test_engine, versions):
     async with test_engine.begin() as connection:
         await connection.execute(
@@ -282,7 +282,7 @@ asyncio.run(database.run_migrations())
             await connection.execute(
                 text("SELECT version FROM schema_migrations ORDER BY version")
             )
-        ).scalars().all() == [1, 2, 3, 4, 5, 6]
+        ).scalars().all() == [1, 2, 3, 4, 5, 6, 7]
         assert (
             await connection.execute(text("SELECT count(*) FROM catalog_quarantine"))
         ).scalar_one() == 2

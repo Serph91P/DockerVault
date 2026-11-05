@@ -215,7 +215,12 @@ class LocalStorage(StorageBackend):
             return False
 
     async def delete_result(
-        self, remote_path: str, *, missing_ok=False, allow_directories=True
+        self,
+        remote_path: str,
+        *,
+        missing_ok=False,
+        allow_directories=True,
+        expected_root=None,
     ):
         from .storage_operations import delete_local_target, directory_sizes
 
@@ -227,6 +232,7 @@ class LocalStorage(StorageBackend):
                     remote_path,
                     missing_ok=missing_ok,
                     allow_directories=allow_directories,
+                    expected_root=expected_root,
                 )
             )
         finally:

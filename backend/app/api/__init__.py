@@ -13,6 +13,7 @@ from app.api.retention import router as retention_router
 from app.api.schedules import router as schedules_router
 from app.api.settings import router as settings_router
 from app.api.storage import router as storage_router
+from app.api.operations import router as operations_router
 from app.api.targets import router as targets_router
 
 router = APIRouter()
@@ -28,5 +29,6 @@ router.include_router(schedules_router, prefix="/schedules", tags=["Schedules"])
 router.include_router(retention_router, prefix="/retention", tags=["Retention"])
 router.include_router(komodo_router, prefix="/komodo", tags=["Komodo"])
 router.include_router(storage_router, prefix="/storage", tags=["Remote Storage"])
+router.include_router(operations_router, prefix="/operations", tags=["Operations"])
 router.include_router(encryption_router, prefix="/encryption", tags=["Encryption"])
 router.include_router(settings_router, prefix="/settings", tags=["Settings"])

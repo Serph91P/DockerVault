@@ -181,6 +181,13 @@ class ConnectionManager:
             for websocket in self.active_connections:
                 self._enqueue(websocket, encoded)
 
+    async def send_to_user(self, user_id: int, message: Dict):
+        encoded = json.dumps(message)
+        async with self._lock:
+            for websocket, (_, owner) in self._sessions.items():
+                if owner == user_id:
+                    self._enqueue(websocket, encoded)
+
     async def send_to_client(self, websocket: WebSocket, message: Dict):
         async with self._lock:
             self._enqueue(websocket, json.dumps(message))

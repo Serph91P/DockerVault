@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from anyio import CancelScope
 from sqlalchemy import JSON, Boolean, Column, DateTime
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy import ForeignKey, Integer, String, Text, event, text
+from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, backref, relationship
@@ -181,6 +181,45 @@ class WorkloadOperation(Base):
     resources = Column(JSON, nullable=False, default=dict)
     error = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_utcnow)
+
+
+class StorageOperation(Base):
+    """Durable storage effects; intentionally separate from workload recovery."""
+
+    __tablename__ = "storage_operations"
+    __table_args__ = (UniqueConstraint("user_id", "request_id"),)
+    id = Column(String(36), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    request_id = Column(String(36), nullable=False)
+    payload = Column(JSON, nullable=False)
+    storage_identity = Column(JSON, nullable=False)
+    parent_id = Column(String(36), ForeignKey("storage_operations.id"), nullable=True)
+    action = Column(String(32), nullable=False)
+    storage_id = Column(String(32), nullable=False, index=True)
+    path = Column(String(1024), nullable=False)
+    state = Column(String(16), nullable=False, default="queued")
+    stage = Column(String(32), nullable=False, default="queued")
+    total = Column(Integer, nullable=False)
+    completed = Column(Integer, nullable=False, default=0)
+    succeeded = Column(Integer, nullable=False, default=0)
+    failed = Column(Integer, nullable=False, default=0)
+    skipped = Column(Integer, nullable=False, default=0)
+    unknown = Column(Integer, nullable=False, default=0)
+    cancel_requested = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, nullable=False, default=_utcnow)
+    updated_at = Column(DateTime, nullable=False, default=_utcnow)
+    finished_at = Column(DateTime, nullable=True)
+
+
+class StorageOperationItem(Base):
+    __tablename__ = "storage_operation_items"
+    id = Column(Integer, primary_key=True)
+    operation_id = Column(
+        String(36), ForeignKey("storage_operations.id"), nullable=False, index=True
+    )
+    path = Column(String(1024), nullable=False)
+    state = Column(String(16), nullable=False, default="pending")
+    error = Column(String(255), nullable=True)
 
 
 class BackupLog(Base):
@@ -445,6 +484,7 @@ async def run_migrations():
         _ensure_target_foreign_keys,
         _create_operation_journal,
         _add_plan_tombstone,
+        _create_storage_operations,
     )
     async with engine.connect() as conn:
         # SQLite's documented rebuild procedure requires this outside a transaction.
@@ -497,6 +537,11 @@ async def run_migrations():
             await conn.rollback()
             await conn.execute(text("PRAGMA foreign_keys=ON"))
             await conn.commit()
+
+
+async def _create_storage_operations(conn):
+    for model in (StorageOperation, StorageOperationItem):
+        await conn.run_sync(lambda sync: model.__table__.create(sync, checkfirst=True))
 
 
 async def _add_plan_tombstone(conn):

@@ -1,7 +1,7 @@
 import { render, screen, within, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import userEvent from '@testing-library/user-event'
-import { describe, it, expect, vi } from 'vitest'
+import { beforeEach, describe, it, expect, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../test/mocks/server'
 import StorageBrowser from '../StorageBrowser'
@@ -18,6 +18,7 @@ function mount() {
 }
 
 describe('separate directory sizes', () => {
+  beforeEach(() => server.use(http.get('/api/v1/operations', () => HttpResponse.json([]))))
   it('lists before size completion, formats bytes and does not treat unavailable as zero', async () => {
     let finish!: () => void
     const gate = new Promise<void>(resolve => { finish = resolve })
@@ -63,7 +64,8 @@ describe('separate directory sizes', () => {
     server.use(
       http.get('/api/v1/storage/local/files', () => HttpResponse.json({ files: deleted ? [] : [directory('backup')], path: '' })),
       http.get('/api/v1/storage/local/files/size', () => HttpResponse.json({ path: 'backup', state: 'completed', bytes: 20 })),
-      http.delete('/api/v1/storage/local/files', () => { deleted = true; return HttpResponse.json({ message: 'Deleted target' }) }),
+      http.post('/api/v1/operations', () => { deleted = true; return HttpResponse.json({ operation_id: 'completed-size-refresh' }, { status: 202 }) }),
+      http.get('/api/v1/operations', () => HttpResponse.json(deleted ? [{ id: 'completed-size-refresh', action: 'storage_delete', storage_id: 'local', path: '', state: 'completed', stage: 'finished', total: 1, completed: 1, succeeded: 1, failed: 0, skipped: 0, unknown: 0, cancel_requested: false, parent_id: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', finished_at: '2026-01-01T00:00:00Z', items: [{ path: 'backup', state: 'succeeded', error: null }] }] : [])),
     )
     const { onClose } = mount()
     const user = userEvent.setup()
