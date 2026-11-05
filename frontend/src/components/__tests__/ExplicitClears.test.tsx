@@ -1,4 +1,4 @@
-import { afterEach, it, expect, vi } from 'vitest'
+import { afterEach, beforeEach, it, expect, vi } from 'vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -6,6 +6,7 @@ import { http, HttpResponse } from 'msw'
 import BackupEditDialog from '../BackupEditDialog'
 import BackupWizard from '../BackupWizard'
 import { server } from '../../test/mocks/server'
+import { useAuthStore } from '../../store/auth'
 import type { BackupTarget } from '../../api'
 
 const target: BackupTarget = {
@@ -16,61 +17,38 @@ const target: BackupTarget = {
   stop_container: false, compression_enabled: true, remote_storage_ids: [], delete_local_after_sync: false,
   created_at: '2026-11-01T00:00:00Z', updated_at: '2026-11-01T00:00:00Z',
 }
+afterEach(() => { cleanup(); localStorage.clear() })
+beforeEach(() => useAuthStore.setState({ user: { id: 7, username: 'fixture', is_admin: true, created_at: '', last_login: null }, isAuthenticated: true }))
 
-afterEach(cleanup)
-
-function prepare(wizard: boolean) {
+it.each([false, true])('serializes explicit removals through the unified editor (legacy caller=%s)', async wizard => {
   let sent: Record<string, unknown> | undefined
+  let stored = target
   server.use(
-    http.get('/api/v1/targets/917', () => HttpResponse.json(target)),
+    http.get('/api/v1/targets/917', () => HttpResponse.json(stored)),
     http.get('/api/v1/schedules', () => HttpResponse.json([{ id: 41, name: 'Owned schedule', cron_expression: '0 2 * * *', enabled: true, target_count: 1 }])),
     http.get('/api/v1/retention', () => HttpResponse.json([{ id: 42, name: 'Owned retention', keep_last: 3, keep_daily: 0, keep_weekly: 0, keep_monthly: 0 }])),
     http.get('/api/v1/storage', () => HttpResponse.json([])),
     http.put('/api/v1/targets/917', async ({ request }) => {
       sent = await request.json() as Record<string, unknown>
-      return HttpResponse.json({ ...target, ...sent })
+      stored = { ...target, ...sent }
+      return HttpResponse.json(stored)
     }),
   )
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   const close = vi.fn()
-  render(<QueryClientProvider client={client}>{wizard
-    ? <BackupWizard editTarget={target} isOpen onClose={close} />
-    : <BackupEditDialog target={target} isOpen onClose={close} />}</QueryClientProvider>)
-  return { getSent: () => sent, close }
-}
-
-it('serializes explicit removals from the real edit dialog', async () => {
-  const { getSent, close } = prepare(false)
+  render(<QueryClientProvider client={client}>{wizard ? <BackupWizard editTarget={target} isOpen onClose={close} /> : <BackupEditDialog target={target} isOpen onClose={close} />}</QueryClientProvider>)
   const user = userEvent.setup()
-  await screen.findByDisplayValue(/Owned schedule/)
-  await screen.findByDisplayValue('Owned retention')
-  await user.click(screen.getByRole('button', { name: 'Show schedule options' }))
-  await user.click(await screen.findByRole('option', { name: 'No schedule (manual only)' }))
+  await user.click(screen.getByRole('button', { name: 'Strategy' }))
+  await screen.findByRole('option', { name: /Owned schedule/ })
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Select Schedule' }), 'none')
   await user.selectOptions(screen.getByRole('combobox', { name: 'Retention Policy' }), '')
-  await user.click(screen.getByRole('button', { name: /^None/ }))
-  await user.click(screen.getByRole('button', { name: 'Advanced: Pre/Post Commands' }))
-  await user.clear(screen.getByDisplayValue('pg_dump before'))
-  await user.clear(screen.getByDisplayValue('redis-cli after'))
-  await user.click(screen.getByRole('button', { name: 'Save Changes' }))
-  await waitFor(() => expect(close).toHaveBeenCalledOnce())
-  expect(getSent()).toMatchObject({ schedule_id: null, schedule_cron: null, retention_policy_id: null, pre_backup_command: null, post_backup_command: null, enabled: true, compression_enabled: false, stop_container: false, remote_storage_ids: [], include_paths: [], exclude_paths: [] })
-})
-
-it('serializes explicit removals from the existing wizard edit caller', async () => {
-  const { getSent, close } = prepare(true)
-  const user = userEvent.setup()
-  await user.click(screen.getByRole('button', { name: /^Next/ }))
-  await screen.findByText('Owned schedule')
-  await user.click(screen.getByRole('button', { name: /No schedule \(manual only\)/ }))
-  await user.click(screen.getByRole('button', { name: /^Next/ }))
-  await user.click(screen.getByRole('button', { name: /^Next/ }))
-  await user.click(screen.getByRole('button', { name: /No retention policy/ }))
-  await user.click(screen.getByRole('button', { name: /^Next/ }))
+  await user.click(screen.getByRole('button', { name: 'Execution & review' }))
+  await user.click(screen.getByRole('button', { name: /^None \(tar\)/ }))
   await user.click(screen.getByRole('button', { name: 'Advanced Options' }))
-  await user.clear(screen.getByDisplayValue('pg_dump before'))
+  await user.clear(await screen.findByDisplayValue('pg_dump before'))
   await user.clear(screen.getByDisplayValue('redis-cli after'))
-  await user.click(screen.getByRole('button', { name: /^Next/ }))
-  await user.click(screen.getByRole('button', { name: /Save Changes/ }))
+  await user.click(screen.getByRole('button', { name: 'Save plan' }))
   await waitFor(() => expect(close).toHaveBeenCalledOnce())
-  expect(getSent()).toMatchObject({ schedule_id: null, schedule_cron: null, retention_policy_id: null, pre_backup_command: null, post_backup_command: null })
+  expect(sent).toMatchObject({ schedule_id: null, schedule_cron: null, retention_policy_id: null, pre_backup_command: null, post_backup_command: null, enabled: true, compression_enabled: false, stop_container: false, remote_storage_ids: [], include_paths: [], exclude_paths: [] })
+  expect(stored).toMatchObject(sent!)
 })

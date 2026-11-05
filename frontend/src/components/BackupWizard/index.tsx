@@ -1,759 +1,714 @@
-import { useState, useCallback } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import api from '../../api'
-import { usePrivateTargetEditor } from '../usePrivateTargetEditor'
-import { X, ChevronLeft, ChevronRight, Check, Loader2 } from 'lucide-react'
-import {
-  dockerApi,
-  schedulesApi,
-  retentionApi,
-  storageApi,
-  targetsApi,
-} from '../../api'
-import toast from 'react-hot-toast'
+import api, { dockerApi, targetsApi, schedulesApi, retentionApi, storageApi, type BackupTarget } from '../../api'
+import type { PrivateTargetConfig } from '../../api/targetPrivacy'
+import { responseStatus, ResponseError } from '../../api/responses'
+import { queryKeys } from '../../api/queryKeys'
 import { useAuthStore } from '../../store/auth'
-
-import StepTargetSelect from './StepTargetSelect'
-import StepDependencies from './StepDependencies'
-import StepSchedule from './StepSchedule'
-import StepStorage from './StepStorage'
-import StepRetention from './StepRetention'
-import StepOptions from './StepOptions'
-import StepSummary from './StepSummary'
-import StepVolumeConfig from './StepVolumeConfig'
+import { sessionSignal } from '../../store/session'
+import { useNotificationStore } from '../../store/notifications'
+import { usePrivateTargetEditor } from '../usePrivateTargetEditor'
 import { QueryFeedback } from '../QueryFeedback'
 import { useValidationFeedback } from '../ValidationFeedback'
+import { PageHeader } from '../ui/workspace'
+import StepTargetSelect from './StepTargetSelect'
+import StepVolumeConfig from './StepVolumeConfig'
+import StepDependencies from './StepDependencies'
+import StepSchedule from './StepSchedule'
+import StepRetention from './StepRetention'
+import StepStorage from './StepStorage'
+import StepOptions from './StepOptions'
+import StepSummary from './StepSummary'
+import {
+  initialData,
+  targetToWizardData,
+  changeSource,
+  serializeCreate,
+  serializeUpdate,
+  validateEditor,
+  topologyErrors,
+  availableVolumes,
+  type WizardData,
+} from './planEditorModel'
+import { DraftWriter, readDraft } from './planEditorDraft'
+export type { WizardData } from './planEditorModel'
 
-export interface WizardData {
-  // Step 1: Target
-  targetType: 'container' | 'volume' | 'path' | 'stack' | null
-  targetName: string
-  containerName: string
-  volumeName: string
-  hostPath: string
-  stackName: string
-
-  // Step 2: Volume Configuration (for container/stack)
-  selectedVolumes: string[]  // Empty = all volumes
-  includePaths: string[]     // Include only these paths (empty = all)
-  excludePaths: string[]     // Exclude these paths/patterns
-  perVolumeRules: Record<string, { includePaths: string[]; excludePaths: string[] }>
-
-  // Step 3: Dependencies
-  dependencies: string[]
-  stopContainer: boolean
-
-  // Step 4: Schedule
-  scheduleId: number | null
-  newSchedule: {
-    name: string
-    cronExpression: string
-    description: string
-  } | null
-
-  // Step 5: Storage
-  remoteStorageIds: number[]
-  deleteLocalAfterSync: boolean
-
-  // Step 6: Retention
-  retentionPolicyId: number | null
-  newRetentionPolicy: {
-    name: string
-    keepLast: number
-    keepDaily: number
-    keepWeekly: number
-    keepMonthly: number
-  } | null
-
-  // Step 7: Options
-  compression: 'none' | 'gzip' | 'zstd'
-  preCommand: string
-  postCommand: string
-  enabled: boolean
-}
-
-const initialData: WizardData = {
-  targetType: null,
-  targetName: '',
-  containerName: '',
-  volumeName: '',
-  hostPath: '',
-  stackName: '',
-  selectedVolumes: [],
-  includePaths: [],
-  excludePaths: [],
-  perVolumeRules: {},
-  dependencies: [],
-  stopContainer: true,
-  scheduleId: null,
-  newSchedule: null,
-  remoteStorageIds: [],
-  deleteLocalAfterSync: false,
-  retentionPolicyId: null,
-  newRetentionPolicy: null,
-  compression: 'gzip',
-  preCommand: '',
-  postCommand: '',
-  enabled: true,
-}
-
-const STEPS = [
-  { id: 1, name: 'Target', description: 'What to backup' },
-  { id: 2, name: 'Volumes', description: 'Which volumes/paths' },
-  { id: 3, name: 'Dependencies', description: 'Container dependencies' },
-  { id: 4, name: 'Schedule', description: 'When to backup' },
-  { id: 5, name: 'Storage', description: 'Where to store' },
-  { id: 6, name: 'Retention', description: 'How long to keep' },
-  { id: 7, name: 'Options', description: 'Advanced settings' },
-  { id: 8, name: 'Summary', description: 'Review & create' },
-]
-
-// W2: LocalStorage draft persistence
-const DRAFT_KEY = 'dockervault-wizard-draft'
-
-interface WizardDraft {
-  data: WizardData
-  currentStep: number
-  savedAt: number
-  ownerId?: number
-}
-
-function sanitizedDraftData(data: WizardData): WizardData {
-  const safe = Object.fromEntries(Object.keys(initialData).map(name => [name, data[name as keyof WizardData] ?? initialData[name as keyof WizardData]])) as unknown as WizardData
-  safe.preCommand = ''
-  safe.postCommand = ''
-  return safe
-}
-
-function saveDraft(data: WizardData, currentStep: number) {
-  try {
-    const draft: WizardDraft = { data: sanitizedDraftData(data), currentStep, savedAt: Date.now(), ownerId: useAuthStore.getState().user?.id }
-    localStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
-  } catch { /* localStorage full or unavailable */ }
-}
-
-function loadDraft(): WizardDraft | null {
-  try {
-    const raw = localStorage.getItem(DRAFT_KEY)
-    if (!raw) return null
-    const draft: WizardDraft = JSON.parse(raw)
-    // Discard drafts older than 24 hours
-    if (Date.now() - draft.savedAt > 24 * 60 * 60 * 1000) {
-      localStorage.removeItem(DRAFT_KEY)
-      return null
-    }
-    draft.data = sanitizedDraftData(draft.data)
-    localStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
-    return draft
-  } catch {
-    return null
-  }
-}
-
-function clearDraft() {
-  try { localStorage.removeItem(DRAFT_KEY) } catch { /* ignore */ }
-}
-
-interface BackupWizardProps {
+interface Props {
   isOpen: boolean
   onClose: () => void
-  editTarget?: import('../../api').BackupTarget | null
-  preselectedType?: 'container' | 'volume' | 'path' | 'stack' | null
+  onSaved?: (id: number) => void
+  editTarget?: BackupTarget | null
+  preselectedType?: WizardData['targetType']
   preselectedTarget?: string | null
 }
-
-function targetToWizardData(target: import('../../api').BackupTarget): WizardData {
-  return {
-    targetType: target.target_type,
-    targetName: target.name,
-    containerName: target.container_name || '',
-    volumeName: target.volume_name || '',
-    hostPath: target.host_path || '',
-    stackName: target.stack_name || '',
-    selectedVolumes: target.selected_volumes || [],
-    includePaths: target.include_paths || [],
-    excludePaths: target.exclude_paths || [],
-    perVolumeRules: Object.fromEntries(
-      Object.entries(target.per_volume_rules || {}).map(([k, v]) => [
-        k,
-        { includePaths: v.include_paths || [], excludePaths: v.exclude_paths || [] },
-      ])
-    ),
-    dependencies: target.dependencies || [],
-    stopContainer: target.stop_container,
-    scheduleId: target.schedule_id || null,
-    newSchedule: null,
-    remoteStorageIds: target.remote_storage_ids || [],
-    deleteLocalAfterSync: target.delete_local_after_sync || false,
-    retentionPolicyId: target.retention_policy_id || null,
-    newRetentionPolicy: null,
-    compression: target.compression_enabled ? 'gzip' : 'none',
-    preCommand: '',
-    postCommand: '',
-    enabled: target.enabled,
-  }
+const GROUPS = ['Source & scope', 'Strategy', 'Execution & review']
+const same = (a: unknown, b: unknown): boolean => {
+  if (Array.isArray(a)) return Array.isArray(b) && a.length === b.length && a.every((v, i) => same(v, b[i]))
+  if (a && typeof a === 'object')
+    return (
+      !!b &&
+      typeof b === 'object' &&
+      Object.keys(a).length === Object.keys(b).length &&
+      Object.entries(a).every(([key, value]) => same(value, (b as Record<string, unknown>)[key]))
+    )
+  return a === b
+}
+export default function BackupWizard(props: Props) {
+  const owner = useAuthStore((s) => s.user?.id)
+  return props.isOpen ? <PlanEditor key={`${owner}:${props.editTarget?.id ?? 'new'}`} {...props} /> : null
 }
 
-export default function BackupWizard({ isOpen, onClose, editTarget, preselectedType, preselectedTarget }: BackupWizardProps) {
-  return isOpen ? <BackupWizardForm key={editTarget?.id ?? 'new'} isOpen={isOpen} onClose={onClose} editTarget={editTarget} preselectedType={preselectedType} preselectedTarget={preselectedTarget} /> : null
-}
+function PlanEditor({ onClose, onSaved, editTarget, preselectedType, preselectedTarget }: Props) {
+  const owner = useAuthStore((s) => s.user?.id)
+  const intent = editTarget ? `target:${editTarget.id}` : 'new'
+  const [draft, setDraft] = useState(() => (owner ? readDraft(owner, intent) : null))
+  const [baseline, setBaseline] = useState(editTarget?.updated_at ?? draft?.revision ?? undefined)
+  const writer = useMemo(
+    () => (owner ? new DraftWriter(owner, intent, baseline ?? null) : null),
+    [owner, intent, baseline]
+  )
+  const [data, setData] = useState<WizardData>(() => {
+    if (editTarget) return targetToWizardData(editTarget)
+    if (!preselectedType || !preselectedTarget) return initialData
+    return {
+      ...initialData,
+      targetType: preselectedType,
+      targetName: `${preselectedTarget} Backup`,
+      ...{
+        container: { containerName: preselectedTarget },
+        stack: { stackName: preselectedTarget },
+        volume: { volumeName: preselectedTarget },
+        path: { hostPath: preselectedTarget },
+      }[preselectedType],
+    }
+  })
+  const [group, setGroup] = useState(0)
+  const [touched, setTouched] = useState(false)
+  const [errors, setErrors] = useState<string[]>([])
 
-function BackupWizardForm({ isOpen, onClose, editTarget, preselectedType, preselectedTarget }: BackupWizardProps) {
-  const queryClient = useQueryClient()
+  const [conflict, setConflict] = useState<BackupTarget | null>(null)
+  const [candidates, setCandidates] = useState<Array<{ id: number; label: string }>>([])
+  const [candidateError, setCandidateError] = useState(false)
+  const [reconciled, setReconciled] = useState(false)
+  const finished = useRef(false)
+  const errorFocus = useRef<HTMLDivElement>(null)
   const editor = usePrivateTargetEditor(editTarget?.id)
   const validation = useValidationFeedback(editor.saveFailure)
-  const isEditing = !!editTarget
-  const [currentStep, setCurrentStep] = useState(1)
-  const [data, setData] = useState<WizardData>(initialData)
-  const [showDraftBanner, setShowDraftBanner] = useState(false)
-
-  // W2: Check for saved draft when wizard opens (non-edit, no preselection)
-  const [draftChecked, setDraftChecked] = useState(false)
-  if (isOpen && !isEditing && !preselectedType && !draftChecked) {
-    setDraftChecked(true)
-    const draft = loadDraft()
-    if (draft && draft.data.targetType) {
-      setShowDraftBanner(true)
-    }
-  }
-  if (!isOpen && draftChecked) {
-    setDraftChecked(false)
-  }
-
-  // Pre-populate data when editing
-  const [lastEditId, setLastEditId] = useState<number | null>(null)
-  if (editTarget && editTarget.id !== lastEditId) {
-    setData(targetToWizardData(editTarget))
-    setLastEditId(editTarget.id)
-  }
-
-  // T1: Handle preselection - auto-select type and target, advance to step 2
-  const [lastPreselection, setLastPreselection] = useState<string | null>(null)
-  const preselectionKey = preselectedType && preselectedTarget
-    ? `${preselectedType}:${preselectedTarget}`
-    : null
-  if (isOpen && !isEditing && preselectionKey && preselectionKey !== lastPreselection) {
-    setLastPreselection(preselectionKey)
-
-    const updates: Partial<WizardData> = {
-      targetType: preselectedType ?? null,
-    }
-    // Set the appropriate target field and auto-generate name
-    switch (preselectedType) {
-      case 'container':
-        updates.containerName = preselectedTarget ?? ''
-        updates.targetName = `${preselectedTarget} Backup`
-        break
-      case 'volume':
-        updates.volumeName = preselectedTarget ?? ''
-        updates.targetName = `${preselectedTarget} Backup`
-        break
-      case 'stack':
-        updates.stackName = preselectedTarget ?? ''
-        updates.targetName = `${preselectedTarget} Stack Backup`
-        break
-      case 'path':
-        updates.hostPath = preselectedTarget ?? ''
-        updates.targetName = `${preselectedTarget?.split('/').pop() || preselectedTarget} Backup`
-        break
-    }
-    setData((prev) => ({ ...prev, ...updates }))
-    // Skip to step 2 (or 4 for volume/path which skip steps 2+3)
-    if (preselectedType === 'volume' || preselectedType === 'path') {
-      setCurrentStep(4)
-    } else {
-      setCurrentStep(2)
-    }
-  }
-
-  // Fetch existing targets for T3: "Already configured" badge
-  const targetsQuery = useQuery({
-    queryKey: queryKeys.targets.list(),
-    queryFn: () => targetsApi.list().then((r) => r.data),
-    enabled: isOpen,
-  })
-
-  // Fetch data for all steps
-  const containersQuery = useQuery({
+  const client = useQueryClient()
+  const targets = useQuery({ queryKey: queryKeys.targets.list(), queryFn: () => targetsApi.list().then((r) => r.data) })
+  const containers = useQuery({
     queryKey: queryKeys.containers.list(),
     queryFn: () => dockerApi.listContainers().then((r) => r.data),
-    enabled: isOpen,
   })
-
-  const volumesQuery = useQuery({
+  const volumes = useQuery({
     queryKey: queryKeys.volumes.list(),
     queryFn: () => dockerApi.listVolumes().then((r) => r.data),
-    enabled: isOpen,
   })
-
-  const stacksQuery = useQuery({
+  const stacks = useQuery({
     queryKey: queryKeys.stacks.list(),
     queryFn: () => dockerApi.listStacks().then((r) => r.data),
-    enabled: isOpen,
   })
-
-  const schedulesQuery = useQuery({
+  const schedules = useQuery({
     queryKey: queryKeys.schedules.list(),
     queryFn: () => schedulesApi.list().then((r) => r.data),
-    enabled: isOpen,
   })
-
-  const retentionQuery = useQuery({
+  const retention = useQuery({
     queryKey: queryKeys.retention.list(),
     queryFn: () => retentionApi.listPolicies().then((r) => r.data),
-    enabled: isOpen,
   })
-
-  const storagesQuery = useQuery({
+  const storages = useQuery({
     queryKey: queryKeys.storages.list(),
     queryFn: () => storageApi.list().then((r) => r.data),
-    enabled: isOpen,
   })
 
-
-  const { data: existingTargets = [] } = targetsQuery
-  const { data: containers = [] } = containersQuery
-  const { data: volumes = [] } = volumesQuery
-  const { data: stacks = [] } = stacksQuery
-  const { data: schedules = [] } = schedulesQuery
-  const { data: retentionPolicies = [] } = retentionQuery
-  const { data: remoteStorages = [] } = storagesQuery
-
-  const handleClose = () => {
-    editor.close()
-    // W2: Save draft if user has made progress (has selected a target type)
-    if (!isEditing && data.targetType) {
-      saveDraft(data, currentStep)
+  useEffect(() => {
+    if (touched && !draft && !finished.current) writer?.queue(data, group)
+    return () => writer?.cancel()
+  }, [data, group, touched, draft, writer])
+  useEffect(() => {
+    const signal = sessionSignal()
+    const revoke = () => {
+      finished.current = true
+      writer?.clear()
     }
-    setCurrentStep(1)
-    setData(initialData)
-    setLastEditId(null)
-    setLastPreselection(null)
-    setShowDraftBanner(false)
-    onClose()
-  }
-
-  const handleDiscardDraft = () => {
-    clearDraft()
-    setShowDraftBanner(false)
-  }
-
-  const handleRestoreDraft = () => {
-    const draft = loadDraft()
-    if (draft) {
-      setData(draft.data)
-      setCurrentStep(draft.currentStep)
-      clearDraft()
+    signal.addEventListener('abort', revoke, { once: true })
+    return () => {
+      writer?.cancel()
+      signal.removeEventListener('abort', revoke)
     }
-    setShowDraftBanner(false)
-  }
+  }, [writer])
+  useEffect(() => {
+    if (errors.length || editor.saveError) errorFocus.current?.focus()
+  }, [errors, editor.saveError])
 
   const updateData = (updates: Partial<WizardData>) => {
-    setData((prev) => {
-      const next = { ...prev, ...updates }
-      // W2: Auto-save draft to localStorage (only for new targets)
-      if (!isEditing) {
-        saveDraft(next, currentStep)
-      }
-      return next
-    })
+    setTouched(true)
+    setData((prev) =>
+      ['targetType', 'containerName', 'stackName', 'volumeName', 'hostPath'].some(
+        (key) => key in updates && updates[key as keyof WizardData] !== prev[key as keyof WizardData]
+      )
+        ? changeSource(prev, updates)
+        : { ...prev, ...updates }
+    )
   }
-
-  const canProceed = (): boolean => {
-    switch (currentStep) {
-      case 1: // Target
-        if (!data.targetType) return false
-        if (data.targetType === 'container' && !data.containerName) return false
-        if (data.targetType === 'volume' && !data.volumeName) return false
-        if (data.targetType === 'path' && !data.hostPath) return false
-        if (data.targetType === 'stack' && !data.stackName) return false
-        if (!data.targetName) return false
-        return true
-      case 2: // Volumes
-        return true
-      case 3: // Dependencies
-        return true
-      case 4: // Schedule
-        if (data.newSchedule) {
-          return !!data.newSchedule.name && !!data.newSchedule.cronExpression
+  const checkpoint = (next: WizardData, revision = baseline) => {
+    if (finished.current) return
+    setData(next)
+    setTouched(true)
+    writer?.checkpoint(next, group, revision)
+  }
+  const cancel = () => {
+    writer?.cancel()
+    editor.close()
+    onClose()
+  }
+  const discard = () => {
+    writer?.clear()
+    editor.retry()
+    setErrors([])
+    setDraft(null)
+    setTouched(false)
+    setData(editTarget ? targetToWizardData(editTarget) : initialData)
+    setGroup(0)
+  }
+  const restore = () => {
+    if (!draft) return
+    if (editTarget && draft.revision !== editTarget.updated_at) {
+      setConflict(editTarget)
+      return
+    }
+    // Immutable source identity comes from the freshly loaded target, never the draft.
+    const source = editTarget
+      ? {
+          targetType: editTarget.target_type,
+          containerName: editTarget.container_name || '',
+          stackName: editTarget.stack_name || '',
+          volumeName: editTarget.volume_name || '',
+          hostPath: editTarget.host_path || '',
         }
-        return true
-      case 5: // Storage
-        return true
-      case 6: // Retention
-        if (data.newRetentionPolicy) {
-          return !!data.newRetentionPolicy.name
+      : {}
+    setData({ ...draft.data, ...source })
+    setGroup(draft.group)
+    setDraft(null)
+    setTouched(true)
+  }
+  const readCandidates = async () => {
+    setCandidateError(false)
+    setCandidates([])
+    try {
+      const kind = data.unconfirmed
+      if (kind === 'target') {
+        const rows = (await targetsApi.list()).data
+        setCandidates(
+          rows
+            .filter((t) => t.name === data.targetName)
+            .map((t) => ({
+              id: t.id,
+              label: `${t.name} (#${t.id}) — ${t.target_type}; ${t.container_name || t.stack_name || t.volume_name || t.host_path}; updated ${t.updated_at || 'unknown'}`,
+            }))
+        )
+      } else if (kind === 'schedule') {
+        const rows = (await schedulesApi.list()).data
+        setCandidates(
+          rows
+            .filter((s) => s.name === data.newSchedule?.name)
+            .map((s) => ({
+              id: s.id,
+              label: `${s.name} (#${s.id}): ${s.cron_expression}; ${s.description || ''}; enabled ${s.enabled}`,
+            }))
+        )
+      } else if (kind === 'retention') {
+        const rows = (await retentionApi.listPolicies()).data
+        setCandidates(
+          rows
+            .filter((p) => p.name === data.newRetentionPolicy?.name)
+            .map((p) => ({
+              id: p.id,
+              label: `${p.name} (#${p.id}): last ${p.keep_last}, daily ${p.keep_daily}, weekly ${p.keep_weekly}, monthly ${p.keep_monthly}, yearly ${p.keep_yearly}, age ${p.max_age_days}`,
+            }))
+        )
+      }
+    } catch {
+      setCandidateError(true)
+    }
+  }
+  const chooseCandidate = async (id: number) => {
+    await editor.run(
+      async (signal, current) => {
+        const kind = data.unconfirmed
+        if (kind === 'target') {
+          await api.get(`/targets/${id}`, { signal })
+          if (!current()) return
+          // Explicit user choice opens the canonical detail, never silently overwrites a candidate.
+          finished.current = true
+          writer?.clear()
+          onSaved?.(id)
+          if (!onSaved) onClose()
+        } else {
+          await api.get(`/${kind === 'schedule' ? 'schedules' : 'retention'}/${id}`, { signal })
+          if (current())
+            checkpoint({
+              ...data,
+              unconfirmed: null,
+              ...(kind === 'schedule'
+                ? { scheduleId: id, scheduleMode: 'shared', newSchedule: null }
+                : { retentionPolicyId: id, newRetentionPolicy: null }),
+            })
         }
-        return true
-      case 7: // Options
-        return true
-      case 8: // Summary
-        return true
-      default:
-        return false
-    }
+      },
+      () => {
+        void client.invalidateQueries({ queryKey: queryKeys.schedules.all })
+        void client.invalidateQueries({ queryKey: queryKeys.retention.all })
+      }
+    )
   }
 
-  // Steps 2 (Volumes) and 3 (Dependencies) are irrelevant for volume/path targets
-  const shouldSkipStep = useCallback((stepId: number): boolean => {
-    if (stepId === 2 || stepId === 3) {
-      return data.targetType === 'volume' || data.targetType === 'path'
-    }
-    return false
-  }, [data.targetType])
+  const reloadScheduler = () =>
+    editor.run(
+      async (signal, current) => {
+        await api.post('/schedules/reload', undefined, { signal })
+        await api.get('/schedules/jobs', { signal })
+        if (current()) setReconciled(true)
+      },
+      () => {
+        void client.invalidateQueries({ queryKey: queryKeys.schedules.all })
+      }
+    )
 
-  const getNextStep = useCallback((from: number): number => {
-    let next = from + 1
-    while (next <= STEPS.length && shouldSkipStep(next)) next++
-    return next
-  }, [shouldSkipStep])
-
-  const getPrevStep = useCallback((from: number): number => {
-    let prev = from - 1
-    while (prev >= 1 && shouldSkipStep(prev)) prev--
-    return prev
-  }, [shouldSkipStep])
-
-  const handleNext = () => {
-    if (currentStep < STEPS.length && canProceed()) {
-      setCurrentStep(getNextStep(currentStep))
-    }
-  }
-
-  const handlePrev = () => {
-    if (currentStep > 1) {
-      setCurrentStep(getPrevStep(currentStep))
-    }
-  }
-
-  const isLoading = editor.pending
-
-  const handleSubmit = async () => {
-    let savedId: number | undefined
-    let savedRevision = 0
-    await editor.run(async (signal, current) => {
-      let scheduleId = data.scheduleId
-
-      // Create new schedule if specified
-      if (data.newSchedule) {
-        const newSchedule = await api.post('/schedules', {
-          name: data.newSchedule.name,
-          cron_expression: data.newSchedule.cronExpression,
-          description: data.newSchedule.description || undefined,
-        }, { signal })
+  const save = async () => {
+    const invalid = validateEditor(data)
+    if (data.unconfirmed) invalid.push('Resolve unconfirmed creation before saving. No automatic replay is safe.')
+    if (!owner) invalid.push('Confirmed account identity is required before saving.')
+    setErrors(invalid)
+    if (invalid.length || finished.current) return
+    let savedId = editTarget?.id ?? data.confirmedTargetId ?? undefined
+    let revision = 0
+    await editor.run(
+      async (signal, current) => {
+        let working = data
+        // Refresh only relevant discovery. Failed discovery is unknown, never empty/all.
+        const c = data.targetType === 'container' || data.dependencies.length ? await containers.refetch() : containers
+        const s = data.targetType === 'stack' ? await stacks.refetch() : stacks
+        const v = data.targetType === 'volume' ? await volumes.refetch() : volumes
+        if (
+          ((data.targetType === 'container' || data.dependencies.length) && c.isError) ||
+          (data.targetType === 'stack' && s.isError) ||
+          (data.targetType === 'volume' && v.isError)
+        )
+          throw new ResponseError()
+        const scopeErrors = topologyErrors(data, c.data || [], s.data || [], v.data || [])
+        if (scopeErrors.length) {
+          setErrors(scopeErrors)
+          throw new ResponseError()
+        }
+        if (savedId && baseline) {
+          const latest = (await api.get<BackupTarget>(`/targets/${savedId}`, { signal })).data
+          if (!current()) return
+          if (latest.updated_at !== baseline) {
+            setConflict(latest)
+            throw new ResponseError()
+          }
+        }
+        const post = async (kind: 'schedule' | 'retention' | 'target', payload: unknown) => {
+          working = { ...working, unconfirmed: kind }
+          checkpoint(working)
+          try {
+            return await api.post(
+              kind === 'schedule' ? '/schedules' : kind === 'retention' ? '/retention' : '/targets',
+              payload,
+              { signal }
+            )
+          } catch (error) {
+            if (current()) {
+              const status = responseStatus(error)
+              if (status !== undefined && status >= 400 && status < 500) {
+                working = { ...working, unconfirmed: null }
+                checkpoint(working)
+              }
+            }
+            throw error
+          }
+        }
+        if (working.newSchedule) {
+          const p = working.newSchedule
+          const response = await post('schedule', {
+            name: p.name,
+            cron_expression: p.cronExpression,
+            description: p.description,
+            enabled: p.enabled !== false,
+          })
+          if (!current()) return
+          working = {
+            ...working,
+            scheduleId: response.data.id,
+            scheduleMode: 'shared',
+            newSchedule: null,
+            unconfirmed: null,
+          }
+          checkpoint(working)
+        }
+        if (working.newRetentionPolicy) {
+          const p = working.newRetentionPolicy
+          const response = await post('retention', {
+            name: p.name,
+            keep_last: p.keepLast,
+            keep_daily: p.keepDaily,
+            keep_weekly: p.keepWeekly,
+            keep_monthly: p.keepMonthly,
+            keep_yearly: p.keepYearly,
+            max_age_days: p.maxAgeDays,
+          })
+          if (!current()) return
+          working = { ...working, retentionPolicyId: response.data.id, newRetentionPolicy: null, unconfirmed: null }
+          checkpoint(working)
+        }
+        const safePayload = savedId ? serializeUpdate(working) : serializeCreate(working)
+        const payload = {
+          ...safePayload,
+          ...(editor.loaded
+            ? { pre_backup_command: editor.hooks.pre || null, post_backup_command: editor.hooks.post || null }
+            : {}),
+        }
+        let schedulerFailed = false
+        if (savedId) {
+          try {
+            await api.put(`/targets/${savedId}`, payload, { signal })
+          } catch (error) {
+            if (responseStatus(error) !== 503) throw error
+            schedulerFailed = true
+          }
+        } else {
+          const response = await post('target', payload)
+          if (!current()) return
+          if (!Number.isSafeInteger(response.data.id) || response.data.id <= 0) throw new ResponseError()
+          savedId = response.data.id
+          working = { ...working, confirmedTargetId: savedId!, unconfirmed: null }
+          setBaseline(response.data.updated_at)
+          checkpoint(working, response.data.updated_at)
+        }
         if (!current()) return
-        scheduleId = newSchedule.data.id
+        const config: PrivateTargetConfig = { signal, privateTargetHooks: true }
+        const stored = (await api.get<BackupTarget>(`/targets/${savedId}`, config)).data
+        const matches = Object.entries(payload).every(([key, value]) =>
+          same(value, stored[key as keyof BackupTarget] ?? (value === null ? null : undefined))
+        )
+        if (!matches) {
+          setErrors(['Saved configuration differs from the reviewed intent. Reload and compare before continuing.'])
+          throw new ResponseError()
+        }
+        if (schedulerFailed) {
+          await api.post('/schedules/reload', undefined, { signal })
+          await api.get('/schedules/jobs', { signal })
+          setReconciled(true)
+        }
+        revision = Date.parse(stored.updated_at) || 0
+      },
+      () => {
+        if (!savedId) return
+        finished.current = true
+        writer?.clear()
+        useNotificationStore
+          .getState()
+          .addNotification({
+            code: 'plan-saved',
+            target: { kind: 'plan', id: savedId },
+            type: 'info',
+            title: '',
+            message: '',
+            revision,
+          })
+        void client.invalidateQueries({ queryKey: queryKeys.targets.all })
+        void client.invalidateQueries({ queryKey: queryKeys.schedules.all })
+        void client.invalidateQueries({ queryKey: queryKeys.retention.all })
+        editor.close()
+        if (onSaved) onSaved(savedId)
+        else onClose()
       }
-
-      // Create new retention policy if specified
-      let retentionPolicyId = data.retentionPolicyId
-      if (data.newRetentionPolicy) {
-        const newPolicy = await api.post('/retention', {
-          name: data.newRetentionPolicy.name,
-          keep_last: data.newRetentionPolicy.keepLast,
-          keep_daily: data.newRetentionPolicy.keepDaily,
-          keep_weekly: data.newRetentionPolicy.keepWeekly,
-          keep_monthly: data.newRetentionPolicy.keepMonthly,
-        }, { signal })
-        if (!current()) return
-        retentionPolicyId = newPolicy.data.id
-      }
-
-      // Build target data
-      const targetData: Parameters<typeof targetsApi.create>[0] = {
-        name: data.targetName,
-        target_type: data.targetType!,
-        container_name: data.targetType === 'container' ? data.containerName : undefined,
-        volume_name: data.targetType === 'volume' ? data.volumeName : undefined,
-        host_path: data.targetType === 'path' ? data.hostPath : undefined,
-        stack_name: data.targetType === 'stack' ? data.stackName : undefined,
-        schedule_id: scheduleId ?? (isEditing ? null : undefined),
-        schedule_cron: isEditing && scheduleId == null ? null : undefined,
-        enabled: data.enabled,
-        dependencies: data.dependencies,
-        // Volume selection and path filtering
-        selected_volumes: data.selectedVolumes,
-        include_paths: data.includePaths,
-        exclude_paths: data.excludePaths,
-        per_volume_rules: Object.fromEntries(
-          Object.entries(data.perVolumeRules)
-            .filter(([, v]) => v.includePaths.length > 0 || v.excludePaths.length > 0)
-            .map(([k, v]) => [
-              k,
-              { include_paths: v.includePaths, exclude_paths: v.excludePaths },
-            ])
-        ),
-        stop_container: data.stopContainer,
-        compression_enabled: data.compression !== 'none',
-        ...(editor.loaded ? { pre_backup_command: editor.hooks.pre || (isEditing ? null : undefined), post_backup_command: editor.hooks.post || (isEditing ? null : undefined) } : {}),
-        retention_policy_id: retentionPolicyId ?? (isEditing ? null : undefined),
-        remote_storage_ids: data.remoteStorageIds,
-        delete_local_after_sync: data.deleteLocalAfterSync,
-      }
-
-      if (isEditing) {
-        const result = await api.put(`/targets/${editTarget!.id}`, targetData, { signal })
-        savedRevision = Date.parse(result.data?.updated_at) || 0
-        savedId = editTarget!.id
-      } else {
-        const result = await api.post('/targets', targetData, { signal })
-        if (!Number.isSafeInteger(result.data?.id) || result.data.id <= 0) throw new Error('Saved plan identity unavailable')
-        savedId = result.data.id
-        savedRevision = Date.parse(result.data.updated_at) || 0
-      }
-    }, () => {
-      toast.success(isEditing ? 'Backup target updated successfully!' : 'Backup target created successfully!')
-      if (savedId) useNotificationStore.getState().addNotification({ code: 'plan-saved', target: { kind: 'plan', id: savedId }, type: 'info', title: '', message: '', revision: savedRevision })
-      clearDraft()
-      void queryClient.invalidateQueries({ queryKey: queryKeys.targets.all })
-      void queryClient.invalidateQueries({ queryKey: queryKeys.schedules.all })
-      void queryClient.invalidateQueries({ queryKey: queryKeys.retention.all })
-      editor.close()
-      setData(initialData)
-      onClose()
-    })
+    )
   }
-
-  if (!isOpen) return null
-
   return (
-    <Modal title={isEditing ? 'Edit Backup Target' : 'Create Backup Target'} onClose={handleClose} pending={isLoading}>
-
-      {/* Modal */}
-      <div className="relative bg-dark-800 rounded-2xl border border-dark-700 w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-dark-700">
-          <div>
-            <h2 className="text-xl font-bold text-dark-100">{isEditing ? 'Edit Backup Target' : 'Create Backup Target'}</h2>
-            <p className="text-sm text-dark-400">
-              Step {currentStep} of {STEPS.length}: {STEPS[currentStep - 1].name}
-            </p>
-          </div>
+    <div className="space-y-6 max-w-4xl">
+      <PageHeader
+        title={editTarget ? `Edit protection: ${editTarget.name}` : 'Create protection plan'}
+        description="Review configuration, save it, then run separately."
+      />
+      <nav aria-label="Plan editor groups" className="flex flex-wrap gap-2">
+        {GROUPS.map((name, i) => (
           <button
-            onClick={handleClose}
-            aria-label="Close backup wizard"
-            disabled={isLoading}
-            className="p-2 text-dark-400 hover:text-dark-200 hover:bg-dark-700 rounded-lg transition-colors"
+            type="button"
+            className="btn-secondary"
+            aria-current={group === i ? 'step' : undefined}
+            key={name}
+            onClick={() => setGroup(i)}
           >
-            <X className="w-5 h-5" />
+            {name}
           </button>
-        </div>
-
-        {/* Progress Steps */}
-        <div className="px-6 py-4 border-b border-dark-700">
-          <div className="flex items-center justify-between gap-2 overflow-x-auto" role="group" aria-label="Backup wizard steps" tabIndex={0}>
-            {STEPS.map((step, index) => {
-              const skipped = shouldSkipStep(step.id)
-              const isVisited = isEditing || step.id < currentStep
-              const canClick = isEditing ? !skipped : (step.id < currentStep && !skipped)
-              return (
-                <div key={step.id} className="flex items-center">
-                  <div className="flex flex-col items-center">
-                    <button
-                      onClick={() => canClick && setCurrentStep(step.id)}
-                      disabled={isLoading || (!canClick && step.id !== currentStep)}
-                      title={skipped ? `${step.name} (skipped)` : step.name}
-                      className={`flex items-center justify-center rounded-full font-medium transition-colors ${
-                        skipped
-                          ? 'w-5 h-5 text-[10px] bg-dark-700/50 text-dark-500 cursor-default'
-                          : step.id === currentStep
-                          ? 'w-8 h-8 text-sm bg-primary-500 text-white'
-                          : isVisited
-                          ? 'w-8 h-8 text-sm bg-green-500 text-white cursor-pointer'
-                          : 'w-8 h-8 text-sm bg-dark-700 text-dark-400'
-                      }`}
-                    >
-                      {skipped ? '·' : isVisited && step.id !== currentStep ? <Check className="w-4 h-4" /> : step.id}
-                    </button>
-                    <span className={`text-[10px] mt-1 ${
-                      skipped ? 'text-dark-600 text-[9px]' : step.id === currentStep ? 'text-primary-400' : 'text-dark-500'
-                    }`}>
-                      {step.name.length > 6 ? step.name.slice(0, 5) + '.' : step.name}
-                    </span>
-                  </div>
-                  {index < STEPS.length - 1 && (
-                    <div
-                      className={`w-8 h-0.5 mx-1 ${
-                        (isEditing || step.id < currentStep) ? 'bg-green-500' : 'bg-dark-700'
-                      }`}
-                    />
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6">
-          {(currentStep === 1 || targetsQuery.isError) && <QueryFeedback name="Existing plans" query={targetsQuery} />}
-          {([1, 2, 3].includes(currentStep) || containersQuery.isError) && <QueryFeedback name="Containers" query={containersQuery} />}
-          {(currentStep === 1 || volumesQuery.isError) && <QueryFeedback name="Volumes" query={volumesQuery} />}
-          {([1, 2, 3].includes(currentStep) || stacksQuery.isError) && <QueryFeedback name="Stacks" query={stacksQuery} />}
-          {([4, 8].includes(currentStep) || schedulesQuery.isError) && <QueryFeedback name="Schedule choices" query={schedulesQuery} />}
-          {([6, 8].includes(currentStep) || retentionQuery.isError) && <QueryFeedback name="Retention choices" query={retentionQuery} />}
-          {([5, 8].includes(currentStep) || storagesQuery.isError) && <QueryFeedback name="Storage choices" query={storagesQuery} />}
-          {validation.summary}
-          {editor.saveError && <p>Could not save backup configuration. Check the current server state before retrying; cancellation does not undo a server change.</p>}
-          {editor.loading && <p role="status">Loading private hook commands…</p>}
-          {editor.loadError && <p role="alert">Could not load hook commands. Existing commands will be preserved. <button type="button" onClick={editor.retry}>Retry hook load</button></p>}
-          {/* W2: Draft restoration banner */}
-          {showDraftBanner && (
-            <div className="mb-4 flex items-center gap-3 p-3 bg-primary-500/10 border border-primary-500/30 rounded-lg">
-              <div className="flex-1">
-                <p className="text-sm font-medium text-primary-300">Continue where you left off?</p>
-                <p className="text-xs text-primary-400/70">You have an unsaved wizard draft</p>
-              </div>
-              <button
-                onClick={handleRestoreDraft}
-                className="px-3 py-1.5 text-xs bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors"
-              >
-                Restore
-              </button>
-              <button
-                onClick={handleDiscardDraft}
-                className="px-3 py-1.5 text-xs bg-dark-600 text-dark-300 rounded-lg hover:bg-dark-500 transition-colors"
-              >
-                Discard
-              </button>
-            </div>
+        ))}
+      </nav>
+      {draft && (
+        <section aria-label="Unsaved draft" className="space-y-2 border border-dark-600 p-4">
+          <p>
+            Unsaved safe intent found for this account and {editTarget ? 'plan' : 'new plan'}. Hooks must be entered or
+            loaded again. Recovery rechecks current resources.
+          </p>
+          <button type="button" className="btn-secondary" onClick={restore}>
+            Restore draft
+          </button>
+          <button type="button" className="btn-secondary" onClick={discard}>
+            Discard draft
+          </button>
+        </section>
+      )}
+      {conflict && (
+        <section role="alert" className="space-y-2">
+          <p>
+            Server revision changed. No changes were saved. Compare current configuration with your intent before
+            continuing.
+          </p>
+          <pre className="whitespace-pre-wrap break-all">
+            {JSON.stringify(serializeUpdate(targetToWizardData(conflict)), null, 2)}
+          </pre>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => {
+              setBaseline(conflict.updated_at)
+              setData((prev) => ({
+                ...(draft?.data || prev),
+                targetType: conflict.target_type,
+                containerName: conflict.container_name || '',
+                stackName: conflict.stack_name || '',
+                volumeName: conflict.volume_name || '',
+                hostPath: conflict.host_path || '',
+              }))
+              setDraft(null)
+              setTouched(true)
+              setConflict(null)
+            }}
+          >
+            Keep safe intent against current revision
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => {
+              setData({ ...targetToWizardData(conflict), confirmedTargetId: editTarget ? null : conflict.id })
+              setBaseline(conflict.updated_at)
+              setConflict(null)
+              setDraft(null)
+              writer?.clear()
+              setTouched(false)
+              editor.retry()
+            }}
+          >
+            Use server configuration
+          </button>
+        </section>
+      )}
+      <div ref={errorFocus} tabIndex={-1} role={errors.length || editor.saveError ? 'alert' : undefined}>
+        {errors.map((error) => (
+          <p key={error}>{error}</p>
+        ))}
+        {validation.summary}
+        {editor.saveError && (
+          <p>
+            Could not save backup configuration. Safe inputs and confirmed policy IDs are retained. Check current server
+            state; cancellation does not undo a committed write.
+          </p>
+        )}
+      </div>
+      {data.unconfirmed && (
+        <section role="alert" className="space-y-3">
+          <h2 className="text-lg font-semibold">Unconfirmed {data.unconfirmed} creation</h2>
+          <p>
+            No automatic replay or name-based ownership assumption is safe. Read back candidates, compare all fields,
+            and explicitly choose the resource. Discarding the draft does not delete server resources.
+          </p>
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={editor.pending}
+            onClick={() => void readCandidates()}
+          >
+            Read back candidates
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={editor.pending}
+            onClick={() => void reloadScheduler()}
+          >
+            Reload scheduler and read jobs
+          </button>
+          {candidateError && <p>Candidate readback unavailable. Retry; no new resource has been requested.</p>}
+          <ul>
+            {candidates.map((candidate) => (
+              <li key={candidate.id} className="space-y-2 break-all">
+                <p>{candidate.label}</p>
+                <button type="button" className="btn-secondary" onClick={() => void chooseCandidate(candidate.id)}>
+                  {data.unconfirmed === 'target' ? 'Open and inspect' : 'Use explicitly selected'} #{candidate.id}
+                </button>
+              </li>
+            ))}
+          </ul>
+          {data.unconfirmed !== 'target' && (
+            <p>
+              Policies are shared. Selecting a candidate does not prove it was created by this editor and never modifies
+              or deletes it.
+            </p>
           )}
-
-          {currentStep === 1 && (
-            <StepTargetSelect
-              data={data}
-              updateData={updateData}
-              containers={containers}
-              volumes={volumes}
-              stacks={stacks}
-              existingTargets={existingTargets}
-              nameFeedback={validation.field('name')}
-              unavailableTypes={[...(containersQuery.data ? [] : ['container']), ...(volumesQuery.data ? [] : ['volume']), ...(stacksQuery.data ? [] : ['stack'])]}
-            />
-          )}
-          {currentStep === 2 && (data.targetType === 'stack' ? stacksQuery.data : containersQuery.data) && (
-            <StepVolumeConfig
-              data={data}
-              updateData={updateData}
-              containers={containers}
-              stacks={stacks}
-            />
-          )}
-          {currentStep === 3 && (data.targetType === 'stack' ? stacksQuery.data : containersQuery.data) && (
-            <StepDependencies
-              data={data}
-              updateData={updateData}
-              containers={containers}
-              stacks={stacks}
-            />
-          )}
-          {currentStep === 4 && schedulesQuery.data && (
+        </section>
+      )}
+      {reconciled && (
+        <p role="status">
+          Scheduler reloaded and jobs read back. Unconfirmed creation still requires explicit candidate selection.
+        </p>
+      )}
+      {editor.loading && <p role="status">Loading private hook commands…</p>}
+      {editor.loadError && (
+        <p role="alert">
+          Could not load hook commands. Existing commands will be preserved.{' '}
+          <button type="button" className="btn-secondary" onClick={editor.retry}>
+            Retry hook load
+          </button>
+        </p>
+      )}
+      <fieldset disabled={editor.pending} className="space-y-6 min-w-0">
+        {group === 0 && (
+          <>
+            <QueryFeedback name="Existing plans" query={targets} />
+            {editTarget || data.confirmedTargetId ? (
+              <section className="space-y-3">
+                <p className="break-all">
+                  Source (read-only): {data.targetType} —{' '}
+                  {data.containerName || data.stackName || data.volumeName || data.hostPath}. To change source, create a
+                  new plan; existing archives keep their identity.
+                </p>
+                <label className="block">
+                  Plan name
+                  <input
+                    className="input w-full"
+                    value={data.targetName}
+                    {...validation.field('name')}
+                    onChange={(e) => updateData({ targetName: e.target.value })}
+                  />
+                </label>
+              </section>
+            ) : (
+              <StepTargetSelect
+                data={data}
+                updateData={updateData}
+                containers={containers.data || []}
+                stacks={stacks.data || []}
+                volumes={volumes.data || []}
+                existingTargets={targets.data || []}
+                nameFeedback={validation.field('name')}
+                unavailableTypes={[
+                  ...(containers.isError || containers.isPending ? ['container'] : []),
+                  ...(stacks.isError || stacks.isPending ? ['stack'] : []),
+                  ...(volumes.isError || volumes.isPending ? ['volume'] : []),
+                ]}
+              />
+            )}
+            <QueryFeedback name="Containers" query={containers} />
+            <QueryFeedback name="Stacks" query={stacks} />
+            <QueryFeedback name="Volumes" query={volumes} />
+            {data.targetType && (
+              <StepVolumeConfig
+                data={data}
+                updateData={updateData}
+                containers={containers.data || []}
+                stacks={stacks.data || []}
+              />
+            )}
+          </>
+        )}
+        {group === 1 && (
+          <>
+            <QueryFeedback name="Schedule choices" query={schedules} />
             <StepSchedule
+              feedback={validation.field}
               data={data}
               updateData={updateData}
-              schedules={schedules}
-              isLoadingSchedules={false}
+              schedules={schedules.data || []}
+              isLoadingSchedules={schedules.isPending}
             />
-          )}
-          {currentStep === 5 && storagesQuery.data && (
+            <QueryFeedback name="Retention choices" query={retention} />
+            <StepRetention
+              feedback={validation.field}
+              data={data}
+              updateData={updateData}
+              policies={retention.data || []}
+              isLoadingPolicies={retention.isPending}
+            />
+            <QueryFeedback name="Storage choices" query={storages} />
             <StepStorage
               data={data}
               updateData={updateData}
-              storages={remoteStorages}
-              isLoadingStorages={false}
+              storages={storages.data || []}
+              isLoadingStorages={storages.isPending}
             />
-          )}
-          {currentStep === 6 && retentionQuery.data && (
-            <StepRetention
+          </>
+        )}
+        {group === 2 && (
+          <>
+            <p>
+              Stack members follow the engine stop/start topology even when source-stop is disabled. Explicit
+              dependencies are stopped independently; original stopped states are preserved. Listed order is not a
+              custom execution guarantee.
+            </p>
+            <StepDependencies
               data={data}
               updateData={updateData}
-              policies={retentionPolicies}
-              isLoadingPolicies={false}
+              containers={containers.data || []}
+              stacks={stacks.data || []}
             />
-          )}
-          {currentStep === 7 && (
-              <StepOptions hooksDisabled={editor.loading || !editor.loaded || editor.pending} data={{ ...data, preCommand: editor.hooks.pre, postCommand: editor.hooks.post }} updateData={updates => {
-                if (updates.preCommand !== undefined) editor.setHooks(prev => ({ ...prev, pre: updates.preCommand! }))
-                if (updates.postCommand !== undefined) editor.setHooks(prev => ({ ...prev, post: updates.postCommand! }))
-                const { preCommand: _pre, postCommand: _post, ...safeUpdates } = updates
-                updateData(safeUpdates)
-              }} />
-
-          )}
-          {currentStep === 8 && (
-            <StepSummary
+            <StepOptions
+              hooksDisabled={editor.loading || !editor.loaded || editor.pending}
               data={{ ...data, preCommand: editor.hooks.pre, postCommand: editor.hooks.post }}
-              schedules={schedules}
-              policies={retentionPolicies}
-              storages={remoteStorages}
-              isCreating={isLoading}
-              onGoToStep={setCurrentStep}
-              availableVolumes={(() => {
-                if (data.targetType === 'container' && data.containerName) {
-                  const c = containers.find((ct) => ct.name === data.containerName)
-                  return c?.mounts?.filter((m) => m.type === 'volume').map((m) => m.name || '').filter(Boolean) || []
-                }
-                if (data.targetType === 'stack' && data.stackName) {
-                  return stacks.find((s) => s.name === data.stackName)?.volumes || []
-                }
-                return []
-              })()}
+              updateData={(updates) => {
+                if (updates.preCommand !== undefined) editor.setHooks((prev) => ({ ...prev, pre: updates.preCommand! }))
+                if (updates.postCommand !== undefined)
+                  editor.setHooks((prev) => ({ ...prev, post: updates.postCommand! }))
+                const { preCommand: _pre, postCommand: _post, ...safe } = updates
+                if (Object.keys(safe).length) updateData(safe)
+              }}
             />
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-between px-6 py-4 border-t border-dark-700">
-          <button
-            onClick={handlePrev}
-            disabled={currentStep === 1 || isLoading}
-            className="flex items-center gap-2 px-4 py-2 text-dark-300 hover:text-dark-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            <ChevronLeft className="w-4 h-4" />
-            Previous
+            <StepSummary
+              data={data}
+              hooks={editor.loaded ? editor.hooks : undefined}
+              schedules={schedules.data || []}
+              policies={retention.data || []}
+              storages={storages.data || []}
+              availableVolumes={availableVolumes(data, containers.data || [], stacks.data || [])}
+              isCreating={editor.pending}
+              onGoToStep={setGroup}
+            />
+          </>
+        )}
+      </fieldset>
+      <footer className="flex flex-wrap gap-3 border-t border-dark-600 pt-4">
+        <button type="button" className="btn-secondary" onClick={cancel}>
+          Cancel
+        </button>
+        <button type="button" className="btn-secondary" disabled={editor.pending} onClick={discard}>
+          Discard changes
+        </button>
+        {group < 2 ? (
+          <button type="button" className="btn-primary" onClick={() => setGroup(group + 1)}>
+            Next: {GROUPS[group + 1]}
           </button>
-
-          <div className="flex gap-2">
-            <button
-              onClick={handleClose}
-              className="px-4 py-2 text-dark-300 hover:text-dark-100 transition-colors"
-            >
-              Cancel
-            </button>
-            {currentStep === STEPS.length ? (
-              <button
-                onClick={handleSubmit}
-                disabled={!canProceed() || isLoading}
-                className="flex items-center gap-2 px-6 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {isLoading ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    {isEditing ? 'Saving...' : 'Creating...'}
-                  </>
-                ) : (
-                  <>
-                    <Check className="w-4 h-4" />
-                    {isEditing ? 'Save Changes' : 'Create Target'}
-                  </>
-                )}
-              </button>
-            ) : (
-              <button
-                onClick={handleNext}
-                disabled={!canProceed()}
-                className="flex items-center gap-2 px-6 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                Next
-                <ChevronRight className="w-4 h-4" />
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-    </Modal>
+        ) : (
+          <button
+            type="button"
+            className="btn-primary"
+            disabled={editor.pending || !!data.unconfirmed || !!draft || !!conflict}
+            onClick={() => void save()}
+          >
+            {editor.pending ? 'Saving…' : 'Save plan'}
+          </button>
+        )}
+      </footer>
+    </div>
   )
 }
-import { Modal } from '../ui/dialog'
-import { queryKeys } from '../../api/queryKeys'
-import { useNotificationStore } from '../../store/notifications'

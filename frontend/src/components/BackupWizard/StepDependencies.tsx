@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
+import { useState, useMemo, useCallback } from 'react'
 import { AlertCircle, Link2, Power, Search, X, Layers, ChevronDown, ChevronRight, ArrowUp, ArrowDown, GripVertical } from 'lucide-react'
 import { WizardData } from './index'
 import { Container, Stack } from '../../api'
@@ -90,15 +90,7 @@ export default function StepDependencies({ data, updateData, containers, stacks 
     }
   }, [isStack, stackContainerInfo, updateData])
 
-  // D2: Auto-run detection for stacks when no dependencies are selected yet
-  const hasAutoDetected = useRef(false)
-  useEffect(() => {
-    if (hasAutoDetected.current || data.dependencies.length > 0) return
-    if (isStack && stackContainerInfo.length > 0) {
-      autoDetectDependencies()
-      hasAutoDetected.current = true
-    }
-  }, [isStack, stackContainerInfo.length, data.dependencies.length, autoDetectDependencies])
+  // Detection is explicit: an intentionally empty edit/draft must stay empty.
 
   return (
     <div className="space-y-6">
@@ -121,9 +113,9 @@ export default function StepDependencies({ data, updateData, containers, stacks 
           <div className="flex items-center gap-2">
             <Power className="w-4 h-4 text-orange-400" />
             <div>
-              <span className="text-dark-100 font-medium">Stop container(s) during backup</span>
+              <span className="text-dark-200 font-medium">Source-container stop flag</span>
               <p className="text-sm text-dark-400 mt-1">
-                Ensures data consistency by stopping services before backup
+                Applies to the source container only. Stacks use their existing stop/start topology; explicit dependencies stop independently. Volume/path does not automatically stop consumers.
               </p>
             </div>
           </div>
@@ -187,18 +179,14 @@ export default function StepDependencies({ data, updateData, containers, stacks 
                 <button
                   key={container.id}
                   onClick={() => toggleDependency(container.name)}
+                  aria-pressed={isSelected}
                   className={`w-full flex items-center gap-3 p-3 rounded-lg border transition-all text-left ${
                     isSelected
                       ? 'border-primary-500 bg-primary-500/10'
                       : 'border-dark-700 hover:border-dark-600 bg-dark-800'
                   }`}
                 >
-                  <input
-                    type="checkbox"
-                    checked={isSelected}
-                    onChange={() => {}}
-                    className="w-4 h-4 rounded border-dark-600 text-primary-500 focus:ring-primary-500 bg-dark-700"
-                  />
+                  <span aria-hidden="true" className="text-primary-300">{isSelected ? 'Selected' : 'Not selected'}</span>
                   <div className="flex-1 min-w-0">
                     <p className="text-dark-100 font-medium truncate">{container.name}</p>
                     <p className="text-sm text-dark-400 truncate">{container.image}</p>
@@ -207,7 +195,7 @@ export default function StepDependencies({ data, updateData, containers, stacks 
                     className={`px-2 py-1 rounded text-xs ${
                       container.state === 'running'
                         ? 'bg-green-500/10 text-green-400'
-                        : 'bg-dark-600 text-dark-400'
+                        : 'bg-dark-600 text-dark-200'
                     }`}
                   >
                     {container.state}
@@ -278,12 +266,12 @@ export default function StepDependencies({ data, updateData, containers, stacks 
                     type="text"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Search containers..."
+                    placeholder="Search containers..." aria-label="Search dependency containers"
                     className="w-full pl-9 pr-8 py-2 bg-dark-800 border border-dark-700 rounded-lg text-dark-100 text-sm placeholder:text-dark-500 focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
                   />
                   {search && (
                     <button
-                      onClick={() => setSearch('')}
+                      onClick={() => setSearch('')} aria-label="Clear dependency search"
                       className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-dark-500 hover:text-dark-300"
                     >
                       <X className="w-3.5 h-3.5" />
@@ -317,18 +305,14 @@ export default function StepDependencies({ data, updateData, containers, stacks 
                         <button
                           key={container.id}
                           onClick={() => toggleDependency(container.name)}
+                  aria-pressed={isSelected}
                           className={`w-full flex items-center gap-3 p-3 rounded-lg border transition-all text-left ${
                             isSelected
                               ? 'border-primary-500 bg-primary-500/10'
                               : 'border-dark-700 hover:border-dark-600 bg-dark-800'
                           }`}
                         >
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => {}}
-                            className="w-4 h-4 rounded border-dark-600 text-primary-500 focus:ring-primary-500 bg-dark-700"
-                          />
+                          <span aria-hidden="true" className="text-primary-300">{isSelected ? 'Selected' : 'Not selected'}</span>
                           <div className="flex-1 min-w-0">
                             <p className="text-dark-100 font-medium truncate">{container.name}</p>
                             <p className="text-sm text-dark-400 truncate">{container.image}</p>
@@ -337,7 +321,7 @@ export default function StepDependencies({ data, updateData, containers, stacks 
                             className={`px-2 py-1 rounded text-xs ${
                               container.state === 'running'
                                 ? 'bg-green-500/10 text-green-400'
-                                : 'bg-dark-600 text-dark-400'
+                                : 'bg-dark-600 text-dark-200'
                             }`}
                           >
                             {container.state}
@@ -364,7 +348,7 @@ export default function StepDependencies({ data, updateData, containers, stacks 
       {data.dependencies.length > 0 && (
         <div className="bg-dark-800 rounded-xl border border-dark-700 p-4">
           <h4 className="text-sm font-medium text-dark-300 mb-3">
-            Stop/Start order ({data.dependencies.length} dependencies):
+            Dependency review order (engine determines actual stop/start order; {data.dependencies.length} selected):
           </h4>
           <div className="space-y-1.5 mb-3">
             {data.dependencies.map((dep, index) => (
@@ -376,6 +360,7 @@ export default function StepDependencies({ data, updateData, containers, stacks 
                 <span className="text-xs text-dark-500 w-5 text-center font-mono">{index + 1}</span>
                 <span className="text-sm text-dark-100 flex-1 truncate">{dep}</span>
                 <div className="flex gap-1 flex-shrink-0">
+                  <button type="button" aria-label={`Remove dependency ${dep}`} onClick={() => updateData({ dependencies: data.dependencies.filter(name => name !== dep) })} className="btn-secondary">Remove</button>
                   <button
                     type="button"
                     onClick={() => {
@@ -410,11 +395,11 @@ export default function StepDependencies({ data, updateData, containers, stacks 
           </div>
           <div className="text-xs text-dark-500 space-y-1 border-t border-dark-700 pt-2">
             <p>
-              <span className="text-orange-400">Stop:</span>{' '}
+              <span className="text-orange-300">Review:</span>{' '}
               {data.dependencies.join(' \u2192 ')}
             </p>
             <p>
-              <span className="text-green-400">Start:</span>{' '}
+              <span className="text-green-300">Reverse review:</span>{' '}
               {[...data.dependencies].reverse().join(' \u2192 ')}
             </p>
           </div>

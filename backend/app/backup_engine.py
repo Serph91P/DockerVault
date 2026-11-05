@@ -62,6 +62,12 @@ class ArchiveSources:
     paths: tuple[tuple[str, str], ...] = ()
     root: str | None = None
     container_ids: tuple[str, ...] = ()
+    rules_json: str = "{}"
+
+    @property
+    def per_volume_rules(self) -> dict:
+        # Return a copy so callers cannot mutate the claimed rules snapshot.
+        return json.loads(self.rules_json)
 
 
 @dataclass
@@ -1546,6 +1552,9 @@ class BackupEngine:
         paths = []
         container_ids = []
         selected = target.selected_volumes or []
+        known_names = set()
+        bindings = {}
+        roots = {}
         for container in containers:
             expected = identities.get(container.name)
             if expected is None:
@@ -1557,7 +1566,10 @@ class BackupEngine:
             container_ids.append(expected)
             for mount in container.mounts:
                 name = mount.get("name")
-                if mount.get("type") != "volume" or (selected and name not in selected):
+                if mount.get("type") != "volume":
+                    continue
+                known_names.add(name)
+                if selected and name not in selected:
                     continue
                 if name not in volume_map:
                     raise ValueError(f"Claimed volume {name} is unavailable")
@@ -1566,12 +1578,55 @@ class BackupEngine:
                     if target.target_type == "stack"
                     else mount.get("destination")
                 )
-                selection = (logical, os.path.realpath(volume_map[name]))
+                if not logical or logical.lstrip("/").startswith("volume:"):
+                    raise ValueError(
+                        "Archive root collides with reserved volume namespace"
+                    )
+                root = logical.lstrip("/")
+                if not root or any(part in ("", ".", "..") for part in root.split("/")):
+                    raise ValueError("Ambiguous archive root")
+                path = os.path.realpath(volume_map[name])
+                if any(
+                    root != other
+                    and (root.startswith(other + "/") or other.startswith(root + "/"))
+                    for other in roots
+                ):
+                    raise ValueError("Overlapping archive roots")
+                if root in roots and roots[root] != (name, path):
+                    raise ValueError("Conflicting sources for archive root")
+                roots[root] = (name, path)
+                bindings.setdefault(name, set()).add(root)
+                selection = (logical, path)
                 if selection not in paths:
                     paths.append(selection)
+        if set(selected) - known_names:
+            raise ValueError("Selected volumes are missing from claimed topology")
         if not paths:
             raise ValueError("Claimed containers have no selected volumes to backup")
-        return ArchiveSources(paths=tuple(paths), container_ids=tuple(container_ids))
+        rules = target.per_volume_rules or {}
+        resolved = {
+            key: value for key, value in rules.items() if not key.startswith("volume:")
+        }
+        for key, value in rules.items():
+            if not key.startswith("volume:"):
+                continue
+            name = key.removeprefix("volume:")
+            if name not in known_names:
+                raise ValueError(
+                    "Volume rule identity is missing from claimed topology"
+                )
+            for root in bindings.get(name, ()):
+                # Mirror the legacy worker lookup, including empty-dict inheritance.
+                basename = os.path.basename(root)
+                legacy = rules.get(root) or rules.get(basename) or {}
+                if (root in rules or basename in rules) and legacy != value:
+                    raise ValueError("Conflicting volume and legacy archive rules")
+                resolved[root] = value
+        return ArchiveSources(
+            paths=tuple(paths),
+            container_ids=tuple(container_ids),
+            rules_json=json.dumps(resolved),
+        )
 
     async def _create_backup_archive(
         self,
@@ -1626,7 +1681,7 @@ class BackupEngine:
         # Get path filters
         include_paths = target.include_paths or []
         exclude_paths = target.exclude_paths or []
-        per_volume_rules = target.per_volume_rules or {}
+        per_volume_rules = sources.per_volume_rules
 
         # Create tarball
         try:

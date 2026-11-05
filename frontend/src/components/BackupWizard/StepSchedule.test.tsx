@@ -43,7 +43,7 @@ it('Sunday preset sends a named Sunday expression', async () => {
   server.use(http.get('/api/v1/schedules', () => HttpResponse.json([])),
     http.post('/api/v1/schedules/preview', () => HttpResponse.json({ next_runs: [], timezone: 'UTC', contract: '', warnings: [] })))
   const update = show()
-  await userEvent.click(screen.getByRole('button', { name: /Weekly on Sunday/ }))
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Preset' }), '0 0 * * sun')
   expect(update).toHaveBeenCalledWith({ newSchedule: expect.objectContaining({ cronExpression: '0 0 * * sun' }) })
 })
 
@@ -51,5 +51,5 @@ it('shows server validation failure rather than misleading local next dates', as
   server.use(http.get('/api/v1/schedules', () => HttpResponse.json([])),
     http.post('/api/v1/schedules/preview', () => HttpResponse.json({ detail: 'Invalid cron expression: five fields required' }, { status: 400 })))
   show()
-  await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('five fields required'))
+  await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Schedule preview unavailable. Check the server before saving.'))
 })

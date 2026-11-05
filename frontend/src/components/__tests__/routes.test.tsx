@@ -27,7 +27,28 @@ describe('workspace routes', () => {
     renderPath(path)
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent(destination))
   })
-  it.each(['/missing', '/protection/99999', '/storage/99999', '/history/99999'])('does not misrepresent missing %s as overview', async (path) => {
+  it('opens a real plan detail and immutable-source edit route, preserving safe return context', async () => {
+    server.use(http.get('/api/v1/targets/917', () => HttpResponse.json({ id: 917, name: 'Route fixture', target_type: 'path', host_path: '/fixture', enabled: true, dependencies: [], selected_volumes: [], include_paths: [], exclude_paths: [], per_volume_rules: {}, remote_storage_ids: [], compression_enabled: true, stop_container: false })))
+    renderPath('/protection/917/edit?returnTo=%2Fprotection%3Fq%3Dfixture%26type%3Dpath')
+    expect(await screen.findByRole('heading', { name: 'Edit protection: Route fixture' })).toBeInTheDocument()
+    expect(screen.getByText(/Source \(read-only\): path/)).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Return to plan without saving' })).toHaveAttribute('href', '/protection/917?returnTo=%2Fprotection%3Fq%3Dfixture%26type%3Dpath')
+  })
+  it('consumes the existing notification plan query without losing valid filters', async () => {
+    server.use(http.get('/api/v1/targets/917', () => HttpResponse.json({ id: 917, name: 'Route fixture', target_type: 'path', host_path: '/fixture', enabled: true, dependencies: [], selected_volumes: [], include_paths: [], exclude_paths: [], per_volume_rules: {}, remote_storage_ids: [], compression_enabled: true, stop_container: false })))
+    renderPath('/protection?plan=917&q=fixture&type=path')
+    expect(await screen.findByRole('heading', { level: 1, name: 'Route fixture' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Return to protection list' })).toHaveAttribute('href', '/protection?q=fixture&type=path')
+  })
+  it('keeps an unavailable plan address and retained-history recovery distinct from Overview', async () => {
+    server.use(http.get('/api/v1/targets/99999', () => new HttpResponse(null, { status: 404 })))
+    renderPath('/protection/99999')
+    expect(await screen.findByRole('heading', { name: 'Protection plan unavailable' })).toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent('/protection/99999')
+    expect(screen.getByRole('link', { name: 'Open retained history' })).toHaveAttribute('href', '/history')
+  })
+  it.each(['/missing', '/storage/99999', '/history/99999'])('does not misrepresent missing %s as overview', async (path) => {
     renderPath(path)
     expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeInTheDocument()
     expect(screen.getByTestId('location')).toHaveTextContent(path)

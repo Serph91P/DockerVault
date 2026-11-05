@@ -41,9 +41,8 @@ import { format, formatDistanceToNowStrict } from 'date-fns'
 import toast from 'react-hot-toast'
 import { useWebSocketStore } from '../store/websocket'
 import { clsx } from 'clsx'
-import BackupWizard from '../components/BackupWizard'
+import { useNavigate } from 'react-router-dom'
 import BackupBrowser from '../components/BackupBrowser'
-import BackupEditDialog from '../components/BackupEditDialog'
 import RemovalDialog, { RemovalIntent } from '../components/RemovalDialog'
 import EmptyState from '../components/EmptyState'
 import LoadingSkeleton from '../components/LoadingSkeleton'
@@ -493,9 +492,9 @@ function TargetBackupCard({
 
 export default function Backups({ workspace }: { workspace?: 'protection' | 'history' } = {}) {
   const queryClient = useQueryClient()
-  const [wizardOpen, setWizardOpen] = useState(false)
+  const navigate = useNavigate()
   const [browsingBackup, setBrowsingBackup] = useState<Backup | null>(null)
-  const [editingTarget, setEditingTarget] = useState<BackupTarget | null>(null)
+  const setEditingTarget = (target: BackupTarget) => navigate(`/protection/${target.id}/edit`)
   const [searchQuery, setSearchQuery] = useState('')
   const [typeFilter, setTypeFilter] = useState<string | null>(null)
   const [sortBy, setSortBy] = useState<'name' | 'type' | 'last-backup' | 'created'>('name')
@@ -615,7 +614,7 @@ export default function Backups({ workspace }: { workspace?: 'protection' | 'his
             </Menu>
           )}
           <button
-            onClick={() => setWizardOpen(true)}
+            onClick={() => navigate('/protection/new')}
             className="flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors"
           >
             <Plus className="w-4 h-4" />
@@ -749,25 +748,13 @@ export default function Backups({ workspace }: { workspace?: 'protection' | 'his
           icon={Archive}
           title="No backups configured"
           description='Click "New Backup" to set up your first backup'
-          action={{ label: 'Create Backup', onClick: () => setWizardOpen(true), icon: Plus }}
+          action={{ label: 'Create Backup', onClick: () => navigate('/protection/new'), icon: Plus }}
         />
       ) : null}
-
-      {/* Backup Wizard Modal */}
-      <BackupWizard isOpen={wizardOpen} onClose={() => setWizardOpen(false)} />
 
       {/* Backup Browser Modal */}
       {browsingBackup && (
         <BackupBrowser backup={browsingBackup} onClose={() => setBrowsingBackup(null)} />
-      )}
-
-      {/* Backup Edit Dialog */}
-      {editingTarget && (
-        <BackupEditDialog
-          target={editingTarget}
-          isOpen={true}
-          onClose={() => setEditingTarget(null)}
-        />
       )}
 
       {removal && <RemovalDialog intent={removal} onClose={() => setRemoval(null)} onChanged={() => {

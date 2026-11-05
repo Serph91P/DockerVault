@@ -21,6 +21,7 @@ export function usePrivateTargetEditor(targetId?: number) {
     setHooks({ pre: '', post: '' })
     setLoaded(false)
     setPending(false)
+    setSaveError(false)
     setSaveFailure(null)
   }
 
@@ -41,6 +42,8 @@ export function usePrivateTargetEditor(targetId?: number) {
         setHooks({ pre: response.data.pre_backup_command ?? '', post: response.data.post_backup_command ?? '' })
         setLoaded(true)
       }).catch(() => { if (current()) setLoadError(true) }).finally(() => { if (current()) setLoading(false) })
+    } else {
+      setHooks({ pre: '', post: '' }); setLoaded(true); setLoading(false)
     }
     return () => { requests.abort(); session.removeEventListener('abort', clear) }
   }, [targetId, attempt])
@@ -60,5 +63,5 @@ export function usePrivateTargetEditor(targetId?: number) {
     } catch (error) { if (current()) { setSaveError(true); setSaveFailure(error instanceof ResponseError ? error : new ResponseError()) } }
     finally { busy.current = false; if (current()) setPending(false) }
   }
-  return { hooks, setHooks, loaded, loading, loadError, retry: () => setAttempt(value => value + 1), pending, saveError, saveFailure, run, close }
+  return { hooks, setHooks, loaded, loading, loadError, retry: () => { close(); setAttempt(value => value + 1) }, pending, saveError, saveFailure, run, close }
 }
