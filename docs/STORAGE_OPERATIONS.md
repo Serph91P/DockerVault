@@ -71,6 +71,14 @@ of claiming a current success. Terminal work stops polling. Unmount, storage
 change and session-generation change invalidate UI ownership and late replies.
 Reopening a storage discovers operations from the server, not browser persistence.
 
+Discovery refresh cancels any older in-flight list before issuing a new authorized
+read. This also covers acceptance during the initial empty discovery, without a
+WebSocket hint; loading is not presented as a confirmed empty history. Session and
+mount ownership are checked again after cancellation. Definitive request rejection
+(HTTP 400/401/403/404/409/422/429) releases the unaccepted create intent so the user
+can correct their selection in the same folder with a new UUID. Network failures,
+timeouts and 5xx remain ambiguous: only the original payload/UUID can be retried.
+
 ## Verification and replay
 
 Baseline: `7c5c0c6906283892cf835e5faf120edcced076ee` on `develop`.
@@ -81,8 +89,8 @@ Linux checks run with Python 3.14.4, Node 24.11.0 and npm 11.6.2:
 ```sh
 # From backend, using the repository virtual environment:
 python -m pytest
-python -m ruff check app tests/test_storage_jobs.py tests/run_storage_jobs_browser.py
-python -m ruff format --check app tests/test_storage_jobs.py tests/run_storage_jobs_browser.py
+python -m ruff check app tests/test_storage_jobs.py tests/run_storage_jobs_browser.py tests/run_storage_jobs_recovery_browser.py
+python -m ruff format --check app tests/test_storage_jobs.py tests/run_storage_jobs_browser.py tests/run_storage_jobs_recovery_browser.py
 uv pip check --python ../.venv/bin/python
 PYTHONPATH=. python tests/runtime_smoke.py
 
@@ -96,6 +104,7 @@ npm run build
 # From repository root (isolated --rm containers; no production socket/mounts):
 docker build -t dockervault:storage-operations-test .
 .venv/bin/python backend/tests/run_storage_jobs_browser.py dockervault:storage-operations-test dockervault:t539-browser-runner
+.venv/bin/python backend/tests/run_storage_jobs_recovery_browser.py dockervault:storage-operations-test dockervault:t539-browser-runner
 .venv/bin/python backend/tests/run_backup_roundtrip.py dockervault:storage-operations-test
 ```
 
@@ -103,14 +112,15 @@ Results on the candidate source:
 
 | Check | Result |
 | --- | --- |
-| Full backend suite, configured coverage gate >=34% | 666 passed; 74.12% coverage |
+| Full backend suite, configured coverage gate >=34% | 666 passed; 74.11% coverage |
 | New storage-job SQLite/API/filesystem tests | 27 passed in the full suite |
-| Full frontend coverage suite | 186 passed in 27 files |
+| Full frontend coverage suite | 196 passed in 28 files |
 | Ruff app and new Python tests, format | pass |
 | Frontend lint, TypeScript, production build | pass |
 | Runtime import, repeated SQLite init, dependency consistency | pass |
 | Production Docker build and nginx/backend health | pass |
 | Product Chromium/cookie/SQLite/disk acceptance | 44 checks pass |
+| Recovery product regressions, each independently replayed | 3 scenarios pass twice; final SQLite/disk/sentinel checks pass |
 | Plain and encrypted HTTP backup, local restore, remote-only restart restore | both byte-identical |
 
 The versioned product runner uses real application routes and physical deletion,
@@ -123,6 +133,19 @@ physical-effect-before-DB-outcome window. External test-only holds make that
 window deterministic; they do not replace ordinary real product deletions and
 are never included in product source or the production image. Final SQLite
 counters and actual disk bytes are inspected before owned containers are removed.
+
+The recovery runner holds the first real empty list response until after a real
+202, with WebSockets unavailable; a fresh GET discovers the actual completed job
+without resubmission. It then checks a real 1001-file rejection (422 and no job),
+selection correction to 1000 in the same folder, and exactly 1000 successful
+physical deletions while the unselected file remains byte-identical. Finally it
+loses a real committed 202 response and retries the exact UUID/payload, verifying
+one job and one effect. These are separate fresh isolated products, not mock
+acceptance or provider effects. Component regressions use the real QueryClient
+and cover both already-completed and running-to-polled-terminal discovery,
+retry-child discovery, initial loading, definitive 422/409/429 rejection and
+network/408/500 ambiguity. The original reviewer probes failed on the original
+head before these corrections; no gate or 1000-item limit was relaxed.
 
 TDD/self-review also reproduced and fixed a split counter/item snapshot race,
 root inode lifetime gap, worker initial-read failure, ambiguous/fast retry request

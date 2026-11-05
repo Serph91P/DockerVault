@@ -1,7 +1,7 @@
 import { operationActive, type StorageOperation } from '../api/operations'
 
-export default function StorageOperationResults({ operations, stale, pending, error, onCancel, onRetry, onRefresh, onFolder }: {
-  operations: StorageOperation[]; stale: boolean; pending: boolean; error: boolean
+export default function StorageOperationResults({ operations, loading, stale, pending, error, onCancel, onRetry, onRefresh, onFolder }: {
+  operations: StorageOperation[]; loading: boolean; stale: boolean; pending: boolean; error: boolean
   onCancel: (id: string) => void; onRetry: (id: string) => void; onRefresh: () => void; onFolder: (path: string) => void
 }) {
   return <section aria-label="Storage operations" className="border-t border-dark-700 p-3 space-y-3 max-h-64 overflow-y-auto shrink-0">
@@ -26,6 +26,7 @@ export default function StorageOperationResults({ operations, stale, pending, er
       </div>
       <details open={operation.failed > 0 || operation.unknown > 0}><summary>Per-item results</summary><ul>{operation.items.map((item, index) => <li key={index} className="text-sm break-all">{item.path}: {item.state}{item.error && <> - <span>{item.error}</span></>}</li>)}</ul></details>
     </article>)}
-    {!operations.length && !stale && <p className="text-sm text-dark-400">No recent storage operations</p>}
+    {loading && <p role="status">Loading storage operations...</p>}
+    {!operations.length && !loading && !stale && <p className="text-sm text-dark-400">No recent storage operations</p>}
   </section>
 }

@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { RemoteStorage, storageApi } from '../api'
 import toast from 'react-hot-toast'
+import { isAxiosError } from 'axios'
 import { clsx } from 'clsx'
 import ConfirmDialog from './ConfirmDialog'
 import { ownsSession, sessionGeneration, sessionSignal } from '../store/session'
@@ -162,7 +163,12 @@ function StorageBrowserContent({ storage, onClose }: StorageBrowserProps) {
     window.addEventListener('storage-operation-update', update)
     return () => { window.removeEventListener('storage-operation-update', update); clearTimeout(timer) }
   }, [owner, queryClient, storage.id])
-  const refreshOperations = () => queryClient.invalidateQueries({ queryKey: operationsKey })
+  const refreshOperations = async () => {
+    if (!mounted.current || !ownsSession(owner)) return
+    // Invalidation alone reuses an initial in-flight read with no cached data.
+    await queryClient.cancelQueries({ queryKey: operationsKey })
+    if (mounted.current && ownsSession(owner)) await queryClient.invalidateQueries({ queryKey: operationsKey })
+  }
   const command = useMutation({
     mutationFn: async (request: { kind: 'create'; data: CreateStorageOperation } | { kind: 'retry'; id: string; request_id: string } | { kind: 'cancel'; id: string }) => {
       if (request.kind === 'create') return operationsApi.create(request.data)
@@ -180,8 +186,10 @@ function StorageBrowserContent({ storage, onClose }: StorageBrowserProps) {
 
       void refreshOperations()
     },
-    onError: () => {
+    onError: (error, request) => {
       if (!mounted.current || !ownsSession(owner)) return
+      // These API rejections precede admission; transport/timeouts/5xx remain ambiguous.
+      if (request.kind === 'create' && isAxiosError(error) && [400, 401, 403, 404, 409, 422, 429].includes(error.response?.status ?? 0)) unfinishedRequest.current = null
       setDeleteTarget(null)
       setBulkDeleteTarget(null)
       void refreshOperations()
@@ -562,7 +570,7 @@ function StorageBrowserContent({ storage, onClose }: StorageBrowserProps) {
         )}
 
         {command.isError && unfinishedRequest.current && <button type="button" className="btn-secondary" disabled={command.isPending} onClick={() => startDelete(unfinishedRequest.current!.paths)}>Retry request with same ID</button>}
-        <StorageOperationResults operations={jobs} stale={operations.isError} pending={command.isPending} error={command.isError}
+        <StorageOperationResults operations={jobs} loading={operations.isPending} stale={operations.isError} pending={command.isPending} error={command.isError}
           onRefresh={() => { void refreshOperations() }}
           onFolder={path => { setCurrentPath(path); setSelectedFiles(new Set()); setDeleteTarget(null); setBulkDeleteTarget(null) }}
           onCancel={id => { if (!submitting.current) { submitting.current = true; command.mutate({ kind: 'cancel', id }) } }}

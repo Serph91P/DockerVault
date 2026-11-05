@@ -137,6 +137,70 @@ describe('durable storage browser', () => {
     expect(within(screen.getByRole('article', { name: 'Operation durable-one' })).queryByRole('button', { name: 'Retry failed items' })).not.toBeInTheDocument()
   })
 
+  it.each([422, 409, 429])('allows a corrected new intent after definitive HTTP %s rejection', async status => {
+    listings()
+    const requests: { request_id: string; paths: string[] }[] = []
+    server.use(http.post('/api/v1/operations', async ({ request }) => {
+      requests.push(await request.json() as typeof requests[number])
+      return requests.length === 1
+        ? HttpResponse.json({ detail: 'Request not admitted' }, { status })
+        : HttpResponse.json({ operation_id: 'corrected' }, { status: 202 })
+    }))
+    const { onClose } = mount()
+    const user = userEvent.setup()
+    await screen.findByRole('row', { name: /folder/ })
+    await user.click(screen.getByRole('button', { name: 'Select All', exact: true }))
+    await user.click(screen.getByRole('button', { name: 'Delete', exact: true }))
+    await user.click(within(screen.getByRole('dialog', { name: 'Delete Files' })).getByRole('button', { name: 'Delete', exact: true }))
+    await screen.findByText(/Operation request failed/)
+    await user.click(screen.getByRole('row', { name: /file/ }))
+    expect(screen.getByText('1 selected')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Delete', exact: true })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Retry request with same ID' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Delete', exact: true }))
+    await user.click(within(screen.getByRole('dialog', { name: 'Delete Files' })).getByRole('button', { name: 'Delete', exact: true }))
+    await waitFor(() => expect(requests).toHaveLength(2))
+    expect(requests[1].paths).toEqual(['folder'])
+    expect(requests[1].request_id).not.toBe(requests[0].request_id)
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it.each(['network', 500, 408])('preserves the exact original intent after ambiguous %s acceptance', async status => {
+    listings()
+    const requests: unknown[] = []
+    server.use(http.post('/api/v1/operations', async ({ request }) => {
+      requests.push(await request.json())
+      return status === 'network' ? HttpResponse.error() : HttpResponse.json({}, { status: status as number })
+    }))
+    mount()
+    const user = userEvent.setup()
+    await screen.findByRole('row', { name: /folder/ })
+    await user.click(screen.getByRole('button', { name: 'Select All', exact: true }))
+    await user.click(screen.getByRole('button', { name: 'Delete', exact: true }))
+    await user.click(within(screen.getByRole('dialog', { name: 'Delete Files' })).getByRole('button', { name: 'Delete', exact: true }))
+    await screen.findByText(/Operation request failed/)
+    await user.click(screen.getByRole('row', { name: /file/ }))
+    expect(screen.getByRole('button', { name: 'Delete', exact: true })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Retry request with same ID' }))
+    await waitFor(() => expect(requests).toHaveLength(2))
+    expect(requests[1]).toEqual(requests[0])
+  })
+
+  it('does not report an initial pending list as confirmed empty', async () => {
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    listings()
+    server.use(http.get('/api/v1/operations', async () => { await held; return HttpResponse.json([]) }))
+    const { unmount } = mount()
+    try {
+      await screen.findByRole('row', { name: /folder/ })
+      expect(screen.getByText('Loading storage operations...')).toBeVisible()
+      expect(screen.queryByText('No recent storage operations')).not.toBeInTheDocument()
+      release()
+      expect(await screen.findByText('No recent storage operations')).toBeVisible()
+    } finally { release(); unmount() }
+  })
+
   it('ignores accepted late responses after logout and clears private operation UI', async () => {
     let release!: () => void
     const held = new Promise<void>(resolve => { release = resolve })
