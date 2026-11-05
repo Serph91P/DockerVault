@@ -2,6 +2,8 @@
 
 Issue: #184 (part of #179); related consumer correction: #183. Base: `develop@773679fca82813cc7d8c9f4ed1442a8a86f17c84`. One branch, `feat/184-protection-workspace`, one shared editor. Backend configuration and completed effects remain the source of truth. No merge, issue close, release or production deployment is part of this implementation.
 
+The sole correction round additionally fixes typed/intent-bound candidate reconciliation (B1), whitespace-only private-hook clearing (S1), consumption of the native global422 envelope, and the owner-confirmed SQLite cursor-cancellation merge blocker. These are verified below; earlier successful normal paths did not disprove those defects.
+
 ## Acceptance matrix
 
 | #184 group | Evidence |
@@ -21,12 +23,12 @@ Issue: #184 (part of #179); related consumer correction: #183. Base: `develop@77
 
 ## Executed local gates
 
-- Backend native full suite: **699 passed**,27 warnings, **74.30%** coverage; original34% floor retained. Own age tools were extracted from the disposable product image. A first final invocation timed out at240s in inherited WebSocket tests; a fresh complete invocation passed in179.99s. No timeout, assertion or product polling setting was relaxed.
-- Frontend locked install and Node24.11.0/npm11.6.2 native gates: **366 passed /47 files**; coverage69.66% statements /65.83% branches /60.80% functions /71.59% lines; lint and TypeScript pass; native **production** build passes. Dependencies and lockfiles are unchanged.
-- Product Protection browser: **102/102**, then independent SQLite/five-archive/format/copy/hook/restore assertions pass.
+- Backend native full suite: **731 passed**,27 warnings, **74.37%** coverage; original34% floor retained,213.86s. Own age tools were extracted from the disposable product image. One preceding731-case invocation failed the inherited S3 provider cancellation fixture's5s entry wait during concurrent verification (730 passed); unchanged focused provider/API cases and the fresh entire suite subsequently pass. This is disclosed, not a claim of universal flake freedom. No timeout, assertion or product polling setting was relaxed.
+- Frontend locked install and Node24.11.0/npm11.6.2 native gates: **403 passed /49 files**; coverage70.52% statements /66.75% branches /61.63% functions /72.57% lines; lint and TypeScript pass; native **production** build passes. Dependencies and lockfiles are unchanged.
+- Product Protection browser: **five consecutive102/102 runs**, each with independent SQLite/five-archive/format/copy/hook/restore assertions. The additional reconciliation runner passes36 checks plus SQLite, including real lost committed POSTs, colliding IDs, Discard/late readback, both private hook cases and a native non-intercepted422.
 - Existing storage-operation suite: **44 controls pass**, including real cancellation/restart/unknown outcomes. Three recovery scenarios pass; they also passed twice on the earlier candidate image. Existing plain + encrypted local and remote-only-after-restart byte-roundtrips pass.
-- Production Ruff check/format and new Python tests/fixtures pass. Advisory mypy remains432 errors in20 files. An exploratory all-backend Ruff run finds23 pre-existing findings in untouched test/fixture files; these are outside the declared production Ruff gate.
-- The existing214-state/61-real-run browser remains a required release gate. Its final invocation and exact-head GitHub checks are recorded in the PR/task handoff, not inferred from this document. No CI waiver is introduced.
+- Production Ruff check/format and new Python tests/fixtures pass. Advisory native `mypy app/` remains432 errors in20 files. An exploratory all-backend Ruff run finds23 pre-existing findings in untouched test/fixture files; these are outside the declared production Ruff gate.
+- Existing214-state browser and61 real COMPLETED runs pass, including SQLite, physical deletion, real SSH key files and preserved source bytes. The final run took861s with native rate-limit pacing. An earlier pre-backend invocation was terminated at240s and rerun without changing its pacing/assertions. Exact-head GitHub checks are recorded in the PR/task handoff; no CI waiver is introduced.
 
 Commands (use the project's installed Python environment, a Playwright runner image and axe script):
 
@@ -45,6 +47,7 @@ npm run build
 cd ..
 docker build --build-arg BUILD_ENV=development -t "$PRODUCT_IMAGE" .
 python backend/tests/run_protection_browser.py "$PRODUCT_IMAGE" "$BROWSER_IMAGE" "$AXE_JS"
+python backend/tests/run_protection_reconciliation_browser.py "$PRODUCT_IMAGE" "$BROWSER_IMAGE"
 python backend/tests/run_truthful_states_browser.py "$PRODUCT_IMAGE" "$BROWSER_IMAGE" "$AXE_JS"
 python backend/tests/run_storage_jobs_browser.py "$PRODUCT_IMAGE" "$BROWSER_IMAGE"
 python backend/tests/run_storage_jobs_recovery_browser.py "$PRODUCT_IMAGE" "$BROWSER_IMAGE"
@@ -53,7 +56,16 @@ python backend/tests/run_backup_roundtrip.py "$PRODUCT_IMAGE"
 
 ## Provenance and self-review
 
-The tested development image is `sha256:ab7eda562926424074927054abcdad1efe5b6f362fb5bfdc714d0857288c4483`. Read-only binding compares all38 backend Python sources and119 frontend builder source files with this checkout, all4 Docker-builder dist files with the shipped image, and the exported recovery script. Docker build path `/app` and `BUILD_ENV=development` are identical. The separate native production build is **not** claimed byte-identical: development JSX embeds build paths. Raw logs and hash manifests are retained in the task evidence attachment.
+The correction's tested immutable development image is `sha256:97b043d4a44c11833015156600919fc189ed07fdfdbfce6c7b47f7534522b8bd`. It derives from the originalab7 runtime with a fresh native Docker frontend-builder dist and the corrected backend sources, not a claimed fresh complete Dockerfile build. Read-only binding compares all38 backend Python sources and121 frontend builder source files with this checkout, all4 Docker-builder dist files with the shipped image, and the exported recovery script. Docker build path `/app` and `BUILD_ENV=development` are identical. The separate native production build is **not** claimed byte-identical: development JSX embeds build paths. Raw logs, Docker derivation inputs and hash manifests are retained in the task evidence attachment.
+
+## Sole correction round
+
+- **B1:** candidate rows, completion/error and selection are bound to resource kind and current generation. Model/private-hook changes, checkpoint/new POST, resolution, Discard/Restore/Cancel/session/unmount invalidate them. Old IDs cannot be reinterpreted for the next table, even after a delayed read.12 component cases include sequential Schedule→Retention→Target and Schedule→Target collisions; causal old-editor replay has9 failures/3 controls, current403-case suite passes. Real36-check API/SQLite replay confirms correct policy IDs, six intended/orphan-disclosed target rows, exactly two schedules/two retentions, zero backup runs, retained draft before correct selection and no duplicate POSTs.
+- **S1:** only whitespace-only hook bodies become null before the private write/readback comparison; other bodies remain byte-for-byte unchanged, private and absent from browser persistence. Real existing-plan edits confirm both cases.
+- **Native422:** only actual-string, exact allowlisted `body.<field>` names from global `errors` are mapped to static messages. Raw message/msg/input/ctx never enter Error/cache/UI/callback state. Compatible detail-array validation remains supported with strict types.24 adapter cases and both caller envelopes cover malformed/nested/prototype/private-marker inputs; the real backend422 maps Keep Last to associated `aria-invalid` feedback without changing the unrelated #187 defaults/description contracts.
+- **SQLite cancellation:** a real unfinished SELECT retained a read lock after cancellation, despite a closed session and zero checked-out pool connections. Controlled asyncio/repeated/AnyIO cancellation at execute/fetchall reproduces it for execute/get/refresh. A native SQLite/aiosqlite-only `Engine.handle_error` hook closes the existing cursor under cancellation shielding before normal connection invalidation; it does not replay statements, alter the exception/disconnect, commit, tune timeouts/pools/WAL or upgrade dependencies.32 new cases check actual locks/commits/reads, native driver stop completion without GC, normal errors, missing context/cursor and static-only cleanup-failure logging. Removing only the hook in a process causes six lock failures with six normal controls; the candidate passes32/32. Owner independently reproduced the mechanism and candidate fix, and tested that SQLAlchemy2.1.8 alone remains affected.
+- **Honest native logging:** six forced AnyIO cases still emit SQLAlchemy's `Exception terminating connection / CancelledError` while invalidation proceeds. Tests independently await native worker-stop completion and prove subsequent EXCLUSIVE/commit/read immediately succeeds while task/driver references remain retained. These native log events are not suppressed or called clean logs. A failed cursor-close logs only a static warning and preserves cancellation/invalidation, never success.
+- **Gate integrity:** original102 runner's Unconfirmed heading is a pre-POST checkpoint, not the completed lost-response outcome. Both policy/target checks now await the existing final save failure before the identical durable-effect assertions; no assertion/15s timeout was loosened. The reconciliation browser holds a real POST before commit to prove this ordering deterministically. Earlier old-backend Auth500/Target500 failures, failed synchronization attempts and native fixture timeouts remain in the evidence; five new complete102 runs and the214 run pass on the corrected image.
 
 Static self-review traced source→model→serializer→API→readback, private hook ownership/cancellation, all policy/target retry branches, draft timer/session guards, legacy scopes and claimed archive roots. RED→GREEN findings corrected confirmed-create source locking, private-hook discard, legacy-subset migration, ambiguous/overlapping roots and strict enum types. Central SFTP correction accepts all seven existing backend types and rejects malformed arrays at all five enum boundaries. Schedule-job validation also accepts the real maintenance jobs, not only backup jobs.
 

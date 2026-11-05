@@ -2,14 +2,16 @@
 Database configuration and models using SQLAlchemy with async support.
 """
 
+import asyncio
 import enum
+import logging
 from datetime import datetime, timezone
 
 from anyio import CancelScope
 from sqlalchemy import JSON, Boolean, Column, DateTime
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint, event, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, ExceptionContext
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, backref, relationship
 
@@ -419,6 +421,33 @@ def _enable_sqlite_foreign_keys(connection, _record):
         cursor.execute("PRAGMA foreign_keys=ON")
     finally:
         cursor.close()
+
+
+@event.listens_for(Engine, "handle_error")
+def _close_cancelled_sqlite_cursor(context: ExceptionContext) -> None:
+    if (
+        context.dialect.name != "sqlite"
+        or context.dialect.driver != "aiosqlite"
+        or not isinstance(context.original_exception, asyncio.CancelledError)
+        or context.execution_context is None
+    ):
+        return
+    cursor = getattr(context.execution_context, "cursor", None)
+    if cursor is None:
+        return
+    # SQLAlchemy skips cursor close on disconnect; an unfinished SQLite SELECT still owns its read lock.
+    while True:
+        try:
+            with CancelScope(shield=True):
+                cursor.close()
+            return
+        except asyncio.CancelledError:
+            continue  # Finish only cursor cleanup; never replay the cancelled statement.
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Cancelled SQLite cursor cleanup failed; connection invalidation will continue"
+            )
+            return
 
 
 # Database engine and session
