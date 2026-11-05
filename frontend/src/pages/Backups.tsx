@@ -50,6 +50,8 @@ import LoadingSkeleton from '../components/LoadingSkeleton'
 import StorageBrowser from '../components/StorageBrowser'
 import RestoreWizard from '../components/RestoreWizard'
 import BackupLogViewer from '../components/BackupLogViewer'
+import { operationOutcome } from '../api/outcomes'
+import { useNotificationStore } from '../store/notifications'
 
 // Backup Row Component with dropdown actions menu
 function BackupRow({
@@ -59,7 +61,7 @@ function BackupRow({
   onDelete,
 }: {
   backup: Backup
-  target: BackupTarget
+  target?: BackupTarget
   onBrowse: (backup: Backup) => void
   onDelete: (backup: Backup) => void
 }) {
@@ -73,19 +75,24 @@ function BackupRow({
   const retrySyncMutation = useMutation({
     mutationFn: () => backupsApi.retrySync(backup.id),
     onSuccess: (res) => {
-      const data = res.data as { succeeded: number; failed: number }
-      if (data.failed === 0) {
+      const data = res.data
+      if (!data || !Number.isSafeInteger(data.succeeded) || !Number.isSafeInteger(data.failed) || data.succeeded < 0 || data.failed < 0 || !Array.isArray(data.sync_details)) { toast.error('Remote sync result unknown. Refresh the run before retrying.'); return }
+      const phase = data.failed > 0 ? 'partial' : data.succeeded > 0 ? 'completed' : 'unknown'
+      useNotificationStore.getState().addNotification({ type: phase === 'completed' ? 'success' : 'warning', title: 'Remote sync result', message: `${data.succeeded} copies succeeded; ${data.failed} failed. Open the run for per-copy state.`, target: { kind: 'run', id: backup.id }, phase })
+      if (phase === 'completed') {
         toast.success(`Remote sync succeeded (${data.succeeded} storage(s))`)
       } else {
         toast.error(`Retry: ${data.succeeded} ok, ${data.failed} failed`)
       }
-      queryClient.invalidateQueries({ queryKey: ['backups'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.backups.all })
       setMenuOpen(false)
     },
     onError: () => toast.error('Failed to retry remote sync'),
   })
 
   const getStatusIcon = () => {
+    if (operationOutcome(backup) === 'partial') return <Clock className="w-4 h-4 text-amber-300" />
+    if (operationOutcome(backup) === 'unknown') return <Clock className="w-4 h-4 text-dark-300" />
     switch (backup.status) {
       case 'completed':
         return <CheckCircle className="w-4 h-4 text-green-500" />
@@ -101,7 +108,7 @@ function BackupRow({
   }
 
   // Determine remote sync status for display
-  const remoteConfigured = target.remote_storage_ids && target.remote_storage_ids.length > 0
+  const remoteConfigured = target?.remote_storage_ids && target.remote_storage_ids.length > 0
   const syncDetails = backup.remote_sync_details || []
   const syncCompleted = syncDetails.filter((s) => s.status === 'completed')
   const syncFailed = syncDetails.filter((s) => s.status === 'failed')
@@ -159,6 +166,7 @@ function BackupRow({
     <div className="flex items-center justify-between py-3 px-4 bg-dark-750 rounded-lg hover:bg-dark-700 transition-colors">
       <div className="flex items-center gap-3">
         {getStatusIcon()}
+        <span className="text-xs text-dark-200">{operationOutcome(backup)}</span>
         <div>
           <p className="text-sm text-dark-200">
             {format(new Date(backup.created_at), 'yyyy-MM-dd HH:mm')}
@@ -223,6 +231,7 @@ function BackupRow({
 function TargetBackupCard({
   target,
   backups,
+  backupsKnown,
   schedules,
   onBrowseBackup,
   onEdit,
@@ -232,6 +241,7 @@ function TargetBackupCard({
 }: {
   target: BackupTarget
   backups: Backup[]
+  backupsKnown: boolean
   schedules: ScheduleEntity[]
   onBrowseBackup: (backup: Backup) => void
   onEdit: (target: BackupTarget) => void
@@ -244,9 +254,10 @@ function TargetBackupCard({
 
   const triggerMutation = useMutation({
     mutationFn: () => backupsApi.create(target.id, 'full'),
-    onSuccess: () => {
-      toast.success('Backup started')
-      queryClient.invalidateQueries({ queryKey: ['backups'] })
+    onSuccess: response => {
+      if (!response.data || !Number.isSafeInteger(response.data.id) || !['pending', 'running', 'completed', 'failed', 'cancelled'].includes(response.data.status)) { toast.error('Run acceptance unknown. Refresh before submitting again.'); return }
+      toast(`Run #${response.data.id}: ${operationOutcome(response.data)}. Inspect the backend run for its final outcome.`)
+      queryClient.invalidateQueries({ queryKey: queryKeys.backups.all })
     },
     onError: () => toast.error('Failed to start backup'),
   })
@@ -255,7 +266,7 @@ function TargetBackupCard({
     mutationFn: () => targetsApi.update(target.id, { enabled: !target.enabled }),
     onSuccess: () => {
       toast.success(target.enabled ? 'Backup disabled' : 'Backup enabled')
-      queryClient.invalidateQueries({ queryKey: ['targets'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.targets.all })
     },
     onError: () => toast.error('Failed to update backup'),
   })
@@ -316,7 +327,8 @@ function TargetBackupCard({
             {/* B1: Last Backup Status - more info on collapsed card */}
             {lastBackup ? (
               <div className="flex items-center gap-2 text-sm">
-                {lastBackup.status === 'completed' ? (
+                <span className="text-xs text-dark-200">{operationOutcome(lastBackup)}</span>
+                {operationOutcome(lastBackup) === 'completed' ? (
                   <CheckCircle className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />
                 ) : lastBackup.status === 'failed' ? (
                   <XCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />
@@ -332,7 +344,7 @@ function TargetBackupCard({
               </div>
             ) : (
               <span className="px-2 py-1 rounded-full text-xs font-medium bg-dark-600 text-dark-400">
-                No backups
+                {backupsKnown ? 'No backups' : 'Archive history unknown'}
               </span>
             )}
 
@@ -346,7 +358,7 @@ function TargetBackupCard({
 
             {/* Backup Count */}
             <span className="px-2 py-1 rounded text-xs bg-dark-700 text-dark-300">
-              {backups.length} backup{backups.length !== 1 ? 's' : ''}
+              {backupsKnown ? `${backups.length} backups` : 'Unknown archive count'}
             </span>
 
             {expanded ? (
@@ -470,7 +482,7 @@ function TargetBackupCard({
                 )}
               </div>
             ) : (
-              <p className="text-sm text-dark-400 py-4 text-center">No backups yet</p>
+              <p className="text-sm text-dark-400 py-4 text-center">{backupsKnown ? 'No backups yet' : 'Archive history unavailable. Retry the archive query.'}</p>
             )}
           </div>
         </div>
@@ -493,24 +505,24 @@ export default function Backups({ workspace }: { workspace?: 'protection' | 'his
   const [removal, setRemoval] = useState<RemovalIntent | null>(null)
   const [browsingStorage, setBrowsingStorage] = useState<RemoteStorage | null>(null)
 
-  const { data: targets, isLoading: targetsLoading } = useQuery({
-    queryKey: ['targets', 'with-history'],
+  const { data: targets, isLoading: targetsLoading, ...targetsQuery } = useQuery({
+    queryKey: queryKeys.targets.list(true),
     queryFn: () => targetsApi.list(true).then((r) => r.data),
   })
 
-  const { data: allBackups } = useQuery({
-    queryKey: ['backups'],
+  const { data: allBackups, ...backupsQuery } = useQuery({
+    queryKey: queryKeys.backups.list({ limit: 500 }),
     queryFn: () => backupsApi.list({ limit: 500 }).then((r) => r.data),
-    refetchInterval: 5000,
+
   })
 
-  const { data: schedules = [] } = useQuery({
-    queryKey: ['schedules'],
+  const { data: schedules = [], ...schedulesQuery } = useQuery({
+    queryKey: queryKeys.schedules.list(),
     queryFn: () => schedulesApi.list().then((r) => r.data),
   })
 
-  const { data: storages = [] } = useQuery({
-    queryKey: ['storages'],
+  const { data: storages = [], ...storagesQuery } = useQuery({
+    queryKey: queryKeys.storages.list(),
     queryFn: () => storageApi.list().then((r) => r.data),
   })
 
@@ -568,10 +580,10 @@ export default function Backups({ workspace }: { workspace?: 'protection' | 'his
 
   // Stats
   const stats = {
-    activeTargets: targets?.filter((t) => t.enabled).length || 0,
-    totalBackups: allBackups?.length || 0,
-    completedBackups: allBackups?.filter((b) => b.status === 'completed').length || 0,
-    failedBackups: allBackups?.filter((b) => b.status === 'failed').length || 0,
+    activeTargets: targets?.filter((t) => t.enabled).length ?? 'Unknown',
+    totalBackups: allBackups?.length ?? 'Unknown',
+    completedBackups: allBackups?.filter((b) => operationOutcome(b) === 'completed').length ?? 'Unknown',
+    failedBackups: allBackups?.filter((b) => b.status === 'failed').length ?? 'Unknown',
   }
 
   const handleDeleteBackup = (backup: Backup) => {
@@ -613,6 +625,12 @@ export default function Backups({ workspace }: { workspace?: 'protection' | 'his
       </div>
 
       {/* Stats */}
+      <NotificationContext domain="backups" onPlan={setEditingTarget} onArchive={setBrowsingBackup} />
+      <QueryFeedback name="Plans" query={targetsQuery} />
+      <QueryFeedback name="Archives" query={backupsQuery} />
+      <QueryFeedback name="Schedules" query={schedulesQuery} />
+      <QueryFeedback name="Storage locations" query={storagesQuery} />
+      {!targets && allBackups && allBackups.length > 0 && <section aria-label="Available archives" className="space-y-2"><h2>Available archives</h2>{allBackups.map(backup => <BackupRow key={backup.id} backup={backup} onBrowse={setBrowsingBackup} onDelete={handleDeleteBackup} />)}</section>}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <button
           onClick={() => setStatsFilter(statsFilter === 'active' ? null : 'active')}
@@ -705,6 +723,7 @@ export default function Backups({ workspace }: { workspace?: 'protection' | 'his
               key={target.id}
               target={target}
               backups={getBackupsForTarget(target.id)}
+              backupsKnown={allBackups !== undefined}
               schedules={schedules}
               onBrowseBackup={setBrowsingBackup}
               onEdit={setEditingTarget}
@@ -719,20 +738,20 @@ export default function Backups({ workspace }: { workspace?: 'protection' | 'his
           <Search className="w-8 h-8 text-dark-500 mx-auto mb-3" />
           <p className="text-dark-400">No targets matching your search</p>
           <button
-            onClick={() => { setSearchQuery(''); setTypeFilter(null) }}
+            onClick={() => { setSearchQuery(''); setTypeFilter(null); setStatsFilter(null) }}
             className="mt-2 text-sm text-primary-400 hover:text-primary-300"
           >
             Clear filters
           </button>
         </div>
-      ) : (
+      ) : targets ? (
         <EmptyState
           icon={Archive}
           title="No backups configured"
           description='Click "New Backup" to set up your first backup'
           action={{ label: 'Create Backup', onClick: () => setWizardOpen(true), icon: Plus }}
         />
-      )}
+      ) : null}
 
       {/* Backup Wizard Modal */}
       <BackupWizard isOpen={wizardOpen} onClose={() => setWizardOpen(false)} />
@@ -752,9 +771,9 @@ export default function Backups({ workspace }: { workspace?: 'protection' | 'his
       )}
 
       {removal && <RemovalDialog intent={removal} onClose={() => setRemoval(null)} onChanged={() => {
-        queryClient.invalidateQueries({ queryKey: ['backups'] })
-        queryClient.invalidateQueries({ queryKey: ['targets'] })
-        queryClient.invalidateQueries({ queryKey: ['schedules'] })
+        queryClient.invalidateQueries({ queryKey: queryKeys.backups.all })
+        queryClient.invalidateQueries({ queryKey: queryKeys.targets.all })
+        queryClient.invalidateQueries({ queryKey: queryKeys.schedules.all })
       }} />}
 
       {/* Remote Storage Browser */}
@@ -764,3 +783,6 @@ export default function Backups({ workspace }: { workspace?: 'protection' | 'his
     </div>
   )
 }
+import { queryKeys } from '../api/queryKeys'
+import { QueryFeedback } from '../components/QueryFeedback'
+import NotificationContext from '../components/NotificationContext'

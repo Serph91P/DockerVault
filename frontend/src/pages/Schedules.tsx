@@ -11,6 +11,7 @@ import LoadingSkeleton from '../components/LoadingSkeleton'
 import { Modal } from '../components/ui/dialog'
 import { TextField } from '../components/ui/input'
 import { Button } from '../components/ui/button'
+import { useValidationFeedback } from '../components/ValidationFeedback'
 
 interface ScheduleFormData {
   name: string
@@ -31,25 +32,29 @@ function ScheduleForm({
   onSubmit,
   onCancel,
   isLoading,
+  error,
 }: {
   initialData?: ScheduleFormData
   onSubmit: (data: ScheduleFormData) => void
   onCancel: () => void
   isLoading: boolean
+  error?: unknown
 }) {
   const [formData, setFormData] = useState<ScheduleFormData>(initialData || defaultFormData)
   const [submitted, setSubmitted] = useState(false)
   const nameError = submitted && !formData.name.trim() ? 'Enter a schedule name.' : undefined
   const cronError = submitted && !formData.cron_expression.trim() ? 'Enter a cron expression.' : undefined
+  const validation = useValidationFeedback(error)
 
   return <form noValidate className="space-y-4" onSubmit={(event) => {
     event.preventDefault()
     setSubmitted(true)
     if (!isLoading && formData.name.trim() && formData.cron_expression.trim()) onSubmit(formData)
   }}>
-    <TextField label="Name" value={formData.name} error={nameError} onChange={(event) => setFormData({ ...formData, name: event.target.value })} autoComplete="off" />
-    <TextField label="Cron Expression" value={formData.cron_expression} error={cronError} help="minute hour day month weekday" onChange={(event) => setFormData({ ...formData, cron_expression: event.target.value })} />
-    <TextField label="Description" value={formData.description} onChange={(event) => setFormData({ ...formData, description: event.target.value })} />
+    {validation.summary}
+    <TextField label="Name" value={formData.name} error={nameError} {...validation.field('name')} onChange={(event) => setFormData({ ...formData, name: event.target.value })} autoComplete="off" />
+    <TextField label="Cron Expression" value={formData.cron_expression} error={cronError} {...validation.field('cron_expression')} help="minute hour day month weekday" onChange={(event) => setFormData({ ...formData, cron_expression: event.target.value })} />
+    <TextField label="Description" value={formData.description} {...validation.field('description')} onChange={(event) => setFormData({ ...formData, description: event.target.value })} />
     <label className="flex min-h-11 items-center gap-2 text-sm text-dark-200"><input type="checkbox" checked={formData.enabled} onChange={(event) => setFormData({ ...formData, enabled: event.target.checked })} />Enabled</label>
     <div className="flex flex-wrap gap-2 pt-2">
       <Button type="submit" disabled={isLoading}>{isLoading ? 'Saving...' : 'Save'}</Button>
@@ -62,10 +67,12 @@ function ScheduleCard({
   schedule,
   onEdit,
   targets,
+  usageKnown,
 }: {
   schedule: ScheduleEntity
   onEdit: () => void
   targets: BackupTarget[]
+  usageKnown: boolean
 }) {
   const queryClient = useQueryClient()
   const [showConfirm, setShowConfirm] = useState(false)
@@ -77,7 +84,7 @@ function ScheduleCard({
     mutationFn: () => schedulesApi.delete(schedule.id),
     onSuccess: () => {
       toast.success('Schedule deleted')
-      queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.schedules.all })
     },
     onError: () => toast.error('Failed to delete schedule'),
   })
@@ -86,7 +93,7 @@ function ScheduleCard({
     mutationFn: () => schedulesApi.update(schedule.id, { enabled: !schedule.enabled }),
     onSuccess: () => {
       toast.success(`Schedule ${schedule.enabled ? 'disabled' : 'enabled'}`)
-      queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.schedules.all })
     },
     onError: () => toast.error('Failed to update schedule'),
   })
@@ -94,9 +101,11 @@ function ScheduleCard({
   const triggerAllMutation = useMutation({
     mutationFn: () => schedulesApi.triggerAll(schedule.id),
     onSuccess: (res) => {
-      const count = res.data?.triggered_targets?.length ?? 0
-      toast.success(`Triggered ${count} backup${count !== 1 ? 's' : ''}`)
-      queryClient.invalidateQueries({ queryKey: ['backups'] })
+      const triggered = res.data?.triggered_targets, skipped = res.data?.skipped_targets
+      if (res.data?.status !== 'triggered' || !Array.isArray(triggered) || !Array.isArray(skipped)) { toast.error('Run acceptance unknown. Inspect current runs before retrying.'); return }
+      if (skipped.length) toast(`Accepted ${triggered.length} runs, skipped ${skipped.length}. Completion is not confirmed.`, { icon: '!' })
+      else toast(`Accepted ${triggered.length} runs. Completion is not confirmed.`)
+      queryClient.invalidateQueries({ queryKey: queryKeys.backups.all })
     },
     onError: () => toast.error('Failed to trigger backups'),
   })
@@ -153,6 +162,7 @@ function ScheduleCard({
             {schedule.target_count}
           </div>
           {/* SC1: Show target names */}
+          {!usageKnown && <p className="text-amber-200">Usage details unknown</p>}
           {usedByTargets.length > 0 && (
             <div className="mt-1 space-y-0.5">
               {usedByTargets.slice(0, 3).map((t) => (
@@ -266,19 +276,19 @@ export default function Schedules() {
   const [editingSchedule, setEditingSchedule] = useState<ScheduleEntity | null>(null)
   const [showCronHelp, setShowCronHelp] = useState(false)
 
-  const { data: cronInventory } = useQuery({
-    queryKey: ['schedules', 'cron-inventory'],
+  const { data: cronInventory, ...inventoryQuery } = useQuery({
+    queryKey: queryKeys.schedules.inventory(),
     queryFn: () => schedulesApi.cronInventory().then((r) => r.data),
   })
 
-  const { data: schedules, isLoading } = useQuery({
-    queryKey: ['schedules'],
+  const { data: schedules, isLoading, ...schedulesQuery } = useQuery({
+    queryKey: queryKeys.schedules.list(),
     queryFn: () => schedulesApi.list().then((r) => r.data),
   })
 
   // SC1: Fetch targets to show which targets use each schedule
-  const { data: targets = [] } = useQuery({
-    queryKey: ['targets'],
+  const { data: targets = [], ...targetsQuery } = useQuery({
+    queryKey: queryKeys.targets.list(),
     queryFn: () => targetsApi.list().then((r) => r.data),
   })
 
@@ -286,7 +296,7 @@ export default function Schedules() {
     mutationFn: (data: ScheduleCreate) => schedulesApi.create(data),
     onSuccess: () => {
       toast.success('Schedule created')
-      queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.schedules.all })
       setShowForm(false)
     },
     onError: (err: Error & { response?: { data?: { detail?: string } } }) => {
@@ -299,7 +309,7 @@ export default function Schedules() {
       schedulesApi.update(id, data),
     onSuccess: () => {
       toast.success('Schedule updated')
-      queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.schedules.all })
       setEditingSchedule(null)
     },
     onError: (err: Error & { response?: { data?: { detail?: string } } }) => {
@@ -376,6 +386,9 @@ export default function Schedules() {
       </section>}
 
       <div className={clsx('grid gap-6', showCronHelp ? 'grid-cols-1 lg:grid-cols-3' : 'grid-cols-1')}>
+        <QueryFeedback name="Schedules" query={schedulesQuery} />
+        <QueryFeedback name="Plan usage" query={targetsQuery} />
+        <QueryFeedback name="Schedule compatibility" query={inventoryQuery} />
         <div className={clsx(showCronHelp ? 'lg:col-span-2' : '', 'space-y-6')}>
           {/* Schedule List */}
           {isLoading ? (
@@ -391,6 +404,7 @@ export default function Schedules() {
                   key={schedule.id}
                   schedule={schedule}
                   targets={targets}
+                  usageKnown={!targetsQuery.isError && !targetsQuery.isPending}
                   onEdit={() => {
                     setShowForm(false)
                     setEditingSchedule(schedule)
@@ -400,7 +414,7 @@ export default function Schedules() {
             </div>
           )}
 
-          {!isLoading && schedules?.length === 0 && !showForm && (
+          {!isLoading && !schedulesQuery.isError && schedules?.length === 0 && !showForm && (
             <EmptyState
               icon={Clock}
               title="No schedules configured"
@@ -441,6 +455,7 @@ export default function Schedules() {
                 setEditingSchedule(null)
               }}
               isLoading={createMutation.isPending || updateMutation.isPending}
+              error={editingSchedule ? updateMutation.error : createMutation.error}
             />
           </div>
         </Modal>
@@ -448,3 +463,5 @@ export default function Schedules() {
     </div>
   )
 }
+import { queryKeys } from '../api/queryKeys'
+import { QueryFeedback } from '../components/QueryFeedback'

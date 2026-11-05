@@ -11,7 +11,7 @@ const job = { id: 'accepted-during-initial-read', action: 'storage_delete', stor
 
 describe('acceptance overlapping operation discovery without realtime', () => {
   it('rebinds an accepted retry child instead of retaining an older parent-only snapshot', async () => {
-    const parent = { ...job, id: 'failed-parent', state: 'failed', succeeded: 0, failed: 1 }
+    const parent = { ...job, id: 'failed-parent', state: 'failed', succeeded: 0, failed: 1, items: [{ path: 'file', state: 'failed', error: 'Synthetic failure' }] }
     const child = { ...job, id: 'retry-child', parent_id: parent.id }
     let release!: () => void
     const held = new Promise<void>(resolve => { release = resolve })
@@ -40,7 +40,7 @@ describe('acceptance overlapping operation discovery without realtime', () => {
     } finally { release(); mounted.unmount(); client.clear() }
   })
   it.each(['completed', 'running'])('discovers an accepted %s job despite an older empty initial response', async state => {
-    let current = { ...job, state, completed: state === 'running' ? 0 : 1, succeeded: state === 'running' ? 0 : 1 }
+    let current = { ...job, state, completed: state === 'running' ? 0 : 1, succeeded: state === 'running' ? 0 : 1, items: [{ path: 'file', state: state === 'running' ? 'running' : 'succeeded', error: null }] }
     let release!: () => void
     const gate = new Promise<void>(resolve => { release = resolve })
     let reads = 0, creates = 0

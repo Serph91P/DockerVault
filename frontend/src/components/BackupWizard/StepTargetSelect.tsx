@@ -9,6 +9,8 @@ interface Props {
   containers: ContainerType[]
   volumes: Volume[]
   stacks: Stack[]
+  unavailableTypes?: string[]
+  nameFeedback?: { 'aria-invalid'?: true; 'aria-describedby'?: string }
   existingTargets?: BackupTarget[]
 }
 
@@ -205,6 +207,8 @@ export default function StepTargetSelect({
   volumes,
   stacks,
   existingTargets = [],
+  unavailableTypes = [],
+  nameFeedback,
 }: Props) {
   // T3: Build sets of already-configured target names per type
   const configuredContainers = useMemo(() => new Set(
@@ -300,7 +304,7 @@ export default function StepTargetSelect({
         <div className="space-y-4 pt-4 border-t border-dark-700">
           <h3 className="text-lg font-semibold text-dark-100">Select {data.targetType}</h3>
 
-          {data.targetType === 'container' && (
+          {data.targetType === 'container' && !unavailableTypes.includes('container') && (
             <div>
               <label className="block text-sm font-medium text-dark-300 mb-2">
                 Container
@@ -322,7 +326,7 @@ export default function StepTargetSelect({
             </div>
           )}
 
-          {data.targetType === 'volume' && (
+          {data.targetType === 'volume' && !unavailableTypes.includes('volume') && (
             <div>
               <label className="block text-sm font-medium text-dark-300 mb-2">Volume</label>
               <SearchableList
@@ -341,7 +345,7 @@ export default function StepTargetSelect({
             </div>
           )}
 
-          {data.targetType === 'stack' && (
+          {data.targetType === 'stack' && !unavailableTypes.includes('stack') && (
             <div>
               <label className="block text-sm font-medium text-dark-300 mb-2">Stack</label>
               <SearchableList
@@ -386,7 +390,7 @@ export default function StepTargetSelect({
             </label>
             <input
               type="text"
-              value={data.targetName}
+              value={data.targetName} aria-label="Backup name" {...nameFeedback}
               onChange={(e) => updateData({ targetName: e.target.value })}
               placeholder="Enter a name for this backup target"
               className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-dark-100"

@@ -10,7 +10,9 @@ import {
   Info,
 } from 'lucide-react'
 import { clsx } from 'clsx'
-import { useNotificationStore, type NotificationType } from '../store/notifications'
+import { useNotificationStore, notificationHref, type NotificationType } from '../store/notifications'
+import { Link } from 'react-router-dom'
+import OperationActivity from './OperationActivity'
 import { formatDistanceToNowStrict } from 'date-fns'
 
 const typeConfig: Record<
@@ -100,6 +102,7 @@ export function NotificationCenter({ isOpen, onClose }: NotificationCenterProps)
 
       {/* Notification List */}
       <div className="flex-1 overflow-y-auto">
+        <OperationActivity />
         {notifications.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-10 text-dark-500">
             <Bell className="w-8 h-8 mb-2 opacity-40" />
@@ -155,6 +158,8 @@ export function NotificationCenter({ isOpen, onClose }: NotificationCenterProps)
                     <p className="text-xs text-dark-500 mt-0.5 line-clamp-2">
                       {notification.message}
                     </p>
+                    {notification.phase && <p className="text-sm text-dark-200">UI session only: {notification.phase}. Started {new Date(notification.startedAt ?? notification.timestamp).toLocaleString()}; updated {new Date(notification.timestamp).toLocaleString()}. No persistent resume or cancellation is available.</p>}
+                    {notification.target && notificationHref(notification.target) && <Link className="inline-block min-h-11 py-3 text-primary-300 underline" to={notificationHref(notification.target)!} onClick={() => { markRead(notification.id); onClose() }}>Open {notification.target.kind} #{notification.target.id}</Link>}
                     <p className="text-[10px] text-dark-600 mt-1">
                       {formatDistanceToNowStrict(notification.timestamp, { addSuffix: true })}
                     </p>

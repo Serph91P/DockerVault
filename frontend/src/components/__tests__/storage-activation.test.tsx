@@ -5,13 +5,14 @@ import { describe, it, expect } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../test/mocks/server'
 import Storage from '../../pages/Storage'
+import { MemoryRouter } from 'react-router-dom'
 
 describe('storage wizard focused activation', () => {
  it('reaches Review without submitting from Next, then saves only from explicit confirmation', async () => {
   const saved: unknown[] = []
   server.use(http.get('/api/v1/storage',()=>HttpResponse.json([])),http.get('/api/v1/storage/ssh-keys',()=>HttpResponse.json([])),http.post('/api/v1/storage',async({request})=>{saved.push(await request.json());return HttpResponse.json({id:8})}))
   const client=new QueryClient({defaultOptions:{queries:{retry:false}}});const user=userEvent.setup()
-  render(<QueryClientProvider client={client}><Storage/></QueryClientProvider>)
+  render(<QueryClientProvider client={client}><MemoryRouter><Storage/></MemoryRouter></QueryClientProvider>)
   await user.click(screen.getByRole('button',{name:'Add Storage',exact:true}))
   const dialog=screen.getByRole('dialog',{name:'Add New Storage'})
   await user.type(within(dialog).getByPlaceholderText('My Backup Storage'),'Synthetic local')

@@ -33,6 +33,8 @@ import {
 } from '../api'
 import toast from 'react-hot-toast'
 import { clsx } from 'clsx'
+import { QueryFeedback } from './QueryFeedback'
+import { useValidationFeedback } from './ValidationFeedback'
 
 interface BackupEditDialogProps {
   target: BackupTarget
@@ -54,6 +56,7 @@ export default function BackupEditDialog({ target, isOpen, onClose }: BackupEdit
 function BackupEditForm({ target, isOpen, onClose }: BackupEditDialogProps) {
   const queryClient = useQueryClient()
   const editor = usePrivateTargetEditor(target.id)
+  const validation = useValidationFeedback(editor.saveFailure)
   const handleClose = () => { editor.close(); onClose() }
   const [showAdvanced, setShowAdvanced] = useState(false)
   
@@ -88,29 +91,34 @@ function BackupEditForm({ target, isOpen, onClose }: BackupEditDialogProps) {
   const [newIncludePath, setNewIncludePath] = useState('')
 
   // Fetch schedules
-  const { data: schedules = [] } = useQuery({
-    queryKey: ['schedules'],
+  const schedulesQuery = useQuery({
+    queryKey: queryKeys.schedules.list(),
     queryFn: () => schedulesApi.list().then((r) => r.data),
     enabled: isOpen,
   })
 
   // Fetch retention policies
-  const { data: retentionPolicies = [] } = useQuery({
-    queryKey: ['retention-policies'],
+  const retentionQuery = useQuery({
+    queryKey: queryKeys.retention.list(),
     queryFn: () => retentionApi.listPolicies().then((r) => r.data),
     enabled: isOpen,
   })
 
   // Fetch remote storages
-  const { data: remoteStorages = [] } = useQuery({
-    queryKey: ['remote-storages'],
+  const storagesQuery = useQuery({
+    queryKey: queryKeys.storages.list(),
     queryFn: () => storageApi.list().then((r) => r.data),
     enabled: isOpen,
   })
 
+  const { data: schedules = [] } = schedulesQuery
+  const { data: retentionPolicies = [] } = retentionQuery
+  const { data: remoteStorages = [] } = storagesQuery
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    void editor.run(async signal => { await api.put(`/targets/${target.id}`, {
+    let savedRevision = 0
+    void editor.run(async signal => { const response = await api.put(`/targets/${target.id}`, {
       name: formData.name,
       enabled: formData.enabled,
       schedule_id: formData.schedule_id ?? null,
@@ -124,9 +132,10 @@ function BackupEditForm({ target, isOpen, onClose }: BackupEditDialogProps) {
       remote_storage_ids: formData.remote_storage_ids,
       delete_local_after_sync:
         formData.remote_storage_ids.length > 0 ? formData.delete_local_after_sync : false,
-    }, { signal }) }, () => {
+    }, { signal }); savedRevision = Date.parse(response.data?.updated_at) || 0 }, () => {
       toast.success('Backup configuration updated')
-      void queryClient.invalidateQueries({ queryKey: ['targets'] })
+      useNotificationStore.getState().addNotification({ code: 'plan-saved', target: { kind: 'plan', id: target.id }, type: 'info', title: '', message: '', revision: savedRevision })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.targets.all })
       handleClose()
     })
   }
@@ -206,12 +215,16 @@ function BackupEditForm({ target, isOpen, onClose }: BackupEditDialogProps) {
 
         {/* Content */}
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-6">
-          {editor.saveError && <p role="alert">Could not save backup configuration. Check the current server state before retrying; cancellation does not undo a server change.</p>}
+          <QueryFeedback name="Schedule choices" query={schedulesQuery} />
+          <QueryFeedback name="Retention choices" query={retentionQuery} />
+          <QueryFeedback name="Storage choices" query={storagesQuery} />
+          {validation.summary}
+          {editor.saveError && <p>Could not save backup configuration. Check the current server state before retrying; cancellation does not undo a server change.</p>}
           {editor.loading && <p role="status">Loading private hook commands…</p>}
           {editor.loadError && <p role="alert">Could not load hook commands. Existing commands will be preserved. <button type="button" onClick={editor.retry}>Retry hook load</button></p>}
           {/* Name & Status */}
           <div className="grid grid-cols-2 gap-4">
-            <TextField label="Name" value={formData.name} onChange={(event) => setFormData((prev) => ({ ...prev, name: event.target.value }))} required />
+            <TextField label="Name" value={formData.name} {...validation.field('name')} onChange={(event) => setFormData((prev) => ({ ...prev, name: event.target.value }))} required />
             <div>
               <label className="block text-sm font-medium text-dark-300 mb-2">Status</label>
               <button
@@ -631,3 +644,5 @@ function BackupEditForm({ target, isOpen, onClose }: BackupEditDialogProps) {
 import { Modal } from './ui/dialog'
 import { SearchSelect } from './ui/select'
 import { TextField } from './ui/input'
+import { queryKeys } from '../api/queryKeys'
+import { useNotificationStore } from '../store/notifications'

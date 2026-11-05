@@ -4,6 +4,7 @@ import { Key, Plus, Trash2, Upload, Copy, Check, Loader2, Download } from 'lucid
 import axios from 'axios';
 import { storageApi, type SSHKeyInfo } from '../api';
 import ConfirmDialog from './ConfirmDialog';
+import { QueryFeedback } from './QueryFeedback';
 
 /**
  * Manages SSH keypairs stored under /app/data/ssh_keys.
@@ -22,10 +23,11 @@ export default function SSHKeyManager() {
   const [copiedName, setCopiedName] = useState<string | null>(null);
   const [deleteKey, setDeleteKey] = useState<string | null>(null);
 
-  const { data: keys, isLoading } = useQuery({
-    queryKey: ['ssh-keys'],
+  const keysQuery = useQuery({
+    queryKey: queryKeys.sshKeys.list(),
     queryFn: async () => (await storageApi.listSSHKeys()).data,
   });
+  const { data: keys } = keysQuery;
 
   const createMut = useMutation({
     mutationFn: () =>
@@ -34,7 +36,7 @@ export default function SSHKeyManager() {
         comment: createComment.trim() || undefined,
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['ssh-keys'] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.sshKeys.all });
       setShowCreate(false);
       setCreateName('');
       setCreateComment('');
@@ -44,7 +46,7 @@ export default function SSHKeyManager() {
   const deleteMut = useMutation({
     mutationFn: (name: string) => storageApi.deleteSSHKey(name),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['ssh-keys'] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.sshKeys.all });
       setDeleteKey(null);
     },
   });
@@ -76,12 +78,8 @@ export default function SSHKeyManager() {
       </div>
 
       <div className="p-4 space-y-3">
-        {isLoading && (
-          <div className="flex items-center gap-2 text-slate-500 text-sm">
-            <Loader2 className="w-4 h-4 animate-spin" /> Loading…
-          </div>
-        )}
-        {!isLoading && (!keys || keys.length === 0) && (
+        <QueryFeedback name="SSH keys" query={keysQuery} />
+        {keysQuery.isSuccess && keys?.length === 0 && (
           <p className="text-sm text-slate-500 dark:text-slate-400">
             No SSH keys yet. Generate one and use the public key on your remote
             (e.g. Hetzner Storage Box).
@@ -268,7 +266,7 @@ function InstallKeyModal(props: { keyInfo: SSHKeyInfo; onClose: () => void }) {
         username: username.trim(),
         password,
         method,
-      }),
+      }).then(response => ({ outcome: operationOutcome(response.data) })),
   });
 
   const errorText = installMut.error
@@ -350,7 +348,7 @@ function InstallKeyModal(props: { keyInfo: SSHKeyInfo; onClose: () => void }) {
           </select>
         </div>
 
-        {installMut.isSuccess && (
+        {installMut.isSuccess && installMut.data.outcome === 'completed' && (
           <div className="text-sm text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/30 p-2 rounded">
             Key installed successfully.
           </div>
@@ -383,3 +381,5 @@ function InstallKeyModal(props: { keyInfo: SSHKeyInfo; onClose: () => void }) {
   );
 }
 import { Modal } from './ui/dialog'
+import { queryKeys } from '../api/queryKeys'
+import { operationOutcome } from '../api/outcomes'

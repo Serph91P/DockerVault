@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { Backup } from '../api'
-import { useNotificationStore } from './notifications'
+
 
 interface BackupProgress {
   backup_id: number
@@ -23,6 +23,11 @@ let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
 let socketGeneration = 0
 let expireSession: () => void = () => undefined
 export function onSocketSessionExpired(handler: () => void) { expireSession = handler }
+let queryHint: (type: string) => void = () => undefined
+export function onQueryHint(handler: (type: string) => void) {
+  queryHint = handler
+  return () => { if (queryHint === handler) queryHint = () => undefined }
+}
 
 export const useWebSocketStore = create<WebSocketStore>((set, get) => ({
   connected: false,
@@ -48,6 +53,7 @@ export const useWebSocketStore = create<WebSocketStore>((set, get) => ({
       if (!current()) return
       console.log('WebSocket connected')
       set({ connected: true })
+      queryHint('reconnect')
     }
 
     ws.onclose = (event) => {
@@ -119,17 +125,18 @@ function handleMessage(
 ) {
   switch (data.type) {
     case 'operation_update':
-      if (typeof data.operation_id === 'string') window.dispatchEvent(new CustomEvent('storage-operation-update', { detail: { operation_id: data.operation_id } }))
+      if (typeof data.operation_id === 'string') queryHint('operation_update')
       break
     case 'connected':
       console.log('WebSocket handshake complete')
       break
 
     case 'backup_progress':
+      if (!Number.isSafeInteger(data.backup_id) || typeof data.progress !== 'number' || !Number.isFinite(data.progress)) break
       get().updateProgress({
         backup_id: data.backup_id as number,
         progress: data.progress as number,
-        message: data.message as string,
+        message: 'Work reported by live channel; awaiting backend confirmation',
       })
       break
 
@@ -142,21 +149,8 @@ function handleMessage(
         newProgress.delete(data.backup_id as number)
         set({ backupProgress: newProgress })
 
-        // Add persistent notification
-        const addNotification = useNotificationStore.getState().addNotification
-        if (data.type === 'backup_completed') {
-          addNotification({
-            type: 'success',
-            title: 'Backup completed',
-            message: `Backup #${data.backup_id} finished successfully`,
-          })
-        } else {
-          addNotification({
-            type: 'error',
-            title: 'Backup failed',
-            message: `Backup #${data.backup_id} failed. Check logs for details.`,
-          })
-        }
+        // A socket event is only a hint. The authorized HTTP result owns completion.
+        queryHint(data.type)
       }
       break
 

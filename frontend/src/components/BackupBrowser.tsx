@@ -304,7 +304,7 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
         }
       } catch (error) {
         // Axios errors retain request bodies: only a sanitized error may enter Query.
-        throw Object.assign(new Error('Unable to browse archive'), { status: (error as { response?: { status?: number } }).response?.status })
+        throw Object.assign(new Error('Unable to browse archive'), { status: responseStatus(error) })
       }
     },
     enabled: shouldFetch,
@@ -567,3 +567,4 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
   )
 }
 import { Modal } from './ui/dialog'
+import { responseStatus } from '../api/responses'

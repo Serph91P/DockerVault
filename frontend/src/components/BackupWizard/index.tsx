@@ -21,6 +21,8 @@ import StepRetention from './StepRetention'
 import StepOptions from './StepOptions'
 import StepSummary from './StepSummary'
 import StepVolumeConfig from './StepVolumeConfig'
+import { QueryFeedback } from '../QueryFeedback'
+import { useValidationFeedback } from '../ValidationFeedback'
 
 export interface WizardData {
   // Step 1: Target
@@ -199,6 +201,7 @@ export default function BackupWizard({ isOpen, onClose, editTarget, preselectedT
 function BackupWizardForm({ isOpen, onClose, editTarget, preselectedType, preselectedTarget }: BackupWizardProps) {
   const queryClient = useQueryClient()
   const editor = usePrivateTargetEditor(editTarget?.id)
+  const validation = useValidationFeedback(editor.saveFailure)
   const isEditing = !!editTarget
   const [currentStep, setCurrentStep] = useState(1)
   const [data, setData] = useState<WizardData>(initialData)
@@ -264,49 +267,57 @@ function BackupWizardForm({ isOpen, onClose, editTarget, preselectedType, presel
   }
 
   // Fetch existing targets for T3: "Already configured" badge
-  const { data: existingTargets = [] } = useQuery({
-    queryKey: ['targets'],
+  const targetsQuery = useQuery({
+    queryKey: queryKeys.targets.list(),
     queryFn: () => targetsApi.list().then((r) => r.data),
     enabled: isOpen,
   })
 
   // Fetch data for all steps
-  const { data: containers = [] } = useQuery({
-    queryKey: ['containers'],
+  const containersQuery = useQuery({
+    queryKey: queryKeys.containers.list(),
     queryFn: () => dockerApi.listContainers().then((r) => r.data),
     enabled: isOpen,
   })
 
-  const { data: volumes = [] } = useQuery({
-    queryKey: ['volumes'],
+  const volumesQuery = useQuery({
+    queryKey: queryKeys.volumes.list(),
     queryFn: () => dockerApi.listVolumes().then((r) => r.data),
     enabled: isOpen,
   })
 
-  const { data: stacks = [] } = useQuery({
-    queryKey: ['stacks'],
+  const stacksQuery = useQuery({
+    queryKey: queryKeys.stacks.list(),
     queryFn: () => dockerApi.listStacks().then((r) => r.data),
     enabled: isOpen,
   })
 
-  const { data: schedules = [] } = useQuery({
-    queryKey: ['schedules'],
+  const schedulesQuery = useQuery({
+    queryKey: queryKeys.schedules.list(),
     queryFn: () => schedulesApi.list().then((r) => r.data),
     enabled: isOpen,
   })
 
-  const { data: retentionPolicies = [] } = useQuery({
-    queryKey: ['retention-policies'],
+  const retentionQuery = useQuery({
+    queryKey: queryKeys.retention.list(),
     queryFn: () => retentionApi.listPolicies().then((r) => r.data),
     enabled: isOpen,
   })
 
-  const { data: remoteStorages = [] } = useQuery({
-    queryKey: ['remote-storages'],
+  const storagesQuery = useQuery({
+    queryKey: queryKeys.storages.list(),
     queryFn: () => storageApi.list().then((r) => r.data),
     enabled: isOpen,
   })
 
+
+  const { data: existingTargets = [] } = targetsQuery
+  const { data: containers = [] } = containersQuery
+  const { data: volumes = [] } = volumesQuery
+  const { data: stacks = [] } = stacksQuery
+  const { data: schedules = [] } = schedulesQuery
+  const { data: retentionPolicies = [] } = retentionQuery
+  const { data: remoteStorages = [] } = storagesQuery
 
   const handleClose = () => {
     editor.close()
@@ -418,6 +429,8 @@ function BackupWizardForm({ isOpen, onClose, editTarget, preselectedType, presel
   const isLoading = editor.pending
 
   const handleSubmit = async () => {
+    let savedId: number | undefined
+    let savedRevision = 0
     await editor.run(async (signal, current) => {
       let scheduleId = data.scheduleId
 
@@ -479,16 +492,22 @@ function BackupWizardForm({ isOpen, onClose, editTarget, preselectedType, presel
       }
 
       if (isEditing) {
-        await api.put(`/targets/${editTarget!.id}`, targetData, { signal })
+        const result = await api.put(`/targets/${editTarget!.id}`, targetData, { signal })
+        savedRevision = Date.parse(result.data?.updated_at) || 0
+        savedId = editTarget!.id
       } else {
-        await api.post('/targets', targetData, { signal })
+        const result = await api.post('/targets', targetData, { signal })
+        if (!Number.isSafeInteger(result.data?.id) || result.data.id <= 0) throw new Error('Saved plan identity unavailable')
+        savedId = result.data.id
+        savedRevision = Date.parse(result.data.updated_at) || 0
       }
     }, () => {
       toast.success(isEditing ? 'Backup target updated successfully!' : 'Backup target created successfully!')
+      if (savedId) useNotificationStore.getState().addNotification({ code: 'plan-saved', target: { kind: 'plan', id: savedId }, type: 'info', title: '', message: '', revision: savedRevision })
       clearDraft()
-      void queryClient.invalidateQueries({ queryKey: ['targets'] })
-      void queryClient.invalidateQueries({ queryKey: ['schedules'] })
-      void queryClient.invalidateQueries({ queryKey: ['retention-policies'] })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.targets.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.schedules.all })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.retention.all })
       editor.close()
       setData(initialData)
       onClose()
@@ -567,7 +586,15 @@ function BackupWizardForm({ isOpen, onClose, editTarget, preselectedType, presel
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6">
-          {editor.saveError && <p role="alert">Could not save backup configuration. Check the current server state before retrying; cancellation does not undo a server change.</p>}
+          {(currentStep === 1 || targetsQuery.isError) && <QueryFeedback name="Existing plans" query={targetsQuery} />}
+          {([1, 2, 3].includes(currentStep) || containersQuery.isError) && <QueryFeedback name="Containers" query={containersQuery} />}
+          {(currentStep === 1 || volumesQuery.isError) && <QueryFeedback name="Volumes" query={volumesQuery} />}
+          {([1, 2, 3].includes(currentStep) || stacksQuery.isError) && <QueryFeedback name="Stacks" query={stacksQuery} />}
+          {([4, 8].includes(currentStep) || schedulesQuery.isError) && <QueryFeedback name="Schedule choices" query={schedulesQuery} />}
+          {([6, 8].includes(currentStep) || retentionQuery.isError) && <QueryFeedback name="Retention choices" query={retentionQuery} />}
+          {([5, 8].includes(currentStep) || storagesQuery.isError) && <QueryFeedback name="Storage choices" query={storagesQuery} />}
+          {validation.summary}
+          {editor.saveError && <p>Could not save backup configuration. Check the current server state before retrying; cancellation does not undo a server change.</p>}
           {editor.loading && <p role="status">Loading private hook commands…</p>}
           {editor.loadError && <p role="alert">Could not load hook commands. Existing commands will be preserved. <button type="button" onClick={editor.retry}>Retry hook load</button></p>}
           {/* W2: Draft restoration banner */}
@@ -600,9 +627,11 @@ function BackupWizardForm({ isOpen, onClose, editTarget, preselectedType, presel
               volumes={volumes}
               stacks={stacks}
               existingTargets={existingTargets}
+              nameFeedback={validation.field('name')}
+              unavailableTypes={[...(containersQuery.data ? [] : ['container']), ...(volumesQuery.data ? [] : ['volume']), ...(stacksQuery.data ? [] : ['stack'])]}
             />
           )}
-          {currentStep === 2 && (
+          {currentStep === 2 && (data.targetType === 'stack' ? stacksQuery.data : containersQuery.data) && (
             <StepVolumeConfig
               data={data}
               updateData={updateData}
@@ -610,7 +639,7 @@ function BackupWizardForm({ isOpen, onClose, editTarget, preselectedType, presel
               stacks={stacks}
             />
           )}
-          {currentStep === 3 && (
+          {currentStep === 3 && (data.targetType === 'stack' ? stacksQuery.data : containersQuery.data) && (
             <StepDependencies
               data={data}
               updateData={updateData}
@@ -618,7 +647,7 @@ function BackupWizardForm({ isOpen, onClose, editTarget, preselectedType, presel
               stacks={stacks}
             />
           )}
-          {currentStep === 4 && (
+          {currentStep === 4 && schedulesQuery.data && (
             <StepSchedule
               data={data}
               updateData={updateData}
@@ -626,7 +655,7 @@ function BackupWizardForm({ isOpen, onClose, editTarget, preselectedType, presel
               isLoadingSchedules={false}
             />
           )}
-          {currentStep === 5 && (
+          {currentStep === 5 && storagesQuery.data && (
             <StepStorage
               data={data}
               updateData={updateData}
@@ -634,7 +663,7 @@ function BackupWizardForm({ isOpen, onClose, editTarget, preselectedType, presel
               isLoadingStorages={false}
             />
           )}
-          {currentStep === 6 && (
+          {currentStep === 6 && retentionQuery.data && (
             <StepRetention
               data={data}
               updateData={updateData}
@@ -726,3 +755,5 @@ function BackupWizardForm({ isOpen, onClose, editTarget, preselectedType, presel
   )
 }
 import { Modal } from '../ui/dialog'
+import { queryKeys } from '../../api/queryKeys'
+import { useNotificationStore } from '../../store/notifications'
