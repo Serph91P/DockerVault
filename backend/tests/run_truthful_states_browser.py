@@ -74,7 +74,7 @@ def main():
             [
                 "python",
                 "-c",
-                "import sqlite3,json;from pathlib import Path;c=sqlite3.connect('/app/data/backup.db');assert c.execute('PRAGMA foreign_key_check').fetchall()==[];assert c.execute('select count(*) from backups where status=?',('COMPLETED',)).fetchone()[0]>=1;assert c.execute('select count(*) from storage_operations where state=?',('completed',)).fetchone()[0]>=1;assert not Path('/backups/notification-delete').exists();assert Path('/app/data/ux183-source/data.txt').read_bytes()==b'owned truthful states fixture';print(json.dumps({'sqlite':'passed','physical_deletion':'passed','source_bytes':'unchanged'}))",
+                "import sqlite3,json;from pathlib import Path;c=sqlite3.connect('/app/data/backup.db');assert c.execute('PRAGMA foreign_key_check').fetchall()==[];assert c.execute('select count(*) from backups where status=?',('COMPLETED',)).fetchone()[0]==61;assert Path('/app/data/ssh_keys/truthful_key').is_file();assert Path('/app/data/ssh_keys/truthful_key.pub').is_file();assert c.execute('select count(*) from storage_operations where state=?',('completed',)).fetchone()[0]>=1;assert not Path('/backups/notification-delete').exists();assert Path('/app/data/ux183-source/data.txt').read_bytes()==b'owned truthful states fixture';print(json.dumps({'sqlite':'passed','physical_deletion':'passed','source_bytes':'unchanged'}))",
             ]
         )
         assert verification.exit_code == 0, verification.output.decode()

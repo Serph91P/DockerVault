@@ -50,9 +50,15 @@ function safeResult(value: unknown): Notification | null {
   return { ...notificationResults[n.code], code: n.code, target, revision, counts, dedupeKey, id: dedupeKey, timestamp: n.timestamp, read: n.read, dismissed: n.dismissed === true }
 }
 function removeRetention() { try { sessionStorage.removeItem(KEY) } catch { /* Storage unavailable. */ } }
+function newestFirst(a: Notification, b: Notification) {
+  const time = (b.revision || b.timestamp) - (a.revision || a.timestamp)
+  if (time) return time
+  if (a.target?.kind === b.target?.kind && typeof a.target?.id === 'number' && typeof b.target?.id === 'number' && a.target.id !== b.target.id) return b.target.id - a.target.id
+  return b.id.localeCompare(a.id)
+}
 function persist() {
   if (owner === null) return
-  const items = [...useNotificationStore.getState().notifications, ...dismissed].map(safeResult).filter((n): n is Notification => n !== null).sort((a, b) => b.timestamp - a.timestamp).slice(0, 50)
+  const items = [...useNotificationStore.getState().notifications, ...dismissed].map(safeResult).filter((n): n is Notification => n !== null).sort(newestFirst).slice(0, 50)
   if (items.length === 0) { removeRetention(); return }
   try { sessionStorage.setItem(KEY, JSON.stringify({ version: 1, owner, items })) } catch { /* Quota does not break in-memory controls. */ }
 }
@@ -67,7 +73,7 @@ export function bindNotificationOwner(id: number) {
     else removeRetention()
   } catch { removeRetention() }
   owner = id
-  const unique = [...new Map(notifications.map(n => [n.id, n])).values()]
+  const unique = [...new Map(notifications.map(n => [n.id, n])).values()].sort(newestFirst)
   dismissed = unique.filter(n => n.dismissed)
   useNotificationStore.setState({ notifications: unique.filter(n => !n.dismissed) })
   persist()
@@ -88,7 +94,11 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
     const raw = { ...input, id: crypto.randomUUID(), timestamp: Date.now(), read: false }
     const notification = input.code ? safeResult(raw) : raw
     if (!notification || (notification.dedupeKey && [...get().notifications, ...dismissed].some(n => n.dedupeKey === notification.dedupeKey))) return
-    set({ notifications: [notification, ...get().notifications].slice(0, 50) }); persist()
+    // Keep dismissed revisions inside the same bounded window so an older HTTP snapshot cannot resurrect them.
+    const retained = [notification, ...get().notifications, ...dismissed].sort(newestFirst).slice(0, 50)
+    if (!retained.includes(notification)) return
+    dismissed = retained.filter(n => n.dismissed)
+    set({ notifications: retained.filter(n => !n.dismissed) }); persist()
   },
   markRead: id => { set({ notifications: get().notifications.map(n => n.id === id ? { ...n, read: true } : n) }); persist() },
   markAllRead: () => { set({ notifications: get().notifications.map(n => ({ ...n, read: true })) }); persist() },

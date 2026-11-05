@@ -21,6 +21,24 @@ const routes = [
   ['Storage', '/storage', '/storage', 'Storage locations', <Storage />],
   ['Settings', '/settings', '/settings/storage', 'Storage settings', <Settings />],
 ] as const
+it('malformed compatibility items keep independent schedules visible with a scoped Retry', async () => {
+  let malformed = true
+  let scheduleReads = 0
+  server.use(
+    http.get('/api/v1/schedules', () => { scheduleReads++; return HttpResponse.json([{ id: 1, name: 'Independent valid schedule', cron_expression: '0 2 * * *', enabled: true, target_count: 0 }]) }),
+    http.get('/api/v1/schedules/compatibility/inventory', () => HttpResponse.json({ contract: 'synthetic contract', timezone: 'UTC', items: [{ kind: 'schedule', id: 1, name: 'Independent valid schedule', expression: '0 2 * * *', warnings: malformed ? null : ['Review intent'] }] })),
+  )
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  clients.push(client)
+  render(<QueryClientProvider client={client}><MemoryRouter><Schedules /></MemoryRouter></QueryClientProvider>)
+  expect(await screen.findByRole('alert', { name: 'Schedule compatibility status' })).toHaveTextContent(/unavailable/i)
+  expect(screen.getByText('Independent valid schedule')).toBeVisible()
+  malformed = false
+  await userEvent.click(screen.getByRole('button', { name: 'Retry Schedule compatibility' }))
+  expect(await screen.findByText('Review intent')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Refresh Schedule compatibility' })).toHaveFocus()
+  expect(scheduleReads).toBe(1)
+})
 const clients: QueryClient[] = []
 afterEach(() => { cleanup(); clients.splice(0).forEach(c => c.clear()) })
 for (const [name, route, endpoint, label, page] of routes) {

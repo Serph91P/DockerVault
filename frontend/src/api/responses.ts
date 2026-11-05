@@ -43,12 +43,12 @@ const objectFields: Record<string, Record<string, (value: unknown) => boolean>> 
   '/settings/komodo': { enabled: boolean, has_api_key: boolean, has_api_secret: boolean, connected: boolean },
   '/settings/system-info': { disk_total: number, disk_used: number, disk_free: number, backup_count: number, target_count: number, uptime_seconds: number, app_version: string },
   '/docker/health': { status: v => v === 'healthy' },
-  '/schedules/compatibility/inventory': { items: Array.isArray, timezone: string, contract: string },
+  '/schedules/compatibility/inventory': { items: value => Array.isArray(value) && value.every(item => fields(item, { kind: v => v === 'schedule' || v === 'target_legacy', id, name: string, expression: string, warnings: v => Array.isArray(v) && v.every(string) })), timezone: string, contract: string },
 }
 
 function validRow(url: string, row: unknown) {
   if (!fields(row, listFields[url]) || !object(row)) return false
-  for (const key of ['created_at', 'updated_at', 'started_at', 'completed_at', 'next_run', 'last_run']) if (row[key] !== undefined && row[key] !== null && !timestamp(row[key])) return false
+  for (const key of ['created_at', 'updated_at', 'started_at', 'completed_at', 'next_run', 'last_run']) if (row[key] !== undefined && row[key] !== null && !(url === '/storage/ssh-keys' && key === 'created_at' ? number(row[key]) : timestamp(row[key]))) return false
   for (const key of ['description', 'target_name', 'container_name', 'volume_name', 'stack_name', 'host_path', 'private_path', 'fingerprint']) if (row[key] !== undefined && row[key] !== null && !string(row[key])) return false
   if (url === '/targets') {
     for (const key of ['selected_volumes', 'include_paths', 'exclude_paths', 'dependencies']) if (row[key] !== undefined && (!Array.isArray(row[key]) || !(row[key] as unknown[]).every(string))) return false
