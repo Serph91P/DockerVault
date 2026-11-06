@@ -8,12 +8,12 @@ export interface ScheduleDraft {
 }
 export interface RetentionDraft {
   name: string
-  keepLast: number
-  keepDaily: number
-  keepWeekly: number
-  keepMonthly: number
-  keepYearly: number
-  maxAgeDays: number
+  keepLast: number | ''
+  keepDaily: number | ''
+  keepWeekly: number | ''
+  keepMonthly: number | ''
+  keepYearly: number | ''
+  maxAgeDays: number | ''
 }
 import type { useValidationFeedback } from '../ValidationFeedback'
 type Feedback = ReturnType<typeof useValidationFeedback>['field']
@@ -183,11 +183,11 @@ export function RetentionFields({
               type="number"
               min={min}
               max={max}
-              value={Number.isNaN(value[key]) ? '' : value[key]}
+              value={value[key]}
               onChange={(e) =>
                 onChange({
                   ...value,
-                  [key]: e.target.value === '' ? NaN : Number(e.target.value),
+                  [key]: e.target.value === '' ? '' : Number(e.target.value),
                 })
               }
             />

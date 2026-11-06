@@ -347,6 +347,79 @@ try {
   await page.addScriptTag({ url: base + '/__policy187_axe.js' })
   const axe = await page.evaluate(async () => window.axe.run(document.querySelector('main')))
   check(axe.violations.length === 0, 'A6 narrow policy editor axe including contrast has no violations')
+  // B1: all six shared numeric fields, real Wizard callers/drafts and policy pages.
+  // No transport/payload faults in this section; compare actual native writes/readbacks.
+  await page.setViewportSize({ width: 1280, height: 900 })
+  const numericFields = [['keepLast', 'keep_last', 'Keep Last', 3], ['keepDaily', 'keep_daily', 'Daily', 7], ['keepWeekly', 'keep_weekly', 'Weekly', 4], ['keepMonthly', 'keep_monthly', 'Monthly', 6], ['keepYearly', 'keep_yearly', 'Yearly', 2], ['maxAgeDays', 'max_age_days', 'Max age (days)', 365]]
+  const pageErrors = []
+  page.on('pageerror', error => pageErrors.push(String(error)))
+  const writes = []
+  page.on('request', request => { if (['POST', 'PUT'].includes(request.method()) && /\/api\/v1\/(retention|targets)(\/\d+)?$/.test(new URL(request.url()).pathname)) writes.push(request.url()) })
+  const editFixture = await newPlan('B1 editable plan', { enabled: false })
+  for (const editing of [false, true]) {
+    for (const [draftKey, apiKey, label] of numericFields) {
+      const name = `B1 ${editing ? 'edit' : 'new'} ${draftKey}`
+      const planPath = editing ? `/protection/${editFixture.id}/edit` : '/protection/new'
+      await goto(planPath)
+      if (!editing) {
+        await page.getByRole('button', { name: /^Host Path / }).click()
+        await page.getByPlaceholder('/path/to/directory').fill('/app/data/184-fixtures/path')
+        await field('Backup name', name)
+      }
+      await page.getByRole('button', { name: 'Strategy', exact: true }).click()
+      await page.getByRole('combobox', { name: 'Retention Policy', exact: true }).selectOption('new')
+      await field('Policy name', name)
+      await field(label, '4')
+      await field(label, '')
+      const before = writes.length
+      await page.getByRole('button', { name: 'Execution & review', exact: true }).click()
+      await page.getByRole('button', { name: 'Save plan', exact: true }).click()
+      await page.getByRole('alert').filter({ hasText: 'Keep Last must be 1–1000' }).waitFor()
+      check(writes.length === before && pageErrors.length === 0, `B1 Wizard ${name}: blank blocks all native writes without pageerror`)
+      // Poll actual debounced draft, not time/sleep. Reload must offer and restore it.
+      await expect.poll(async () => page.evaluate(({ key, editing, id }) => {
+        const entry = Object.entries(localStorage).find(([k]) => k.startsWith('dockervault-plan-draft:') && k.endsWith(editing ? `:target:${id}` : ':new'))
+        return entry ? JSON.parse(entry[1]).data.newRetentionPolicy?.[key] : null
+      }, { key: draftKey, editing, id: editFixture.id })).toBe('')
+      await page.reload()
+      await page.getByRole('button', { name: 'Restore draft', exact: true }).click()
+      await page.getByRole('button', { name: 'Strategy', exact: true }).click()
+      check(await page.getByLabel(label, { exact: true }).inputValue() === '' && await page.getByLabel('Policy name', { exact: true }).inputValue() === name, `B1 Wizard ${name}: actual reload/resume preserves blank and policy name`)
+      await field(label, '4')
+      await page.getByRole('button', { name: 'Execution & review', exact: true }).click()
+      await page.getByRole('button', { name: 'Save plan', exact: true }).click()
+      await page.waitForURL(/\/protection\/[1-9]\d*(\?|$)/)
+      const target = await api('/targets/' + new URL(page.url()).pathname.split('/')[2])
+      const storedPolicy = await api('/retention/' + target.retention_policy_id)
+      check(storedPolicy.name === name && target.name === (editing ? editFixture.name : name) && numericFields.every(([key, apiField, , original]) => storedPolicy[apiField] === (key === draftKey ? 4 : original)), `B1 Wizard ${name}: correction really commits numbers and preserves all other fields`)
+      await page.getByRole('link', { name: 'Edit plan', exact: true }).click()
+      await page.getByRole('button', { name: 'Strategy', exact: true }).click()
+      check(await page.getByRole('combobox', { name: 'Retention Policy', exact: true }).inputValue() === String(storedPolicy.id), `B1 Wizard ${name}: fast re-edit reads confirmed assignment`)
+    }
+  }
+  const policyFixture = await api('/retention', 'POST', { name: 'B1 policy fixture', keep_last: 3, keep_daily: 7, keep_weekly: 4, keep_monthly: 6, keep_yearly: 2, max_age_days: 365 })
+  for (const editing of [false, true]) {
+    for (const [key, apiKey, label] of numericFields) {
+      await goto(editing ? `/protection/retention/${policyFixture.id}/edit` : '/protection/retention/new')
+      await page.getByLabel('Policy name', { exact: true }).waitFor()
+      const name = `B1 policy ${editing ? 'edit' : 'new'} ${key}`
+      await field('Policy name', name)
+      await field(label, '')
+      const before = writes.length
+      await page.getByRole('button', { name: 'Save', exact: true }).click()
+      await expect(page.getByLabel(label, { exact: true })).toHaveAttribute('aria-invalid', 'true')
+      check(writes.length === before && await page.getByLabel(label, { exact: true }).inputValue() === '', `B1 ${name}: blank stays inline-invalid with zero native writes`)
+      await field(label, '4')
+      const id = await savePolicy('retention')
+      check((await api('/retention/' + id))[apiKey] === 4, `B1 ${name}: correction has authoritative numeric readback`)
+      await page.getByRole('link', { name: 'Edit', exact: true }).click()
+      await expect(page.getByLabel(label, { exact: true })).toHaveValue('4')
+      await page.reload()
+      await expect(page.getByLabel(label, { exact: true })).toHaveValue('4')
+      check(await page.getByLabel('Policy name', { exact: true }).inputValue() === name, `B1 ${name}: fast re-edit and real reload retain persisted identity and number`)
+    }
+  }
+  check(pageErrors.length === 0, 'B1 all numeric caller/reload/resume/correction flows without browser pageerrors')
   snapshot = await control('snapshot')
   check(snapshot.foreign_key_violations === 0 && snapshot.backups.find(row => row.id === actualRun.id)?.exists, 'final native SQLite has no FK violations and run-now archive remains')
   const result = { status: 'passed', checks: checks.length, labels: checks, retentionId, scheduleId, runId: actualRun.id, boundary: 'Chromium/Linux emulation only; fixture-only controls and synthetic discovery/lifecycle; native policy/auth/SQLite/files/engine. Injected unlink/reconcile faults and explicitly lost/modified transport named per assertion.' }

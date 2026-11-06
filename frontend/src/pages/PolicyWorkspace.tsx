@@ -34,6 +34,10 @@ import { planId, policySearch as filterSearch } from './protectionRoutes'
 
 type Kind = 'schedules' | 'retention'
 type Policy = ScheduleEntity | RetentionPolicy
+function retentionNumber(value: number | ''): number {
+  if (value === '') throw new ResponseError(422)
+  return value
+}
 const titles = { schedules: 'Schedules', retention: 'Retention Policies' }
 const root = (kind: Kind) => `/protection/${kind}`
 const keys = (kind: Kind) =>
@@ -588,12 +592,12 @@ function PolicyEditor({
             }
           : {
               name: retention.name,
-              keep_last: retention.keepLast,
-              keep_daily: retention.keepDaily,
-              keep_weekly: retention.keepWeekly,
-              keep_monthly: retention.keepMonthly,
-              keep_yearly: retention.keepYearly,
-              max_age_days: retention.maxAgeDays,
+              keep_last: retentionNumber(retention.keepLast),
+              keep_daily: retentionNumber(retention.keepDaily),
+              keep_weekly: retentionNumber(retention.keepWeekly),
+              keep_monthly: retentionNumber(retention.keepMonthly),
+              keep_yearly: retentionNumber(retention.keepYearly),
+              max_age_days: retentionNumber(retention.maxAgeDays),
             }
       if (kind === 'schedules') {
         try {
@@ -685,7 +689,7 @@ function PolicyEditor({
       })) {
         const min = key === 'keep_last' || key === 'max_age_days' ? 1 : 0
         const max = key === 'max_age_days' ? 36500 : 1000
-        if (!Number.isInteger(value) || value < min || value > max)
+        if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max)
           fields[key] = `Enter a whole number from ${min} to ${max}.`
       }
     setLocalError(

@@ -1,4 +1,5 @@
 import type { BackupTarget, Container, Stack, Volume } from '../../api'
+import type { RetentionDraft } from './PolicyFields'
 
 export interface VolumeRule {
   includePaths?: string[]
@@ -25,15 +26,7 @@ export interface WizardData {
   remoteStorageIds: number[]
   deleteLocalAfterSync: boolean
   retentionPolicyId: number | null
-  newRetentionPolicy: {
-    name: string
-    keepLast: number
-    keepDaily: number
-    keepWeekly: number
-    keepMonthly: number
-    keepYearly: number
-    maxAgeDays: number
-  } | null
+  newRetentionPolicy: RetentionDraft | null
   compression: 'none' | 'gzip'
   enabled: boolean
   unconfirmed: 'schedule' | 'retention' | 'target' | null
@@ -147,7 +140,7 @@ export function validateEditor(data: WizardData): string[] {
   const r = data.newRetentionPolicy
   if (r) {
     if (!r.name.trim()) errors.push('Retention name is required.')
-    const valid = (n: number, min: number, max: number) => Number.isInteger(n) && n >= min && n <= max
+    const valid = (n: number | '', min: number, max: number) => typeof n === 'number' && Number.isInteger(n) && n >= min && n <= max
     if (
       !valid(r.keepLast, 1, 1000) ||
       !valid(r.maxAgeDays, 1, 36500) ||

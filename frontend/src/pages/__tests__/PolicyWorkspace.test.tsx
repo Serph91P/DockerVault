@@ -76,6 +76,33 @@ function fixtures() {
   )
 }
 describe('durable reusable policy management', () => {
+  it.each(['Keep Last', 'Daily', 'Weekly', 'Monthly', 'Yearly', 'Max age (days)'].flatMap(label => [false, true].map(editing => ({ label, editing }))))('blank $label stays invalid in policy editor (editing=$editing), correction saves and re-edit reads numbers', async ({ label, editing }) => {
+    fixtures()
+    let writes = 0
+    let stored = { ...policy }
+    const write = async ({ request }: { request: Request }) => {
+      writes++
+      const body = await request.json() as typeof policy
+      expect(Object.values(body)).not.toContain('')
+      stored = { ...stored, ...body }
+      return HttpResponse.json(stored)
+    }
+    server.use(http.post('/api/v1/retention', write), http.put('/api/v1/retention/7', write), http.get('/api/v1/retention/7', () => HttpResponse.json(stored)))
+    const user = mount(editing ? '/protection/retention/7/edit' : '/protection/retention/new')
+    const input = await screen.findByRole('spinbutton', { name: label, exact: true })
+    await user.clear(input)
+    await user.click(screen.getByRole('button', { name: 'Save', exact: true }))
+    expect(input).toHaveValue(null)
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+    expect(writes).toBe(0)
+    expect(screen.getByRole('textbox', { name: 'Policy name' })).toHaveValue(editing ? 'default' : '')
+    if (!editing) await user.type(screen.getByRole('textbox', { name: 'Policy name' }), 'Blank regression')
+    await user.type(input, '4')
+    await user.click(screen.getByRole('button', { name: 'Save', exact: true }))
+    await user.click(await screen.findByRole('link', { name: 'Edit', exact: true }))
+    expect(await screen.findByRole('spinbutton', { name: label, exact: true })).toHaveValue(4)
+    expect(writes).toBe(1)
+  })
   it.each(['detail still exists', 'incomplete usage'])('does not confirm deletion with contradictory readback: %s', async mode => {
     fixtures(); let deleted = false
     server.use(

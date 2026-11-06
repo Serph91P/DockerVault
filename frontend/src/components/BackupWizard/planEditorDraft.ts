@@ -64,7 +64,10 @@ export function safeIntent(data: WizardData): WizardData {
     (!record(safe.newRetentionPolicy) ||
       typeof safe.newRetentionPolicy.name !== 'string' ||
       ['keepLast', 'keepDaily', 'keepWeekly', 'keepMonthly', 'keepYearly', 'maxAgeDays'].some(
-        (key) => !Number.isFinite(safe.newRetentionPolicy![key as keyof typeof safe.newRetentionPolicy])
+        (key) => {
+          const value = safe.newRetentionPolicy![key as keyof typeof safe.newRetentionPolicy]
+          return value !== '' && !Number.isFinite(value)
+        }
       ))
   )
     throw new Error('Invalid retention draft')

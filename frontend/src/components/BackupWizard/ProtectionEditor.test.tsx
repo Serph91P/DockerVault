@@ -125,6 +125,34 @@ it('retains confirmed inline policy ID after target validation failure and never
   await new Promise((r) => setTimeout(r, 350))
   expect(Object.keys(localStorage).filter((k) => k.startsWith('dockervault-plan-draft:'))).toEqual([])
 })
+it.each(['Keep Last', 'Daily', 'Weekly', 'Monthly', 'Yearly', 'Max age (days)'])('wizard blank %s blocks all writes until corrected', async label => {
+  let posts = 0
+  server.use(http.post('/api/v1/retention', async ({ request }) => {
+    posts++
+    const body = await request.json() as Record<string, unknown>
+    expect(Object.values(body)).not.toContain('')
+    expect(body.name).toBe('Blank regression')
+    return HttpResponse.json({ detail: 'Declared validation failure after correction' }, { status: 422 })
+  }))
+  await mount({})
+  await userEvent.click(screen.getByRole('button', { name: 'Strategy', exact: true }))
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Retention Policy', exact: true }), 'new')
+  await userEvent.type(screen.getByRole('textbox', { name: 'Policy name' }), 'Blank regression')
+  await userEvent.clear(screen.getByRole('spinbutton', { name: label, exact: true }))
+  await userEvent.click(screen.getByRole('button', { name: 'Execution & review' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Save plan' }))
+  expect(screen.getByText('Keep Last must be 1–1000; age must be 1–36500; GFS buckets must be 0–1000.')).toBeVisible()
+  expect(posts).toBe(0)
+  await userEvent.click(screen.getByRole('button', { name: 'Strategy', exact: true }))
+  expect(screen.getByRole('spinbutton', { name: label, exact: true })).toHaveValue(null)
+  expect(screen.getByRole('textbox', { name: 'Policy name' })).toHaveValue('Blank regression')
+  await userEvent.type(screen.getByRole('spinbutton', { name: label, exact: true }), '4')
+  await userEvent.click(screen.getByRole('button', { name: 'Execution & review' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Save plan' }))
+  await waitFor(() => expect(posts).toBe(1))
+  await screen.findByText(/Could not save backup configuration/)
+})
+
 it('does not replay or automatically adopt an unknown target POST', async () => {
   let posts = 0
   server.use(
