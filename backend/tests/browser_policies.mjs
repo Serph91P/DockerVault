@@ -69,6 +69,8 @@ try {
   const retentionId = await savePolicy('retention', true)
   const retention = await api('/retention/' + retentionId)
   check(JSON.stringify([retention.keep_last, retention.keep_daily, retention.keep_weekly, retention.keep_monthly, retention.keep_yearly, retention.max_age_days]) === JSON.stringify([3, 7, 4, 6, 2, 365]), 'A1 first successful create GET confirms every documented default')
+  await page.getByText(/0 effective plans; 0 removed references/).waitFor()
+  check((await page.locator('main').innerText()).includes('0 effective plans; 0 removed references'), 'A3 zero-assignment usage is authoritative, not unknown')
 
   // A2: authoritative validation/preview, create/edit/description-clear/toggle/jobs/run.
   await goto('/protection/schedules/new?q=Managed')
@@ -150,6 +152,7 @@ try {
   const defaultPolicy = (await api('/retention')).find(policy => policy.name === 'default')
   await goto('/protection/retention/' + defaultPolicy.id)
   await page.getByRole('link', { name: 'Default implicit', exact: true }).waitFor()
+  check((await page.locator('main').innerText()).includes('1 effective plans; 0 removed references'), 'A3 exactly one default/null user has the correct linked usage count')
   check((await page.locator('main').innerText()).includes('Default fallback (null assignment)'), 'A3 default/null fallback is linked rather than falsely unused')
   check((await response('/retention/' + defaultPolicy.id, 'DELETE')).status() === 400, 'A4 native default-name deletion constraint unchanged')
   await api('/targets/' + two.id, 'PUT', { retention_policy_id: null })
@@ -280,7 +283,7 @@ try {
   check((await response('/schedules/' + scheduleId)).status() === 404 && (await api('/targets?include_removed=true')).every(target => target.schedule_id !== scheduleId), 'A3 schedule deletion verifies policy absence and all active/removed unlinks')
 
   // A6: native routes, safe context, query filters, narrow reflow, keyboard cancel/save.
-  await api('/schedules', 'POST', { name: 'Filter inactive', description: 'Find description', enabled: false, cron_expression: '0 3 * * *' })
+  const filteredSchedule = await api('/schedules', 'POST', { name: 'Filter inactive', description: 'Find description', enabled: false, cron_expression: '0 3 * * *' })
   await goto('/protection/schedules?q=Find&status=disabled')
   await page.getByRole('link', { name: 'Filter inactive', exact: true }).waitFor()
   check(await page.getByRole('searchbox').inputValue() === 'Find', 'A6 description search and disabled schedule filter from durable URL')
@@ -293,19 +296,51 @@ try {
   await page.getByRole('button', { name: 'Cancel', exact: true }).press('Enter')
   await page.getByRole('link', { name: 'Back to Retention Policies', exact: true }).click()
   check(await page.getByRole('searchbox').inputValue() === 'Managed' && new URL(page.url()).searchParams.get('usage') === 'used', 'A6 list/detail/edit/cancel/back retains query filters')
+  await page.getByRole('link', { name: 'Managed bounds', exact: true }).click()
+  await page.getByRole('heading', { name: 'Managed bounds', exact: true }).waitFor()
+  await page.reload()
+  await page.getByRole('heading', { name: 'Managed bounds', exact: true }).waitFor()
+  check(new URL(page.url()).searchParams.get('q') === 'Managed' && new URL(page.url()).searchParams.get('usage') === 'used' && (await page.locator('main').innerText()).includes('Keep Last: 1;'), 'A6 actual detail reload restores persisted identity/rules and filter context')
+  await page.goBack()
+  await page.getByRole('link', { name: 'Managed bounds', exact: true }).waitFor()
+  check(await page.getByRole('searchbox').inputValue() === 'Managed' && new URL(page.url()).searchParams.get('usage') === 'used', 'A6 actual browser Back returns to the filtered policy list')
   await page.getByRole('searchbox').fill('definitely no match')
   await page.getByText('No matching policies.', { exact: true }).waitFor()
   check((await api('/retention')).length > 0, 'A6 filtered empty is not backend empty')
-  for (const path of ['/protection/retention/new', '/protection/retention/' + retentionId, '/protection/retention/' + retentionId + '/edit', '/protection/schedules/new', '/protection/schedules/edit']) {
-    await goto(path)
-    check(!(await page.locator('main').innerText()).includes('Invalid protection plan address'), 'A6 direct/reload policy route is never parsed as plan '+path)
+  const directRoutes = [
+    { path: '/protection/retention/new', heading: 'New Retention Policy', form: 'retention', fresh: true, value: '' },
+    { path: '/protection/retention/' + retentionId, heading: 'Managed bounds' },
+    { path: '/protection/retention/' + retentionId + '/edit', heading: 'Edit policy', form: 'retention', value: 'Managed bounds' },
+    { path: '/protection/schedules/new', heading: 'New Schedule', form: 'schedules', fresh: true, value: '' },
+    { path: '/protection/schedules/' + filteredSchedule.id, heading: 'Filter inactive' },
+    { path: '/protection/schedules/' + filteredSchedule.id + '/edit', heading: 'Edit policy', form: 'schedules', value: 'Filter inactive' },
+  ]
+  for (const entry of directRoutes) {
+    await goto(entry.path)
+    await page.getByRole('heading', { name: entry.heading, exact: true }).waitFor()
+    if (entry.form === 'retention') {
+      check(await page.getByLabel('Policy name', { exact: true }).inputValue() === entry.value && await page.getByLabel('Keep Last', { exact: true }).inputValue() === (entry.fresh ? '3' : '1') && await page.getByLabel('Max age (days)', { exact: true }).inputValue() === (entry.fresh ? '365' : '1'), 'A6 direct retention form is finished with correct name/rules '+entry.path)
+    } else if (entry.form === 'schedules') {
+      check(await page.getByLabel('Schedule name', { exact: true }).inputValue() === entry.value && await page.getByLabel('Cron expression', { exact: true }).inputValue() === (entry.fresh ? '0 2 * * *' : '0 3 * * *') && await page.getByLabel('Description', { exact: true }).inputValue() === (entry.fresh ? '' : 'Find description') && await page.getByRole('checkbox', { name: 'Enable schedule', exact: true }).isChecked() === !!entry.fresh, 'A6 direct schedule form is finished with correct identity/cron/description/state '+entry.path)
+    } else {
+      const text = await page.locator('main').innerText()
+      check(entry.heading === 'Managed bounds' ? text.includes('Keep Last: 1;') && text.includes('Bucket age cutoff: 1 days.') : text.includes('Find description') && text.includes('Cron: 0 3 * * *') && text.includes('Disabled'), 'A6 direct detail is finished with correct persisted policy identity/rules '+entry.path)
+    }
   }
+  await goto('/protection/schedules/edit')
+  await page.getByRole('alert').filter({ hasText: 'This address is not a valid policy route.' }).waitFor()
+  check(!(await page.locator('main').innerText()).includes('Invalid protection plan address'), 'A6 invalid static schedule/edit is rejected as a policy route, not a plan ID')
   await goto('/schedules'); await page.waitForURL('**/protection/schedules'); check(true, 'A6 legacy schedule route redirects')
   await goto('/retention'); await page.waitForURL('**/protection/retention'); check(true, 'A6 legacy retention route redirects')
   await page.setViewportSize({ width: 320, height: 720 })
   for (const path of ['/protection/retention', '/protection/retention/' + retentionId + '/edit', '/protection/schedules/new']) {
     await goto(path)
     await page.locator('main h1').waitFor()
+    if (path === '/protection/retention') await page.getByRole('link', { name: 'Default implicit', exact: true }).waitFor()
+    else if (path.endsWith('/edit')) {
+      await page.getByRole('heading', { name: 'Usage and edit impact', exact: true }).waitFor()
+      assert.equal(await page.getByLabel('Policy name', { exact: true }).inputValue(), 'Managed bounds')
+    } else await page.getByText(/Next runs \(server timezone:/).waitFor()
     check(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), 'A6 320 CSS px reflow '+path)
   }
   await page.route(base + '/__policy187_axe.js', async route => route.fulfill({ status: 200, contentType: 'application/javascript', body: await readFile('/runner/axe.min.js', 'utf8') }))
