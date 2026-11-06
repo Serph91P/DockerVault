@@ -12,8 +12,39 @@ import BackupWizard from '../components/BackupWizard'
 import StepSummary from '../components/BackupWizard/StepSummary'
 import { targetToWizardData, availableVolumes } from '../components/BackupWizard/planEditorModel'
 import { planId, contextSearch, returnPath } from './protectionRoutes'
+import type { BackupTarget } from '../api'
+import { useAuthStore } from '../store/auth'
+
+function ProtectionEdit({ id, detail, onSaved }: { id: number; detail: string; onSaved: (id: number) => void }) {
+  const navigate = useNavigate()
+  const target = useQuery({
+    queryKey: queryKeys.targets.detail(id),
+    queryFn: () => targetsApi.get(id).then((r) => r.data),
+    refetchOnMount: 'always',
+    retry: false,
+  })
+  const [initialTarget, setInitialTarget] = useState<BackupTarget | null>(null)
+  // Fresh entry only; subsequent background reads must not reset dirty intent or private hooks.
+  if (!initialTarget && target.isFetchedAfterMount && target.isSuccess) setInitialTarget(target.data)
+  return (
+    <div className="space-y-4">
+      <Link className="underline" to={detail}>Return to plan without saving</Link>
+      {initialTarget && !initialTarget.removed_at ? (
+        <BackupWizard editTarget={initialTarget} isOpen onClose={() => navigate(detail)} onSaved={onSaved} />
+      ) : (
+        <>
+          {!target.isError && !initialTarget && <p role="status">Reading current plan before editing…</p>}
+          <QueryFeedback name={`Plan #${id}`} query={target} />
+          {initialTarget?.removed_at && <p role="alert">Removed plan: configuration is read-only.</p>}
+          {target.isError && <p role="alert">Could not load current plan for editing. Retry or return without saving.</p>}
+        </>
+      )}
+    </div>
+  )
+}
 
 export default function ProtectionPlan({ editing = false }: { editing?: boolean }) {
+  const owner = useAuthStore((s) => s.user?.id)
   const { id: raw } = useParams()
   const id = planId(raw)
   const [params] = useSearchParams()
@@ -25,7 +56,7 @@ export default function ProtectionPlan({ editing = false }: { editing?: boolean 
   const target = useQuery({
     queryKey: queryKeys.targets.detail(id || 0),
     queryFn: () => targetsApi.get(id!).then((r) => r.data),
-    enabled: !!id,
+    enabled: !!id && !editing,
     retry: false,
   })
   const schedules = useQuery({
@@ -80,19 +111,14 @@ export default function ProtectionPlan({ editing = false }: { editing?: boolean 
     )
   const t = target.data
   const detail = `/protection/${id}${contextSearch(back)}`
-  if (editing && t && !t.removed_at)
+  if (editing)
     return (
-      <div className="space-y-4">
-        <Link className="underline" to={detail}>
-          Return to plan without saving
-        </Link>
-        <BackupWizard
-          editTarget={t}
-          isOpen
-          onClose={() => navigate(detail)}
-          onSaved={(saved) => navigate(`/protection/${saved}${contextSearch(back)}`)}
-        />
-      </div>
+      <ProtectionEdit
+        key={`${owner}:${id}`}
+        id={id}
+        detail={detail}
+        onSaved={(saved) => navigate(`/protection/${saved}${contextSearch(back)}`)}
+      />
     )
   const data = t ? targetToWizardData(t) : null
   const sourceQuery = t?.target_type === 'container' ? containers : t?.target_type === 'stack' ? stacks : volumes
