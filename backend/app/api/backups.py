@@ -1379,13 +1379,14 @@ async def list_encrypted_backup_files(
 
 def _open_download_member(archive_path, mode, name, resources):
     """Retain one TarInfo, preserving last-name-wins and native link lookup order."""
-    import posixpath
+    import os.path
 
     filename = _sanitize_filename(name)
     before = None
+    normalize = False
     seen = set()
     for _ in range(1000):
-        lookup = (name, before)
+        lookup = (name, before, normalize)
         if lookup in seen:
             raise KeyError(name)
         seen.add(lookup)
@@ -1395,19 +1396,24 @@ def _open_download_member(archive_path, mode, name, resources):
         for member in tar:
             if before is not None and member.offset >= before:
                 break
-            if member.name == name:
+            member_name = os.path.normpath(member.name) if normalize else member.name
+            if member_name == name:
                 selected = member
         if selected is None:
             raise KeyError(name)
         if selected.isdir():
             raise HTTPException(status_code=400, detail="Cannot download directories")
         if selected.issym() or selected.islnk():
-            name = posixpath.normpath(
-                posixpath.join(posixpath.dirname(selected.name), selected.linkname)
+            # Match tarfile._find_link_target, including absolute symlink names.
+            name = os.path.normpath(
+                "/".join(
+                    filter(None, (os.path.dirname(selected.name), selected.linkname))
+                )
                 if selected.issym()
                 else selected.linkname
             )
             before = selected.offset if selected.islnk() else None
+            normalize = True
             tar.close()
             continue
         resources["file"] = tar.extractfile(selected)
