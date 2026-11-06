@@ -77,6 +77,12 @@ function validOperation(job: unknown) {
 // Validate before data enters the shared cache; malformed is never confirmed empty.
 export function validateWrite(url: string | undefined, data: unknown) {
   if (!url) return
+  if (url === '/retention/cleanup-orphaned') {
+    if (!fields(data, { deleted: count, failed: count, protected: count, scan_errors: count, scan_complete: boolean, freed_bytes: count, freed_human: string }) || !object(data)) throw new ResponseError()
+    const errors = Number(data.failed) + Number(data.scan_errors)
+    const outcome = errors ? (Number(data.deleted) > 0 ? 'partial' : 'failure') : Number(data.deleted) > 0 ? 'success' : 'empty'
+    if (data.outcome !== outcome || data.scan_complete !== (data.scan_errors === 0)) throw new ResponseError()
+  }
   const familyPath = url.replace(/\/\d+$/, '')
   const shape = listFields[familyPath]
   if (shape && ['/targets', '/storage', '/schedules', '/retention'].includes(familyPath) && !validRow(familyPath, data)) throw new ResponseError()
@@ -84,6 +90,7 @@ export function validateWrite(url: string | undefined, data: unknown) {
 }
 
 export function validateRead(url: string | undefined, data: unknown) {
+  if (url && /^\/(schedules|retention)\/\d+$/.test(url) && !validRow(url.startsWith('/schedules') ? '/schedules' : '/retention', data)) throw new ResponseError()
   if (url === '/schedules/jobs' && (!Array.isArray(data) || !data.every(row => fields(row, { id: value => typeof value === 'string' && value.length > 0, name: string, next_run: value => value === null || timestamp(value) })))) throw new ResponseError()
   if (url && /^\/targets\/\d+$/.test(url) && !validRow('/targets', data)) throw new ResponseError()
   if (url && /^\/backups\/\d+$/.test(url) && !validRow('/backups', data)) throw new ResponseError()

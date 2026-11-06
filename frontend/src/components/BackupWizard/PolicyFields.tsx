@@ -1,6 +1,20 @@
 import { useQuery } from '@tanstack/react-query'
 import { schedulesApi } from '../../api'
-import type { WizardData } from './planEditorModel'
+export interface ScheduleDraft {
+  name: string
+  cronExpression: string
+  description: string
+  enabled?: boolean
+}
+export interface RetentionDraft {
+  name: string
+  keepLast: number
+  keepDaily: number
+  keepWeekly: number
+  keepMonthly: number
+  keepYearly: number
+  maxAgeDays: number
+}
 import type { useValidationFeedback } from '../ValidationFeedback'
 type Feedback = ReturnType<typeof useValidationFeedback>['field']
 
@@ -11,12 +25,20 @@ export function CronPreview({ expression }: { expression: string }) {
     enabled: !!expression,
     retry: false,
   })
-  if (preview.isError) return <p role="alert">Schedule preview unavailable. Check the server before saving.</p>
+  if (preview.isError)
+    return (
+      <p role="alert">
+        Schedule preview unavailable. Check the server before saving.
+      </p>
+    )
   if (!preview.data) return <p role="status">Loading server preview...</p>
   return (
     <div className="text-sm space-y-2">
       <p>{preview.data.contract}</p>
-      <p>Next runs (server timezone: {preview.data.timezone}; dates displayed in your local timezone):</p>
+      <p>
+        Next runs (server timezone: {preview.data.timezone}; dates displayed in
+        your local timezone):
+      </p>
       {preview.data.next_runs.map((text) => (
         <p key={text}>{new Date(text).toLocaleString()}</p>
       ))}
@@ -32,14 +54,16 @@ export function ScheduleFields({
   value,
   onChange,
   feedback,
+  legend = 'New shared schedule',
 }: {
-  value: NonNullable<WizardData['newSchedule']>
-  onChange: (value: NonNullable<WizardData['newSchedule']>) => void
+  value: ScheduleDraft
+  onChange: (value: ScheduleDraft) => void
   feedback?: Feedback
+  legend?: string
 }) {
   return (
     <fieldset className="space-y-3">
-      <legend>New shared schedule</legend>
+      <legend>{legend}</legend>
       <label className="block">
         Schedule name
         <input
@@ -54,7 +78,9 @@ export function ScheduleFields({
         <select
           className="input w-full"
           value=""
-          onChange={(e) => onChange({ ...value, cronExpression: e.target.value })}
+          onChange={(e) =>
+            onChange({ ...value, cronExpression: e.target.value })
+          }
         >
           <option value="">Choose a preset</option>
           {[
@@ -77,14 +103,17 @@ export function ScheduleFields({
           className="input w-full font-mono"
           {...feedback?.('cron_expression')}
           value={value.cronExpression}
-          onChange={(e) => onChange({ ...value, cronExpression: e.target.value })}
+          onChange={(e) =>
+            onChange({ ...value, cronExpression: e.target.value })
+          }
         />
       </label>
       <label className="block">
         Description
         <input
           className="input w-full"
-          value={value.description}
+          {...feedback?.('description')}
+          value={value.description ?? ''}
           onChange={(e) => onChange({ ...value, description: e.target.value })}
         />
       </label>
@@ -99,8 +128,9 @@ export function ScheduleFields({
       <details>
         <summary>Cron help</summary>
         <p>
-          Five fields: minute, hour, day of month, month, day of week. Server scheduling uses Monday=0, Sunday=6;
-          day-of-month AND day-of-week. Use named weekdays to avoid ambiguity. Preview is authoritative.
+          Five fields: minute, hour, day of month, month, day of week. Server
+          scheduling uses Monday=0, Sunday=6; day-of-month AND day-of-week. Use
+          named weekdays to avoid ambiguity. Preview is authoritative.
         </p>
       </details>
       <CronPreview expression={value.cronExpression} />
@@ -112,10 +142,12 @@ export function RetentionFields({
   value,
   onChange,
   feedback,
+  legend = 'New shared retention policy',
 }: {
-  value: NonNullable<WizardData['newRetentionPolicy']>
-  onChange: (value: NonNullable<WizardData['newRetentionPolicy']>) => void
+  value: RetentionDraft
+  onChange: (value: RetentionDraft) => void
   feedback?: Feedback
+  legend?: string
 }) {
   const fields = [
     ['keepLast', 'Keep Last', 1, 1000],
@@ -127,11 +159,12 @@ export function RetentionFields({
   ] as const
   return (
     <fieldset className="space-y-3">
-      <legend>New shared retention policy</legend>
+      <legend>{legend}</legend>
       <label className="block">
         Policy name
         <input
           className="input w-full"
+          {...feedback?.('name')}
           value={value.name}
           onChange={(e) => onChange({ ...value, name: e.target.value })}
         />
@@ -142,19 +175,29 @@ export function RetentionFields({
             {label}
             <input
               className="input w-full"
-              {...feedback?.(key === 'maxAgeDays' ? 'max_age_days' : key.replace(/([A-Z])/g, '_$1').toLowerCase())}
+              {...feedback?.(
+                key === 'maxAgeDays'
+                  ? 'max_age_days'
+                  : key.replace(/([A-Z])/g, '_$1').toLowerCase(),
+              )}
               type="number"
               min={min}
               max={max}
-              value={value[key]}
-              onChange={(e) => onChange({ ...value, [key]: Number(e.target.value) })}
+              value={Number.isNaN(value[key]) ? '' : value[key]}
+              onChange={(e) =>
+                onChange({
+                  ...value,
+                  [key]: e.target.value === '' ? NaN : Number(e.target.value),
+                })
+              }
             />
           </label>
         ))}
       </div>
       <p className="text-sm text-dark-300">
-        Keep Last protects the newest backups independently of age. GFS buckets are combined, not added into a
-        guaranteed total. Max age limits bucket candidates, not Keep Last; at least the newest backup remains protected.
+        Keep Last protects the newest backups independently of age. GFS buckets
+        are combined, not added into a guaranteed total. Max age limits bucket
+        candidates, not Keep Last; at least the newest backup remains protected.
         Zero disables a GFS bucket only.
       </p>
     </fieldset>

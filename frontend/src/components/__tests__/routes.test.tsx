@@ -18,6 +18,14 @@ beforeEach(() => {
   server.use(http.get('/api/v1/encryption/status', () => HttpResponse.json({ setup_completed: true, encryption_enabled: true, onboarding_deferred: false })))
 })
 describe('workspace routes', () => {
+  it.each(['/protection/schedules/new', '/protection/retention/new', '/protection/schedules/8/edit', '/protection/retention/7/edit', '/protection/schedules/edit', '/protection/retention/edit'])('never interprets a static policy segment as a plan at %s', async path => {
+    let planReads = 0
+    server.use(http.get('/api/v1/targets/:id', () => { planReads++; return new HttpResponse(null, { status: 404 }) }))
+    renderPath(path)
+    const heading = await screen.findByRole('heading', { level: 1 })
+    expect(heading).not.toHaveTextContent('Invalid protection plan address')
+    expect(planReads).toBe(0)
+  })
   it.each([['/protection', 'Protection'], ['/history', 'History & Restore'], ['/protection/schedules', 'Schedules'], ['/protection/retention', 'Retention Policies']])('renders the working destination at %s', async (path, title) => {
     renderPath(path)
     expect(await screen.findByRole('heading', { level: 1, name: title })).toBeInTheDocument()

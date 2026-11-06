@@ -11,3 +11,8 @@ it('strictly validates safe positive plan identities', () => {
   for (const raw of ['0','-1','1x','01','9007199254740992','new']) expect(planId(raw)).toBeNull()
   expect(planId('917')).toBe(917)
 })
+it('preserves allowlisted policy return context without allowing arbitrary navigation', () => {
+  expect(returnPath('/protection/retention/7?q=default&usage=used&secret=x')).toBe('/protection/retention/7?q=default&usage=used')
+  expect(returnPath('/protection/schedules/8/edit?status=disabled')).toBe('/protection/schedules/8/edit?status=disabled')
+  for (const raw of ['/protection/schedules/0', '/protection/schedules//evil', '/protection/retention/7/../../settings', '/protection/schedules/new', '/protection/schedules/9007199254740992']) expect(returnPath(raw)).toBe('/protection')
+})
