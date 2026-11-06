@@ -1328,19 +1328,48 @@ class S3Storage(StorageBackend):
             return False, str(e)[:500]
 
     async def download(self, remote_path: str, local_path: Path) -> bool:
+        return await self._download(remote_path, local_path)
+
+    async def _download(
+        self, remote_path: str, local_path: Path, expected_checksum: bytes | None = None
+    ) -> bool:
+        """Publish only a complete (and, for verification, independently hashed) body."""
+        partial = None
         try:
             client = await self._get_client()
             key = f"{self.config.base_path}/{remote_path}".lstrip("/")
-
             local_path.parent.mkdir(parents=True, exist_ok=True)
-
             response = await client.get_object(Bucket=self.config.s3_bucket, Key=key)
-            async with aiofiles.open(local_path, "wb") as f:
-                await f.write(await response["Body"].read())
+            body = response["Body"]
+            async with body:
+                fd, name = tempfile.mkstemp(
+                    prefix=".dockervault-download-", dir=local_path.parent
+                )
+                partial = Path(name)
+                digest = hashlib.sha256() if expected_checksum is not None else None
+                received = 0
+                with os.fdopen(fd, "wb") as destination:
+
+                    def write(chunk):
+                        destination.write(chunk)
+                        if digest is not None:
+                            digest.update(chunk)
+
+                    while chunk := await body.read(1024 * 1024):
+                        await _await_io_settled(asyncio.to_thread(write, chunk))
+                        received += len(chunk)
+                if received != response["ContentLength"]:
+                    raise OSError("S3 download length mismatch")
+                if digest is not None and digest.digest() != expected_checksum:
+                    raise OSError("Remote copy verification checksum mismatch")
+            os.replace(partial, local_path)
             return True
         except Exception as e:
             logger.error(f"S3 download error: {e}")
             return False
+        finally:
+            if partial is not None:
+                partial.unlink(missing_ok=True)
 
     async def delete(self, remote_path: str) -> bool:
         try:
@@ -1728,6 +1757,25 @@ class RemoteStorageManager:
         Returns {storage_id: (success, error_message)}.
         """
         results: Dict[int, tuple[bool, str]] = {}
+        source_checksum = None
+        source_identity = None
+
+        def identity(stat):
+            return (
+                stat.st_dev,
+                stat.st_ino,
+                stat.st_size,
+                stat.st_mtime_ns,
+                stat.st_ctime_ns,
+            )
+
+        def digest(path):
+            with path.open("rb") as stream:
+                before = identity(os.fstat(stream.fileno()))
+                result = hashlib.file_digest(stream, "sha256").digest()
+                if identity(os.fstat(stream.fileno())) != before:
+                    raise OSError("Upload source changed while hashing")
+                return result, before
 
         targets = list(self.backends.keys()) if storage_ids is None else storage_ids
         for storage_id in targets:
@@ -1736,6 +1784,12 @@ class RemoteStorageManager:
                 results[storage_id] = (False, "Storage is unavailable or disabled")
                 continue
             try:
+                if source_checksum is None:
+                    source_checksum, source_identity = await _await_io_settled(
+                        asyncio.to_thread(digest, local_path)
+                    )
+                if identity(local_path.stat()) != source_identity:
+                    raise OSError("Upload source changed")
                 upload = backend.upload(local_path, remote_path)
                 # These providers settle their I/O or protocol abort themselves.
                 result = (
@@ -1752,25 +1806,29 @@ class RemoteStorageManager:
                     else "Upload failed"
                 )
                 if success:
+                    if identity(local_path.stat()) != source_identity:
+                        raise OSError("Upload source changed")
                     with tempfile.TemporaryDirectory(
                         prefix="dockervault-verify-"
                     ) as directory:
                         downloaded = Path(directory) / "artifact"
-                        if not await _await_io_settled(
-                            backend.download(remote_path, downloaded)
-                        ):
+                        download = (
+                            backend._download(remote_path, downloaded, source_checksum)
+                            if isinstance(backend, S3Storage)
+                            else backend.download(remote_path, downloaded)
+                        )
+                        if not await _await_io_settled(download):
                             raise OSError("Remote copy verification download failed")
-
-                        def digest(path):
-                            with path.open("rb") as stream:
-                                return hashlib.file_digest(stream, "sha256").digest()
-
-                        if await _await_io_settled(
-                            asyncio.to_thread(digest, local_path)
-                        ) != await _await_io_settled(
-                            asyncio.to_thread(digest, downloaded)
-                        ):
-                            raise OSError("Remote copy verification checksum mismatch")
+                        if not isinstance(backend, S3Storage):
+                            remote_checksum, _ = await _await_io_settled(
+                                asyncio.to_thread(digest, downloaded)
+                            )
+                            if remote_checksum != source_checksum:
+                                raise OSError(
+                                    "Remote copy verification checksum mismatch"
+                                )
+                        if identity(local_path.stat()) != source_identity:
+                            raise OSError("Upload source changed")
                 results[storage_id] = (
                     success,
                     "" if success else str(error or "Upload failed")[:500],

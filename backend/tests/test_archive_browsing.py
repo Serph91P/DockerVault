@@ -249,6 +249,9 @@ async def test_large_real_archive_pages_health_and_cancel_cleanup(
 
     entered = threading.Event()
     release = threading.Event()
+    # Force real reader work rather than a valid cross-page metadata cache hit.
+    with backups._archive_cache_lock:
+        backups._archive_listing_cache.clear()
     original = backups._scan_archive_entries
     scanned_paths = []
 
@@ -337,7 +340,7 @@ async def test_cancelled_encrypted_listing_removes_decrypted_temp_file(
 
     entered = asyncio.Event()
 
-    async def slow_scan(archive_path, mode, limit, offset):
+    async def slow_scan(archive_path, mode, limit, offset, *, cache_identity=None):
         entered.set()
         await asyncio.sleep(60)
         raise AssertionError("unreachable")
