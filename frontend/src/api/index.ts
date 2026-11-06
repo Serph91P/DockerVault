@@ -99,6 +99,7 @@ export interface BackupTarget {
 export interface RemoteSyncInfo {
   storage_id: number
   storage_name: string
+  availability?: 'unknown' | 'inaccessible'
   status: 'completed' | 'failed' | 'pending' | string
   synced_at?: string
   remote_path?: string
@@ -271,7 +272,24 @@ export interface RemovalResult {
   items: RemovalItem[]
   retry_token: string | null
 }
+export interface HistoryRecord extends Backup {
+  source_type: string
+  source_identity: string
+  local_storage_path?: string | null
+  plan_removed: boolean
+  retention_context: string
+  archive_state: 'recorded' | 'never_created' | 'unknown'
+  local_state: 'available' | 'missing' | 'inaccessible' | 'not_recorded' | 'deleted'
+  stage?: string | null
+  can_restore: boolean
+  can_sync: boolean
+}
+export interface HistoryPage {
+  items: HistoryRecord[]; total: number; limit: number; offset: number; snapshot: number; dataset: string
+}
 export const backupsApi = {
+  history: (params: Record<string, string | number>, signal?: AbortSignal) => api.get<HistoryPage>('/backups/history', { params, signal }),
+  historyDetail: (id: number, signal?: AbortSignal) => api.get<HistoryRecord>(`/backups/history/${id}`, { signal }),
   previewRemoval: (selection: { scope: RemovalScope; backup_ids?: number[]; target_id?: number; status?: string }) =>
     api.post<RemovalPreview>('/backups/removal/preview', selection),
   executeRemoval: (token: string) => api.post<RemovalResult>('/backups/removal/execute', { token }),

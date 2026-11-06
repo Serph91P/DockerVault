@@ -44,9 +44,10 @@ const LEVEL_STYLES: Record<string, { dot: string; text: string }> = {
 interface Props {
   backupId: number
   onClose: () => void
+  inline?: boolean
 }
 
-export default function BackupLogViewer({ backupId, onClose }: Props) {
+export default function BackupLogViewer({ backupId, onClose, inline = false }: Props) {
   const query = useQuery({ queryKey: queryKeys.backups.logs(backupId), queryFn: () => backupsApi.getLogs(backupId).then(response => response.data), retry: false })
   const { data: logs = [] } = query
 
@@ -55,8 +56,7 @@ export default function BackupLogViewer({ backupId, onClose }: Props) {
     return d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   }
 
-  return (
-    <Modal title={`Backup ${backupId} — Job Log`} onClose={onClose}>
+  const content = (
       <div className="bg-dark-800 border border-dark-600 rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-dark-600">
@@ -136,7 +136,7 @@ export default function BackupLogViewer({ backupId, onClose }: Props) {
           </button>
         </div>
       </div>
-    </Modal>
   )
+  return inline ? content : <Modal title={`Backup ${backupId} — Job Log`} onClose={onClose}>{content}</Modal>
 }
 import { Modal } from './ui/dialog'

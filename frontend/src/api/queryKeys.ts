@@ -5,6 +5,8 @@ export const queryKeys = {
   backups: {
     all: ['backups'] as const,
     list: (params: BackupParams = {}) => ['backups', 'list', params] as const,
+    history: (params: Record<string, string | number>) => ['backups', 'history', params] as const,
+    historyDetail: (id: number) => ['backups', 'history-detail', id] as const,
     detail: (id: number) => ['backups', 'detail', id] as const,
     logs: (id: number) => ['backups', 'logs', id] as const,
   },

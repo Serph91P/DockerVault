@@ -235,7 +235,7 @@ export default function ProtectionPlan({ editing = false }: { editing?: boolean 
             availableVolumes={availableVolumes(data, containers.data || [], stacks.data || [])}
             isCreating={false}
           />
-          <Link className="btn-secondary" to={`/history?plan=${id}`}>
+          <Link className="btn-secondary" to={`/history?target_id=${id}`}>
             Archives, logs, browse and restore for this plan
           </Link>
           {removing && (

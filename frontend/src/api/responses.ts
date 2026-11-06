@@ -89,7 +89,20 @@ export function validateWrite(url: string | undefined, data: unknown) {
   if (objectFields[url] && !fields(data, objectFields[url])) throw new ResponseError()
 }
 
+function validHistory(row: unknown) {
+  return validRow('/backups', row) && fields(row, {
+    source_type: string, source_identity: string, encrypted: boolean, local_available: boolean, remote_synced: boolean, plan_removed: boolean, retention_context: string,
+    archive_state: v => typeof v === 'string' && ['recorded', 'never_created', 'unknown'].includes(v),
+    local_state: v => typeof v === 'string' && ['available', 'missing', 'inaccessible', 'not_recorded', 'deleted'].includes(v),
+    can_restore: boolean, can_sync: boolean,
+    remote_sync_details: v => Array.isArray(v) && v.every(copy => fields(copy, { storage_id: id, storage_name: string, status: string, availability: value => value === 'unknown' || value === 'inaccessible' })),
+  })
+}
 export function validateRead(url: string | undefined, data: unknown) {
+  if (url === '/backups/history') {
+    if (!fields(data, { total: count, limit: id, offset: count, snapshot: count, dataset: string, items: Array.isArray }) || !object(data) || !Array.isArray(data.items) || !data.items.every(validHistory) || data.items.length > Number(data.limit) || data.items.length > Math.max(0, Number(data.total) - Number(data.offset))) throw new ResponseError()
+  }
+  if (url && /^\/backups\/history\/\d+$/.test(url) && !validHistory(data)) throw new ResponseError()
   if (url && /^\/(schedules|retention)\/\d+$/.test(url) && !validRow(url.startsWith('/schedules') ? '/schedules' : '/retention', data)) throw new ResponseError()
   if (url === '/schedules/jobs' && (!Array.isArray(data) || !data.every(row => fields(row, { id: value => typeof value === 'string' && value.length > 0, name: string, next_run: value => value === null || timestamp(value) })))) throw new ResponseError()
   if (url && /^\/targets\/\d+$/.test(url) && !validRow('/targets', data)) throw new ResponseError()

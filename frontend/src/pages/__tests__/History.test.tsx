@@ -1,0 +1,84 @@
+import { render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
+import { http, HttpResponse } from 'msw'
+import { expect, it } from 'vitest'
+import { server } from '../../test/mocks/server'
+import History from '../History'
+
+const row = { id: 507, target_id: 1, target_name: 'Retained source', backup_type: 'full', status: 'completed', created_at: '2026-01-01T00:00:00Z', file_size: 7, file_size_human: '7 B', encrypted: false, local_available: true, remote_synced: false, remote_sync_details: [], source_type: 'path', source_identity: '/fixture', plan_removed: true, retention_context: 'Retained after plan removal', archive_state: 'recorded', local_state: 'available', can_restore: true, can_sync: false }
+const page = { items: [row], total: 507, offset: 0, limit: 50, snapshot: 507, dataset: 'Catalog placement, not a live availability scan' }
+function Location() { const l = useLocation(); return <output aria-label="Location">{l.pathname}{l.search}</output> }
+function mount(path = '/history?q=Retained&custom=keep', client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><Location /><Routes><Route path="/history/*" element={<History />} /></Routes></MemoryRouter></QueryClientProvider>)
+  return userEvent.setup()
+}
+function fixtures() {
+  server.use(http.get('/api/v1/backups/history', () => HttpResponse.json(page)), http.get('/api/v1/backups/history/507', () => HttpResponse.json(row)), http.get('/api/v1/backups/507/logs', () => HttpResponse.json([])))
+}
+it('shows authoritative total, pages past the old sample and preserves context through details', async () => {
+  fixtures()
+  const requests: URL[] = []
+  server.use(http.get('/api/v1/backups/history', ({ request }) => { const url = new URL(request.url); requests.push(url); return HttpResponse.json({ ...page, offset: Number(url.searchParams.get('offset') || 0) }) }))
+  const user = mount()
+  await screen.findByText('507 matching runs')
+  expect(screen.getByRole('table', { name: 'Runs' })).toBeVisible()
+  await user.click(screen.getByRole('button', { name: 'Next page' }))
+  await waitFor(() => expect(requests.at(-1)?.searchParams.get('offset')).toBe('50'))
+  expect(requests.at(-1)?.searchParams.get('snapshot')).toBe('507')
+  await user.click(screen.getByRole('link', { name: 'Run #507' }))
+  await screen.findByRole('heading', { name: 'Run #507' })
+  expect(screen.getByLabelText('Location')).toHaveTextContent('custom=keep')
+  await user.click(screen.getByRole('link', { name: 'Back to runs' }))
+  await screen.findByText('507 matching runs')
+  expect(screen.getByLabelText('Location')).toHaveTextContent('offset=50')
+  await user.click(screen.getByRole('button', { name: 'Reset filters' }))
+  expect(screen.getByLabelText('Location')).toHaveTextContent('custom=keep')
+  expect(screen.getByRole('textbox', { name: 'Search history' })).toHaveValue('')
+})
+it('preserves saved legacy plan filters as authoritative target_id', async () => {
+  fixtures()
+  let target = ''
+  server.use(http.get('/api/v1/backups/history', ({ request }) => { target = new URL(request.url).searchParams.get('target_id') ?? ''; return HttpResponse.json(page) }))
+  mount('/history?plan=7&q=Retained&custom=keep')
+  await screen.findByText('507 matching runs')
+  expect(target).toBe('7')
+  expect(screen.getByLabelText('Location')).toHaveTextContent('custom=keep')
+})
+it('never presents a failed run without archive as a restore point', async () => {
+  fixtures()
+  server.use(http.get('/api/v1/backups/history/12', () => HttpResponse.json({ ...row, id: 12, status: 'failed', archive_state: 'never_created', local_state: 'not_recorded', local_available: false, can_restore: false })))
+  mount('/history/runs/12?q=keep')
+  await screen.findByRole('heading', { name: 'Run #12' })
+  expect(await screen.findByText('Archive never created')).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Restore archive' })).not.toBeInTheDocument()
+})
+it.each([403, 500, 404])('keeps detail context and offers retry after %s', async status => {
+  server.use(http.get('/api/v1/backups/history/99', () => HttpResponse.json({}, { status })))
+  mount('/history/archives/99?q=keep&custom=value')
+  await screen.findByRole('button', { name: 'Retry Archive #99' })
+  const back = new URL(screen.getByRole('link', { name: 'Back to archives' }).getAttribute('href')!, 'http://test')
+  expect(back.pathname).toBe('/history')
+  expect(Object.fromEntries(back.searchParams)).toEqual({ view: 'archives', q: 'keep', custom: 'value' })
+  if (status === 404) expect(screen.getByRole('heading', { name: 'Archive not found' })).toBeVisible()
+})
+it('retains last confirmed total as explicitly stale, never empty on failed refresh', async () => {
+  fixtures()
+  const user = mount()
+  await screen.findByText('507 matching runs')
+  server.use(http.get('/api/v1/backups/history', () => HttpResponse.json({}, { status: 500 })))
+  await user.click(screen.getByRole('button', { name: 'Refresh History' }))
+  await screen.findByText('History: stale data')
+  expect(screen.getByText('507 matching runs')).toBeVisible()
+  expect(screen.queryByText('No matching runs')).not.toBeInTheDocument()
+})
+it('uses archive-specific links and textual copy states', async () => {
+  fixtures()
+  server.use(http.get('/api/v1/backups/history', () => HttpResponse.json({ ...page, items: [{ ...row, local_state: 'missing', local_available: false, remote_synced: true, remote_sync_details: [{ storage_id: 3, storage_name: 'Offsite', status: 'completed', availability: 'unknown' }, { storage_id: 4, storage_name: 'Cold', status: 'failed', availability: 'unknown' }] }] })))
+  mount('/history?view=archives')
+  const table = await screen.findByRole('table', { name: 'Archives' })
+  expect(within(table).getByRole('link', { name: 'Archive #507' })).toHaveAttribute('href', expect.stringContaining('/history/archives/507'))
+  expect(within(table).getByText(/Local file missing/)).toBeVisible()
+  expect(within(table).getByText(/Cold: failed sync/)).toBeVisible()
+})

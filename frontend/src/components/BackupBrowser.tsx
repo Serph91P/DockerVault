@@ -38,6 +38,7 @@ interface BackupFile {
 interface BackupBrowserProps {
   backup: Backup
   onClose: () => void
+  inline?: boolean
 }
 
 // Get icon based on file extension
@@ -74,7 +75,6 @@ function formatSize(bytes: number): string {
 function FileRow({
   file,
   depth,
-  backupId,
   expanded,
   onToggle,
   encryptedDownload,
@@ -82,10 +82,9 @@ function FileRow({
 }: {
   file: BackupFile
   depth: number
-  backupId: number
   expanded: boolean
   onToggle: () => void
-  encryptedDownload?: (filePath: string, fileName: string) => Promise<void>
+  encryptedDownload: (filePath: string, fileName: string) => Promise<void>
   children?: React.ReactNode
 }) {
   const [downloading, setDownloading] = useState(false)
@@ -96,24 +95,7 @@ function FileRow({
     
     setDownloading(true)
     try {
-      if (encryptedDownload) {
-        await encryptedDownload(file.path, file.name)
-      } else {
-        const response = await fetch(`/api/v1/backups/${backupId}/files/${encodeURIComponent(file.path)}`)
-        if (!response.ok) throw new Error('Download failed')
-        
-        const blob = await response.blob()
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = file.name
-        document.body.appendChild(a)
-        a.click()
-        document.body.removeChild(a)
-        URL.revokeObjectURL(url)
-      }
-    } catch {
-      console.error('Failed to download file')
+      await encryptedDownload(file.path, file.name)
     } finally {
       setDownloading(false)
     }
@@ -126,7 +108,12 @@ function FileRow({
           'flex items-center gap-2 py-2 px-3 hover:bg-dark-700 rounded-lg transition-colors',
           file.is_dir && 'cursor-pointer'
         )}
-        style={{ paddingLeft: `${depth * 20 + 12}px` }}
+        style={{ paddingLeft: `${Math.min(depth, 4) * 12 + 12}px` }}
+        role={file.is_dir ? 'button' : undefined}
+        tabIndex={file.is_dir ? 0 : undefined}
+        aria-expanded={file.is_dir ? expanded : undefined}
+        aria-label={file.is_dir ? `${expanded ? 'Collapse' : 'Expand'} ${file.name}` : undefined}
+        onKeyDown={file.is_dir ? event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onToggle() } } : undefined}
         onClick={file.is_dir ? onToggle : undefined}
       >
         {/* Expand/Collapse Arrow for Directories */}
@@ -166,6 +153,7 @@ function FileRow({
             disabled={downloading}
             className="p-1.5 text-dark-400 hover:text-primary-400 hover:bg-dark-600 rounded transition-colors"
             title="Download file"
+            aria-label={`Download ${file.name}`}
           >
             {downloading ? (
               <Loader2 className="w-4 h-4 animate-spin" />
@@ -184,14 +172,12 @@ function FileRow({
 function FileTree({
   files,
   depth,
-  backupId,
   encryptedDownload,
   prefix = '',
 }: {
   files: BackupFile[]
   depth: number
-  backupId: number
-  encryptedDownload?: (filePath: string, fileName: string) => Promise<void>
+  encryptedDownload: (filePath: string, fileName: string) => Promise<void>
   prefix?: string
 }) {
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
@@ -253,13 +239,12 @@ function FileTree({
           key={file.path}
           file={{ ...file, path: prefix + file.path }}
           depth={depth}
-          backupId={backupId}
           expanded={expandedDirs.has(file.path)}
           onToggle={() => toggleDir(file.path)}
           encryptedDownload={encryptedDownload}
         >
           {file.children.length > 0 && (
-            <FileTree files={file.children} depth={depth + 1} backupId={backupId} encryptedDownload={encryptedDownload} prefix={`${prefix}${file.path}/`} />
+            <FileTree files={file.children} depth={depth + 1}  encryptedDownload={encryptedDownload} prefix={`${prefix}${file.path}/`} />
           )}
         </FileRow>
       ))}
@@ -267,7 +252,7 @@ function FileTree({
   )
 }
 
-export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
+export default function BackupBrowser({ backup, onClose, inline = false }: BackupBrowserProps) {
   const isEncrypted = backup.encrypted || backup.file_path?.endsWith('.enc')
   const [privateKey, setPrivateKey] = useState('')
   const [keySubmitted, setKeySubmitted] = useState(false)
@@ -287,15 +272,16 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
 
 
   const [offset, setOffset] = useState(0)
+  const [search, setSearch] = useState('')
   const pageSize = 2000
-  const { data: page, isLoading, error } = useQuery({
-    queryKey: ['backup-files', backup.id, isEncrypted ? 'encrypted' : 'plain', contextId, offset],
+  const { data: page, isLoading, error, refetch } = useQuery({
+    queryKey: ['backup-files', backup.id, isEncrypted ? 'encrypted' : 'plain', contextId, offset, search],
     queryFn: async ({ signal }) => {
       try {
         const response = await api.request({
           url: `/backups/${backup.id}/files`, method: isEncrypted ? 'POST' : 'GET',
           data: isEncrypted ? { private_key: key.current } : undefined,
-          params: { limit: pageSize, offset }, signal,
+          params: { limit: pageSize, offset, search }, signal,
         })
         return {
           files: response.data as BackupFile[],
@@ -357,8 +343,7 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
     }
   }
 
-  return (
-    <Modal title="Browse Backup" onClose={onClose}>
+  const content = (
       <div className="bg-dark-800 rounded-2xl border border-dark-700 shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-dark-700">
@@ -399,6 +384,7 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-4">
+          {shouldFetch && <form className="flex flex-wrap gap-2 mb-3" onSubmit={event => { event.preventDefault(); setOffset(0); setSearch(String(new FormData(event.currentTarget).get('search') ?? '')) }}><label>Search all archive paths<input className="input w-full" name="search" maxLength={200} defaultValue={search} /></label><button className="btn-secondary" type="submit">Search files</button></form>}
           {downloadError && <p role="alert">{downloadError}</p>}
           {/* Encrypted backup: Key input */}
           {isEncrypted && !keySubmitted ? (
@@ -434,6 +420,7 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
                     <button
                       type="button"
                       onClick={() => setShowKey(!showKey)}
+                      aria-label={showKey ? 'Hide private key' : 'Show private key'}
                       className="absolute right-2 top-2 p-1.5 text-dark-500 hover:text-dark-300 rounded transition-colors"
                     >
                       {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -528,13 +515,13 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
                   </>
                 )
               })()}
+              <button className="btn-secondary mt-3" onClick={() => void refetch()}>Retry archive contents</button>
             </div>
           ) : files && files.length > 0 ? (
             <div className="space-y-0.5">
               <FileTree
                 files={files}
                 depth={0}
-                backupId={backup.id}
                 encryptedDownload={handleEncryptedDownload}
               />
             </div>
@@ -563,8 +550,8 @@ export default function BackupBrowser({ backup, onClose }: BackupBrowserProps) {
           </button>
         </div>
       </div>
-    </Modal>
   )
+  return inline ? content : <Modal title="Browse Backup" onClose={onClose}>{content}</Modal>
 }
 import { Modal } from './ui/dialog'
 import { responseStatus } from '../api/responses'

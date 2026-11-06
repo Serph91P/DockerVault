@@ -54,7 +54,8 @@ export function startQueryFreshness() {
   const uncache = queryClient.getQueryCache().subscribe(event => {
     if (stopped || !ownsSession(owner) || event.type !== 'updated' || event.action.type !== 'success') return
     const data = event.query.state.data
-    if (event.query.queryKey[0] === 'backups') recordRunResults((Array.isArray(data) ? data : [data]).filter((item): item is Backup => Boolean(item && Number.isSafeInteger(item.id) && typeof item.status === 'string')))
+    const runs = event.query.queryKey[1] === 'history' && data && typeof data === 'object' && 'items' in data && Array.isArray(data.items) ? data.items : Array.isArray(data) ? data : [data]
+    if (event.query.queryKey[0] === 'backups') recordRunResults(runs.filter((item: Partial<Backup>): item is Backup => Boolean(item && Number.isSafeInteger(item.id) && typeof item.status === 'string')))
     if (event.query.queryKey[0] === 'storage-operations') recordStorageResults((Array.isArray(data) ? data : [data]).filter((item): item is StorageOperation => Boolean(item && typeof item.id === 'string' && typeof item.state === 'string')))
   })
   const visibility = () => { if (visible()) void refresh('visible'); schedule() }
