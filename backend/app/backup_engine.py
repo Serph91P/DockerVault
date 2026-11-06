@@ -35,6 +35,7 @@ from app.database import (
     EncryptionConfig,
     LogLevel,
     async_session,
+    backup_db_session,
 )
 from app.docker_client import docker_client
 from app.encryption import (
@@ -437,7 +438,7 @@ class BackupEngine:
     ):
         """Write a structured log entry for a backup job."""
         try:
-            async with async_session() as session:
+            async with backup_db_session(async_session) as session:
                 entry = BackupLog(
                     backup_id=backup_id,
                     level=level,
@@ -581,7 +582,7 @@ class BackupEngine:
         backup_type: BackupType = BackupType.FULL,
     ) -> Backup:
         """Create a new backup for the target."""
-        async with async_session() as session:
+        async with backup_db_session(async_session) as session:
             # Serialize plan removal without blocking creation behind running jobs.
             await session.execute(text("BEGIN IMMEDIATE"))
             current = await session.get(BackupTarget, target.id)
@@ -615,7 +616,7 @@ class BackupEngine:
             True if backup succeeded, False otherwise
         """
         # Determine target_id to acquire per-target lock
-        async with async_session() as session:
+        async with backup_db_session(async_session) as session:
             result = await session.execute(select(Backup).where(Backup.id == backup_id))
             backup_peek = result.scalar_one_or_none()
             if not backup_peek:
@@ -637,7 +638,7 @@ class BackupEngine:
         file_size = 0
         target_id = None
 
-        async with async_session() as session:
+        async with backup_db_session(async_session) as session:
             result = await session.execute(select(Backup).where(Backup.id == backup_id))
             backup = result.scalar_one_or_none()
 
@@ -669,39 +670,40 @@ class BackupEngine:
                 await session.commit()
                 return False
 
-            # Validate prerequisites unless skipped
-            if not skip_validation:
-                validation_issues = await self.validate_backup_prerequisites(target)
-                if validation_issues:
-                    error_msg = f"Validation failed: {'; '.join(validation_issues)}"
-                    await self._log(
-                        backup_id,
-                        "validation",
-                        error_msg,
-                        level=LogLevel.ERROR,
-                        details={"issues": validation_issues},
-                    )
-                    logger.error(
-                        f"Backup {backup_id} validation failed",
-                        extra={
-                            "backup_id": backup_id,
-                            "target_id": target.id,
-                            "target_name": target.name,
-                            "issues": validation_issues,
-                        },
-                    )
+        # Discovery/validation can await Docker and write its own log; never hold admission here.
+        if not skip_validation:
+            validation_issues = await self.validate_backup_prerequisites(target)
+            if validation_issues:
+                error_msg = f"Validation failed: {'; '.join(validation_issues)}"
+                await self._log(
+                    backup_id,
+                    "validation",
+                    error_msg,
+                    level=LogLevel.ERROR,
+                    details={"issues": validation_issues},
+                )
+                logger.error(
+                    f"Backup {backup_id} validation failed",
+                    extra={
+                        "backup_id": backup_id,
+                        "target_id": target.id,
+                        "target_name": target.name,
+                        "issues": validation_issues,
+                    },
+                )
+                async with backup_db_session(async_session) as session:
+                    session.add(backup)
                     backup.status = BackupStatus.FAILED
                     backup.error_message = error_msg
                     backup.completed_at = datetime.now(timezone.utc)
                     await session.commit()
-                    await self._notify_progress(backup_id, -1, error_msg)
+                await self._notify_progress(backup_id, -1, error_msg)
+                duration = time.time() - start_time
+                self.metrics.record_backup(target_id, duration, 0, False)
+                return False
 
-                    # Record failed backup metrics
-                    duration = time.time() - start_time
-                    self.metrics.record_backup(target_id, duration, 0, False)
-                    return False
-
-            # Update status to running
+        async with backup_db_session(async_session) as session:
+            session.add(backup)
             backup.status = BackupStatus.RUNNING
             backup.started_at = datetime.now(timezone.utc)
             await session.commit()
@@ -945,7 +947,7 @@ class BackupEngine:
 
             # Update backup record
             await journal.phase(operation_id, "finalizing")
-            async with async_session() as session:
+            async with backup_db_session(async_session) as session:
                 duration_seconds = int(
                     (datetime.now(timezone.utc) - backup.started_at).total_seconds()
                 )
@@ -1016,7 +1018,7 @@ class BackupEngine:
                     level=LogLevel.ERROR,
                     details={"error_type": "CancelledError"},
                 )
-                async with async_session() as session:
+                async with backup_db_session(async_session) as session:
                     await session.execute(
                         update(Backup)
                         .where(Backup.id == backup_id)
@@ -1060,7 +1062,7 @@ class BackupEngine:
             )
 
             # Update backup record with error
-            async with async_session() as session:
+            async with backup_db_session(async_session) as session:
                 await session.execute(
                     update(Backup)
                     .where(Backup.id == backup_id)
@@ -1119,7 +1121,7 @@ class BackupEngine:
                     self._remote_sync_locks.setdefault(key, asyncio.Lock())
                 )
             # Re-read AFTER acquiring every path: another target may have just committed.
-            async with async_session() as session:
+            async with backup_db_session(async_session) as session:
                 existing = (
                     await session.execute(
                         select(
@@ -1195,7 +1197,7 @@ class BackupEngine:
 
         try:
             # Ensure backends are initialised from the database
-            async with async_session() as session:
+            async with backup_db_session(async_session) as session:
                 from app.database import RemoteStorage as RemoteStorageModel
 
                 for storage_id in selected_ids:
@@ -1324,7 +1326,7 @@ class BackupEngine:
 
             # Record sync results in BackupStorageSync table
             remote_path = f"{safe_name}/{local_path.name}"
-            async with async_session() as session:
+            async with backup_db_session(async_session) as session:
                 for storage_id, (success, error) in normalized_results.items():
                     records = list(
                         (
@@ -1660,7 +1662,7 @@ class BackupEngine:
 
         # Reserve every possible artifact before the worker can create any of them.
         # The cleaner rechecks these reservations under the same SQLite writer lock.
-        async with async_session() as session:
+        async with backup_db_session(async_session) as session:
             record = await session.get(Backup, backup_id)
             if record is None:
                 raise RuntimeError("Cannot create an archive without a backup owner")
@@ -2149,7 +2151,7 @@ class BackupEngine:
         is_encrypted = False
         encryption_key_path = None
 
-        async with async_session() as session:
+        async with backup_db_session(async_session) as session:
             result = await session.execute(select(Backup).where(Backup.id == backup_id))
             backup = result.scalar_one_or_none()
 
@@ -2422,7 +2424,7 @@ class BackupEngine:
 
     async def _get_encryption_config(self) -> Optional[EncryptionConfig]:
         """Get encryption configuration if set up."""
-        async with async_session() as session:
+        async with backup_db_session(async_session) as session:
             result = await session.execute(select(EncryptionConfig).limit(1))
             config = result.scalar_one_or_none()
             if config and config.setup_completed:
@@ -2431,7 +2433,7 @@ class BackupEngine:
 
     async def estimate_backup_duration(self, target: BackupTarget) -> int:
         """Estimate backup duration in seconds based on historical data."""
-        async with async_session() as session:
+        async with backup_db_session(async_session) as session:
             # Get last 5 successful backups
             result = await session.execute(
                 select(Backup)

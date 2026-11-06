@@ -5,14 +5,23 @@ Database configuration and models using SQLAlchemy with async support.
 import asyncio
 import enum
 import logging
+import os
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from weakref import WeakValueDictionary
 
 from anyio import CancelScope
 from sqlalchemy import JSON, Boolean, Column, DateTime
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint, event, text
 from sqlalchemy.engine import Engine, ExceptionContext
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import DeclarativeBase, backref, relationship
 
 from app.config import settings
@@ -470,6 +479,48 @@ async_session = async_sessionmaker(
     class_=CancellationSafeAsyncSession,
     expire_on_commit=False,
 )
+
+
+_backup_db_gates: WeakValueDictionary[
+    tuple[asyncio.AbstractEventLoop, str], asyncio.Lock
+] = WeakValueDictionary()
+
+
+@asynccontextmanager
+async def backup_db_session(
+    sessions: Callable[[], AsyncSession],
+) -> AsyncIterator[AsyncSession]:
+    """Admit short backup DB sections fairly within a worker; SQLite still owns cross-process locking."""
+    session = sessions()
+    bind = session.bind if isinstance(session, AsyncSession) else None
+    database = (
+        bind.url.database
+        if isinstance(bind, AsyncEngine) and bind.dialect.name == "sqlite"
+        else None
+    )
+    if not database or database == ":memory:":
+        async with session as entered:
+            yield entered
+        return
+
+    key = (asyncio.get_running_loop(), os.path.realpath(database))
+    gate = _backup_db_gates.setdefault(key, asyncio.Lock())
+    # FIFO admission avoids an eager series of commits starving another SQLite connection.
+    async with gate:
+        try:
+            yield session
+        finally:
+            closing = asyncio.create_task(session.close())
+            cancellation = None
+            while not closing.done():
+                try:
+                    with CancelScope(shield=True):
+                        await asyncio.shield(closing)
+                except asyncio.CancelledError as exc:
+                    cancellation = exc
+            closing.result()
+            if cancellation is not None:
+                raise cancellation
 
 
 async def init_db():
