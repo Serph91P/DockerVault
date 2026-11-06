@@ -7,7 +7,7 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Literal, TypedDict
 
 from sqlalchemy import delete, select, text
 
@@ -41,6 +41,17 @@ async def _known_artifact_paths(session) -> set[str]:
             paths.extend(metadata.get("active_artifacts") or [])
         known.update(str(Path(path).resolve()) for path in paths if path)
     return known
+
+
+class CleanupResult(TypedDict):
+    outcome: Literal["empty", "success", "partial", "failure"]
+    deleted: int
+    failed: int
+    protected: int
+    scan_errors: int
+    scan_complete: bool
+    freed_bytes: int
+    freed_human: str
 
 
 class RetentionManager:
@@ -251,42 +262,68 @@ class RetentionManager:
             size_bytes /= 1024
         return f"{size_bytes:.2f} PB"
 
-    async def cleanup_orphaned_files(self) -> Dict[str, int]:
-        """
-        Clean up backup files that don't have corresponding database records.
-        """
+    async def cleanup_orphaned_files(self) -> CleanupResult:
+        """Collect global *.tar* orphans; report settled effects, not just successes."""
         backup_dir = Path(settings.BACKUP_BASE_PATH)
+        deleted = failed = protected = freed_bytes = scan_errors = 0
 
-        if not backup_dir.exists():
-            return {"deleted": 0, "freed_bytes": 0}
+        def scan_error(error):
+            nonlocal scan_errors
+            scan_errors += 1
+            logger.error(f"Orphan scan failed: {error}")
 
         async with backup_db_session(async_session) as session:
             known_paths = await _known_artifact_paths(session)
 
-        deleted = 0
-        freed_bytes = 0
-
-        # Walk through backup directory
-        for file_path in backup_dir.rglob("*.tar*"):
-            if str(file_path.resolve()) not in known_paths:
-                try:
-                    async with backup_db_session(async_session) as session:
-                        await session.execute(text("BEGIN IMMEDIATE"))
-                        # Inventory can be stale: coordinate the final check with
-                        # writers committing reservations before creating files.
-                        known_paths = await _known_artifact_paths(session)
+        # Path.rglob suppresses scan errors; walk exposes incomplete traversal.
+        try:
+            backup_dir.stat()
+            exists = True
+        except FileNotFoundError:
+            exists = False
+        except OSError as error:
+            scan_error(error)
+            exists = False
+        if exists:
+            for directory, _, names in backup_dir.walk(on_error=scan_error):
+                for name in names:
+                    if ".tar" not in name:
+                        continue
+                    file_path = directory / name
+                    try:
                         if str(file_path.resolve()) in known_paths:
+                            protected += 1
                             continue
-                        size = file_path.stat().st_size
-                        file_path.unlink()
-                        deleted += 1
-                        freed_bytes += size
-                        logger.info(f"Deleted orphaned backup: {file_path}")
-                except Exception as e:
-                    logger.error(f"Failed to delete orphaned file {file_path}: {e}")
+                        async with backup_db_session(async_session) as session:
+                            await session.execute(text("BEGIN IMMEDIATE"))
+                            # Recheck reservations with the existing writer admission.
+                            known_paths = await _known_artifact_paths(session)
+                            if str(file_path.resolve()) in known_paths:
+                                protected += 1
+                                continue
+                            size = file_path.stat().st_size
+                            file_path.unlink()
+                            deleted += 1
+                            freed_bytes += size
+                            logger.info(f"Deleted orphaned backup: {file_path}")
+                    except Exception as error:
+                        failed += 1
+                        logger.error(
+                            f"Failed to delete orphaned file {file_path}: {error}"
+                        )
 
+        outcome = (
+            ("partial" if deleted else "failure")
+            if failed or scan_errors
+            else ("success" if deleted else "empty")
+        )
         return {
             "deleted": deleted,
+            "failed": failed,
+            "protected": protected,
+            "scan_errors": scan_errors,
+            "scan_complete": scan_errors == 0,
+            "outcome": outcome,
             "freed_bytes": freed_bytes,
             "freed_human": self._format_size(freed_bytes),
         }

@@ -321,6 +321,7 @@ export const schedulesApi = {
   
   // Scheduler management
   getJobs: () => api.get<Array<{ id: string; name: string; next_run: string | null }>>('/schedules/jobs'),
+  reload: () => api.post('/schedules/reload'),
   trigger: (targetId: number) => api.post(`/schedules/target/${targetId}/trigger`),
   triggerAll: (scheduleId: number) => api.post(`/schedules/${scheduleId}/trigger-all`),
   estimate: (target_id: number, cron_expression: string) =>
@@ -334,6 +335,16 @@ export const schedulesApi = {
 }
 
 // Retention API
+export interface CleanupResult {
+  outcome: 'empty' | 'success' | 'partial' | 'failure'
+  deleted: number
+  failed: number
+  protected: number
+  scan_errors: number
+  scan_complete: boolean
+  freed_bytes: number
+  freed_human: string
+}
 export const retentionApi = {
   listPolicies: () => api.get<RetentionPolicy[]>('/retention'),
   getPolicy: (id: number) => api.get<RetentionPolicy>(`/retention/${id}`),
@@ -343,7 +354,7 @@ export const retentionApi = {
   deletePolicy: (id: number) => api.delete(`/retention/${id}`),
   applyRetention: (targetId: number) => api.post(`/retention/${targetId}/apply`),
   getStats: (targetId: number) => api.get(`/retention/${targetId}/stats`),
-  cleanupOrphaned: () => api.post('/retention/cleanup-orphaned'),
+  cleanupOrphaned: () => api.post<CleanupResult>('/retention/cleanup-orphaned'),
 }
 
 // Remote Storage Types

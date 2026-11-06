@@ -7,9 +7,10 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.database import RetentionPolicy, async_session
-from app.retention import retention_manager
+from app.retention import CleanupResult, retention_manager
 
 router = APIRouter()
 
@@ -209,7 +210,14 @@ async def delete_retention_policy(policy_id: int):
             raise HTTPException(status_code=400, detail="Cannot delete default policy")
 
         await session.delete(policy)
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Policy is still referenced by a plan, including removed plans",
+            ) from None
 
         return {"status": "deleted"}
 
@@ -231,7 +239,7 @@ async def get_retention_stats(target_id: int):
     return await retention_manager.get_retention_stats(target_id)
 
 
-@router.post("/cleanup-orphaned")
+@router.post("/cleanup-orphaned", response_model=CleanupResult)
 async def cleanup_orphaned_files():
     """Clean up orphaned backup files."""
     return await retention_manager.cleanup_orphaned_files()

@@ -1,4 +1,4 @@
-// Real cookie/API effects; only lost/delayed response transport is injected.
+// Real cookie/API effects; lost/delayed responses and an explicit KeepLast payload fault are injected.
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import { chromium } from 'playwright'
@@ -152,20 +152,35 @@ try {
   check((await api('/targets/' + chosen)).name === 'Discarded ambiguity', 'fresh explicit readback selection remains possible after stale response')
   check((await api('/backups')).length === 0, 'all recovery/save paths create zero backup runs')
   check((await api('/schedules')).length === 2 && (await api('/retention')).length === 2, 'no duplicated policy POSTs across unknown outcomes')
-  // Native (not intercepted) global validation envelope, shared consumer only; #187 defaults remain unchanged.
+  // #187 now blocks KeepLast0 before POST. Keep both the native API422 and UI-adapter gates.
   await page.goto(base + '/retention')
   await page.getByRole('button', { name: 'New Policy', exact: true }).click()
-  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('Invalid policy preserved')
+  await page.getByRole('textbox', { name: 'Policy name', exact: true }).fill('Invalid policy preserved')
   await page.getByRole('spinbutton', { name: 'Keep Last', exact: true }).fill('0')
+  let submitted = 0
+  const count = request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/v1/retention') submitted++ }
+  page.on('request', count)
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await page.locator('input[aria-invalid="true"]').waitFor()
+  check(submitted === 0, 'KeepLast0 is now rejected locally without a POST')
+  const direct = await context.request.post(base + '/api/v1/retention', { data: { name: 'Invalid native control', keep_last: 0 } })
+  const directEnvelope = await direct.json()
+  check(direct.status() === 422 && directEnvelope.detail === 'Validation error' && directEnvelope.errors.some(e => e.field === 'body.keep_last'), 'unintercepted native 422 uses canonical field envelope')
+  await page.getByRole('spinbutton', { name: 'Keep Last', exact: true }).fill('3')
+  // Explicit transport fault changes only a valid UI payload's KeepLast to0; native API emits422.
+  const injectInvalid = route => route.request().method() === 'POST' ? route.continue({ postData: JSON.stringify({ ...route.request().postDataJSON(), keep_last: 0 }) }) : route.continue()
+  await page.route(base + '/api/v1/retention', injectInvalid)
   const rejected = page.waitForResponse(r => new URL(r.url()).pathname === '/api/v1/retention' && r.request().method() === 'POST')
-  await page.getByRole('button', { name: 'Create', exact: true }).click()
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
   const response = await rejected
   const envelope = await response.json()
-  check(response.status() === 422 && envelope.detail === 'Validation error' && envelope.errors.some(e => e.field === 'body.keep_last'), 'unintercepted native 422 uses canonical field envelope')
+  check(response.status() === 422 && envelope.detail === 'Validation error' && envelope.errors.some(e => e.field === 'body.keep_last'), 'real server422 under declared payload fault retains canonical field envelope')
   await page.locator('input[aria-invalid="true"]').waitFor()
   const field = page.getByRole('spinbutton', { name: 'Keep Last', exact: true })
   check(await field.getAttribute('aria-invalid') === 'true' && !!(await field.getAttribute('aria-describedby')), 'real 422 associates static safe field feedback')
-  check(await field.inputValue() === '0' && await page.getByRole('textbox', { name: 'Name', exact: true }).inputValue() === 'Invalid policy preserved', 'real validation keeps both safe inputs')
+  check(await field.inputValue() === '3' && await page.getByRole('textbox', { name: 'Policy name', exact: true }).inputValue() === 'Invalid policy preserved', 'real validation keeps both safe inputs')
   check((await api('/retention')).length === 2, 'native rejected policy has no SQLite/API side effect')
-  console.log(JSON.stringify({ status: 'passed', checks: checks.length, fixture: 'real Auth/API/SQLite; injected lost/delayed transport; synthetic discovery/lifecycle; no providers' }))
+  await page.unroute(base + '/api/v1/retention', injectInvalid)
+  page.off('request', count)
+  console.log(JSON.stringify({ status: 'passed', checks: checks.length, fixture: 'real Auth/API/SQLite; injected lost/delayed responses and KeepLast payload fault; synthetic discovery/lifecycle; no providers' }))
 } finally { await browser.close() }

@@ -59,11 +59,17 @@ function App() {
         <Route index element={<Dashboard />} />
         <Route path="protection" element={<Protection />} />
         <Route path="protection/new" element={<ProtectionNew />} />
+        <Route path="history" element={<Backups workspace="history" />} />
+        <Route path="protection/schedules/new" element={<Schedules />} />
+        <Route path="protection/schedules/:policyId" element={<Schedules />} />
+        <Route path="protection/schedules/:policyId/edit" element={<Schedules />} />
+        <Route path="protection/schedules/*" element={<Schedules />} />
+        <Route path="protection/retention/new" element={<Retention />} />
+        <Route path="protection/retention/:policyId" element={<Retention />} />
+        <Route path="protection/retention/:policyId/edit" element={<Retention />} />
+        <Route path="protection/retention/*" element={<Retention />} />
         <Route path="protection/:id" element={<ProtectionPlan />} />
         <Route path="protection/:id/edit" element={<ProtectionPlan editing />} />
-        <Route path="history" element={<Backups workspace="history" />} />
-        <Route path="protection/schedules" element={<Schedules />} />
-        <Route path="protection/retention" element={<Retention />} />
         <Route path="backups" element={<Navigate to="/protection" replace />} />
         <Route path="schedules" element={<Navigate to="/protection/schedules" replace />} />
         <Route path="retention" element={<Navigate to="/protection/retention" replace />} />

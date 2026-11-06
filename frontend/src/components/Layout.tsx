@@ -31,7 +31,11 @@ export default function Layout() {
   const main = useRef<HTMLElement>(null)
   const current = navigation.find((item) => item.href === '/' ? location.pathname === '/' : location.pathname === item.href || location.pathname.startsWith(`${item.href}/`))
   const section = sections[location.pathname.split('/')[2]] || (location.pathname === '/protection/new' ? 'New plan' : /^\/protection\/[1-9]\d*\/edit$/.test(location.pathname) ? 'Edit plan' : /^\/protection\/[1-9]\d*$/.test(location.pathname) ? 'Plan detail' : undefined)
-  const title = current ? section || current.name : 'Page not found'
+  const policySegments = location.pathname.split('/')
+  const policyKind = policySegments[2]
+  const policyNoun = policyKind === 'schedules' ? 'schedule' : 'retention policy'
+  const policyTitle = sections[policyKind] && policySegments[3] ? policySegments[3] === 'new' ? `New ${policyNoun}` : policySegments[4] === 'edit' ? `Edit ${policyNoun}` : policyKind === 'schedules' ? 'Schedule detail' : 'Retention policy detail' : undefined
+  const title = current ? policyTitle || section || current.name : 'Page not found'
 
   useEffect(startQueryFreshness, [])
 
@@ -78,7 +82,7 @@ export default function Layout() {
             <ShortcutHelp isOpen={showHelp} onClose={() => setShowHelp(false)} />
           </DialogContent>
         </Dialog>
-        <nav aria-label="Breadcrumb" className="min-w-0 flex-1 text-sm text-dark-300"><Link to="/">DockerVault</Link><span aria-hidden="true"> / </span>{section ? <><Link to="/protection">Protection</Link><span aria-hidden="true"> / </span></> : null}<span aria-current="page">{title}</span></nav>
+        <nav aria-label="Breadcrumb" className="min-w-0 flex-1 text-sm text-dark-300"><Link to="/">DockerVault</Link><span aria-hidden="true"> / </span>{section ? <><Link to="/protection">Protection</Link><span aria-hidden="true"> / </span></> : null}{policyTitle && <><Link to={`/protection/${policyKind}`}>{section}</Link><span aria-hidden="true"> / </span></>}<span aria-current="page">{title}</span></nav>
         <span role="status" className="connection-status" title="Live updates connection">{connected ? <Wifi className="size-4" /> : <WifiOff className="size-4" />}<span>{connected ? 'Live updates connected' : 'Live updates disconnected'}</span></span>
         <NotificationBadge onClick={() => setShowNotifications(true)} />
         <ConnectionSignals />

@@ -267,6 +267,9 @@ export const handlers = [
   }),
 
   // Schedules API
+  http.post('/api/v1/schedules/preview', () => HttpResponse.json({ next_runs: ['2027-01-02T02:00:00Z'], timezone: 'UTC', contract: 'Synthetic server preview fixture', warnings: [] })),
+  http.get('/api/v1/schedules/compatibility/inventory', () => HttpResponse.json({ items: [], timezone: 'UTC', contract: 'Synthetic server inventory fixture' })),
+  http.get('/api/v1/schedules/jobs', () => HttpResponse.json([])),
   http.get('/api/v1/schedules', () => {
     return HttpResponse.json([
       {
