@@ -30,7 +30,7 @@ export default function Layout() {
   const [showNotifications, setShowNotifications] = useState(false)
   const main = useRef<HTMLElement>(null)
   const current = navigation.find((item) => item.href === '/' ? location.pathname === '/' : location.pathname === item.href || location.pathname.startsWith(`${item.href}/`))
-  const section = sections[location.pathname.split('/')[2]]
+  const section = sections[location.pathname.split('/')[2]] || (location.pathname === '/protection/new' ? 'New plan' : /^\/protection\/[1-9]\d*\/edit$/.test(location.pathname) ? 'Edit plan' : /^\/protection\/[1-9]\d*$/.test(location.pathname) ? 'Plan detail' : undefined)
   const title = current ? section || current.name : 'Page not found'
 
   useEffect(startQueryFreshness, [])

@@ -5,14 +5,21 @@ export function responseStatus(error: unknown): number | undefined {
   return error instanceof ResponseError ? error.status : (error as { response?: { status?: number } } | null)?.response?.status
 }
 
-const validationFields = new Set(['name', 'cron_expression', 'description', 'keep_last', 'keep_daily', 'keep_weekly', 'keep_monthly', 'keep_yearly', 'max_age_days', 'host', 'port', 'username', 'password', 'base_path', 'storage_type', 'api_url', 'api_key', 'api_secret', 'enabled', 'target_path', 's3_bucket', 's3_region', 's3_access_key', 's3_secret_key', 's3_endpoint_url', 'webdav_url', 'rclone_remote', 'ssh_key_path'])
+const validationFields = new Set(['target_type', 'container_name', 'stack_name', 'volume_name', 'host_path', 'selected_volumes', 'include_paths', 'exclude_paths', 'per_volume_rules', 'dependencies', 'stop_container', 'schedule_id', 'schedule_cron', 'retention_policy_id', 'remote_storage_ids', 'delete_local_after_sync', 'compression_enabled', 'pre_backup_command', 'post_backup_command', 'name', 'cron_expression', 'description', 'keep_last', 'keep_daily', 'keep_weekly', 'keep_monthly', 'keep_yearly', 'max_age_days', 'host', 'port', 'username', 'password', 'base_path', 'storage_type', 'api_url', 'api_key', 'api_secret', 'enabled', 'target_path', 's3_bucket', 's3_region', 's3_access_key', 's3_secret_key', 's3_endpoint_url', 'webdav_url', 'rclone_remote', 'ssh_key_path'])
 const validationMessages: Record<string, string> = { missing: 'This field is required.', greater_than: 'Value is outside the allowed range.', greater_than_equal: 'Value is outside the allowed range.', less_than: 'Value is outside the allowed range.', less_than_equal: 'Value is outside the allowed range.', int_parsing: 'Enter a whole number.', int_type: 'Enter a whole number.', string_too_short: 'The value is too short.', string_too_long: 'The value is too long.', value_error: 'Check this value.', url_parsing: 'Enter a valid URL.' }
 export function safeRequestError(error: { response?: { status?: number; data?: unknown } }) {
   const fields: Record<string, string> = {}
-  const detail = (error.response?.data as { detail?: unknown } | undefined)?.detail
-  if (error.response?.status === 422 && Array.isArray(detail)) for (const item of detail) {
-    if (!item || !Array.isArray(item.loc) || item.loc.length !== 2 || item.loc[0] !== 'body' || !validationFields.has(item.loc[1])) continue
-    fields[item.loc[1]] = Object.prototype.hasOwnProperty.call(validationMessages, item.type) ? validationMessages[item.type] : 'Check this value.'
+  const data = error.response?.data
+  if (error.response?.status === 422 && object(data)) {
+    if (Array.isArray(data.detail)) for (const item of data.detail) {
+      if (!object(item) || !Array.isArray(item.loc) || item.loc.length !== 2 || item.loc[0] !== 'body' || typeof item.loc[1] !== 'string' || !validationFields.has(item.loc[1])) continue
+      fields[item.loc[1]] = typeof item.type === 'string' && Object.prototype.hasOwnProperty.call(validationMessages, item.type) ? validationMessages[item.type] : 'Check this value.'
+    }
+    if (Array.isArray(data.errors)) for (const item of data.errors) {
+      if (!object(item) || !Object.prototype.hasOwnProperty.call(item, 'field') || typeof item.field !== 'string' || !item.field.startsWith('body.')) continue
+      const field = item.field.slice(5)
+      if (validationFields.has(field)) fields[field] = 'Check this value.'
+    }
   }
   return new ResponseError(error.response?.status, fields)
 }
@@ -27,9 +34,9 @@ const count = (value: unknown) => number(value) && Number.isSafeInteger(value) &
 const fields = (value: unknown, required: Record<string, (value: unknown) => boolean>) => object(value) && Object.entries(required).every(([key, check]) => check(value[key]))
 
 const listFields: Record<string, Record<string, (value: unknown) => boolean>> = {
-  '/targets': { id, name: string, target_type: v => ['container', 'volume', 'stack', 'path'].includes(String(v)), enabled: boolean },
-  '/backups': { id, target_id: id, status: v => ['pending', 'running', 'completed', 'failed', 'cancelled'].includes(String(v)), created_at: timestamp },
-  '/storage': { id, name: string, storage_type: v => ['local', 'ssh', 's3', 'webdav', 'ftp', 'rclone'].includes(String(v)), enabled: boolean, base_path: string },
+  '/targets': { id, name: string, target_type: v => typeof v === 'string' && ['container', 'volume', 'stack', 'path'].includes(v), enabled: boolean },
+  '/backups': { id, target_id: id, status: v => typeof v === 'string' && ['pending', 'running', 'completed', 'failed', 'cancelled'].includes(v), created_at: timestamp },
+  '/storage': { id, name: string, storage_type: v => typeof v === 'string' && ['local', 'ssh', 'sftp', 's3', 'webdav', 'ftp', 'rclone'].includes(v), enabled: boolean, base_path: string },
   '/schedules': { id, name: string, cron_expression: string, enabled: boolean },
   '/retention': { id, name: string, keep_last: number, keep_daily: number, keep_weekly: number, keep_monthly: number },
   '/docker/containers': { id: string, name: string, status: string },
@@ -61,8 +68,8 @@ function validRow(url: string, row: unknown) {
 }
 
 function validOperation(job: unknown) {
-  if (!fields(job, { id: string, action: v => v === 'storage_delete', state: v => ['queued', 'running', 'completed', 'failed', 'cancelled'].includes(String(v)), total: count, completed: count, succeeded: count, failed: count, skipped: count, unknown: count, created_at: string, updated_at: string, path: string, items: Array.isArray }) || !object(job)) return false
-  if (!(job.storage_id === 'local' || id(job.storage_id)) || !Array.isArray(job.items) || !job.items.every(item => fields(item, { path: string, state: v => ['pending', 'running', 'succeeded', 'failed', 'skipped', 'unknown'].includes(String(v)) }))) return false
+  if (!fields(job, { id: string, action: v => v === 'storage_delete', state: v => typeof v === 'string' && ['queued', 'running', 'completed', 'failed', 'cancelled'].includes(v), total: count, completed: count, succeeded: count, failed: count, skipped: count, unknown: count, created_at: string, updated_at: string, path: string, items: Array.isArray }) || !object(job)) return false
+  if (!(job.storage_id === 'local' || id(job.storage_id)) || !Array.isArray(job.items) || !job.items.every(item => fields(item, { path: string, state: v => typeof v === 'string' && ['pending', 'running', 'succeeded', 'failed', 'skipped', 'unknown'].includes(v) }))) return false
   const outcomes = ['succeeded', 'failed', 'skipped', 'unknown']
   return job.items.length === job.total && Number(job.completed) <= Number(job.total) && outcomes.reduce((sum, key) => sum + Number(job[key]), 0) === job.completed && outcomes.every(outcome => job[outcome] === (job.items as Record<string, unknown>[]).filter(item => item.state === outcome).length)
 }
@@ -77,6 +84,7 @@ export function validateWrite(url: string | undefined, data: unknown) {
 }
 
 export function validateRead(url: string | undefined, data: unknown) {
+  if (url === '/schedules/jobs' && (!Array.isArray(data) || !data.every(row => fields(row, { id: value => typeof value === 'string' && value.length > 0, name: string, next_run: value => value === null || timestamp(value) })))) throw new ResponseError()
   if (url && /^\/targets\/\d+$/.test(url) && !validRow('/targets', data)) throw new ResponseError()
   if (url && /^\/backups\/\d+$/.test(url) && !validRow('/backups', data)) throw new ResponseError()
   if (url && /^\/backups\/\d+\/logs$/.test(url) && (!Array.isArray(data) || !data.every(row => fields(row, { id, level: string, step: string, message: string, created_at: timestamp })))) throw new ResponseError()

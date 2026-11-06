@@ -1,19 +1,16 @@
-import {
-  Check,
-  Target,
-  Link2,
-  Calendar,
-  Cloud,
-  Archive,
-  Settings,
-  AlertCircle,
-  Database,
-  Pencil,
-} from 'lucide-react'
-import { WizardData } from './index'
-import { ScheduleEntity, RemoteStorage, RetentionPolicy } from '../../api'
+import type { WizardData } from './planEditorModel'
+import type { ScheduleEntity, RemoteStorage, RetentionPolicy } from '../../api'
+import { CronPreview } from './PolicyFields'
 
-interface Props {
+export default function StepSummary({
+  data,
+  schedules,
+  storages,
+  policies,
+  onGoToStep,
+  availableVolumes = [],
+  hooks,
+}: {
   data: WizardData
   schedules: ScheduleEntity[]
   storages: RemoteStorage[]
@@ -21,283 +18,129 @@ interface Props {
   isCreating: boolean
   onGoToStep?: (step: number) => void
   availableVolumes?: string[]
-}
-
-// Section component for summary display
-function SummarySection({
-  icon: Icon,
-  title,
-  children,
-  status = 'configured',
-  onEdit,
-}: {
-  icon: React.ElementType
-  title: string
-  children: React.ReactNode
-  status?: 'configured' | 'optional' | 'warning'
-  onEdit?: () => void
+  hooks?: { pre: string; post: string }
 }) {
-  const statusColors = {
-    configured: 'text-green-400',
-    optional: 'text-dark-400',
-    warning: 'text-yellow-400',
-  }
-
+  const schedule = schedules.find((s) => s.id === data.scheduleId)
+  const retention =
+    policies.find((p) => p.id === data.retentionPolicyId) ||
+    (!data.retentionPolicyId ? policies.find((p) => p.name === 'default') : undefined)
+  const expression =
+    data.newSchedule?.cronExpression ||
+    schedule?.cron_expression ||
+    (data.scheduleMode === 'legacy' ? data.scheduleCron : null)
   return (
-    <div className="bg-dark-800 rounded-xl border border-dark-700 p-4">
-      <div className="flex items-start gap-3">
-        <div className="p-2 bg-dark-700 rounded-lg">
-          <Icon className={`w-5 h-5 ${statusColors[status]}`} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <h4 className="text-dark-100 font-medium">{title}</h4>
-          <div className="mt-2 text-sm">{children}</div>
-        </div>
-        <div className="flex items-center gap-2">
-          {onEdit && (
-            <button
-              onClick={onEdit}
-              className="p-1.5 text-dark-500 hover:text-primary-400 hover:bg-dark-700 rounded-lg transition-colors"
-              title={`Edit ${title}`}
-            >
-              <Pencil className="w-3.5 h-3.5" />
-            </button>
-          )}
-          {status === 'configured' && <Check className="w-5 h-5 text-green-400" />}
-          {status === 'warning' && <AlertCircle className="w-5 h-5 text-yellow-400" />}
-        </div>
+    <section className="space-y-4" aria-label="Reviewed configuration">
+      <h3 className="text-lg font-semibold">Review plan</h3>
+      <p>Saving configures protection. It does not run a backup or prove that a restore works.</p>
+      <div className="space-y-3 break-words">
+        <h4 className="font-semibold">Source & scope</h4>
+        <p>
+          {data.targetName}: {data.targetType} —{' '}
+          {data.containerName || data.stackName || data.volumeName || data.hostPath}
+        </p>
+        {['container', 'stack'].includes(data.targetType || '') && (
+          <p>
+            {data.volumeMode === 'all'
+              ? `All named volumes (dynamic): ${availableVolumes.join(', ') || 'not confirmed'}`
+              : `Explicit subset: ${data.selectedVolumes.join(', ') || 'INVALID: no selection'}`}
+            . Bind mounts/rootfs are not included.
+          </p>
+        )}
+        <p>
+          Global includes: {data.includePaths.join(', ') || 'all paths'}; excludes:{' '}
+          {data.excludePaths.join(', ') || 'none'}.
+        </p>
+        {Object.entries(data.perVolumeRules).map(([key, rule]) => (
+          <p key={key} className="break-all">
+            Rule {key}:{' '}
+            {Object.keys(rule).length
+              ? `includes ${rule.includePaths?.join(', ') || 'all'}; excludes ${rule.excludePaths?.join(', ') || 'none'} (replaces globals)`
+              : 'inherit globals'}
+            {key.startsWith('volume:') &&
+              data.volumeMode === 'subset' &&
+              !data.selectedVolumes.includes(key.slice(7)) &&
+              ' — dormant, not selected'}
+          </p>
+        ))}
+        {onGoToStep && (
+          <button type="button" className="btn-secondary" onClick={() => onGoToStep(0)}>
+            Edit source & scope
+          </button>
+        )}
       </div>
-    </div>
-  )
-}
-
-export default function StepSummary({ data, schedules, storages, policies, isCreating, onGoToStep, availableVolumes = [] }: Props) {
-  // Get referenced entities
-  const selectedSchedule = data.scheduleId
-    ? schedules.find((s) => s.id === data.scheduleId)
-    : null
-  const selectedStorages = storages.filter((s) => data.remoteStorageIds.includes(s.id))
-  const selectedPolicy = data.retentionPolicyId
-    ? policies.find((p) => p.id === data.retentionPolicyId)
-    : null
-
-  // Format target type display
-  const formatTargetType = () => {
-    switch (data.targetType) {
-      case 'container':
-        return `Container: ${data.containerName || 'Not selected'}`
-      case 'volume':
-        return `Volume: ${data.volumeName || 'Not selected'}`
-      case 'stack':
-        return `Stack: ${data.stackName || 'Not selected'}`
-      case 'path':
-        return `Path: ${data.hostPath || 'Not specified'}`
-      default:
-        return 'Not configured'
-    }
-  }
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h3 className="text-lg font-semibold text-dark-100 mb-2">Review & Create</h3>
-        <p className="text-sm text-dark-400">
-          Review your backup configuration before creating
+      <div className="space-y-3">
+        <h4 className="font-semibold">Strategy</h4>
+        <p>
+          Schedule:{' '}
+          {data.newSchedule
+            ? `new ${data.newSchedule.name}`
+            : data.scheduleId
+              ? `${schedule?.name || `unverified #${data.scheduleId}`} (${schedule?.enabled ? 'enabled' : 'disabled or unknown'})`
+              : data.scheduleMode === 'legacy'
+                ? `preserve legacy ${data.scheduleCron}`
+                : 'manual only; both schedule fields cleared'}
+          .
+        </p>
+        {expression && <CronPreview expression={expression} />}
+        <p>
+          Retention:{' '}
+          {data.newRetentionPolicy
+            ? `new ${data.newRetentionPolicy.name}: last ${data.newRetentionPolicy.keepLast}, daily ${data.newRetentionPolicy.keepDaily}, weekly ${data.newRetentionPolicy.keepWeekly}, monthly ${data.newRetentionPolicy.keepMonthly}, yearly ${data.newRetentionPolicy.keepYearly}, age ${data.newRetentionPolicy.maxAgeDays} days`
+            : `${data.retentionPolicyId ? 'assigned' : 'standard fallback'} ${retention?.name || (data.retentionPolicyId ? `unverified #${data.retentionPolicyId}` : 'policy named default when available')}`}
+          . This is not retention-off or a deletion preview.
+        </p>
+        {retention && !data.newRetentionPolicy && (
+          <p>
+            Last {retention.keep_last}; daily {retention.keep_daily}; weekly {retention.keep_weekly}; monthly{' '}
+            {retention.keep_monthly}; yearly {retention.keep_yearly}; max age {retention.max_age_days} days. Keep Last
+            is protected independently of age.
+          </p>
+        )}
+        <p>
+          Local archive first. Remote destinations:{' '}
+          {data.remoteStorageIds
+            .map((id) => storages.find((s) => s.id === id)?.name || `unverified #${id}`)
+            .join(', ') || 'none (local only)'}
+          .
+        </p>
+        <p>
+          {data.remoteStorageIds.length && data.deleteLocalAfterSync
+            ? 'Remove local copy only after every required normal sync, including key material, succeeds.'
+            : 'Keep local copy.'}{' '}
+          Removing destinations does not delete existing copies. Provider reachability is not proven by saving.
+        </p>
+        {onGoToStep && (
+          <button type="button" className="btn-secondary" onClick={() => onGoToStep(1)}>
+            Edit strategy
+          </button>
+        )}
+      </div>
+      <div className="space-y-3">
+        <h4 className="font-semibold">Execution</h4>
+        <p>
+          {data.targetType === 'stack'
+            ? 'Stack members follow the existing engine stop/start topology, even with the source-stop flag disabled.'
+            : data.targetType === 'container' && data.stopContainer
+              ? 'Stop the source container while archiving.'
+              : 'No automatic source-container stop. Volume/path does not stop every consumer.'}{' '}
+          Explicit dependencies are additional stops regardless of the source-stop flag; only originally running
+          containers are restarted. Engine discovery determines execution order; list order is not a guaranteed custom
+          sequence.
+        </p>
+        <p>
+          Dependencies: {data.dependencies.join(', ') || 'none'}. Source-stop flag: {data.stopContainer ? 'on' : 'off'}.
+        </p>
+        <p>
+          Format: {data.compression === 'gzip' ? 'gzip (.tar.gz)' : 'tar (.tar)'}. Plan{' '}
+          {data.enabled ? 'enabled (configured, not proven healthy)' : 'disabled (scheduled and manual runs blocked)'}.
+        </p>
+        <p>
+          Private pre-hook: {hooks?.pre ? 'configured' : 'empty or not loaded'}; post-hook:{' '}
+          {hooks?.post ? 'configured' : 'empty or not loaded'}. Commands are not persisted in drafts. Pre runs after
+          stops; post after archive/encryption and before restart, on the backend with executable allowlist and timeout,
+          not a shell pipeline.
         </p>
       </div>
-
-      {/* Loading overlay */}
-      {isCreating && (
-        <div className="absolute inset-0 bg-dark-900/80 flex items-center justify-center z-10 rounded-2xl">
-          <div className="text-center">
-            <div className="animate-spin rounded-full h-12 w-12 border-2 border-primary-500 border-t-transparent mx-auto mb-4" />
-            <p className="text-dark-300">Creating backup target...</p>
-          </div>
-        </div>
-      )}
-
-      {/* Target Info */}
-      <SummarySection icon={Target} title="Backup Target" status="configured" onEdit={onGoToStep ? () => onGoToStep(1) : undefined}>
-        <p className="text-dark-300">
-          <span className="font-medium text-dark-100">{data.targetName || 'Unnamed'}</span>
-        </p>
-        <p className="text-dark-400 mt-1">{formatTargetType()}</p>
-      </SummarySection>
-
-      {/* Volumes */}
-      {(data.targetType === 'container' || data.targetType === 'stack') && (
-        <SummarySection
-          icon={Database}
-          title="Volume Configuration"
-          status="configured"
-          onEdit={onGoToStep ? () => onGoToStep(2) : undefined}
-        >
-          {(() => {
-            const totalVolumes = availableVolumes.length
-            const selectedCount = data.selectedVolumes.length === 0 ? totalVolumes : data.selectedVolumes.length
-            const customRuleCount = Object.values(data.perVolumeRules).filter(
-              (r) => r.includePaths.length > 0 || r.excludePaths.length > 0
-            ).length
-            return (
-              <div className="text-dark-300">
-                <p>
-                  Volumes: <span className="text-dark-100">{selectedCount}/{totalVolumes}</span> selected
-                  {customRuleCount > 0 && (
-                    <span className="text-purple-400 ml-2">
-                      ({customRuleCount} with custom rules)
-                    </span>
-                  )}
-                </p>
-                {(data.includePaths.length > 0 || data.excludePaths.length > 0) && (
-                  <p className="text-dark-400 mt-1">
-                    {data.includePaths.length > 0 && `${data.includePaths.length} include filter(s)`}
-                    {data.includePaths.length > 0 && data.excludePaths.length > 0 && ', '}
-                    {data.excludePaths.length > 0 && `${data.excludePaths.length} exclude filter(s)`}
-                  </p>
-                )}
-              </div>
-            )
-          })()}
-        </SummarySection>
-      )}
-
-      {/* Dependencies */}
-      <SummarySection
-        icon={Link2}
-        title="Container Dependencies"
-        status={data.dependencies.length > 0 ? 'configured' : 'optional'}
-        onEdit={onGoToStep ? () => onGoToStep(3) : undefined}
-      >
-        {data.stopContainer ? (
-          <div className="text-dark-300">
-            <p>Stop containers during backup: <span className="text-green-400">Yes</span></p>
-            {data.dependencies.length > 0 && (
-              <p className="mt-1">
-                Dependencies: <span className="text-dark-100">{data.dependencies.join(', ')}</span>
-              </p>
-            )}
-          </div>
-        ) : (
-          <p className="text-dark-400">Containers will not be stopped</p>
-        )}
-      </SummarySection>
-
-      {/* Schedule */}
-      <SummarySection
-        icon={Calendar}
-        title="Schedule"
-        status={selectedSchedule || data.newSchedule ? 'configured' : 'warning'}
-        onEdit={onGoToStep ? () => onGoToStep(4) : undefined}
-      >
-        {selectedSchedule ? (
-          <div className="text-dark-300">
-            <p className="text-dark-100">{selectedSchedule.name}</p>
-            <p className="text-dark-400 font-mono">{selectedSchedule.cron_expression}</p>
-          </div>
-        ) : data.newSchedule ? (
-          <div className="text-dark-300">
-            <p className="text-dark-100">{data.newSchedule.name || 'New Schedule'}</p>
-            <p className="text-dark-400 font-mono">{data.newSchedule.cronExpression}</p>
-          </div>
-        ) : (
-          <p className="text-yellow-400">No schedule - manual backups only</p>
-        )}
-      </SummarySection>
-
-      {/* Remote Storage */}
-      <SummarySection
-        icon={Cloud}
-        title="Remote Storage"
-        status={selectedStorages.length > 0 ? 'configured' : 'optional'}
-        onEdit={onGoToStep ? () => onGoToStep(5) : undefined}
-      >
-        {selectedStorages.length > 0 ? (
-          <div className="space-y-2">
-            <ul className="space-y-1">
-              {selectedStorages.map((storage) => (
-                <li key={storage.id} className="text-dark-300">
-                  • {storage.name}{' '}
-                  <span className="text-dark-500">({storage.storage_type})</span>
-                </li>
-              ))}
-            </ul>
-            {data.deleteLocalAfterSync && (
-              <p className="text-amber-400 text-sm">
-                ⚠ Local files will be deleted after successful sync
-              </p>
-            )}
-          </div>
-        ) : (
-          <p className="text-dark-400">Local storage only</p>
-        )}
-      </SummarySection>
-
-      {/* Retention */}
-      <SummarySection
-        icon={Archive}
-        title="Retention Policy"
-        status={selectedPolicy || data.newRetentionPolicy ? 'configured' : 'warning'}
-        onEdit={onGoToStep ? () => onGoToStep(6) : undefined}
-      >
-        {selectedPolicy ? (
-          <div className="text-dark-300">
-            <p className="text-dark-100">{selectedPolicy.name}</p>
-            <div className="flex gap-4 mt-1 text-dark-400">
-              {selectedPolicy.keep_last > 0 && <span>Last: {selectedPolicy.keep_last}</span>}
-              {selectedPolicy.keep_daily > 0 && <span>Daily: {selectedPolicy.keep_daily}</span>}
-              {selectedPolicy.keep_weekly > 0 && <span>Weekly: {selectedPolicy.keep_weekly}</span>}
-              {selectedPolicy.keep_monthly > 0 && <span>Monthly: {selectedPolicy.keep_monthly}</span>}
-              {selectedPolicy.keep_yearly > 0 && <span>Yearly: {selectedPolicy.keep_yearly}</span>}
-            </div>
-          </div>
-        ) : data.newRetentionPolicy ? (
-          <div className="text-dark-300">
-            <p className="text-dark-100">{data.newRetentionPolicy.name || 'New Policy'}</p>
-            <div className="flex gap-4 mt-1 text-dark-400">
-              {data.newRetentionPolicy.keepLast > 0 && (
-                <span>Last: {data.newRetentionPolicy.keepLast}</span>
-              )}
-              {data.newRetentionPolicy.keepDaily > 0 && (
-                <span>Daily: {data.newRetentionPolicy.keepDaily}</span>
-              )}
-              {data.newRetentionPolicy.keepWeekly > 0 && (
-                <span>Weekly: {data.newRetentionPolicy.keepWeekly}</span>
-              )}
-              {data.newRetentionPolicy.keepMonthly > 0 && (
-                <span>Monthly: {data.newRetentionPolicy.keepMonthly}</span>
-              )}
-            </div>
-          </div>
-        ) : (
-          <p className="text-yellow-400">No retention policy - keeping all backups</p>
-        )}
-      </SummarySection>
-
-      {/* Options */}
-      <SummarySection icon={Settings} title="Options" status="configured" onEdit={onGoToStep ? () => onGoToStep(7) : undefined}>
-        <div className="grid grid-cols-2 gap-2 text-dark-300">
-          <div>
-            Compression:{' '}
-            <span className="text-dark-100 capitalize">{data.compression}</span>
-          </div>
-          <div>
-            Enabled:{' '}
-            <span className={data.enabled ? 'text-green-400' : 'text-dark-500'}>
-              {data.enabled ? 'Yes' : 'No'}
-            </span>
-          </div>
-          {data.preCommand && (
-            <div className="col-span-2 truncate">
-              Pre-command: <span className="text-dark-400 font-mono">{data.preCommand}</span>
-            </div>
-          )}
-          {data.postCommand && (
-            <div className="col-span-2 truncate">
-              Post-command: <span className="text-dark-400 font-mono">{data.postCommand}</span>
-            </div>
-          )}
-        </div>
-      </SummarySection>
-    </div>
+    </section>
   )
 }

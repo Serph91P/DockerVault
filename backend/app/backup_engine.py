@@ -35,6 +35,7 @@ from app.database import (
     EncryptionConfig,
     LogLevel,
     async_session,
+    backup_db_session,
 )
 from app.docker_client import docker_client
 from app.encryption import (
@@ -62,6 +63,12 @@ class ArchiveSources:
     paths: tuple[tuple[str, str], ...] = ()
     root: str | None = None
     container_ids: tuple[str, ...] = ()
+    rules_json: str = "{}"
+
+    @property
+    def per_volume_rules(self) -> dict:
+        # Return a copy so callers cannot mutate the claimed rules snapshot.
+        return json.loads(self.rules_json)
 
 
 @dataclass
@@ -431,7 +438,7 @@ class BackupEngine:
     ):
         """Write a structured log entry for a backup job."""
         try:
-            async with async_session() as session:
+            async with backup_db_session(async_session) as session:
                 entry = BackupLog(
                     backup_id=backup_id,
                     level=level,
@@ -575,7 +582,7 @@ class BackupEngine:
         backup_type: BackupType = BackupType.FULL,
     ) -> Backup:
         """Create a new backup for the target."""
-        async with async_session() as session:
+        async with backup_db_session(async_session) as session:
             # Serialize plan removal without blocking creation behind running jobs.
             await session.execute(text("BEGIN IMMEDIATE"))
             current = await session.get(BackupTarget, target.id)
@@ -609,7 +616,7 @@ class BackupEngine:
             True if backup succeeded, False otherwise
         """
         # Determine target_id to acquire per-target lock
-        async with async_session() as session:
+        async with backup_db_session(async_session) as session:
             result = await session.execute(select(Backup).where(Backup.id == backup_id))
             backup_peek = result.scalar_one_or_none()
             if not backup_peek:
@@ -631,7 +638,7 @@ class BackupEngine:
         file_size = 0
         target_id = None
 
-        async with async_session() as session:
+        async with backup_db_session(async_session) as session:
             result = await session.execute(select(Backup).where(Backup.id == backup_id))
             backup = result.scalar_one_or_none()
 
@@ -663,39 +670,40 @@ class BackupEngine:
                 await session.commit()
                 return False
 
-            # Validate prerequisites unless skipped
-            if not skip_validation:
-                validation_issues = await self.validate_backup_prerequisites(target)
-                if validation_issues:
-                    error_msg = f"Validation failed: {'; '.join(validation_issues)}"
-                    await self._log(
-                        backup_id,
-                        "validation",
-                        error_msg,
-                        level=LogLevel.ERROR,
-                        details={"issues": validation_issues},
-                    )
-                    logger.error(
-                        f"Backup {backup_id} validation failed",
-                        extra={
-                            "backup_id": backup_id,
-                            "target_id": target.id,
-                            "target_name": target.name,
-                            "issues": validation_issues,
-                        },
-                    )
+        # Discovery/validation can await Docker and write its own log; never hold admission here.
+        if not skip_validation:
+            validation_issues = await self.validate_backup_prerequisites(target)
+            if validation_issues:
+                error_msg = f"Validation failed: {'; '.join(validation_issues)}"
+                await self._log(
+                    backup_id,
+                    "validation",
+                    error_msg,
+                    level=LogLevel.ERROR,
+                    details={"issues": validation_issues},
+                )
+                logger.error(
+                    f"Backup {backup_id} validation failed",
+                    extra={
+                        "backup_id": backup_id,
+                        "target_id": target.id,
+                        "target_name": target.name,
+                        "issues": validation_issues,
+                    },
+                )
+                async with backup_db_session(async_session) as session:
+                    session.add(backup)
                     backup.status = BackupStatus.FAILED
                     backup.error_message = error_msg
                     backup.completed_at = datetime.now(timezone.utc)
                     await session.commit()
-                    await self._notify_progress(backup_id, -1, error_msg)
+                await self._notify_progress(backup_id, -1, error_msg)
+                duration = time.time() - start_time
+                self.metrics.record_backup(target_id, duration, 0, False)
+                return False
 
-                    # Record failed backup metrics
-                    duration = time.time() - start_time
-                    self.metrics.record_backup(target_id, duration, 0, False)
-                    return False
-
-            # Update status to running
+        async with backup_db_session(async_session) as session:
+            session.add(backup)
             backup.status = BackupStatus.RUNNING
             backup.started_at = datetime.now(timezone.utc)
             await session.commit()
@@ -939,7 +947,7 @@ class BackupEngine:
 
             # Update backup record
             await journal.phase(operation_id, "finalizing")
-            async with async_session() as session:
+            async with backup_db_session(async_session) as session:
                 duration_seconds = int(
                     (datetime.now(timezone.utc) - backup.started_at).total_seconds()
                 )
@@ -1010,7 +1018,7 @@ class BackupEngine:
                     level=LogLevel.ERROR,
                     details={"error_type": "CancelledError"},
                 )
-                async with async_session() as session:
+                async with backup_db_session(async_session) as session:
                     await session.execute(
                         update(Backup)
                         .where(Backup.id == backup_id)
@@ -1054,7 +1062,7 @@ class BackupEngine:
             )
 
             # Update backup record with error
-            async with async_session() as session:
+            async with backup_db_session(async_session) as session:
                 await session.execute(
                     update(Backup)
                     .where(Backup.id == backup_id)
@@ -1113,7 +1121,7 @@ class BackupEngine:
                     self._remote_sync_locks.setdefault(key, asyncio.Lock())
                 )
             # Re-read AFTER acquiring every path: another target may have just committed.
-            async with async_session() as session:
+            async with backup_db_session(async_session) as session:
                 existing = (
                     await session.execute(
                         select(
@@ -1189,7 +1197,7 @@ class BackupEngine:
 
         try:
             # Ensure backends are initialised from the database
-            async with async_session() as session:
+            async with backup_db_session(async_session) as session:
                 from app.database import RemoteStorage as RemoteStorageModel
 
                 for storage_id in selected_ids:
@@ -1318,7 +1326,7 @@ class BackupEngine:
 
             # Record sync results in BackupStorageSync table
             remote_path = f"{safe_name}/{local_path.name}"
-            async with async_session() as session:
+            async with backup_db_session(async_session) as session:
                 for storage_id, (success, error) in normalized_results.items():
                     records = list(
                         (
@@ -1546,6 +1554,9 @@ class BackupEngine:
         paths = []
         container_ids = []
         selected = target.selected_volumes or []
+        known_names = set()
+        bindings = {}
+        roots = {}
         for container in containers:
             expected = identities.get(container.name)
             if expected is None:
@@ -1557,7 +1568,10 @@ class BackupEngine:
             container_ids.append(expected)
             for mount in container.mounts:
                 name = mount.get("name")
-                if mount.get("type") != "volume" or (selected and name not in selected):
+                if mount.get("type") != "volume":
+                    continue
+                known_names.add(name)
+                if selected and name not in selected:
                     continue
                 if name not in volume_map:
                     raise ValueError(f"Claimed volume {name} is unavailable")
@@ -1566,12 +1580,55 @@ class BackupEngine:
                     if target.target_type == "stack"
                     else mount.get("destination")
                 )
-                selection = (logical, os.path.realpath(volume_map[name]))
+                if not logical or logical.lstrip("/").startswith("volume:"):
+                    raise ValueError(
+                        "Archive root collides with reserved volume namespace"
+                    )
+                root = logical.lstrip("/")
+                if not root or any(part in ("", ".", "..") for part in root.split("/")):
+                    raise ValueError("Ambiguous archive root")
+                path = os.path.realpath(volume_map[name])
+                if any(
+                    root != other
+                    and (root.startswith(other + "/") or other.startswith(root + "/"))
+                    for other in roots
+                ):
+                    raise ValueError("Overlapping archive roots")
+                if root in roots and roots[root] != (name, path):
+                    raise ValueError("Conflicting sources for archive root")
+                roots[root] = (name, path)
+                bindings.setdefault(name, set()).add(root)
+                selection = (logical, path)
                 if selection not in paths:
                     paths.append(selection)
+        if set(selected) - known_names:
+            raise ValueError("Selected volumes are missing from claimed topology")
         if not paths:
             raise ValueError("Claimed containers have no selected volumes to backup")
-        return ArchiveSources(paths=tuple(paths), container_ids=tuple(container_ids))
+        rules = target.per_volume_rules or {}
+        resolved = {
+            key: value for key, value in rules.items() if not key.startswith("volume:")
+        }
+        for key, value in rules.items():
+            if not key.startswith("volume:"):
+                continue
+            name = key.removeprefix("volume:")
+            if name not in known_names:
+                raise ValueError(
+                    "Volume rule identity is missing from claimed topology"
+                )
+            for root in bindings.get(name, ()):
+                # Mirror the legacy worker lookup, including empty-dict inheritance.
+                basename = os.path.basename(root)
+                legacy = rules.get(root) or rules.get(basename) or {}
+                if (root in rules or basename in rules) and legacy != value:
+                    raise ValueError("Conflicting volume and legacy archive rules")
+                resolved[root] = value
+        return ArchiveSources(
+            paths=tuple(paths),
+            container_ids=tuple(container_ids),
+            rules_json=json.dumps(resolved),
+        )
 
     async def _create_backup_archive(
         self,
@@ -1605,7 +1662,7 @@ class BackupEngine:
 
         # Reserve every possible artifact before the worker can create any of them.
         # The cleaner rechecks these reservations under the same SQLite writer lock.
-        async with async_session() as session:
+        async with backup_db_session(async_session) as session:
             record = await session.get(Backup, backup_id)
             if record is None:
                 raise RuntimeError("Cannot create an archive without a backup owner")
@@ -1626,7 +1683,7 @@ class BackupEngine:
         # Get path filters
         include_paths = target.include_paths or []
         exclude_paths = target.exclude_paths or []
-        per_volume_rules = target.per_volume_rules or {}
+        per_volume_rules = sources.per_volume_rules
 
         # Create tarball
         try:
@@ -2094,7 +2151,7 @@ class BackupEngine:
         is_encrypted = False
         encryption_key_path = None
 
-        async with async_session() as session:
+        async with backup_db_session(async_session) as session:
             result = await session.execute(select(Backup).where(Backup.id == backup_id))
             backup = result.scalar_one_or_none()
 
@@ -2367,7 +2424,7 @@ class BackupEngine:
 
     async def _get_encryption_config(self) -> Optional[EncryptionConfig]:
         """Get encryption configuration if set up."""
-        async with async_session() as session:
+        async with backup_db_session(async_session) as session:
             result = await session.execute(select(EncryptionConfig).limit(1))
             config = result.scalar_one_or_none()
             if config and config.setup_completed:
@@ -2376,7 +2433,7 @@ class BackupEngine:
 
     async def estimate_backup_duration(self, target: BackupTarget) -> int:
         """Estimate backup duration in seconds based on historical data."""
-        async with async_session() as session:
+        async with backup_db_session(async_session) as session:
             # Get last 5 successful backups
             result = await session.execute(
                 select(Backup)

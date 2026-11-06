@@ -84,7 +84,7 @@ export interface BackupTarget {
   include_paths: string[]  // Include only these paths (empty = all)
   exclude_paths: string[]  // Exclude these paths/patterns
   // Per-volume path rules (overrides global for specific volumes)
-  per_volume_rules: Record<string, { include_paths: string[]; exclude_paths: string[] }>
+  per_volume_rules: Record<string, { include_paths?: string[]; exclude_paths?: string[] }>
   pre_backup_command?: string | null
   post_backup_command?: string | null
   stop_container: boolean
@@ -320,7 +320,7 @@ export const schedulesApi = {
   delete: (id: number) => api.delete(`/schedules/${id}`),
   
   // Scheduler management
-  getJobs: () => api.get('/schedules/jobs'),
+  getJobs: () => api.get<Array<{ id: string; name: string; next_run: string | null }>>('/schedules/jobs'),
   trigger: (targetId: number) => api.post(`/schedules/target/${targetId}/trigger`),
   triggerAll: (scheduleId: number) => api.post(`/schedules/${scheduleId}/trigger-all`),
   estimate: (target_id: number, cron_expression: string) =>
@@ -350,7 +350,7 @@ export const retentionApi = {
 export interface RemoteStorage {
   id: number
   name: string
-  storage_type: 'local' | 'ssh' | 'webdav' | 's3' | 'ftp' | 'rclone'
+  storage_type: 'local' | 'ssh' | 'sftp' | 'webdav' | 's3' | 'ftp' | 'rclone'
   enabled: boolean
   host?: string
   port?: number

@@ -27,7 +27,7 @@ try {
   if (scenario === 'discovery') {
     await page.route('**/api/v1/operations?*', async route => {
       reads++
-      if (reads === 1) {
+      if (requests.length === 0) {
         const response = await route.fetch()
         assert.deepEqual(await response.json(), [])
         entered()

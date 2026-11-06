@@ -4,12 +4,19 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select, update
 
-from app.database import Backup, BackupLog, BackupStatus, LogLevel, WorkloadOperation
+from app.database import (
+    Backup,
+    BackupLog,
+    BackupStatus,
+    LogLevel,
+    WorkloadOperation,
+    backup_db_session,
+)
 
 
 class OperationJournal:
     def __init__(self, sessions, docker):
-        self.sessions = sessions
+        self.sessions = lambda: backup_db_session(sessions)
         self.docker = docker
 
     async def begin(self, backup_id, kind, original_states, start_order=None):

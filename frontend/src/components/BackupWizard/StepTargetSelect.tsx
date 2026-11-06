@@ -77,6 +77,7 @@ function SearchableList({ items, selectedId, onSelect, placeholder, emptyMessage
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+          aria-label={placeholder}
           placeholder={placeholder}
           className="w-full pl-9 pr-8 py-2 bg-dark-700 border border-dark-600 rounded-lg text-dark-100 text-sm placeholder:text-dark-500 focus:outline-none focus:border-primary-500"
         />
@@ -374,6 +375,7 @@ export default function StepTargetSelect({
                 type="text"
                 value={data.hostPath}
                 onChange={(e) => handleTargetChange(e.target.value)}
+                aria-label="Host Path"
                 placeholder="/path/to/directory"
                 className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-dark-100 font-mono"
               />

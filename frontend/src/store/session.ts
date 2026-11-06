@@ -6,6 +6,7 @@ import { protectTargetResponse } from '../api/targetPrivacy'
 import { safeRequestError } from '../api/responses'
 import { resetNotificationOwner } from './notifications'
 import { cleanupWebSocket } from './websocket'
+import { clearPlanDrafts } from '../components/BackupWizard/planEditorDraft'
 
 export const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 10000, refetchOnWindowFocus: false } },
@@ -35,6 +36,7 @@ export function clearSession(preserveDraftFor?: number, preserveNotificationOwne
   resetNotificationOwner(preserveNotificationOwner)
   toast.remove()
   try {
+    clearPlanDrafts(preserveDraftFor)
     let preserveDraft = false
     try { preserveDraft = Boolean(preserveDraftFor && JSON.parse(localStorage.getItem('dockervault-wizard-draft') ?? 'null')?.ownerId === preserveDraftFor) } catch { /* Discard malformed legacy drafts. */ }
     if (!preserveDraft) localStorage.removeItem('dockervault-wizard-draft')

@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.backup_engine import backup_engine
-from app.database import BackupTarget, Schedule, async_session
+from app.database import BackupTarget, Schedule, async_session, backup_db_session
 from app.scheduler import BackupScheduler, DisabledBackupTargetError
 from app.api._scheduler import reconcile_after_commit
 from app.config import settings
@@ -112,7 +112,7 @@ async def preview_cron(data: PreviewRequest):
 @router.get("/compatibility/inventory")
 async def cron_inventory():
     """Expose incompatible/ambiguous stored intent without changing execution."""
-    async with async_session() as session:
+    async with backup_db_session(async_session) as session:
         schedules = (await session.execute(select(Schedule))).scalars().all()
         targets = (await session.execute(select(BackupTarget))).scalars().all()
         items = []
@@ -144,7 +144,7 @@ async def cron_inventory():
 @router.get("", response_model=List[ScheduleResponse])
 async def list_schedules():
     """List all schedules with target counts."""
-    async with async_session() as session:
+    async with backup_db_session(async_session) as session:
         result = await session.execute(
             select(Schedule).options(
                 selectinload(Schedule.targets.and_(BackupTarget.removed_at.is_(None)))
@@ -184,7 +184,7 @@ async def list_schedules():
 @router.post("", response_model=ScheduleResponse)
 async def create_schedule(data: ScheduleCreate, request: Request):
     """Create a new schedule."""
-    async with async_session() as session:
+    async with backup_db_session(async_session) as session:
         # Check for duplicate name
         existing = await session.execute(
             select(Schedule).where(Schedule.name == data.name)
@@ -231,7 +231,7 @@ async def create_schedule(data: ScheduleCreate, request: Request):
 @router.get("/{schedule_id:int}", response_model=ScheduleWithTargets)
 async def get_schedule(schedule_id: int):
     """Get a specific schedule with its assigned targets."""
-    async with async_session() as session:
+    async with backup_db_session(async_session) as session:
         result = await session.execute(
             select(Schedule)
             .where(Schedule.id == schedule_id)
@@ -280,7 +280,7 @@ async def get_schedule(schedule_id: int):
 @router.put("/{schedule_id:int}", response_model=ScheduleResponse)
 async def update_schedule(schedule_id: int, data: ScheduleUpdate, request: Request):
     """Update a schedule."""
-    async with async_session() as session:
+    async with backup_db_session(async_session) as session:
         result = await session.execute(
             select(Schedule)
             .where(Schedule.id == schedule_id)
@@ -355,7 +355,7 @@ async def update_schedule(schedule_id: int, data: ScheduleUpdate, request: Reque
 @router.delete("/{schedule_id:int}")
 async def delete_schedule(schedule_id: int, request: Request):
     """Delete a schedule. Targets using this schedule will be unlinked."""
-    async with async_session() as session:
+    async with backup_db_session(async_session) as session:
         result = await session.execute(
             select(Schedule)
             .where(Schedule.id == schedule_id)
@@ -394,7 +394,7 @@ async def reload_schedules(request: Request):
 @router.get("/legacy/by-target", response_model=List[LegacyScheduleResponse])
 async def list_schedules_legacy():
     """Legacy endpoint: List schedules grouped by target."""
-    async with async_session() as session:
+    async with backup_db_session(async_session) as session:
         result = await session.execute(
             select(BackupTarget)
             .where(
@@ -488,7 +488,7 @@ async def trigger_all_backups(schedule_id: int):
 
     komodo_config = await load_komodo_config()
 
-    async with async_session() as session:
+    async with backup_db_session(async_session) as session:
         result = await session.execute(
             select(Schedule)
             .where(Schedule.id == schedule_id)
@@ -517,17 +517,17 @@ async def trigger_all_backups(schedule_id: int):
 
             enabled_targets.sort(key=_is_komodo_target)
 
-        # Create backup records
-        backup_ids: list[int] = []
-        triggered: list[int] = []
-        for target in enabled_targets:
-            try:
-                backup = await backup_engine.create_backup(target, BackupType.FULL)
-            except ValueError:
-                skipped.append(target.id)
-                continue
-            backup_ids.append(backup.id)
-            triggered.append(target.id)
+    # Create records only after releasing the read section; creation owns its own transaction.
+    backup_ids: list[int] = []
+    triggered: list[int] = []
+    for target in enabled_targets:
+        try:
+            backup = await backup_engine.create_backup(target, BackupType.FULL)
+        except ValueError:
+            skipped.append(target.id)
+            continue
+        backup_ids.append(backup.id)
+        triggered.append(target.id)
 
     # Fire off sequential execution as a background task so the
     # HTTP response returns immediately.
@@ -544,7 +544,7 @@ async def trigger_all_backups(schedule_id: int):
 @router.post("/estimate")
 async def estimate_backup_window(request: EstimateRequest, app_request: Request):
     """Estimate backup window and check for conflicts."""
-    async with async_session() as session:
+    async with backup_db_session(async_session) as session:
         result = await session.execute(
             select(BackupTarget).where(BackupTarget.id == request.target_id)
         )

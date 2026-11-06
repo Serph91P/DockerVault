@@ -1,0 +1,313 @@
+// Real cookie/API/SQLite/file acceptance. Docker discovery/lifecycle are explicitly synthetic.
+import assert from 'node:assert/strict'
+import { randomBytes } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import { chromium } from 'playwright'
+const browser = await chromium.launch({ args: ['--no-sandbox','--disable-dev-shm-usage'] })
+const context = await browser.newContext({ reducedMotion: 'reduce' })
+const page = await context.newPage()
+page.setDefaultTimeout(15000)
+const base = 'http://127.0.0.1'
+const checks = []
+const check = (ok, label) => { assert.ok(ok, label); checks.push(label); console.log('PASS '+label) }
+const password = randomBytes(24).toString('hex')
+const hook = 'pg_dump '+randomBytes(18).toString('hex')
+async function api(path, method='GET', data) {
+  const response = await context.request.fetch(base+'/api/v1'+path,{method,data})
+  assert.ok(response.ok(), `${method} ${path}: ${response.status()}`)
+  return response.json()
+}
+async function group(name) { await page.getByRole('button',{name,exact:true}).press('Enter') }
+async function addPath(label, value) { await page.getByRole('textbox',{name:label,exact:true}).fill(value); await page.getByRole('button',{name:'Add '+label,exact:true}).click() }
+async function save() {
+  await group('Execution & review')
+  await page.getByRole('button',{name:'Save plan',exact:true}).click()
+  await page.waitForURL(/\/protection\/[1-9]\d*(\?|$)/)
+  return Number(new URL(page.url()).pathname.split('/')[2])
+}
+async function safePersistence() {
+  const text = await page.evaluate(() => JSON.stringify([localStorage,sessionStorage,location.href]))
+  check(!text.includes(hook), 'private hooks absent from browser persistence/URL')
+}
+async function settled(id) {
+  let row
+  for (let i=0;i<300;i++) { row=await api('/backups/'+id); if (!['pending','running'].includes(row.status)) break; await new Promise(r=>setTimeout(r,50)) }
+  check(row.status==='completed', 'real run #'+id+' reaches backend completion')
+  return row
+}
+try {
+  await page.goto(base)
+  await page.getByLabel('Username',{exact:true}).fill('protection-operator')
+  await page.getByLabel('Account password',{exact:true}).fill(password)
+  await page.getByLabel('Confirm account password').fill(password)
+  await page.getByRole('button',{name:'Create account',exact:true}).click()
+  await page.getByRole('button',{name:/Continue without encryption/}).click()
+  await page.getByRole('button',{name:'Create first backup plan',exact:true}).click()
+  await page.waitForURL('**/protection/new')
+  await page.getByRole('heading',{name:'Create protection plan',exact:true}).waitFor()
+  check(await page.getByRole('heading',{name:'Create protection plan',exact:true}).isVisible(), 'onboarding create really exits gate into route-backed editor')
+  check((await context.cookies()).some(c=>c.name==='session_token'&&c.httpOnly), 'real HttpOnly-cookie authentication')
+  const remote1 = await api('/storage','POST',{name:'Owned local one',storage_type:'local',base_path:'/app/data/184-fixtures/remote-one',enabled:true})
+  const remote2 = await api('/storage','POST',{name:'Owned local two',storage_type:'local',base_path:'/app/data/184-fixtures/remote-two',enabled:true})
+  const sftp = await api('/storage','POST',{name:'Disabled SFTP fixture',storage_type:'sftp',host:'synthetic.invalid',port:22,username:'synthetic',base_path:'/fixture',enabled:false})
+  const updatedSftp = await api('/storage/'+sftp.id,'PUT',{name:'Disabled SFTP fixture',enabled:false})
+  check(sftp.storage_type==='sftp'&&updatedSftp.storage_type==='sftp'&&(await api('/storage')).length===3,'real disabled SFTP POST/PUT/mixed GET preserve backend discriminator (no provider contact)')
+  await page.goto(base+'/storage')
+  await page.getByRole('heading',{name:'Disabled SFTP fixture',exact:true}).waitFor()
+  check(await page.getByRole('heading',{name:'Disabled SFTP fixture',exact:true}).isVisible(),'Storage list displays real disabled SFTP configuration')
+  const ids = [], requests = []
+  page.on('request',request=> { const url=new URL(request.url()); if (/^\/api\/v1\/targets(?:\/\d+)?$/.test(url.pathname)&&['POST','PUT'].includes(request.method())) requests.push({method:request.method(),body:request.postDataJSON()}) })
+  for (const kind of ['container','stack','volume','path']) {
+    await page.goto(base+'/protection/new')
+    await page.getByLabel('Containers status',{exact:true}).filter({hasText:/updated/}).waitFor()
+    await page.getByRole('button',{name:new RegExp('^'+({container:'Container',stack:'Stack',volume:'Volume',path:'Host Path'}[kind])+' ')}).click()
+    if (kind==='path') await page.getByPlaceholder('/path/to/directory').fill('/app/data/184-fixtures/path')
+    else await page.getByRole('button',{name:new RegExp('^'+({container:'service',stack:'owned-stack',volume:'docker-data'}[kind])+' ')}).click()
+    await page.getByRole('textbox',{name:'Backup name',exact:true}).fill('Owned '+kind)
+    await addPath('Include Paths','config')
+    await addPath('Exclude Paths','config/cache')
+    if (['container','stack'].includes(kind)) {
+      await page.getByRole('button',{name:'Select specific volumes',exact:true}).click()
+      await page.getByRole('checkbox',{name:'docker-logs',exact:true}).uncheck()
+      await addPath('Exclude Paths','config/keep.txt')
+      await page.getByText('docker-data — inherits global filters',{exact:true}).click()
+      await page.getByRole('button',{name:'Override with all paths for docker-data',exact:true}).click()
+      await addPath('docker-data include paths','config')
+      await addPath('docker-data exclude paths','config/cache')
+    }
+    await group('Strategy')
+    check(await page.getByRole('button',{name:/Disabled SFTP fixture/}).isVisible(),'Protection destination picker retains disabled SFTP as unavailable, not empty')
+    await page.getByRole('combobox',{name:'Select Schedule',exact:true}).selectOption('new')
+    await page.getByRole('textbox',{name:'Schedule name',exact:true}).fill('Inline '+kind)
+    await page.getByRole('textbox',{name:'Cron expression',exact:true}).fill('0 3 * * *')
+    await page.getByRole('combobox',{name:'Retention Policy',exact:true}).selectOption('new')
+    await page.getByRole('textbox',{name:'Policy name',exact:true}).fill('Inline retention '+kind)
+    await page.getByRole('spinbutton',{name:'Yearly',exact:true}).fill('3')
+    await page.getByRole('spinbutton',{name:'Max age (days)',exact:true}).fill('400')
+    await page.getByRole('button',{name:/^Owned local one/}).click()
+    await page.getByRole('button',{name:/^Owned local two/}).click()
+    await group('Execution & review')
+    // Existing dependency selection; actual lifecycle is the declared synthetic boundary.
+    if (kind==='stack') await page.getByRole('button',{name:/^Other Containers/}).click()
+    await page.getByRole('button',{name:/^dependency /}).click()
+    await page.getByRole('button',{name:/^None \(tar\)/}).click()
+    await page.getByRole('button',{name:'Advanced Options',exact:true}).click()
+    await page.getByRole('textbox',{name:'Pre-backup Command',exact:true}).fill(hook)
+    await page.getByRole('textbox',{name:'Post-backup Command',exact:true}).fill(hook)
+    await safePersistence()
+    const before=(await api('/backups')).length
+    const id=await save();ids.push(id)
+    const stored=await api('/targets/'+id), payload=requests.at(-1).body
+    check(Object.entries(payload).every(([k,v])=>JSON.stringify(stored[k]??null)===JSON.stringify(v)),kind+': exact reviewed create payload read back from real backend')
+    check((await api('/backups')).length===before,kind+': Save creates no run')
+    check(stored.remote_storage_ids.length===2&&stored.dependencies.includes('dependency'),kind+': multiple destinations and explicit dependency persisted')
+    if (['container','stack'].includes(kind)) check(Object.hasOwn(stored.per_volume_rules,'volume:docker-data')&&stored.selected_volumes.length===1,kind+': explicit volume identity/subset persisted')
+    await page.reload()
+    await page.getByRole('link',{name:'Edit plan',exact:true}).click()
+    await page.getByRole('textbox',{name:'Plan name',exact:true}).fill('Changed '+kind)
+    check(await page.getByText(/Source \(read-only\)/).isVisible(),kind+': edit source immutable after reload')
+    await group('Strategy')
+    await page.getByRole('combobox',{name:'Select Schedule',exact:true}).selectOption('new')
+    await page.getByRole('combobox',{name:'Select Schedule',exact:true}).selectOption('none')
+    await page.getByRole('combobox',{name:'Retention Policy',exact:true}).selectOption('')
+    await group('Source & scope');await group('Strategy')
+    check(await page.getByRole('combobox',{name:'Select Schedule',exact:true}).inputValue()==='none',kind+': new→manual survives group remount')
+    await group('Execution & review')
+    await page.getByRole('button',{name:/^Gzip /}).click()
+    await page.getByRole('button',{name:'Advanced Options',exact:true}).click()
+    await page.getByRole('textbox',{name:'Pre-backup Command',exact:true}).fill('')
+    await page.getByRole('textbox',{name:'Post-backup Command',exact:true}).fill('')
+    await save();await page.reload()
+    const changed=await api('/targets/'+id), update=requests.at(-1).body
+    check(Object.entries(update).every(([k,v])=>JSON.stringify(changed[k]??null)===JSON.stringify(v)),kind+': exact reviewed update payload survives reload')
+    check(changed.schedule_id===null&&changed.schedule_cron===null&&changed.retention_policy_id===null&&!changed.pre_backup_command&&!changed.post_backup_command,kind+': schedule/retention/both-hook clears confirmed by GET')
+    check(!(await api('/schedules/jobs')).some(job=>job.id==='backup_target_'+id),kind+': manual clear removes real scheduler job')
+    await page.getByRole('button',{name:'Run now',exact:true}).click()
+    await page.getByText(/Request accepted as run #/).waitFor()
+    const runs=await api('/backups?target_id='+id+'&limit=1')
+    await settled(runs[0].id)
+    if (kind==='path') {
+      const response=await context.request.post(base+'/api/v1/backups/'+runs[0].id+'/restore',{data:{target_path:'/backups/184-path-restored'}})
+      check(response.ok(),'real supported custom-path restore accepted/completed')
+    }
+    await safePersistence()
+  }
+  // Owned allowlisted touch hooks execute real processes; no database/provider is contacted.
+  await page.goto(base+'/protection/'+ids[3]+'/edit');await group('Execution & review')
+  await page.getByRole('button',{name:/^None \(tar\)/}).click()
+  await page.getByRole('button',{name:'Advanced Options',exact:true}).click()
+  await page.getByRole('textbox',{name:'Pre-backup Command',exact:true}).fill('/usr/bin/touch /app/data/184-fixtures/pre-hook-effect')
+  await page.getByRole('textbox',{name:'Post-backup Command',exact:true}).fill('/usr/bin/touch /app/data/184-fixtures/post-hook-effect')
+  await save();await page.getByRole('button',{name:'Run now',exact:true}).click()
+  await page.getByText(/Request accepted as run #/).waitFor()
+  await settled((await api('/backups?target_id='+ids[3]+'&limit=1'))[0].id)
+  check((await api('/targets/'+ids[3])).compression_enabled===false,'tar selection persists and executes real uncompressed archive (independent byte check follows)')
+  await page.getByRole('link',{name:'Edit plan',exact:true}).click();await group('Strategy')
+  await page.getByRole('button',{name:/^Delete Local After Sync/}).click();await save()
+  check((await api('/targets/'+ids[3])).delete_local_after_sync===true,'local-copy removal intent persists without running/deleting on Save')
+  await page.getByRole('link',{name:'Edit plan',exact:true}).click();await group('Strategy')
+  await page.getByRole('button',{name:/^Owned local one/}).click();await page.getByRole('button',{name:/^Owned local two/}).click()
+  await group('Source & scope');await group('Strategy');await save()
+  const cleared=await api('/targets/'+ids[3])
+  check(cleared.remote_storage_ids.length===0&&!cleared.delete_local_after_sync,'last destination removal and delete-local=false survive group remount/save/GET')
+
+  // Real commits with explicitly injected lost/error transport; never fake successful DB writes.
+  async function newPath(name, path='/app/data/184-fixtures/path') {
+    await page.goto(base+'/protection/new')
+    await page.getByRole('heading',{name:'Create protection plan',exact:true}).waitFor()
+    await page.getByRole('button',{name:/^Host Path /}).click()
+    await page.getByPlaceholder('/path/to/directory').fill(path)
+    await page.getByRole('textbox',{name:'Backup name',exact:true}).fill(name)
+  }
+  await page.goto(base+'/protection/'+ids[0]+'/edit')
+  await page.getByRole('checkbox',{name:'docker-data',exact:true}).uncheck()
+  const writesBeforeEmpty=requests.length
+  await group('Execution & review');await page.getByRole('button',{name:'Save plan',exact:true}).click()
+  await page.getByText('Select at least one volume or explicitly choose all volumes.',{exact:true}).waitFor()
+  check(requests.length===writesBeforeEmpty,'last-volume deselection blocks PUT, never serializes implicit all')
+  check(await page.getByRole('alert').filter({hasText:'Select at least one volume'}).evaluate(e=>e===document.activeElement),'invalid subset moves keyboard focus to error summary')
+  await page.getByRole('button',{name:'Discard changes',exact:true}).click()
+  await page.getByRole('textbox',{name:'Plan name',exact:true}).fill('Recovered container draft')
+  await page.waitForTimeout(400)
+  await api('/targets/'+ids[0],'PUT',{name:'Server revision container'})
+  await page.reload();await page.getByRole('button',{name:'Restore draft',exact:true}).click()
+  await page.getByText(/Server revision changed/).waitFor()
+  check((await api('/targets/'+ids[0])).name==='Server revision container','revision conflict does not overwrite server before explicit resolution')
+  await page.getByRole('button',{name:'Keep safe intent against current revision',exact:true}).click()
+  check(await page.getByRole('textbox',{name:'Plan name',exact:true}).inputValue()==='Recovered container draft','explicit conflict resolution restores safe intent against fresh immutable source')
+  await save();await page.reload();await page.getByRole('link',{name:'Edit plan',exact:true}).click()
+  check(!await page.getByRole('button',{name:'Restore draft',exact:true}).count(),'successful save and reload cannot resurrect a draft timer')
+  await group('Execution & review');await page.getByRole('button',{name:'Advanced Options',exact:true}).click()
+  check(await page.getByRole('textbox',{name:'Pre-backup Command',exact:true}).inputValue()==='','private hook is not revived by safe draft recovery')
+  await safePersistence()
+
+  const schedulesBefore=(await api('/schedules')).length
+  await newPath('Unknown policy target','/app/data/184-fixtures/missing')
+  await group('Strategy');await page.getByRole('combobox',{name:'Select Schedule',exact:true}).selectOption('new')
+  await page.getByRole('textbox',{name:'Schedule name',exact:true}).fill('Owned unknown schedule')
+  let schedulePosts=0
+  const lostPolicy=async route=> { if(route.request().method()!=='POST') return route.continue();schedulePosts++;const response=await route.fetch();assert.ok(response.ok());await route.abort('failed') }
+  await page.route('**/api/v1/schedules',lostPolicy)
+  await group('Execution & review');await page.getByRole('button',{name:'Save plan',exact:true}).click()
+  await page.getByRole('heading',{name:'Unconfirmed schedule creation',exact:true}).waitFor()
+  // The checkpoint is visible before POST finishes; assert durable effects only after its lost-response outcome.
+  await page.getByText(/Could not save backup configuration/).waitFor()
+  check(schedulePosts===1&&(await api('/schedules')).length===schedulesBefore+1&&await page.getByRole('button',{name:'Save plan',exact:true}).isDisabled(),'lost policy POST really commits once and blocks blind replay')
+  await page.unroute('**/api/v1/schedules',lostPolicy)
+  await page.getByRole('button',{name:'Read back candidates',exact:true}).click()
+  const policy=(await api('/schedules')).find(s=>s.name==='Owned unknown schedule')
+  await page.getByRole('button',{name:'Use explicitly selected #'+policy.id,exact:true}).click()
+  await page.getByRole('button',{name:'Save plan',exact:true}).click()
+  await page.getByText(/Could not save backup configuration/).waitFor()
+  check(!(await api('/targets')).some(t=>t.name==='Unknown policy target'),'actual invalid-path rejection leaves policy committed but no target')
+  await group('Source & scope');await page.getByPlaceholder('/path/to/directory').fill('/app/data/184-fixtures/path')
+  const recoveredId=await save()
+  check((await api('/targets/'+recoveredId)).schedule_id===policy.id&&(await api('/schedules')).length===schedulesBefore+1,'known policy ID reused after real target rejection; no duplicate policy')
+
+  const beforeUnknown=(await api('/targets')).length
+  await newPath('Unknown target')
+  let targetPosts=0
+  const lostTarget=async route=> { if(route.request().method()!=='POST') return route.continue();targetPosts++;const response=await route.fetch();assert.ok(response.ok());await route.fulfill({status:503,contentType:'application/json',body:'{}'}) }
+  await page.route('**/api/v1/targets',lostTarget)
+  await group('Execution & review');await page.getByRole('button',{name:'Save plan',exact:true}).click()
+  await page.getByRole('heading',{name:'Unconfirmed target creation',exact:true}).waitFor()
+  await page.getByText(/Could not save backup configuration/).waitFor()
+  check(targetPosts===1&&(await api('/targets')).length===beforeUnknown+1,'503 after real create commit remains unconfirmed without second POST')
+  await page.unroute('**/api/v1/targets',lostTarget)
+  await page.getByRole('button',{name:'Reload scheduler and read jobs',exact:true}).click()
+  await page.getByText(/Scheduler reloaded and jobs read back/).waitFor()
+  check(await page.getByRole('button',{name:'Save plan',exact:true}).isDisabled(),'scheduler reload alone never assumes unknown target ownership')
+  await page.getByRole('button',{name:'Read back candidates',exact:true}).click()
+  const unknown=(await api('/targets')).find(t=>t.name==='Unknown target')
+  await page.getByRole('button',{name:'Open and inspect #'+unknown.id,exact:true}).click()
+  await page.waitForURL(new RegExp('/protection/'+unknown.id+'(\\?|$)'))
+  check((await api('/targets')).length===beforeUnknown+1,'explicit candidate opens canonical detail without overwriting or replay')
+
+  await api('/targets/'+unknown.id,'PUT',{enabled:false});await page.reload()
+  await page.getByRole('button',{name:'Run now',exact:true}).waitFor()
+  check(await page.getByRole('button',{name:'Run now',exact:true}).isDisabled(),'disabled plan cannot run from detail')
+  const blockedRun=await context.request.post(base+'/api/v1/backups',{data:{target_id:unknown.id,backup_type:'full'}})
+  check(blockedRun.status()===409,'real backend independently rejects disabled-plan run')
+  await page.goto(base+'/protection/'+ids[3]+'/edit')
+  await page.getByRole('textbox',{name:'Plan name',exact:true}).fill('Changed path')
+  let put503=0,reloads=0
+  const committedPut=async route=> { if(route.request().method()!=='PUT') return route.continue();put503++;const response=await route.fetch();assert.ok(response.ok());await route.fulfill({status:503,contentType:'application/json',body:'{}'}) }
+  const observeReload=request=>{if(request.method()==='POST'&&new URL(request.url()).pathname==='/api/v1/schedules/reload')reloads++}
+  page.on('request',observeReload);await page.route('**/api/v1/targets/'+ids[3],committedPut)
+  await save();await page.unroute('**/api/v1/targets/'+ids[3],committedPut);page.off('request',observeReload)
+  check(put503===1&&reloads===1&&(await api('/targets/'+ids[3])).name==='Changed path','committed PUT503 uses exact saved GET and real scheduler reload, no PUT replay')
+  // Discovery response disappearance is an explicit transport fixture, not a real Docker removal.
+  const missingSource=route=>route.fulfill({status:200,contentType:'application/json',body:'[]'})
+  await page.route('**/api/v1/docker/containers',missingSource);await page.goto(base+'/protection/'+ids[0])
+  await page.getByText(/Source missing. Scope has not been widened/).waitFor()
+  check(await page.getByRole('button',{name:'Run now',exact:true}).isDisabled()&&await page.getByRole('link',{name:'Archives, logs, browse and restore for this plan',exact:true}).isVisible(),'missing discovered source blocks run while retaining history context')
+  await page.unroute('**/api/v1/docker/containers',missingSource)
+  await page.goto(base+'/protection/999999?returnTo='+encodeURIComponent('/protection?type=path'))
+  await page.getByRole('heading',{name:'Protection plan unavailable',exact:true}).waitFor()
+  check(await page.getByRole('link',{name:'Open retained history',exact:true}).isVisible()&&await page.getByRole('link',{name:'Return to protection list',exact:true}).getAttribute('href')==='/protection?type=path','real missing-plan GET keeps archive access and safe return context')
+  await page.goto(base+'/protection/'+ids[0])
+  await page.getByRole('button',{name:'Remove plan (retain archives)',exact:true}).click()
+  await page.getByRole('button',{name:'Review exact scope',exact:true}).click()
+  await page.getByText('No archive or copy will be deleted.',{exact:true}).waitFor()
+  await page.getByRole('button',{name:'Remove plan only — keep recovery points',exact:true}).click()
+  await page.getByText('Protection plan removed. Existing recovery points retained.',{exact:true}).waitFor()
+  await page.getByRole('button',{name:'Close',exact:true}).click();await page.reload()
+  await page.getByRole('heading',{name:'Protection plan unavailable',exact:true}).waitFor()
+  const retained=(await api('/backups?target_id='+ids[0]))[0]
+  check(retained&&retained.status==='completed'&&(await api('/backups/'+retained.id+'/files')).length>0,'route-backed plan-only removal retains real readable archive members and tombstoned history')
+  await newPath('Queued logout draft');await page.getByRole('button',{name:'Log out',exact:true}).click()
+  await page.waitForTimeout(400)
+  check(!await page.evaluate(()=>Object.keys(localStorage).some(k=>k.startsWith('dockervault-plan-draft:'))),'logout clears owned drafts and invalidates queued writes')
+  await page.getByLabel('Username',{exact:true}).fill('protection-operator');await page.getByLabel('Password',{exact:true}).fill(password)
+  await page.getByRole('button',{name:'Sign In',exact:true}).click();await page.getByRole('main').waitFor();await page.goto(base+'/protection/new')
+  await page.getByRole('heading',{name:'Create protection plan',exact:true}).waitFor()
+  check(!await page.getByRole('button',{name:'Restore draft',exact:true}).count(),'new authenticated session cannot revive logged-out draft')
+
+  // URL context, narrow/keyboard/axe checks use the same built app and real stored plan.
+  await page.goto(base+'/protection?q=Changed&type=path&status=active&sort=created')
+  await page.getByRole('link',{name:'Changed path',exact:true}).click()
+  await page.reload()
+  check((await page.getByRole('link',{name:'Return to protection list',exact:true}).getAttribute('href'))==='/protection?q=Changed&type=path&status=active&sort=created','filter/type/status/sort return context survives detail reload')
+  await page.getByRole('link',{name:'Edit plan',exact:true}).click()
+  await page.getByRole('textbox',{name:'Plan name',exact:true}).waitFor()
+  await page.goBack();await page.getByRole('link',{name:'Edit plan',exact:true}).waitFor()
+  check(new URL(page.url()).pathname==='/protection/'+ids[3]&&await page.getByRole('link',{name:'Return to protection list',exact:true}).getAttribute('href')==='/protection?q=Changed&type=path&status=active&sort=created','browser Back preserves detail and filtered-list return context')
+  await page.goForward();await page.getByRole('textbox',{name:'Plan name',exact:true}).waitFor()
+  await group('Execution & review')
+  await page.getByRole('button',{name:'Advanced Options',exact:true}).click()
+  const shortcutInput = page.getByRole('textbox',{name:'Pre-backup Command',exact:true})
+  await page.waitForFunction(input => !input.disabled, await shortcutInput.elementHandle())
+  await shortcutInput.focus()
+  assert.ok(await shortcutInput.evaluate(input => input === document.activeElement), 'Keyboard sequence requires actual hook-input focus')
+  await page.keyboard.type('gb?')
+  await page.keyboard.press('Enter');await page.keyboard.press('Escape')
+  check(new URL(page.url()).pathname.endsWith('/edit')&&!await page.getByRole('dialog').count(),'field Enter/Escape/global shortcut sequences do not hijack editor')
+  await page.getByRole('textbox',{name:'Pre-backup Command',exact:true}).fill('')
+  await page.route(base+'/__axe_probe.js', async route => route.fulfill({status:200,contentType:'application/javascript',body:await readFile('/runner/axe.min.js','utf8')}))
+  await page.addScriptTag({url:base+'/__axe_probe.js'})
+  for (const width of [320,390,768,1024,1440]) {
+    await page.setViewportSize({width,height:950})
+    check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),width+': no page-level horizontal overflow')
+    const violations=await page.evaluate(async()=> (await axe.run(document,{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa']}})).violations.map(v=>({id:v.id,targets:v.nodes.map(n=>n.target)})))
+    console.log(JSON.stringify({width,axe:violations}))
+    check(violations.length===0,width+': automated axe scope has no violations (not native-AT certification)')
+    await page.getByRole('button',{name:'Cancel',exact:true}).focus()
+    await page.keyboard.press('Tab');await page.keyboard.press('Tab')
+    check(await page.getByRole('button',{name:'Save plan',exact:true}).evaluate(e=>e===document.activeElement),width+': save reachable by focus')
+    if(width===320) {
+      await group('Source & scope');await page.getByRole('textbox',{name:'Plan name',exact:true}).fill('')
+      await group('Execution & review');await page.getByRole('button',{name:'Save plan',exact:true}).press('Enter')
+      await page.getByText('Name must contain 1–255 characters.',{exact:true}).waitFor()
+      check(await page.getByRole('alert').filter({hasText:'Name must contain'}).evaluate(e=>e===document.activeElement),'320px keyboard error activation focuses corrective summary')
+      await group('Source & scope');await page.getByRole('textbox',{name:'Plan name',exact:true}).fill('Changed path')
+      await group('Execution & review');await page.getByRole('button',{name:'Cancel',exact:true}).focus();await page.keyboard.press('Tab');await page.keyboard.press('Tab');await page.keyboard.press('Enter')
+      await page.waitForURL(new RegExp('/protection/'+ids[3]+'(\\?|$)'))
+      check((await api('/targets/'+ids[3])).name==='Changed path','320px corrected review saves by keyboard and real GET confirms result')
+      await page.getByRole('link',{name:'Edit plan',exact:true}).click();await group('Execution & review');await page.getByRole('button',{name:'Advanced Options',exact:true}).click()
+    }
+  }
+  await page.setViewportSize({width:640,height:900})
+  check(await page.evaluate(()=>matchMedia('(prefers-reduced-motion: reduce)').matches),'reduced-motion preference is active in the real browser')
+  check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'200%-equivalent 1280→640 CSS-pixel reflow without clipping')
+  console.log(JSON.stringify({status:'passed',checks:checks.length,plans:ids.length,discovery_lifecycle:'explicit synthetic doubles',provider_contact:false,physical_device_native_AT:'not run'}))
+} finally { await browser.close() }

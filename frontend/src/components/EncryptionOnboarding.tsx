@@ -2,7 +2,7 @@ import { useRef, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import api from '../api'
 import EncryptionSetup from './EncryptionSetup'
-import BackupWizard from './BackupWizard'
+import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/auth'
 import { ownsSession, sessionGeneration } from '../store/session'
 
@@ -25,7 +25,7 @@ export default function EncryptionOnboarding({ children }: { children: ReactNode
 
 function OnboardingJourney({ status, refetch, children }: { status: Status; refetch: () => Promise<unknown>; children: ReactNode }) {
   const [onboarding, setOnboarding] = useState(!status.setup_completed && !status.onboarding_deferred)
-  const [showBackup, setShowBackup] = useState(false)
+  const navigate = useNavigate()
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
   const busy = useRef(false)
@@ -57,11 +57,10 @@ function OnboardingJourney({ status, refetch, children }: { status: Status; refe
       {ready && <section className="space-y-4">
         <h2 className="text-xl">Next: create your first backup</h2>
         <p>{status.setup_completed ? 'Key custody confirmed.' : 'You deliberately deferred encryption. New backups are unencrypted; enable encryption later in Settings.'} No backup has been created by setup.</p>
-        <button className="px-4 py-3 bg-indigo-600 hover:bg-indigo-700 rounded-lg text-white" onClick={() => setShowBackup(true)}>Create first backup plan</button>
+        <button className="px-4 py-3 bg-indigo-600 hover:bg-indigo-700 rounded-lg text-white" onClick={() => { setOnboarding(false); navigate('/protection/new') }}>Create first backup plan</button>
         <button className="px-4 py-3 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg text-dark-100" onClick={() => setOnboarding(false)}>Continue to DockerVault</button>
       </section>}
       <button className="px-4 py-3 bg-dark-700 hover:bg-dark-600 disabled:opacity-50 rounded-lg text-dark-100" onClick={() => void useAuthStore.getState().logout()}>Sign out</button>
-      {showBackup && <BackupWizard isOpen onClose={() => setShowBackup(false)} />}
     </div>
   </main>
 }

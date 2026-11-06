@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClientProvider } from '@tanstack/react-query'
@@ -9,6 +9,10 @@ import { server } from '../../test/mocks/server'
 import { useNotificationStore } from '../../store/notifications'
 import BackupEditDialog from '../BackupEditDialog'
 import BackupWizard from '../BackupWizard'
+import { useAuthStore } from '../../store/auth'
+import { initialData } from '../BackupWizard/planEditorModel'
+import { draftKey } from '../BackupWizard/planEditorDraft'
+beforeEach(() => useAuthStore.setState({ user: { id: 7, username: 'fixture', is_admin: true, created_at: '', last_login: null }, isAuthenticated: true }))
 
 const hooks = { pre_backup_command: 'synthetic confidential pre body', post_backup_command: 'synthetic confidential post body' }
 const target = { id: 917, name: 'Hook safety', target_type: 'path', host_path: '/owned/source', enabled: true, dependencies: [], selected_volumes: [], include_paths: [], exclude_paths: [], per_volume_rules: {}, stop_container: false, compression_enabled: true, remote_storage_ids: [], delete_local_after_sync: false } as unknown as BackupTarget
@@ -56,16 +60,16 @@ it('creates through the existing wizard with private hooks and one request, neve
     await gate
     return HttpResponse.json({ ...target, ...hooks })
   }))
-  localStorage.setItem('dockervault-wizard-draft', JSON.stringify({ currentStep: 7, savedAt: Date.now(), data: { targetType: 'path', targetName: 'Hook safety', hostPath: '/owned/source' } }))
+  server.use(http.get('/api/v1/targets/917', () => HttpResponse.json({ ...target, ...hooks, name: 'Hook safety', schedule_id: null, schedule_cron: null, retention_policy_id: null, stop_container: true, enabled: true })))
+  localStorage.setItem(draftKey(7, 'new'), JSON.stringify({ version: 1, owner: 7, intent: 'new', revision: null, group: 2, savedAt: Date.now(), data: { ...initialData, targetType: 'path', targetName: 'Hook safety', hostPath: '/owned/source' } }))
   const close = vi.fn()
   render(<QueryClientProvider client={queryClient}><BackupWizard isOpen onClose={close} /></QueryClientProvider>)
   const user = userEvent.setup()
-  await user.click(screen.getByRole('button', { name: 'Restore' }))
+  await user.click(screen.getByRole('button', { name: 'Restore draft' }))
   await user.click(screen.getByRole('button', { name: 'Advanced Options' }))
   await user.type(screen.getByPlaceholderText(/pg_dump/), hooks.pre_backup_command)
   await user.type(screen.getByPlaceholderText(/rm \/backup/), hooks.post_backup_command)
-  await user.click(screen.getByRole('button', { name: /^Next/ }))
-  await user.dblClick(screen.getByRole('button', { name: 'Create Target' }))
+  await user.dblClick(screen.getByRole('button', { name: 'Save plan' }))
   await waitFor(() => expect(calls).toBe(1))
   expect(correct).toBe(true)
   cachesSafe()
@@ -83,13 +87,12 @@ for (const wizard of [false, true]) {
   }
   async function options() {
     const user = userEvent.setup()
-    if (wizard) await user.click(screen.getByRole('button', { name: 'Options' }))
-    await user.click(screen.getByRole('button', { name: wizard ? 'Advanced Options' : 'Advanced: Pre/Post Commands' }))
+    await user.click(screen.getByRole('button', { name: 'Execution & review' }))
+    await user.click(screen.getByRole('button', { name: 'Advanced Options' }))
     return user
   }
   async function save() {
-    if (wizard) await userEvent.click(screen.getByRole('button', { name: 'Summary' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save plan' }))
   }
   it.each([false, true])(`${editor} privately loads and saves hooks without caching pending/success/error payloads (error=%s)`, async fail => {
     let release!: () => void
@@ -108,7 +111,7 @@ for (const wizard of [false, true]) {
     await waitFor(() => expect(received).toBe(true))
     cachesSafe()
     release()
-    await waitFor(() => fail ? expect(screen.getByRole('button', { name: 'Save Changes' })).toBeEnabled() : expect(view.close).toHaveBeenCalledOnce())
+    await waitFor(() => fail ? expect(screen.getByRole('button', { name: 'Save plan' })).toBeEnabled() : expect(view.close).toHaveBeenCalledOnce())
     cachesSafe()
   })
   it.each(['failed', 'pending'])(`${editor} preserves unloaded hooks after a %s private load`, async state => {
@@ -119,7 +122,7 @@ for (const wizard of [false, true]) {
     mount()
     await options()
     await screen.findByText(state === 'failed' ? /Could not load hook commands/ : /Loading private hook commands/)
-    expect(screen.getByPlaceholderText(wizard ? /pg_dump/ : /mysqldump/)).toBeDisabled()
+    expect(screen.getByPlaceholderText(/pg_dump/)).toBeDisabled()
     await save()
     await waitFor(() => expect(sent).toBeDefined())
     expect(Object.hasOwn(sent!, 'pre_backup_command')).toBe(false)
@@ -159,7 +162,7 @@ for (const wizard of [false, true]) {
     await screen.findByDisplayValue(hooks.pre_backup_command)
     await save()
     await waitFor(() => expect(calls).toBe(1))
-    fireEvent.click(screen.getByRole('button', { name: wizard ? 'Saving...' : 'Save Changes' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Saving…' }))
     clearSession()
     release()
     await waitFor(() => expect(screen.queryByDisplayValue(hooks.pre_backup_command)).not.toBeInTheDocument())

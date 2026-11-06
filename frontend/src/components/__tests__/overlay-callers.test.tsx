@@ -24,8 +24,6 @@ const backup: Backup = { id:1,target_id:1,status:'completed',backup_type:'full',
 const cases: [string,(close:()=>void)=>ReactNode][] = [
  ['Browse Backup',close=><BackupBrowser backup={backup} onClose={close}/>],
  ['Backup 1 — Job Log',close=><BackupLogViewer backupId={1} onClose={close}/>],
- ['Edit Backup',close=><BackupEditDialog target={target} isOpen onClose={close}/>],
- ['Create Backup Target',close=><BackupWizard isOpen onClose={close}/>],
  ['Restore Backup',close=><RestoreWizard backupId={1} onClose={close}/>],
  ['Browse Local',close=><StorageBrowser storage={{id:'local',name:'Local',storage_type:'local',base_path:'/synthetic'}} onClose={close}/>],
  ['Notifications',close=><NotificationCenter isOpen onClose={close}/>],
@@ -46,6 +44,22 @@ beforeEach(()=> {
  server.use(http.get('/api/v1/backups/1/files',()=>HttpResponse.json({files:[]})),http.get('/api/v1/backups/1/logs',()=>HttpResponse.json([])),http.get('/api/v1/backups/1/restore-info',()=>new HttpResponse(null,{status:404})),http.get('/api/v1/storage/local/files',()=>HttpResponse.json({files:[]})))
 })
 describe('complete overlay caller contract',()=> {
+ it.each([false, true])('unified editor is a nonmodal page; text/Enter/Escape do not trigger navigation (edit=%s)', async edit => {
+  const user = userEvent.setup()
+  renderCase(close => edit ? <BackupEditDialog target={target} isOpen onClose={close} /> : <BackupWizard isOpen onClose={close} />)
+  await user.click(screen.getByRole('button', { name: 'Open fixture' }))
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'Background action' })).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Execution & review' }))
+  await user.click(screen.getByRole('button', { name: 'Advanced Options' }))
+  const field = screen.getByPlaceholderText(/pg_dump/)
+  if (!edit) { await user.click(field); await user.keyboard('gb?{Enter}{Escape}') }
+  expect(screen.getByTestId('path')).toHaveTextContent('/')
+  expect(screen.queryByRole('dialog', { name: 'Keyboard Shortcuts' })).not.toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: edit ? 'Edit protection: Synthetic plan' : 'Create protection plan' })).toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Cancel' }))
+  expect(screen.queryByRole('heading', { name: edit ? 'Edit protection: Synthetic plan' : 'Create protection plan' })).not.toBeInTheDocument()
+ })
  it.each(cases)('%s contains focus, suspends shortcuts, closes on Escape and restores focus',async(title,content)=> {
   const user=userEvent.setup();renderCase(content)
   const trigger=screen.getByRole('button',{name:'Open fixture'});await user.click(trigger)

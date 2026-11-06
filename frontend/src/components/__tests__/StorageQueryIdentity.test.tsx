@@ -1,12 +1,14 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
 import BackupEditDialog from '../BackupEditDialog'
 import BackupWizard from '../BackupWizard'
 import { server } from '../../test/mocks/server'
 import type { BackupTarget } from '../../api'
+import { useAuthStore } from '../../store/auth'
+beforeEach(() => useAuthStore.setState({ user: { id: 7, username: 'fixture', is_admin: true, created_at: '', last_login: null }, isAuthenticated: true }))
 
 const clients: QueryClient[] = []
 afterEach(() => { cleanup(); clients.splice(0).forEach(c => c.clear()) })
@@ -16,9 +18,13 @@ it('the private plan editor keeps input and associates only safe validation afte
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   clients.push(client)
   render(<QueryClientProvider client={client}><BackupEditDialog isOpen target={target} onClose={vi.fn()} /></QueryClientProvider>)
-  const input = screen.getByRole('textbox', { name: 'Name' })
+  let input = screen.getByRole('textbox', { name: 'Plan name' })
   await userEvent.clear(input); await userEvent.type(input, 'Retained plan input')
-  await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Execution & review' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Save plan' }))
+  await screen.findByText(/Could not save backup configuration/)
+  await userEvent.click(screen.getByRole('button', { name: 'Source & scope' }))
+  input = screen.getByRole('textbox', { name: 'Plan name' })
   await waitFor(() => expect(input).toHaveAttribute('aria-invalid', 'true'))
   expect(input).toHaveAccessibleDescription(/check this value/i)
   expect(input).toHaveValue('Retained plan input')
@@ -30,6 +36,7 @@ it.each([false, true])('failed storage discovery is not silent empty in an open 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   clients.push(client)
   render(<QueryClientProvider client={client}>{wizard ? <BackupWizard isOpen editTarget={target} onClose={vi.fn()} /> : <BackupEditDialog isOpen target={target} onClose={vi.fn()} />}</QueryClientProvider>)
+  await userEvent.click(screen.getByRole('button', { name: 'Strategy' }))
   expect(await screen.findByRole('alert', { name: 'Storage choices status' })).toHaveTextContent(/unavailable/i)
   failed = false
   await userEvent.click(screen.getByRole('button', { name: 'Retry Storage choices' }))

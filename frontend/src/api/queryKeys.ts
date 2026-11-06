@@ -14,7 +14,7 @@ export const queryKeys = {
     detail: (id: number) => ['targets', 'detail', id] as const,
   },
   storages: family('storages'),
-  schedules: { ...family('schedules'), inventory: () => ['schedules', 'cron-inventory'] as const },
+  schedules: { ...family('schedules'), jobs: () => ['schedules', 'jobs'] as const, inventory: () => ['schedules', 'cron-inventory'] as const },
   retention: family('retention-policies'),
   containers: family('containers'),
   volumes: family('volumes'),

@@ -3,16 +3,15 @@ import { Settings, Zap, Terminal, ChevronDown, ChevronUp } from 'lucide-react'
 import { WizardData } from './index'
 
 interface Props {
-  data: WizardData
-  updateData: (updates: Partial<WizardData>) => void
+  data: WizardData & { preCommand: string; postCommand: string }
+  updateData: (updates: Partial<WizardData & { preCommand: string; postCommand: string }>) => void
   hooksDisabled?: boolean
 }
 
 // Compression options
 const COMPRESSION_OPTIONS = [
-  { value: 'none', label: 'None', description: 'No compression — fastest, but largest backup files' },
-  { value: 'gzip', label: 'Gzip', description: 'Good balance — ~60% smaller, widely compatible' },
-  { value: 'zstd', label: 'Zstandard', description: 'Best ratio — ~70% smaller, slightly slower' },
+  { value: 'none', label: 'None (tar)', description: 'Uncompressed .tar archive' },
+  { value: 'gzip', label: 'Gzip', description: 'Gzip-compressed .tar.gz archive; size depends on content' },
 ]
 
 export default function StepOptions({ data, updateData, hooksDisabled = false }: Props) {
@@ -77,7 +76,7 @@ export default function StepOptions({ data, updateData, hooksDisabled = false }:
           <div>
             <span className="text-dark-100 font-medium">Enable backup target</span>
             <p className="text-sm text-dark-400 mt-1">
-              When disabled, scheduled backups won't run for this target
+              When disabled, both scheduled and manual runs are blocked for this plan
             </p>
           </div>
         </label>
@@ -113,7 +112,8 @@ export default function StepOptions({ data, updateData, hooksDisabled = false }:
               value={data.preCommand}
               disabled={hooksDisabled}
               onChange={(e) => updateData({ preCommand: e.target.value })}
-              placeholder="e.g., docker exec db pg_dump > /backup/dump.sql"
+              aria-label="Pre-backup Command"
+              placeholder="e.g., pg_dump --version"
               className="w-full px-4 py-2 bg-dark-900 border border-dark-600 rounded-lg text-dark-100 font-mono text-sm focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
             />
             <p className="text-xs text-dark-500 mt-1">
@@ -132,6 +132,7 @@ export default function StepOptions({ data, updateData, hooksDisabled = false }:
               value={data.postCommand}
               disabled={hooksDisabled}
               onChange={(e) => updateData({ postCommand: e.target.value })}
+              aria-label="Post-backup Command"
               placeholder="e.g., rm /backup/dump.sql"
               className="w-full px-4 py-2 bg-dark-900 border border-dark-600 rounded-lg text-dark-100 font-mono text-sm focus:border-primary-500 focus:ring-1 focus:ring-primary-500"
             />

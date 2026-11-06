@@ -18,6 +18,7 @@ from app.database import (
     BackupTarget,
     RetentionPolicy,
     async_session,
+    backup_db_session,
     has_remote_copies,
 )
 
@@ -54,7 +55,7 @@ class RetentionManager:
 
         async with (
             backup_engine._get_target_lock(target_id),
-            async_session() as session,
+            backup_db_session(async_session) as session,
         ):
             # Get target with retention policy
             result = await session.execute(
@@ -211,7 +212,7 @@ class RetentionManager:
 
     async def get_retention_stats(self, target_id: int) -> Dict:
         """Get retention statistics for a target."""
-        async with async_session() as session:
+        async with backup_db_session(async_session) as session:
             result = await session.execute(
                 select(Backup)
                 .where(
@@ -259,7 +260,7 @@ class RetentionManager:
         if not backup_dir.exists():
             return {"deleted": 0, "freed_bytes": 0}
 
-        async with async_session() as session:
+        async with backup_db_session(async_session) as session:
             known_paths = await _known_artifact_paths(session)
 
         deleted = 0
@@ -269,7 +270,7 @@ class RetentionManager:
         for file_path in backup_dir.rglob("*.tar*"):
             if str(file_path.resolve()) not in known_paths:
                 try:
-                    async with async_session() as session:
+                    async with backup_db_session(async_session) as session:
                         await session.execute(text("BEGIN IMMEDIATE"))
                         # Inventory can be stale: coordinate the final check with
                         # writers committing reservations before creating files.

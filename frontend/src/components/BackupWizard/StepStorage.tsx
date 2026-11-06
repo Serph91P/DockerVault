@@ -1,4 +1,3 @@
-import { useRef, useEffect } from 'react'
 import { Cloud, HardDrive, Plus, Check, ExternalLink, Trash2 } from 'lucide-react'
 import { WizardData } from './index'
 import { RemoteStorage } from '../../api'
@@ -40,20 +39,7 @@ const STORAGE_TYPES: Record<string, { icon: React.ReactNode; color: string; name
 }
 
 export default function StepStorage({ data, updateData, storages, isLoadingStorages }: Props) {
-  const hasAutoSelected = useRef(false)
-
-  const enabledStorages = storages.filter((s) => s.enabled !== false)
-
-  // Smart default: auto-select the single enabled storage if only one exists
-  useEffect(() => {
-    if (hasAutoSelected.current || data.remoteStorageIds.length > 0) return
-    if (isLoadingStorages) return
-
-    if (enabledStorages.length === 1) {
-      updateData({ remoteStorageIds: [enabledStorages[0].id] })
-    }
-    hasAutoSelected.current = true
-  }, [enabledStorages, isLoadingStorages, data.remoteStorageIds.length, updateData])
+  const enabledStorages = storages
 
   const toggleStorage = (storageId: number) => {
     const newIds = data.remoteStorageIds.includes(storageId)
@@ -129,6 +115,9 @@ export default function StepStorage({ data, updateData, storages, isLoadingStora
             return (
               <button
                 key={storage.id}
+                type="button"
+                disabled={!storage.enabled && !isSelected}
+                aria-pressed={isSelected}
                 onClick={() => toggleStorage(storage.id)}
                 className={`w-full flex items-center gap-4 p-4 rounded-xl border transition-all text-left ${
                   isSelected
@@ -142,7 +131,7 @@ export default function StepStorage({ data, updateData, storages, isLoadingStora
 
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <h4 className="text-dark-100 font-medium truncate">{storage.name}</h4>
+                    <h4 className="text-dark-100 font-medium truncate">{storage.name}{!storage.enabled && ' (disabled)'}</h4>
                     <span className="px-2 py-0.5 bg-dark-700 text-dark-400 text-xs rounded">
                       {typeInfo.name}
                     </span>
@@ -192,6 +181,7 @@ export default function StepStorage({ data, updateData, storages, isLoadingStora
         </div>
       )}
 
+      {data.remoteStorageIds.filter(id => !storages.some(s => s.id === id)).map(id => <p role="alert" key={id}>Missing destination #{id}. <button type="button" className="btn-secondary" onClick={() => toggleStorage(id)}>Remove missing destination #{id}</button></p>)}
       {/* Delete local after sync option */}
       {data.remoteStorageIds.length > 0 && (
         <button
@@ -211,8 +201,8 @@ export default function StepStorage({ data, updateData, storages, isLoadingStora
               Delete Local After Sync
             </h4>
             <p className="text-sm text-dark-400 mt-0.5">
-              Remove local backup files after successful upload to free disk space.
-              Backups can still be browsed and restored from remote storage.
+              Remove local files only after all required normal uploads and key material succeed.
+              Remote browsing/restoring may require downloading and the appropriate private key.
             </p>
           </div>
           <div

@@ -3,6 +3,8 @@ import { Routes, Route, Navigate, Link } from 'react-router-dom'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import Backups from './pages/Backups'
+import Protection from './pages/Protection'
+import ProtectionPlan, { ProtectionNew } from './pages/ProtectionPlan'
 import Schedules from './pages/Schedules'
 import Retention from './pages/Retention'
 import Storage from './pages/Storage'
@@ -55,7 +57,10 @@ function App() {
     <Routes>
       <Route path="/" element={<Layout />}>
         <Route index element={<Dashboard />} />
-        <Route path="protection" element={<Backups workspace="protection" />} />
+        <Route path="protection" element={<Protection />} />
+        <Route path="protection/new" element={<ProtectionNew />} />
+        <Route path="protection/:id" element={<ProtectionPlan />} />
+        <Route path="protection/:id/edit" element={<ProtectionPlan editing />} />
         <Route path="history" element={<Backups workspace="history" />} />
         <Route path="protection/schedules" element={<Schedules />} />
         <Route path="protection/retention" element={<Retention />} />

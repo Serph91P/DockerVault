@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 from app.backup_engine import BackupType, backup_engine
 from app.config import settings
 from app.cron import cron_trigger, next_run
-from app.database import BackupSchedule, BackupTarget, async_session
+from app.database import BackupSchedule, BackupTarget, async_session, backup_db_session
 from app.retention import retention_manager
 from app.auth import cleanup_expired_sessions
 
@@ -87,7 +87,7 @@ class BackupScheduler:
     async def reconcile(self):
         """Project freshly committed effective state into owned backup jobs."""
         async with self._reconcile_lock:
-            async with async_session() as session:
+            async with backup_db_session(async_session) as session:
                 result = await session.execute(
                     select(BackupTarget).options(selectinload(BackupTarget.schedule))
                 )
@@ -169,7 +169,7 @@ class BackupScheduler:
 
             # Update next run time in database
             next_run = self.get_next_run(cron_expr)
-            async with async_session() as session:
+            async with backup_db_session(async_session) as session:
                 await session.execute(
                     update(BackupSchedule)
                     .where(BackupSchedule.target_id == target.id)
@@ -200,7 +200,7 @@ class BackupScheduler:
         """Execute a scheduled backup."""
         logger.info(f"Running scheduled backup for target {target_id}")
 
-        async with async_session() as session:
+        async with backup_db_session(async_session) as session:
             result = await session.execute(
                 select(BackupTarget)
                 .where(BackupTarget.id == target_id)
@@ -238,7 +238,7 @@ class BackupScheduler:
                 logger.error(f"Scheduled backup {backup.id} failed")
 
             # Update last run time
-            async with async_session() as session:
+            async with backup_db_session(async_session) as session:
                 await session.execute(
                     update(BackupSchedule)
                     .where(BackupSchedule.target_id == target_id)
@@ -256,22 +256,22 @@ class BackupScheduler:
         """Run retention cleanup for all targets."""
         logger.info("Running retention cleanup")
 
-        async with async_session() as session:
+        async with backup_db_session(async_session) as session:
             result = await session.execute(
                 select(BackupTarget).where(BackupTarget.removed_at.is_(None))
             )
             targets = result.scalars().all()
 
-            for target in targets:
-                try:
-                    stats = await retention_manager.apply_retention(target.id)
-                    if stats.get("deleted", 0) > 0:
-                        logger.info(
-                            f"Retention cleanup for {target.name}: "
-                            f"deleted {stats['deleted']} backups"
-                        )
-                except Exception as e:
-                    logger.error(f"Retention cleanup failed for {target.name}: {e}")
+        for target in targets:
+            try:
+                stats = await retention_manager.apply_retention(target.id)
+                if stats.get("deleted", 0) > 0:
+                    logger.info(
+                        f"Retention cleanup for {target.name}: "
+                        f"deleted {stats['deleted']} backups"
+                    )
+            except Exception as e:
+                logger.error(f"Retention cleanup failed for {target.name}: {e}")
 
         # Also cleanup orphaned files
         await retention_manager.cleanup_orphaned_files()
@@ -307,7 +307,7 @@ class BackupScheduler:
 
     async def trigger_backup_now(self, target_id: int) -> bool:
         """Trigger a backup immediately."""
-        async with async_session() as session:
+        async with backup_db_session(async_session) as session:
             result = await session.execute(
                 select(BackupTarget).where(BackupTarget.id == target_id)
             )
