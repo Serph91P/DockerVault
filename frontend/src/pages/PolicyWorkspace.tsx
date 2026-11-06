@@ -42,6 +42,21 @@ const read = async (kind: Kind, id: number): Promise<Policy> =>
   kind === 'schedules'
     ? (await schedulesApi.get(id)).data
     : (await retentionApi.getPolicy(id)).data
+function completeUsage(kind: Kind, targets: BackupTarget[]) {
+  return targets.every((target) => {
+    const field = kind === 'schedules' ? 'schedule_id' : 'retention_policy_id'
+    const assignment = target[field]
+    return (
+      Object.prototype.hasOwnProperty.call(target, field) &&
+      (assignment === null ||
+        (typeof assignment === 'number' &&
+          Number.isSafeInteger(assignment) &&
+          assignment > 0)) &&
+      Object.prototype.hasOwnProperty.call(target, 'removed_at') &&
+      (target.removed_at === null || typeof target.removed_at === 'string')
+    )
+  })
+}
 function usageFor(kind: Kind, policy: Policy, targets: BackupTarget[]) {
   return targets.filter((target) =>
     kind === 'schedules'
@@ -176,19 +191,7 @@ export default function PolicyWorkspace({ kind }: { kind: Kind }) {
     targets.isSuccess &&
     !targets.isError &&
     !targets.isFetching &&
-    targets.data.every((target) => {
-      const field = kind === 'schedules' ? 'schedule_id' : 'retention_policy_id'
-      const assignment = target[field]
-      return (
-        Object.prototype.hasOwnProperty.call(target, field) &&
-        (assignment === null ||
-          (typeof assignment === 'number' &&
-            Number.isSafeInteger(assignment) &&
-            assignment > 0)) &&
-        Object.prototype.hasOwnProperty.call(target, 'removed_at') &&
-        (target.removed_at === null || typeof target.removed_at === 'string')
-      )
-    })
+    completeUsage(kind, targets.data)
   const policies = list.data ?? []
   const visible = policies
     .filter((policy) => {
@@ -882,6 +885,7 @@ function PolicyActions({
       if (response.data?.status !== 'deleted') throw new ResponseError()
       try {
         await read(kind, policy.id)
+        throw new ResponseError()
       } catch (error) {
         if (responseStatus(error) !== 404) throw error
       }
@@ -893,8 +897,8 @@ function PolicyActions({
       if (list.some((row) => row.id === policy.id)) throw new ResponseError()
       const inventory = (await targetsApi.list(true)).data
       if (
-        kind === 'schedules' &&
-        inventory.some((target) => target.schedule_id === policy.id)
+        !completeUsage(kind, inventory) ||
+        usageFor(kind, policy, inventory).length > 0
       )
         throw new ResponseError()
       await refresh()

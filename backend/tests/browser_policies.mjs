@@ -120,15 +120,21 @@ try {
   await page.getByText(/Accepted 1 runs, skipped 1/).waitFor()
   const actualRun = await settled(one.id)
   check(actualRun.status === 'completed' && actualRun.file_size > 0, 'A2 run-now accepted/skipped is distinct from actual completed archive')
+  // A distinct plan avoids the existing intentional same-second archive-name collision guard.
+  await api('/targets/' + one.id, 'PUT', { enabled: false })
+  await api('/targets/' + two.id, 'PUT', { enabled: true })
   let batchPosts = 0
-  const loseBatch = async route => { batchPosts++; const native = await route.fetch(); check(native.ok(), 'A2 lost batch response follows actual native acceptance'); await route.abort() }
+  const loseBatch = async route => { batchPosts++; const native = await route.fetch(); const outcome = await native.json(); check(native.ok() && outcome.triggered_targets.length === 1, 'A2 lost batch response follows actual native acceptance'); await route.abort() }
   await page.route('**/api/v1/schedules/' + scheduleId + '/trigger-all', loseBatch)
   await page.getByRole('button', { name: 'Run All', exact: true }).click()
   await page.getByText(/Action result not confirmed/).waitFor()
   check(await page.getByRole('button', { name: 'Run All', exact: true }).isDisabled() && batchPosts === 1, 'A2 unknown non-idempotent run batch is locked without blind replay')
-  await expect.poll(async () => (await api('/backups?target_id=' + one.id)).filter(row => row.status === 'completed').length, { timeout: 15000 }).toBe(2)
-  check((await control('snapshot')).backups.filter(row => row.target_id === one.id && row.exists).length === 2, 'A2 unknown batch really completed a second file-backed native archive')
+  const uncertainRun = await settled(two.id)
+  check(uncertainRun.file_size > 0 && (await control('snapshot')).backups.some(row => row.id === uncertainRun.id && row.exists), 'A2 unknown batch really completed a second file-backed native archive')
   await page.unroute('**/api/v1/schedules/' + scheduleId + '/trigger-all', loseBatch)
+  await api('/targets/' + one.id, 'PUT', { enabled: true })
+  await api('/targets/' + two.id, 'PUT', { enabled: false })
+  check((await api('/targets/' + one.id)).enabled && !(await api('/targets/' + two.id)).enabled, 'A2 isolated batch target-state transitions restored and verified by GET')
 
   // A3: explicit, null/default, disabled and removed references; real plan-editor readbacks.
   await goto('/protection/retention/' + retentionId + '?q=Managed')

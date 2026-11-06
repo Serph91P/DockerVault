@@ -76,6 +76,20 @@ function fixtures() {
   )
 }
 describe('durable reusable policy management', () => {
+  it.each(['detail still exists', 'incomplete usage'])('does not confirm deletion with contradictory readback: %s', async mode => {
+    fixtures(); let deleted = false
+    server.use(
+      http.delete('/api/v1/schedules/8', () => { deleted = true; return HttpResponse.json({ status: 'deleted' }) }),
+      http.get('/api/v1/schedules/8', () => !deleted || mode === 'detail still exists' ? HttpResponse.json({ ...schedule, targets: [] }) : new HttpResponse(null, { status: 404 })),
+      http.get('/api/v1/schedules', () => HttpResponse.json(deleted ? [] : [schedule])),
+      http.get('/api/v1/targets', () => HttpResponse.json(deleted && mode === 'incomplete usage' ? [{ id: 1, name: 'Unverified', target_type: 'path', enabled: true, removed_at: null }] : [])),
+    )
+    const user = mount('/protection/schedules/8')
+    await user.click(await screen.findByRole('button', { name: 'Delete schedule Nightly' }))
+    await user.click(within(screen.getByRole('dialog', { name: 'Delete Schedule' })).getByRole('button', { name: 'Delete', exact: true }))
+    await screen.findByText('Failed to verify deletion. Inspect server state before retrying.')
+    expect(screen.getByLabelText('Location')).toHaveTextContent('/protection/schedules/8')
+  })
   it('locks an unconfirmed run batch instead of offering a blind second POST', async () => {
     fixtures(); let requests = 0
     server.use(http.post('/api/v1/schedules/8/trigger-all', () => { requests++; return HttpResponse.error() }))
