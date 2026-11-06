@@ -528,7 +528,7 @@ export default function BackupBrowser({ backup, onClose, inline = false }: Backu
           ) : (
             <div className="text-center py-12">
               <Archive className="w-12 h-12 text-dark-500 mx-auto mb-4" />
-              <p className="text-dark-400">This backup is empty</p>
+              <p className="text-dark-400">{search.trim() ? 'No matching archive paths' : 'This backup is empty'}</p>
             </div>
           )}
         </div>

@@ -103,7 +103,7 @@ function HistoryDetail({ view, rawId }: { view: string; rawId: string }) {
   const [files, setFiles] = useState(view === 'archives')
   const [logs, setLogs] = useState(view === 'runs')
   const [restore, setRestore] = useState(false)
-  const [removal, setRemoval] = useState(false)
+  const [removal, setRemoval] = useState<'archive' | 'plan' | null>(null)
   const [pending, setPending] = useState(false)
   const [result, setResult] = useState('')
   const [downloadError, setDownloadError] = useState('')
@@ -154,8 +154,10 @@ function HistoryDetail({ view, rawId }: { view: string; rawId: string }) {
         {record.can_restore && <><button className="btn-secondary" onClick={() => setFiles(!files)}>Browse archive files</button><button className="btn-secondary" disabled={pending || query.isError} onClick={() => setRestore(true)}>Restore archive</button><button className="btn-secondary" disabled={pending} onClick={() => void download()}>Download whole archive</button></>}
         {record.can_sync && <button className="btn-secondary" disabled={pending || query.isError} onClick={() => void sync()}>{record.remote_sync_details?.some(copy => copy.status === 'failed') ? 'Retry failed sync / sync new destinations' : 'Sync to new remote destinations'}</button>}
         <button className="btn-secondary" onClick={() => setLogs(!logs)}>{logs ? 'Hide run logs' : 'Show run logs'}</button>
-        {record.archive_state === 'recorded' && <button className="btn-secondary" disabled={pending || query.isError} onClick={() => setRemoval(true)}>Review copy removal</button>}
+        {record.archive_state === 'recorded' && <button className="btn-secondary" disabled={pending || query.isError} onClick={() => setRemoval('archive')}>Review copy removal</button>}
+        <button className="btn-secondary" disabled={pending || query.isError} onClick={() => setRemoval('plan')}>Review archive copy deletion for this plan</button>
       </div>
+      <p>Plan-wide copy deletion reviews all archives for Plan #{record.target_id}, independently of History filters or pagination. The plan and unselected copies are retained.</p>
       {record.local_storage_path && <Link className="underline block" to={`/storage?storage=local&path=${encodeURIComponent(record.local_storage_path.split('/').slice(0, -1).join('/'))}&returnTo=${encodeURIComponent(`/history/${view}/${id}?${historySearch(params, view)}`)}`}>Open local storage at {record.local_storage_path}</Link>}
       {record.remote_sync_details?.map(copy => <Link key={copy.storage_id} className="underline block break-all" to={`/storage?storage=${copy.storage_id}&path=${encodeURIComponent(copy.remote_path?.split('/').slice(0, -1).join('/') ?? '')}&returnTo=${encodeURIComponent(`/history/${view}/${id}?${historySearch(params, view)}`)}`}>Open storage {copy.storage_name} at {copy.remote_path ?? 'unknown path'}</Link>)}
       {result && <p role="status">{result}</p>}
@@ -163,7 +165,7 @@ function HistoryDetail({ view, rawId }: { view: string; rawId: string }) {
       {files && record.can_restore && <BackupBrowser key={id} backup={record} inline onClose={() => setFiles(false)} />}
       {logs && <BackupLogViewer backupId={id} inline onClose={() => setLogs(false)} />}
       {restore && <RestoreWizard backupId={id} onClose={() => setRestore(false)} />}
-      {removal && <RemovalDialog intent={{ kind: 'copies', backupId: id, name: `Archive #${id}` }} onClose={() => setRemoval(false)} onChanged={() => { void client.invalidateQueries({ queryKey: queryKeys.backups.all }) }} />}
+      {removal && <RemovalDialog intent={removal === 'plan' ? { kind: 'copies', targetId: record.target_id, name: record.target_name ?? `Plan #${record.target_id}` } : { kind: 'copies', backupId: id, name: `Archive #${id}` }} onClose={() => setRemoval(null)} onChanged={() => { void client.invalidateQueries({ queryKey: queryKeys.backups.all }) }} />}
     </>}
   </section>
 }

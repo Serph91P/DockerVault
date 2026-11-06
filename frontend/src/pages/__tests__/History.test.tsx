@@ -17,6 +17,33 @@ function mount(path = '/history?q=Retained&custom=keep', client = new QueryClien
 function fixtures() {
   server.use(http.get('/api/v1/backups/history', () => HttpResponse.json(page)), http.get('/api/v1/backups/history/507', () => HttpResponse.json(row)), http.get('/api/v1/backups/507/logs', () => HttpResponse.json([])))
 }
+it.each([false, true])('reaches plan-wide copy preview from a durable History route for removed=%s without selecting the visible page', async removed => {
+  fixtures()
+  const previews: unknown[] = [], executions: unknown[] = []
+  server.use(
+    http.get('/api/v1/backups/history/507', () => HttpResponse.json({ ...row, plan_removed: removed })),
+    http.get('/api/v1/targets/1', () => HttpResponse.json({}, { status: removed ? 404 : 200 })),
+    http.post('/api/v1/backups/removal/preview', async ({ request }) => { previews.push(await request.json()); return HttpResponse.json({ token: 'server-frozen-plan', scope: 'all', archive_count: 513, copy_count: 513, items: [], retained: [] }) }),
+    http.post('/api/v1/backups/removal/execute', async ({ request }) => { executions.push(await request.json()); return HttpResponse.json({ status: 'completed', succeeded: 513, failed: 0, skipped: 0, items: [] }) }),
+  )
+  const user = mount('/history/runs/507?target_id=1&q=narrow&offset=500')
+  await screen.findByRole('heading', { name: 'Run #507', exact: true })
+  expect(screen.getByLabelText('Location')).toHaveTextContent('/history/runs/507')
+  const action = await screen.findByRole('button', { name: 'Review archive copy deletion for this plan', exact: true })
+  await user.click(action)
+  const dialog = screen.getByRole('dialog', { name: 'Delete archive copies' })
+  await user.click(within(dialog).getByRole('button', { name: 'Review exact scope' }))
+  expect(await within(dialog).findByText('513 archives · 513 selected copies · all scope')).toBeVisible()
+  expect(previews).toEqual([{ scope: 'all', target_id: 1 }])
+  await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+  expect(executions).toEqual([])
+  await user.click(action)
+  await user.click(screen.getByRole('button', { name: 'Review exact scope' }))
+  await user.click(await screen.findByRole('button', { name: 'Permanently delete confirmed copies' }))
+  expect(await screen.findByRole('heading', { name: 'Selected copies removed' })).toBeVisible()
+  expect(executions).toEqual([{ token: 'server-frozen-plan' }])
+})
+
 it('shows authoritative total, pages past the old sample and preserves context through details', async () => {
   fixtures()
   const requests: URL[] = []

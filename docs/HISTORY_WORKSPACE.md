@@ -60,7 +60,18 @@ unknown live availability; disabled destinations are inaccessible. A catalog syn
 success is explicitly not a current provider probe.
 
 The detail page reuses the existing log/timeline, archive browser, RestoreWizard
-and RemovalDialog. Restore retains the existing supported backend effects; the
+and RemovalDialog. **Plan-wide copy deletion** is reached from any permanent run
+or archive detail via **Review archive copy deletion for this plan**. This remains
+available for removed plans and does not depend on loading an editable plan (the
+existing target-detail API deliberately returns 404 for removed plans). It passes
+the history record's explicit `target_id` to the canonical server preview, never
+the current History page, search, snapshot, URL plan filter or visible IDs. The dialog names the plan, displays the full server count,
+and reuses scope selection, cancel, frozen confirmation token and failed-copy retry.
+This deletes copies, not the plan; **Remove plan (retain archives)** stays separate.
+Single-archive **Review copy removal** remains on History details with `backup_ids`.
+The legacy grouped History plan-wide removal capability is thus explicitly mapped
+to a reachable routed caller, not merely retained in unroutable `Backups` source.
+Restore retains the existing supported backend effects; the
 full restore workspace remains #186. Copy removal retains #180 preview, frozen
 scope, confirmation token, actual per-copy results and failed-scope retry. Sync
 uses the canonical retry service for both failed copies and new destinations.
