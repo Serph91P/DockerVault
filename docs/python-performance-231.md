@@ -18,7 +18,7 @@ The measurements are **mixed**, not a claim that every backup is faster. Repeate
 - All three measured images report the same Python **3.14.10**, GCC 14.2.0 runtime string. Native worker pytest used Python 3.14.4; independent owner validation used 3.14.7. Those native test environments are not substituted for the image measurements.
 - Six final product-module SHA256 fingerprints match the worktree. Historical component profiling uses identical remote-storage, browse, encryption and recovery bytes; the checksum method, executor-settling helper and engine initializer have identical AST fingerprints. Later engine/Docker changes address restore staging, queued errors and enumeration, not the profiled operations. Final macro/runtime measurements exercise those later changes.
 - Each macro/profile container: **2 CPUs, 6 GiB** memory. Actual service: private, disposable SeaweedFS **4.35**, 4 GiB limit, native S3 SDK/HTTP, no cloud account or published host port.
-- Large files are exactly **1 GiB**. Small fixtures contain **25,000 files**, plus directory/link metadata in app archives. Large content includes compressible bytes and a deterministic nontrivially compressible random block pattern; profiler payload generation uses a seeded RNG.
+- Large-fixture sizes are **1,073,741,824 bytes (1 GiB) for random content** and **1,140,850,688 bytes (1.0625 GiB) for compressible content**. Both exceed or meet the required 1 GiB class; identical sizes/patterns are used before and after. Small fixtures contain **25,000 files**, plus directory/link metadata in app archives. The separate component-profiler payload is exactly **1 GiB** of seeded random bytes.
 - Sources are warmed by fixture creation and independent byte hashing. No global cache flush. Each app run has fresh owned paths/process state. The host is shared: collection-start load averages range from `4.22 5.50 7.57` to `28.56 20.65 13.67`; environment JSON preserves each collection's snapshot. Other owned test collections sometimes overlap. These observations do not prove a cause for any individual regression.
 - Two/four means concurrent **HTTP job submissions on independent source paths**. The existing global product capacity remains **two executing jobs**, including upload/cleanup. Four submitted jobs are queued under that same limit, not represented as four simultaneously executing archives.
 
@@ -68,14 +68,14 @@ Medians of three runs, seconds. Backup ends only when the catalog is completed *
 
 | Dataset | C/E | Submitted jobs | Backup baseline/final | Restore baseline/final |
 |---|---|---:|---:|---:|
-| 1 GiB compressible | no/no | 1 | 11.550 / 8.141 | 2.202 / 2.510 |
+| 1.0625 GiB compressible | no/no | 1 | 11.550 / 8.141 | 2.202 / 2.510 |
 | 1 GiB random | no/no | 1 | 6.574 / 7.879 | 1.931 / 3.112 |
-| 1 GiB compressible | yes/yes | 1 | 3.511 / 4.041 | 2.821 / 4.948 |
+| 1.0625 GiB compressible | yes/yes | 1 | 3.511 / 4.041 | 2.821 / 4.948 |
 | 1 GiB random | yes/yes | 1 | 28.959 / 43.877 | 7.904 / 9.317 |
 | 25k small | no/no | 1 | 1.597 / 1.684 | 2.133 / 2.189 |
 | 25k small | yes/yes | 1 | 1.999 / 1.841 | 2.747 / 2.510 |
 | 1 GiB random | no/yes | 2 | 19.132 / 23.575 | 12.510 / 16.182 |
-| 1 GiB compressible | yes/no | 4 | 10.004 / 8.978 | 8.616 / 10.811 |
+| 1.0625 GiB compressible | yes/no | 4 | 10.004 / 8.978 | 8.616 / 10.811 |
 | 25k small | no/yes | 2 | 2.602 / 2.064 | 17.073 / 5.877 |
 | 25k small | yes/no | 4 | 6.320 / 3.826 | 33.390 / 13.634 |
 
@@ -102,7 +102,7 @@ These are real owned container IDs, stop/start and HTTP response-body checks, no
 
 | Workload case | Backup app-running down, baseline/final | Backup app-ready down, baseline/final | Restore app-ready down, baseline/final |
 |---|---:|---:|---:|
-| 1 GiB compressible raw | 5.013 / 2.068 | 5.580 / 2.747 | 3.095 / 2.383 |
+| 1.0625 GiB compressible raw | 5.013 / 2.068 | 5.580 / 2.747 | 3.095 / 2.383 |
 | 1 GiB random gzip+encrypted | 32.192 / 19.566 | 32.614 / 19.949 | 7.174 / 2.910 |
 
 Across **54 real single-file downloads per main matrix**, concurrently issued health calls show **10 → 0 one-second timeouts**; the maximum successful sampled health latency is **0.9903 → 0.2197 seconds**. The regression tests additionally hold actual worker threads to verify event-loop progress, shared four-slot capacity and cleanup before/after response start. This is evidence for these fixtures, not a universal latency SLA.
