@@ -15,7 +15,7 @@ async function response(path, method = 'GET', data) { return context.request.fet
 async function api(path, method = 'GET', data) { const result = await response(path, method, data); assert.ok(result.ok(), `${method} ${path}: ${result.status()} ${await result.text()}`); return result.json() }
 async function control(action, data = {}) { return api('/test-policy187/' + action, 'POST', data) }
 async function goto(path) { await page.goto(base + path) }
-async function savePolicy(kind) { await page.getByRole('button', { name: 'Save', exact: true }).click(); await page.waitForURL(new RegExp(`/protection/${kind}/[1-9]\\d*(\\?|$)`)); await page.getByRole('link', { name: 'Edit', exact: true }).waitFor(); return Number(new URL(page.url()).pathname.split('/')[3]) }
+async function savePolicy(kind, keyboard = false) { const button = page.getByRole('button', { name: 'Save', exact: true }); if (keyboard) await button.press('Enter'); else await button.click(); await page.waitForURL(new RegExp(`/protection/${kind}/[1-9]\\d*(\\?|$)`)); await page.getByRole('link', { name: 'Edit', exact: true }).waitFor(); return Number(new URL(page.url()).pathname.split('/')[3]) }
 async function settled(targetId) {
   // Runner Playwright1.63 treats an async waitForFunction's Promise as truthy; poll the actual HTTP result.
   await expect.poll(async () => (await api('/backups?target_id=' + targetId))[0]?.status, { timeout: 15000, intervals: [100] }).toBe('completed')
@@ -51,7 +51,7 @@ try {
   await field('Policy name', 'Managed defaults')
   for (const [label, value] of [['Keep Last', ''], ['Keep Last', '0'], ['Keep Last', '1001'], ['Max age (days)', '0'], ['Max age (days)', '36501']]) {
     await field(label, value)
-    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    await page.getByRole('button', { name: 'Save', exact: true }).press('Enter')
     check(await page.getByLabel(label, { exact: true }).getAttribute('aria-invalid') === 'true', `A1 inline ${label}=${value || 'empty'}; route/values retained`)
     await field(label, label === 'Keep Last' ? '3' : '365')
   }
@@ -66,7 +66,7 @@ try {
   await page.waitForFunction(() => document.querySelector('input[aria-invalid="true"]') !== null)
   check(await page.getByLabel('Policy name', { exact: true }).inputValue() === 'Managed defaults' && page.url().includes('/new'), 'A1 real native 422 under explicitly modified request preserves form and route')
   await page.unroute('**/api/v1/retention', rejectKeepLast)
-  const retentionId = await savePolicy('retention')
+  const retentionId = await savePolicy('retention', true)
   const retention = await api('/retention/' + retentionId)
   check(JSON.stringify([retention.keep_last, retention.keep_daily, retention.keep_weekly, retention.keep_monthly, retention.keep_yearly, retention.max_age_days]) === JSON.stringify([3, 7, 4, 6, 2, 365]), 'A1 first successful create GET confirms every documented default')
 
@@ -84,7 +84,7 @@ try {
   const preview = await api('/schedules/preview', 'POST', { cron_expression: schedule.cron_expression })
   await page.getByRole('heading', { name: 'Actual scheduler jobs', exact: true }).waitFor()
   await page.getByText(new RegExp('server timezone: ' + preview.timezone)).waitFor()
-  console.log('PREVIEW-BINDING', JSON.stringify({ timezone: preview.timezone, main: await page.locator('main').innerText() }))
+
   check((await page.locator('main').innerText()).includes(preview.timezone), 'A2 displayed server timezone agrees with native preview')
   check((await page.locator('main').innerText()).includes(new Date(preview.next_runs[0]).toLocaleString('en-US', { timeZone: 'UTC' })), 'A2 displayed next occurrence agrees with native preview')
   const dst = await api('/schedules/preview', 'POST', { cron_expression: '30 2 * * *', base_time: '2027-03-13T00:00:00Z', count: 3 })
@@ -119,8 +119,16 @@ try {
   await page.getByRole('button', { name: 'Run All', exact: true }).click()
   await page.getByText(/Accepted 1 runs, skipped 1/).waitFor()
   const actualRun = await settled(one.id)
-  console.log('RUN-READBACK', JSON.stringify(actualRun), JSON.stringify(await control('snapshot')))
   check(actualRun.status === 'completed' && actualRun.file_size > 0, 'A2 run-now accepted/skipped is distinct from actual completed archive')
+  let batchPosts = 0
+  const loseBatch = async route => { batchPosts++; const native = await route.fetch(); check(native.ok(), 'A2 lost batch response follows actual native acceptance'); await route.abort() }
+  await page.route('**/api/v1/schedules/' + scheduleId + '/trigger-all', loseBatch)
+  await page.getByRole('button', { name: 'Run All', exact: true }).click()
+  await page.getByText(/Action result not confirmed/).waitFor()
+  check(await page.getByRole('button', { name: 'Run All', exact: true }).isDisabled() && batchPosts === 1, 'A2 unknown non-idempotent run batch is locked without blind replay')
+  await expect.poll(async () => (await api('/backups?target_id=' + one.id)).filter(row => row.status === 'completed').length, { timeout: 15000 }).toBe(2)
+  check((await control('snapshot')).backups.filter(row => row.target_id === one.id && row.exists).length === 2, 'A2 unknown batch really completed a second file-backed native archive')
+  await page.unroute('**/api/v1/schedules/' + scheduleId + '/trigger-all', loseBatch)
 
   // A3: explicit, null/default, disabled and removed references; real plan-editor readbacks.
   await goto('/protection/retention/' + retentionId + '?q=Managed')
@@ -170,6 +178,16 @@ try {
   const gfsResult = await api('/retention/' + gfsPlan.id + '/apply', 'POST')
   snapshot = await control('snapshot')
   check(gfsResult.deleted === 1 && snapshot.backups.filter(row => gfsRows.ids.includes(row.id) && row.exists).length === 2, 'A4 real GFS daily union protects two, not KeepLast+Daily summed three')
+  await goto('/protection/retention/' + defaultPolicy.id + '/edit')
+  for (const label of ['Daily', 'Weekly', 'Monthly', 'Yearly']) await field(label, '0')
+  await field('Keep Last', '1'); await field('Max age (days)', '1')
+  await savePolicy('retention', true)
+  const updatedDefault = await api('/retention/' + defaultPolicy.id)
+  check(updatedDefault.name === 'default' && updatedDefault.keep_last === 1 && updatedDefault.max_age_days === 1, 'A4 default policy edit persists through native GET')
+  const defaultRows = await control('seed-pruning', { target_id: implicit.id, kind: 'age' })
+  const defaultResult = await api('/retention/' + implicit.id + '/apply', 'POST')
+  snapshot = await control('snapshot')
+  check(defaultResult.deleted === 2 && snapshot.backups.filter(row => defaultRows.ids.includes(row.id) && row.exists).length === 1 && (await api('/targets/' + implicit.id)).retention_policy_id === null, 'A4 actual default/null fallback uses edited rules to prune real files/SQLite')
   const unused = await api('/retention', 'POST', { name: 'Unused deletion' })
   await goto('/protection/retention/' + unused.id)
   await page.getByRole('button', { name: 'Delete policy Unused deletion', exact: true }).click()
@@ -207,6 +225,8 @@ try {
       release()
     }
     await dialog.getByRole('heading', { name: 'Cleanup result: ' + mode, exact: true }).waitFor()
+    const counts = { empty: '0 deleted; 0 failed', success: '2 deleted; 0 failed', partial: '1 deleted; 1 failed', failure: '0 deleted; 2 failed' }
+    check((await dialog.innerText()).includes(counts[mode]), 'A5 '+mode+' visible exact final counters match independent expected effects')
     if (mode === 'success') await page.unroute('**/api/v1/retention/cleanup-orphaned', hold)
     snapshot = await control('snapshot')
     const remaining = mode === 'partial' ? [true, false] : mode === 'failure' ? [true, true] : [false, false]
@@ -254,6 +274,13 @@ try {
   check((await response('/schedules/' + scheduleId)).status() === 404 && (await api('/targets?include_removed=true')).every(target => target.schedule_id !== scheduleId), 'A3 schedule deletion verifies policy absence and all active/removed unlinks')
 
   // A6: native routes, safe context, query filters, narrow reflow, keyboard cancel/save.
+  await api('/schedules', 'POST', { name: 'Filter inactive', description: 'Find description', enabled: false, cron_expression: '0 3 * * *' })
+  await goto('/protection/schedules?q=Find&status=disabled')
+  await page.getByRole('link', { name: 'Filter inactive', exact: true }).waitFor()
+  check(await page.getByRole('searchbox').inputValue() === 'Find', 'A6 description search and disabled schedule filter from durable URL')
+  await page.getByRole('combobox', { name: 'Status', exact: true }).selectOption('enabled')
+  await page.getByText('No matching policies.', { exact: true }).waitFor()
+  check((await api('/schedules')).length > 0, 'A6 enabled schedule filter gives truthful filtered-empty state')
   await goto('/protection/retention?q=Managed&usage=used')
   await page.getByRole('link', { name: 'Managed bounds', exact: true }).click()
   await page.getByRole('link', { name: 'Edit', exact: true }).click()

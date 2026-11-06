@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it } from 'vitest'
@@ -18,6 +18,11 @@ beforeEach(() => {
   server.use(http.get('/api/v1/encryption/status', () => HttpResponse.json({ setup_completed: true, encryption_enabled: true, onboarding_deferred: false })))
 })
 describe('workspace routes', () => {
+  it.each([['/protection/schedules/new', 'New schedule', 'Schedules'], ['/protection/schedules/8/edit', 'Edit schedule', 'Schedules'], ['/protection/retention/7', 'Retention policy detail', 'Retention']])('names the policy subroute and links its breadcrumb at %s', async (path, title, section) => {
+    renderPath(path)
+    await waitFor(() => expect(document.title).toBe(`${title} · DockerVault`))
+    expect(within(screen.getByRole('navigation', { name: 'Breadcrumb' })).getByRole('link', { name: section })).toHaveAttribute('href', path.startsWith('/protection/schedules') ? '/protection/schedules' : '/protection/retention')
+  })
   it.each(['/protection/schedules/new', '/protection/retention/new', '/protection/schedules/8/edit', '/protection/retention/7/edit', '/protection/schedules/edit', '/protection/retention/edit'])('never interprets a static policy segment as a plan at %s', async path => {
     let planReads = 0
     server.use(http.get('/api/v1/targets/:id', () => { planReads++; return new HttpResponse(null, { status: 404 }) }))
