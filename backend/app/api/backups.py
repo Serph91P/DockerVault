@@ -9,6 +9,10 @@ import re
 import shutil
 import tarfile
 import tempfile
+import json
+import threading
+import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Literal, Optional
@@ -920,6 +924,71 @@ MAX_ARCHIVE_LISTING = 2000
 # Bound on concurrent archive scans so a burst of large listings cannot exhaust
 # the worker pool or monopolize the event loop.
 _archive_scan_semaphore = asyncio.Semaphore(4)
+_ARCHIVE_CACHE_PAGES = 16
+_ARCHIVE_CACHE_BYTES = 8 * 1024 * 1024
+_ARCHIVE_CACHE_MEMBERS = 32768
+_ARCHIVE_CACHE_TTL = 60
+# Only bounded response metadata lives in private process memory, never tar bytes,
+# private keys or persistent plaintext. Encrypted requests still decrypt/authenticate.
+_archive_listing_cache = OrderedDict()
+_archive_cache_lock = threading.Lock()
+
+
+def _archive_identity(path):
+    stat = os.stat(path)
+    return (
+        os.path.realpath(path),
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+    )
+
+
+def _cached_archive_entries(archive_path, mode, limit, offset, cache_identity=None):
+    before = _archive_identity(archive_path)
+    key = (cache_identity or before, mode)
+    with _archive_cache_lock:
+        now = time.monotonic()
+        for expired in [
+            key
+            for key, value in _archive_listing_cache.items()
+            if now - value[0] >= _ARCHIVE_CACHE_TTL
+        ]:
+            del _archive_listing_cache[expired]
+        cached = _archive_listing_cache.get(key)
+        if cached:
+            _archive_listing_cache.move_to_end(key)
+    if cached:
+        data = json.loads(cached[1])
+        if min(offset + limit, data[1]) <= len(data[0]) or offset >= data[1]:
+            result = (
+                [BackupFileInfo(**entry) for entry in data[0][offset : offset + limit]],
+                data[1],
+            )
+        else:
+            # shortcut: archives beyond the bounded metadata prefix scan uncached
+            # pages; upgrade only if profiling justifies an encrypted disk index.
+            result = _scan_archive_entries(archive_path, mode, limit, offset)
+    else:
+        index = []
+        result = _scan_archive_entries(archive_path, mode, limit, offset, index)
+    if _archive_identity(archive_path) != before:
+        raise OSError("Archive changed during listing")
+    if not cached:
+        encoded = b"[[" + b",".join(index) + b"]," + str(result[1]).encode() + b"]"
+        if len(encoded) <= _ARCHIVE_CACHE_BYTES:
+            with _archive_cache_lock:
+                _archive_listing_cache[key] = (time.monotonic(), encoded)
+                _archive_listing_cache.move_to_end(key)
+                while (
+                    len(_archive_listing_cache) > _ARCHIVE_CACHE_PAGES
+                    or sum(len(value[1]) for value in _archive_listing_cache.values())
+                    > _ARCHIVE_CACHE_BYTES
+                ):
+                    _archive_listing_cache.popitem(last=False)
+    return result
 
 
 def _member_to_info(member: tarfile.TarInfo) -> BackupFileInfo:
@@ -937,25 +1006,43 @@ def _member_to_info(member: tarfile.TarInfo) -> BackupFileInfo:
     )
 
 
-def _scan_archive_entries(archive_path: str, mode: str, limit: int, offset: int):
+def _scan_archive_entries(
+    archive_path: str, mode: str, limit: int, offset: int, index=None
+):
     """Blocking archive scan returning (members, total). Runs in a worker thread."""
     window = []
     total = 0
+    index_bytes = 64
+    indexing = index is not None
     # Native stream=True disables TarFile's otherwise unbounded TarInfo cache.
     with tarfile.open(archive_path, mode, stream=True) as tar:
         for member in tar:
+            info = None
+            if indexing:
+                info = _member_to_info(member)
+                encoded = json.dumps(info.model_dump()).encode()
+                index_bytes += len(encoded) + 1
+                if (
+                    index_bytes <= _ARCHIVE_CACHE_BYTES
+                    and len(index) < _ARCHIVE_CACHE_MEMBERS
+                ):
+                    index.append(encoded)
+                else:
+                    indexing = False
             if offset <= total < offset + limit:
-                window.append(_member_to_info(member))
+                window.append(info or _member_to_info(member))
             total += 1
     return window, total
 
 
 async def _list_archive_entries(
-    archive_path: str, mode: str, limit: int, offset: int
+    archive_path: str, mode: str, limit: int, offset: int, *, cache_identity=None
 ) -> tuple[List[BackupFileInfo], int]:
     """Join the real scan before the caller releases its slot or deletes input."""
     return await _await_io_settled(
-        asyncio.to_thread(_scan_archive_entries, archive_path, mode, limit, offset)
+        asyncio.to_thread(
+            _cached_archive_entries, archive_path, mode, limit, offset, cache_identity
+        )
     )
 
 
@@ -972,6 +1059,9 @@ async def _browse_archive(backup, limit, offset, private_key=None):
                     detail="Backup file not found locally or on any remote storage.",
                 )
             backup.file_path = resolved
+            identity = await _await_io_settled(
+                asyncio.to_thread(_archive_identity, resolved)
+            )
             if private_key is not None:
                 archive, mode, temp_path = await _get_decrypted_archive_path(
                     backup, private_key
@@ -983,7 +1073,20 @@ async def _browse_archive(backup, limit, offset, private_key=None):
                         detail="Cannot browse encrypted backups without private key. Use POST endpoint with your private key.",
                     )
                 archive, mode = resolved, _get_tar_mode(resolved)
-            return await _list_archive_entries(archive, mode, limit, offset)
+            if (
+                await _await_io_settled(asyncio.to_thread(_archive_identity, resolved))
+                != identity
+            ):
+                raise OSError("Archive changed during preparation")
+            result = await _list_archive_entries(
+                archive, mode, limit, offset, cache_identity=identity
+            )
+            if (
+                await _await_io_settled(asyncio.to_thread(_archive_identity, resolved))
+                != identity
+            ):
+                raise OSError("Archive changed during listing")
+            return result
         except tarfile.TarError as exc:
             raise HTTPException(
                 status_code=500, detail="Failed to read backup archive"
@@ -1274,6 +1377,123 @@ async def list_encrypted_backup_files(
     return files
 
 
+def _open_download_member(archive_path, mode, name, resources):
+    """Retain one TarInfo, preserving last-name-wins and native link lookup order."""
+    import posixpath
+
+    filename = _sanitize_filename(name)
+    before = None
+    seen = set()
+    for _ in range(1000):
+        lookup = (name, before)
+        if lookup in seen:
+            raise KeyError(name)
+        seen.add(lookup)
+        tar = tarfile.open(archive_path, mode, stream=True)
+        resources["tar"] = tar
+        selected = None
+        for member in tar:
+            if before is not None and member.offset >= before:
+                break
+            if member.name == name:
+                selected = member
+        if selected is None:
+            raise KeyError(name)
+        if selected.isdir():
+            raise HTTPException(status_code=400, detail="Cannot download directories")
+        if selected.issym() or selected.islnk():
+            name = posixpath.normpath(
+                posixpath.join(posixpath.dirname(selected.name), selected.linkname)
+                if selected.issym()
+                else selected.linkname
+            )
+            before = selected.offset if selected.islnk() else None
+            tar.close()
+            continue
+        resources["file"] = tar.extractfile(selected)
+        if resources["file"] is None:
+            raise HTTPException(status_code=500, detail="Failed to extract file")
+        return filename
+    raise KeyError(name)
+
+
+class _ArchiveFileResponse(StreamingResponse):
+    """Own the slot and every resource even if no body chunk is ever requested."""
+
+    def __init__(self, backup, file_path, private_key=None):
+        self.backup = backup
+        self.file_path = file_path
+        self.private_key = private_key
+        super().__init__(
+            iter(()),
+            media_type="application/octet-stream",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def __call__(self, scope, receive, send):
+        async with _archive_scan_semaphore:
+            remote_dir = None
+            plaintext = None
+            resources = {}
+
+            def cleanup():
+                try:
+                    if resources.get("file") is not None:
+                        resources["file"].close()
+                finally:
+                    try:
+                        if resources.get("tar") is not None:
+                            resources["tar"].close()
+                    finally:
+                        if plaintext:
+                            plaintext.unlink(missing_ok=True)
+                        if remote_dir:
+                            shutil.rmtree(remote_dir, ignore_errors=True)
+
+            try:
+                resolved, remote_dir = await _ensure_backup_locally(self.backup)
+                if not resolved:
+                    raise HTTPException(
+                        status_code=404,
+                        detail="Backup file not found locally or on any remote storage.",
+                    )
+                self.backup.file_path = resolved
+                if self.private_key is not None:
+                    archive, mode, plaintext = await _get_decrypted_archive_path(
+                        self.backup, self.private_key
+                    )
+                else:
+                    archive, mode = resolved, _get_tar_mode(resolved)
+                filename = await _await_io_settled(
+                    asyncio.to_thread(
+                        _open_download_member, archive, mode, self.file_path, resources
+                    )
+                )
+                self.headers["Content-Disposition"] = (
+                    f'attachment; filename="{filename}"'
+                )
+
+                async def chunks():
+                    while chunk := await _await_io_settled(
+                        asyncio.to_thread(resources["file"].read, 65536)
+                    ):
+                        yield chunk
+
+                self.body_iterator = chunks()
+                await super().__call__(scope, receive, send)
+            except KeyError as exc:
+                raise HTTPException(
+                    status_code=404, detail="File not found in archive"
+                ) from exc
+            except tarfile.TarError as exc:
+                raise HTTPException(
+                    status_code=500, detail="Failed to read backup archive"
+                ) from exc
+            finally:
+                self.private_key = None
+                await _await_io_settled(asyncio.to_thread(cleanup))
+
+
 @router.post("/{backup_id}/files/{file_path:path}")
 async def download_encrypted_backup_file(
     backup_id: int, file_path: str, body: BrowseEncryptedRequest
@@ -1295,86 +1515,9 @@ async def download_encrypted_backup_file(
                 detail="Backup is not encrypted. Use GET endpoint instead.",
             )
 
-    remote_temp_dir: Path | None = None
-    temp_path: Path | None = None
-    tar = None
-    try:
-        resolved_path, remote_temp_dir = await _ensure_backup_locally(backup)
-        if not resolved_path:
-            raise HTTPException(
-                status_code=404,
-                detail="Backup file not found locally or on any remote storage.",
-            )
-        backup.file_path = resolved_path
-
-        archive_path, mode, temp_path = await _get_decrypted_archive_path(
-            backup, body.private_key
-        )
-
-        tar = tarfile.open(archive_path, mode)
-        normalized_path = _validate_archive_path(file_path)
-
-        member = tar.getmember(normalized_path)
-
-        if member.isdir():
-            tar.close()
-            if temp_path and temp_path.exists():
-                temp_path.unlink(missing_ok=True)
-            if remote_temp_dir:
-                shutil.rmtree(remote_temp_dir, ignore_errors=True)
-            raise HTTPException(status_code=400, detail="Cannot download directories")
-
-        file_obj = tar.extractfile(member)
-        if file_obj is None:
-            tar.close()
-            if temp_path and temp_path.exists():
-                temp_path.unlink(missing_ok=True)
-            if remote_temp_dir:
-                shutil.rmtree(remote_temp_dir, ignore_errors=True)
-            raise HTTPException(status_code=500, detail="Failed to extract file")
-
-        filename = _sanitize_filename(member.name)
-        cleanup_temp = temp_path
-        cleanup_remote_dir = remote_temp_dir
-
-        def iter_file():
-            try:
-                while chunk := file_obj.read(65536):
-                    yield chunk
-            finally:
-                file_obj.close()
-                tar.close()
-                if cleanup_temp and cleanup_temp.exists():
-                    cleanup_temp.unlink(missing_ok=True)
-                if cleanup_remote_dir:
-                    shutil.rmtree(cleanup_remote_dir, ignore_errors=True)
-
-        return StreamingResponse(
-            iter_file(),
-            media_type="application/octet-stream",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Cache-Control": "no-store",
-            },
-        )
-
-    except KeyError:
-        if tar:
-            tar.close()
-        if temp_path and temp_path.exists():
-            temp_path.unlink(missing_ok=True)
-        if remote_temp_dir:
-            shutil.rmtree(remote_temp_dir, ignore_errors=True)
-        raise HTTPException(status_code=404, detail="File not found in archive")
-    except tarfile.TarError as e:
-        if tar:
-            tar.close()
-        if temp_path and temp_path.exists():
-            temp_path.unlink(missing_ok=True)
-        if remote_temp_dir:
-            shutil.rmtree(remote_temp_dir, ignore_errors=True)
-        logger.error("Failed to extract file from decrypted archive: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to read backup archive")
+    return _ArchiveFileResponse(
+        backup, _validate_archive_path(file_path), body.private_key
+    )
 
 
 @router.get("/{backup_id}/files", response_model=List[BackupFileInfo])
@@ -1423,77 +1566,9 @@ async def download_backup_file(backup_id: int, file_path: str):
         if backup.status != BackupStatus.COMPLETED:
             raise HTTPException(status_code=400, detail="Backup is not completed")
 
-    remote_temp_dir: Path | None = None
-    tar = None
-    try:
-        resolved_path, remote_temp_dir = await _ensure_backup_locally(backup)
-        if not resolved_path:
-            raise HTTPException(
-                status_code=404,
-                detail="Backup file not found locally or on any remote storage.",
-            )
-        backup.file_path = resolved_path
-
-        # Handle encrypted backups
-        archive_path = backup.file_path
-        if backup.encrypted and archive_path.endswith(".enc"):
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot download from encrypted backups without private key. Use POST endpoint with your private key.",
-            )
-
-        mode = _get_tar_mode(archive_path)
-
-        tar = tarfile.open(archive_path, mode)
-        normalized_path = _validate_archive_path(file_path)
-
-        member = tar.getmember(normalized_path)
-
-        if member.isdir():
-            tar.close()
-            if remote_temp_dir:
-                shutil.rmtree(remote_temp_dir, ignore_errors=True)
-            raise HTTPException(status_code=400, detail="Cannot download directories")
-
-        file_obj = tar.extractfile(member)
-        if file_obj is None:
-            tar.close()
-            if remote_temp_dir:
-                shutil.rmtree(remote_temp_dir, ignore_errors=True)
-            raise HTTPException(status_code=500, detail="Failed to extract file")
-
-        filename = _sanitize_filename(member.name)
-        cleanup_remote_dir = remote_temp_dir
-
-        def iter_file():
-            try:
-                while chunk := file_obj.read(65536):
-                    yield chunk
-            finally:
-                file_obj.close()
-                tar.close()
-                if cleanup_remote_dir:
-                    shutil.rmtree(cleanup_remote_dir, ignore_errors=True)
-
-        return StreamingResponse(
-            iter_file(),
-            media_type="application/octet-stream",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Cache-Control": "no-store",
-            },
+    if backup.encrypted:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot download from encrypted backups without private key. Use POST endpoint with your private key.",
         )
-
-    except KeyError:
-        if tar:
-            tar.close()
-        if remote_temp_dir:
-            shutil.rmtree(remote_temp_dir, ignore_errors=True)
-        raise HTTPException(status_code=404, detail="File not found in archive")
-    except tarfile.TarError as e:
-        if tar:
-            tar.close()
-        if remote_temp_dir:
-            shutil.rmtree(remote_temp_dir, ignore_errors=True)
-        logger.error("Failed to extract file from archive: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to read backup archive")
+    return _ArchiveFileResponse(backup, _validate_archive_path(file_path))

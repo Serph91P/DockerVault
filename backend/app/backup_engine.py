@@ -9,9 +9,11 @@ import logging
 import os
 import re
 import shlex
+import signal
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import time
 from collections import defaultdict
 from contextlib import AsyncExitStack
@@ -335,6 +337,20 @@ class BackupEngine:
             await self.run_backup(backup_id)
         except Exception as exc:
             logger.error("Queued backup %d failed: %s", backup_id, exc)
+            # Preflight can fail before the inner job owns its status updates.
+            async with async_session() as session:
+                await session.execute(
+                    update(Backup)
+                    .where(
+                        Backup.id == backup_id, Backup.status == BackupStatus.PENDING
+                    )
+                    .values(
+                        status=BackupStatus.FAILED,
+                        error_message=str(exc),
+                        completed_at=datetime.now(timezone.utc),
+                    )
+                )
+                await session.commit()
         finally:
             self.active_backups.pop(backup_id, None)
             self._queue.task_done()
@@ -717,6 +733,7 @@ class BackupEngine:
             start_order = []  # Order for restarting containers
             operation_error = None
             workload_claim = None
+            snapshot_restart_failures = None
 
             try:
                 if target.target_type == "stack" and target.stack_name:
@@ -816,6 +833,22 @@ class BackupEngine:
                 )
                 plaintext_path = Path(backup_path)
                 plaintext_created = plaintext_path not in preexisting_files
+
+                # The settled archive no longer reads workload sources. Hooks keep
+                # their existing encryption-success/stopped-workload semantics.
+                if containers_to_stop and not target.post_backup_command:
+                    restart_order = list(
+                        dict.fromkeys([*start_order, *reversed(containers_to_stop)])
+                    )
+                    failures = await self._restart_containers_cancellation_safe(
+                        restart_order, original_states, backup_id
+                    )
+                    snapshot_restart_failures = failures
+                    await journal.recovered(operation_id, failures)
+                    if failures:
+                        raise RuntimeError(
+                            "Failed to restart container(s): " + ", ".join(failures)
+                        )
 
                 await self._notify_progress(backup_id, 80, "Calculating checksum...")
 
@@ -922,8 +955,12 @@ class BackupEngine:
                     if container_name not in restart_order
                 )
                 try:
-                    restart_failures = await self._restart_containers_cancellation_safe(
-                        restart_order, original_states, backup_id
+                    restart_failures = (
+                        snapshot_restart_failures
+                        if snapshot_restart_failures is not None
+                        else await self._restart_containers_cancellation_safe(
+                            restart_order, original_states, backup_id
+                        )
                     )
                     if operation_id is not None:
                         await journal.recovered(operation_id, restart_failures)
@@ -2019,16 +2056,12 @@ class BackupEngine:
 
     async def _calculate_checksum(self, file_path: str) -> str:
         """Calculate SHA256 checksum of file."""
-        loop = asyncio.get_event_loop()
 
         def calc():
-            sha256 = hashlib.sha256()
             with open(file_path, "rb") as f:
-                for chunk in iter(lambda: f.read(8192), b""):
-                    sha256.update(chunk)
-            return sha256.hexdigest()
+                return hashlib.file_digest(f, "sha256").hexdigest()
 
-        return await loop.run_in_executor(None, calc)
+        return await self._run_executor_cancellation_safe(calc)
 
     async def _run_hook(self, command: str):
         """Run a pre/post backup hook command safely.
@@ -2053,20 +2086,45 @@ class BackupEngine:
         executable = args[0]
         logger.info("Executing hook command: %s", executable)
 
-        process = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            _stdout, _stderr = await asyncio.wait_for(
-                process.communicate(),
-                timeout=settings.HOOK_COMMAND_TIMEOUT,
+        spawning = asyncio.create_task(
+            asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
-        except asyncio.TimeoutError:
-            process.kill()
-            await process.wait()
-            raise Exception(f"Hook '{executable}' timed out")
+        )
+        communication = None
+        try:
+            process = await asyncio.shield(spawning)
+            communication = asyncio.create_task(process.communicate())
+            await asyncio.wait_for(
+                asyncio.shield(communication), timeout=settings.HOOK_COMMAND_TIMEOUT
+            )
+        except (asyncio.CancelledError, TimeoutError) as exc:
+
+            async def cleanup():
+                process = await spawning
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                if communication is not None:
+                    await communication
+                else:
+                    await process.communicate()
+
+            settled = asyncio.create_task(cleanup())
+            while not settled.done():
+                try:
+                    with CancelScope(shield=True):
+                        await asyncio.shield(settled)
+                except asyncio.CancelledError:
+                    continue
+            settled.result()
+            if isinstance(exc, TimeoutError):
+                raise Exception(f"Hook '{executable}' timed out") from exc
+            raise
 
         if process.returncode != 0:
             raise Exception(
@@ -2172,6 +2230,32 @@ class BackupEngine:
                 ) = await self._acquire_workload_locks(
                     target, containers_to_stop, restore_path
                 )
+                # Immutable archive preparation holds the same claims but need not
+                # interrupt sources. Authentication still precedes every write.
+                backup_file_to_extract = backup_file
+                if is_encrypted:
+                    try:
+                        # Register a unique staging name before awaiting the codec;
+                        # startup already reclaims .tmp files under BACKUP_BASE_PATH.
+                        fd, name = tempfile.mkstemp(
+                            prefix=".dockervault-restore-",
+                            suffix=".tmp",
+                            dir=settings.BACKUP_BASE_PATH,
+                        )
+                        temp_decrypted_file = Path(name)
+                        os.close(fd)
+                        decrypted_path = await decrypt_backup(
+                            Path(backup_file),
+                            Path(encryption_key_path),
+                            private_key,
+                            temp_decrypted_file,
+                        )
+                        backup_file_to_extract = str(decrypted_path)
+                        logger.info(f"Decrypted backup to {decrypted_path}")
+                    except DecryptionError as e:
+                        logger.error(f"Decryption failed: {e}")
+                        raise ValueError(f"Failed to decrypt backup: {e}")
+
                 containers_to_stop = list(dict.fromkeys(identities.values()))
                 for container_name in containers_to_stop:
                     original_states[
@@ -2195,28 +2279,14 @@ class BackupEngine:
 
                         await journal.stop(operation_id, container_name, confirmed=True)
 
-                # Handle encrypted backups
-                backup_file_to_extract = backup_file
-
-                if is_encrypted:
-                    try:
-                        encrypted_path = Path(backup_file)
-                        key_path = Path(encryption_key_path)
-
-                        # Decrypt to temp file
-                        decrypted_path = await decrypt_backup(
-                            encrypted_path, key_path, private_key
-                        )
-                        backup_file_to_extract = str(decrypted_path)
-                        temp_decrypted_file = decrypted_path
-                        logger.info(f"Decrypted backup to {decrypted_path}")
-                    except DecryptionError as e:
-                        logger.error(f"Decryption failed: {e}")
-                        raise ValueError(f"Failed to decrypt backup: {e}")
-
                 # Extract backup
                 await journal.phase(operation_id, "extract")
-                is_compressed = backup_file_to_extract.endswith(".gz")
+                original_archive = (
+                    Path(backup_file).with_suffix("")
+                    if is_encrypted
+                    else Path(backup_file)
+                )
+                is_compressed = original_archive.suffix == ".gz"
                 mode = "r:gz" if is_compressed else "r"
 
                 layout = (backup.backup_metadata or {}).get("archive_layout", {})

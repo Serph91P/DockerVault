@@ -99,7 +99,7 @@ class DockerClientWrapper:
         """List all containers with details."""
         loop = asyncio.get_event_loop()
         containers = await loop.run_in_executor(
-            None, lambda: self.client.containers.list(all=all)
+            None, lambda: self.client.containers.list(all=all, ignore_removed=True)
         )
 
         result = []
