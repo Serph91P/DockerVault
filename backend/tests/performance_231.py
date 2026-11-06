@@ -1,8 +1,8 @@
 """Owned, reproducible real-image HTTP backup/restore measurements for issue #231.
 
 Run from the repository root: python3 backend/tests/performance_231.py IMAGE OUTPUT
-No production paths, global cache flushes or shared Docker resources are used.
-OUTPUT is outside the repository; each JSONL row is durable before the next run.
+Only owned fixtures are changed; no production paths or global cache flushes.
+OUTPUT is outside the repository; each JSON result is durable before the next run.
 """
 
 import argparse
