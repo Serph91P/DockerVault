@@ -33,7 +33,7 @@ export default function History() {
   const [params] = useSearchParams()
   const navigate = useNavigate()
   const restoreMatch = location.pathname.match(/^\/history\/archives\/([1-9]\d*)\/restore$/)
-  if (restoreMatch) return <RestoreWizard key={restoreMatch[1]} backupId={Number(restoreMatch[1])} inline onClose={() => navigate(`/history/archives/${restoreMatch[1]}${location.search}`, {state:{restoreReturnFocus:true}})} />
+  if (restoreMatch) return <RestoreWizard key={restoreMatch[1]} backupId={Number(restoreMatch[1])} inline onClose={() => navigate(`/history/${location.state?.restoreFrom === 'runs' ? 'runs' : 'archives'}/${restoreMatch[1]}${location.search}`, {state:{restoreReturnFocus:true}})} />
   const match = location.pathname.match(/^\/history\/(runs|archives)\/([^/]+)$/)
   const legacy = params.get('run') || params.get('archive')
   if (!match && legacy && /^[1-9]\d*$/.test(legacy)) {
@@ -164,7 +164,7 @@ function HistoryDetail({ view, rawId }: { view: string; rawId: string }) {
       {record.archive_state === 'recorded' && view === 'runs' && <Link className="underline" to={`/history/archives/${id}?${historySearch(params, 'archives')}`}>Open archive #{id}</Link>}
       {record.archive_state === 'recorded' && <Link className="underline" to={`/history/runs/${id}?${historySearch(params, 'runs')}`}>Open originating run #{id}</Link>}
       <div className="flex flex-wrap gap-2">
-        {record.can_restore && <><button className="btn-secondary" onClick={() => setFiles(!files)}>Browse archive files</button>{!pending && !query.isError && <Link ref={restoreLink} className="btn-secondary" to={`/history/archives/${id}/restore?${params}`}>Restore archive</Link>}<button className="btn-secondary" disabled={pending} onClick={() => void download()}>Download whole archive</button></>}
+        {record.can_restore && <><button className="btn-secondary" onClick={() => setFiles(!files)}>Browse archive files</button>{!pending && !query.isError && <Link ref={restoreLink} className="btn-secondary" to={`/history/archives/${id}/restore?${params}`} state={{restoreFrom:view}}>Restore archive</Link>}<button className="btn-secondary" disabled={pending} onClick={() => void download()}>Download whole archive</button></>}
         {record.can_sync && <button className="btn-secondary" disabled={pending || query.isError} onClick={() => void sync()}>{record.remote_sync_details?.some(copy => copy.status === 'failed') ? 'Retry failed sync / sync new destinations' : 'Sync to new remote destinations'}</button>}
         <button className="btn-secondary" onClick={() => setLogs(!logs)}>{logs ? 'Hide run logs' : 'Show run logs'}</button>
         {record.archive_state === 'recorded' && <button className="btn-secondary" disabled={pending || query.isError} onClick={() => setRemoval('archive')}>Review copy removal</button>}

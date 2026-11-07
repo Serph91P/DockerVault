@@ -57,7 +57,7 @@ async def restore_impact(backup, target, selection) -> dict:
         name = selection.target_volume if kind == "volume" else target.volume_name
         volumes = await docker_client.list_volumes()
         volume = next((v for v in volumes if v.name == name), None)
-        if not volume or not volume.mountpoint:
+        if not volume or not volume.mountpoint or not Path(volume.mountpoint).is_dir():
             raise ValueError("Destination volume is unavailable")
         path = volume.mountpoint
     elif kind == "path":

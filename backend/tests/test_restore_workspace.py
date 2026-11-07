@@ -94,6 +94,50 @@ async def test_review_deduplicates_aliases_of_one_actual_workload(
     assert review["containers_to_restart"] == ["worker"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("original", [False, True])
+async def test_missing_volume_mountpoint_never_creates_local_substitute(
+    async_client, archive, tmp_path, test_db, monkeypatch, original
+):
+    id, target_id = archive
+    missing = tmp_path / "not-mounted"
+    monkeypatch.setattr(
+        docker_client,
+        "list_volumes",
+        AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    name="owned",
+                    mountpoint=str(missing),
+                    driver="local",
+                    created_at="fixture",
+                )
+            ]
+        ),
+    )
+    if original:
+        async with test_db() as db:
+            target = await db.get(BackupTarget, target_id)
+            target.target_type = "volume"
+            target.volume_name = "owned"
+            await db.commit()
+    selection = (
+        {"destination_type": "original"}
+        if original
+        else {"destination_type": "volume", "target_volume": "owned"}
+    )
+    review = await async_client.post(
+        f"/api/v1/backups/{id}/restore-review", json=selection
+    )
+    assert review.status_code == 400, review.text
+    legacy = await async_client.post(
+        f"/api/v1/backups/{id}/restore",
+        json={} if original else {**selection, "review_fingerprint": "unavailable"},
+    )
+    assert legacy.status_code == 400
+    assert not missing.exists()
+
+
 @pytest.fixture
 async def archive(test_db, tmp_path, monkeypatch, async_client, request):
     # Independent synthetic callers, rather than accumulating a whole suite as one IP.

@@ -8,7 +8,7 @@
 - Legacy `target_path` without `destination_type` still means custom path; legacy empty body means original. These authenticated API callers retain compatibility without a mandatory review field.
 - Typed execution requires `review_fingerprint` from read-only `POST /backups/:id/restore-review`. This endpoint does not download, decrypt, stop workloads or write files.
 - Original path/volume, custom allowed path, and explicit Docker volume destinations use the canonical engine layout. Original container/stack mapping is unsupported and disabled with explanation. Custom container/stack archives preserve their archive roots.
-- The server resolves a volume name via native Docker discovery; the browser never constructs Docker mount paths. Discovery failure is unavailable, not an empty inventory. Custom realpaths retain the existing allowlist (backup root or Docker volumes). Original paths are the configured source paths.
+- The server resolves a volume name via native Docker discovery and requires its physical mount directory to be accessible; a missing mountpoint must never become a newly created local substitute directory. The browser never constructs Docker mount paths. Discovery failure is unavailable, not an empty inventory. Custom realpaths retain the existing allowlist (backup root or Docker volumes). Original paths are the configured source paths.
 
 ## Narrow impact binding, not an authorization token or dry run
 
