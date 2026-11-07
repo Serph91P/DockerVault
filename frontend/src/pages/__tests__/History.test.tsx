@@ -14,6 +14,23 @@ function mount(path = '/history?q=Retained&custom=keep', client = new QueryClien
   render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><Location /><Routes><Route path="/history/*" element={<History />} /></Routes></MemoryRouter></QueryClientProvider>)
   return userEvent.setup()
 }
+it('enters the restore route and returns with every query parameter intact', async () => {
+  fixtures()
+  server.use(http.get('/api/v1/backups/507/restore-info', () => HttpResponse.json({backup:{id:507,encrypted:false,created_at:row.created_at,local_available:true},target:{id:1,name:'Retained source',target_type:'path'},original_supported:true,volume_discovery:'available',available_volumes:[],remote_copies:[]})))
+  const client=new QueryClient({defaultOptions:{queries:{retry:false}}})
+  const user=mount('/history/archives/507?q=keep&custom=value&offset=500',client)
+  await user.click(await screen.findByRole('link',{name:'Restore archive'}))
+  await screen.findByRole('heading',{name:'Source and availability'})
+  expect(screen.getByLabelText('Location')).toHaveTextContent('/history/archives/507/restore?q=keep&custom=value&offset=500')
+  await user.click(screen.getByRole('button',{name:'Close restore'}))
+  expect(screen.getByLabelText('Location')).toHaveTextContent('/history/archives/507?q=keep&custom=value&offset=500')
+  await waitFor(()=>expect(screen.getByRole('link',{name:'Restore archive'})).toHaveFocus())
+  const refresh=screen.getByRole('button',{name:'Refresh Archive #507'})
+  server.use(http.get('/api/v1/backups/history/507',()=>HttpResponse.json({...row,file_size:8})))
+  await user.click(refresh)
+  await waitFor(()=>expect(client.isFetching()).toBe(0))
+  expect(refresh).toHaveFocus()
+})
 function fixtures() {
   server.use(http.get('/api/v1/backups/history', () => HttpResponse.json(page)), http.get('/api/v1/backups/history/507', () => HttpResponse.json(row)), http.get('/api/v1/backups/507/logs', () => HttpResponse.json([])))
 }

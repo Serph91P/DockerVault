@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Link, Navigate, useLocation, useSearchParams } from 'react-router-dom'
+import { useState, useEffect, useRef } from 'react'
+import { Link, Navigate, useLocation, useSearchParams, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import api, { backupsApi, storageApi, type HistoryRecord } from '../api'
 import { queryKeys } from '../api/queryKeys'
@@ -31,6 +31,9 @@ function historySearch(params: URLSearchParams, view: string, restart = false) {
 export default function History() {
   const location = useLocation()
   const [params] = useSearchParams()
+  const navigate = useNavigate()
+  const restoreMatch = location.pathname.match(/^\/history\/archives\/([1-9]\d*)\/restore$/)
+  if (restoreMatch) return <RestoreWizard key={restoreMatch[1]} backupId={Number(restoreMatch[1])} inline onClose={() => navigate(`/history/archives/${restoreMatch[1]}${location.search}`, {state:{restoreReturnFocus:true}})} />
   const match = location.pathname.match(/^\/history\/(runs|archives)\/([^/]+)$/)
   const legacy = params.get('run') || params.get('archive')
   if (!match && legacy && /^[1-9]\d*$/.test(legacy)) {
@@ -100,9 +103,12 @@ function HistoryDetail({ view, rawId }: { view: string; rawId: string }) {
   const client = useQueryClient()
   const query = useQuery({ queryKey: queryKeys.backups.historyDetail(id), queryFn: ({ signal }) => backupsApi.historyDetail(id, signal).then(r => r.data), enabled: Number.isSafeInteger(id), retry: false })
   const record = query.data
+  const location = useLocation()
+  const restoreLink = useRef<HTMLAnchorElement>(null)
+  const returnedFocus = useRef(false)
+  useEffect(() => { if (location.state?.restoreReturnFocus && restoreLink.current && !returnedFocus.current) { restoreLink.current.focus(); returnedFocus.current = true } }, [location.key, location.state, record])
   const [files, setFiles] = useState(view === 'archives')
   const [logs, setLogs] = useState(view === 'runs')
-  const [restore, setRestore] = useState(false)
   const [removal, setRemoval] = useState<'archive' | 'plan' | null>(null)
   const [pending, setPending] = useState(false)
   const [result, setResult] = useState('')
@@ -151,7 +157,7 @@ function HistoryDetail({ view, rawId }: { view: string; rawId: string }) {
       {record.archive_state === 'recorded' && view === 'runs' && <Link className="underline" to={`/history/archives/${id}?${historySearch(params, 'archives')}`}>Open archive #{id}</Link>}
       {record.archive_state === 'recorded' && <Link className="underline" to={`/history/runs/${id}?${historySearch(params, 'runs')}`}>Open originating run #{id}</Link>}
       <div className="flex flex-wrap gap-2">
-        {record.can_restore && <><button className="btn-secondary" onClick={() => setFiles(!files)}>Browse archive files</button><button className="btn-secondary" disabled={pending || query.isError} onClick={() => setRestore(true)}>Restore archive</button><button className="btn-secondary" disabled={pending} onClick={() => void download()}>Download whole archive</button></>}
+        {record.can_restore && <><button className="btn-secondary" onClick={() => setFiles(!files)}>Browse archive files</button>{!pending && !query.isError && <Link ref={restoreLink} className="btn-secondary" to={`/history/archives/${id}/restore?${params}`}>Restore archive</Link>}<button className="btn-secondary" disabled={pending} onClick={() => void download()}>Download whole archive</button></>}
         {record.can_sync && <button className="btn-secondary" disabled={pending || query.isError} onClick={() => void sync()}>{record.remote_sync_details?.some(copy => copy.status === 'failed') ? 'Retry failed sync / sync new destinations' : 'Sync to new remote destinations'}</button>}
         <button className="btn-secondary" onClick={() => setLogs(!logs)}>{logs ? 'Hide run logs' : 'Show run logs'}</button>
         {record.archive_state === 'recorded' && <button className="btn-secondary" disabled={pending || query.isError} onClick={() => setRemoval('archive')}>Review copy removal</button>}
@@ -164,7 +170,6 @@ function HistoryDetail({ view, rawId }: { view: string; rawId: string }) {
       {downloadError && <div role="alert"><p>{downloadError}</p><button className="btn-secondary" disabled={pending} onClick={() => void download(downloadSidecar)}>Retry download</button></div>}
       {files && record.can_restore && <BackupBrowser key={id} backup={record} inline onClose={() => setFiles(false)} />}
       {logs && <BackupLogViewer backupId={id} inline onClose={() => setLogs(false)} />}
-      {restore && <RestoreWizard backupId={id} onClose={() => setRestore(false)} />}
       {removal && <RemovalDialog intent={removal === 'plan' ? { kind: 'copies', targetId: record.target_id, name: record.target_name ?? `Plan #${record.target_id}` } : { kind: 'copies', backupId: id, name: `Archive #${id}` }} onClose={() => setRemoval(null)} onChanged={() => { void client.invalidateQueries({ queryKey: queryKeys.backups.all }) }} />}
     </>}
   </section>

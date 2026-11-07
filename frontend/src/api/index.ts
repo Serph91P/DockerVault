@@ -126,7 +126,24 @@ export interface Backup {
   created_at: string
 }
 
+export interface RestoreSelection {
+  destination_type: 'original' | 'volume' | 'path'
+  target_volume?: string
+  target_path?: string
+}
+export interface RestoreImpact {
+  fingerprint: string
+  destination: { type: RestoreSelection['destination_type']; path: string; volume: string | null }
+  containers_to_stop: string[]
+  containers_to_restart: string[]
+  layout: string
+  overwrite: string
+  key_required: boolean
+}
 export interface RestoreInfo {
+  original_supported: boolean
+  volume_discovery: 'available' | 'unavailable'
+  remote_copies: RemoteSyncInfo[]
   backup: {
     id: number
     file_size_human?: string
@@ -298,8 +315,11 @@ export const backupsApi = {
   get: (id: number) => api.get<Backup>(`/backups/${id}`),
   create: (target_id: number, backup_type = 'full') => 
     api.post<Backup>('/backups', { target_id, backup_type }),
-  restore: (id: number, opts?: { target_path?: string; private_key?: string }) =>
+  restore: (id: number, opts?: Partial<RestoreSelection> & { private_key?: string; review_fingerprint?: string }) =>
     api.post(`/backups/${id}/restore`, {
+      destination_type: opts?.destination_type,
+      target_volume: opts?.target_volume,
+      review_fingerprint: opts?.review_fingerprint,
       target_path: opts?.target_path,
       private_key: opts?.private_key,
     }),

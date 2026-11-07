@@ -1,503 +1,130 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
-import {
-  X,
-  RotateCcw,
-  HardDrive,
-  FolderOpen,
-  Lock,
-  AlertTriangle,
-  CheckCircle,
-  Loader2,
-  ChevronRight,
-  ChevronLeft,
-  Server,
-  ArrowRight,
-} from 'lucide-react'
-import api, { RestoreInfo } from '../api'
+import { useEffect, useRef, useState } from 'react'
+import api, { type RestoreInfo, type RestoreSelection, type RestoreImpact } from '../api'
+import { responseStatus } from '../api/responses'
 import { ownsSession, sessionGeneration, sessionSignal } from '../store/session'
-import { queryKeys } from '../api/queryKeys'
-import { operationOutcome } from '../api/outcomes'
-import { useNotificationStore } from '../store/notifications'
-import { clsx } from 'clsx'
-import toast from 'react-hot-toast'
+import { Modal } from './ui/dialog'
+import { Button } from './ui/button'
 
-interface RestoreWizardProps {
-  backupId: number
-  onClose: () => void
+const tracking = 'Restore has no durable progress tracking. Leaving or closing this view does not cancel the backend. After reload, reconnect or a lost response the outcome is unknown: inspect the destination and run logs before explicitly retrying. Never replay automatically.'
+function validInfo(v: RestoreInfo, id: number): boolean {
+  return !!v?.backup && v.backup.id === id && typeof v.backup.encrypted === 'boolean' && typeof v.backup.local_available === 'boolean' && typeof v.backup.created_at === 'string' && !!v.target && typeof v.target.name === 'string' && typeof v.original_supported === 'boolean' && ['available','unavailable'].includes(v.volume_discovery) && Array.isArray(v.available_volumes) && v.available_volumes.every(n=>typeof n==='string') && Array.isArray(v.remote_copies) && v.remote_copies.every(c=>!!c && Number.isSafeInteger(c.storage_id) && typeof c.storage_name==='string' && typeof c.status==='string')
 }
-
-type DestinationType = 'original' | 'volume' | 'path'
-
-interface RestoreState {
-  destination: DestinationType
-  targetVolume: string
-  targetPath: string
-  privateKey: string
+function validImpact(value: unknown): value is RestoreImpact {
+  const v = value as RestoreImpact | null
+  return !!v && typeof v.fingerprint === 'string' && !!v.destination && ['original','volume','path'].includes(v.destination.type) && typeof v.destination.path === 'string' && (v.destination.volume === null || typeof v.destination.volume === 'string') && typeof v.layout === 'string' && typeof v.overwrite === 'string' && typeof v.key_required === 'boolean' && [v.containers_to_stop,v.containers_to_restart].every(a => Array.isArray(a) && a.every(n => typeof n === 'string'))
 }
-
-const STEPS = ['Destination', 'Decryption', 'Confirm'] as const
-const STEPS_NO_ENCRYPT = ['Destination', 'Confirm'] as const
-
-export default function RestoreWizard({ backupId, onClose }: RestoreWizardProps) {
-  const queryClient = useQueryClient()
+function Effects({ impact }: { impact: RestoreImpact }) {
+  return <dl className="space-y-3 break-words">
+    <div><dt className="font-semibold">Confirmed destination</dt><dd>{impact.destination.type}: {impact.destination.volume && `${impact.destination.volume} — `}{impact.destination.path}</dd></div>
+    <div><dt className="font-semibold">Overwrite and recovery limits</dt><dd>{impact.overwrite}</dd></div>
+    <div><dt className="font-semibold">Archive layout</dt><dd>{impact.layout}</dd></div>
+    <div><dt className="font-semibold">Containers to stop</dt><dd>{impact.containers_to_stop.join(', ') || 'None'}</dd></div>
+    <div><dt className="font-semibold">Containers to restart (order)</dt><dd>{impact.containers_to_restart.join(', ') || 'None'}</dd></div>
+    <div><dt className="font-semibold">Recovery key</dt><dd>{impact.key_required ? 'Required; decryption authenticates before workload stop' : 'Not required'}</dd></div>
+  </dl>
+}
+export default function RestoreWizard({ backupId, onClose, inline = false }: { backupId: number; onClose: () => void; inline?: boolean }) {
   const [info, setInfo] = useState<RestoreInfo | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [step, setStep] = useState(0)
-  const [restoring, setRestoring] = useState(false)
-  const busy = useRef(false)
+  const [selection, setSelection] = useState<RestoreSelection>({destination_type:'original'})
+  const [privateKey, setPrivateKey] = useState('')
+  const [impact, setImpact] = useState<RestoreImpact | null>(null)
+  const [result, setResult] = useState<RestoreImpact | null>(null)
+  const [step, setStep] = useState<'source'|'destination'|'review'|'pending'|'result'>('source')
+  const [error, setError] = useState('')
+  const [acknowledged, setAcknowledged] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [attempt, setAttempt] = useState(0)
+  const [revoked, setRevoked] = useState(false)
+  const lock = useRef(false)
   const requests = useRef(new AbortController())
-  const [state, setState] = useState<RestoreState>({
-    destination: 'original',
-    targetVolume: '',
-    targetPath: '',
-    privateKey: '',
-  })
-
-  const isEncrypted = info?.backup.encrypted ?? false
-  const steps = isEncrypted ? STEPS : STEPS_NO_ENCRYPT
-  const isLastStep = step === steps.length - 1
-
+  const heading = useRef<HTMLHeadingElement>(null)
   useEffect(() => {
-    let cancelled = false
     const controller = new AbortController()
-    requests.current = controller
-    async function load() {
-      try {
-        setLoading(true)
-        const res = await api.get<RestoreInfo>(`/backups/${backupId}/restore-info`, { signal: controller.signal })
-        if (!cancelled) {
-          setInfo(res.data)
-          if (res.data.target.target_type === 'volume' && res.data.target.volume_name) {
-            setState((s) => ({ ...s, targetVolume: res.data.target.volume_name! }))
-          }
-          setError(null)
-        }
-      } catch {
-        if (!cancelled) setError('Failed to load backup info')
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-    load()
-    return () => { cancelled = true; controller.abort() }
-  }, [backupId])
-
-  const restore = async () => {
-    if (busy.current) return
-    busy.current = true
+    const session = sessionSignal()
     const owner = sessionGeneration()
-    const signal = AbortSignal.any([requests.current.signal, sessionSignal()])
-    setRestoring(true)
-    const startedAt = Date.now()
+    const signal = AbortSignal.any([controller.signal,session])
+    requests.current = controller
+    const revoke = () => { setPrivateKey(''); setImpact(null); setResult(null); setInfo(null); setRevoked(true) }
+    session.addEventListener('abort', revoke, {once:true})
+    void api.get<RestoreInfo>(`/backups/${backupId}/restore-info`, {signal}).then(r => {
+      if (!signal.aborted && ownsSession(owner)) {
+        if (!validInfo(r.data, backupId)) throw new Error('Unavailable info')
+        setInfo(r.data); setError(''); setSelection({destination_type:r.data.original_supported ? 'original':'path'})
+      }
+    }).catch(e => { if (!signal.aborted) setError(responseStatus(e) === 404 ? 'Archive not found or no longer available.' : responseStatus(e) === 403 ? 'Access denied to this archive.' : 'Restore source information unavailable. Retry loading.') })
+    return () => { controller.abort(); session.removeEventListener('abort',revoke) }
+  }, [backupId,attempt])
+  useEffect(() => { heading.current?.focus() }, [step, result, error])
+  const close = () => { requests.current.abort(); setPrivateKey(''); setImpact(null); setResult(null); onClose() }
+  const ownerRequest = () => ({ owner: sessionGeneration(), signal: AbortSignal.any([requests.current.signal,sessionSignal()]) })
+  const review = async () => {
+    if (lock.current) return
+    lock.current = true; setBusy(true); setError(''); setImpact(null); setAcknowledged(false)
+    const {owner,signal} = ownerRequest()
     try {
-      const opts: { target_path?: string; private_key?: string } = {}
-      if (state.destination === 'path' && state.targetPath) {
-        opts.target_path = state.targetPath
+      const r = await api.post(`/backups/${backupId}/restore-review`, selection, {signal})
+      if (!signal.aborted && ownsSession(owner)) {
+        if (!validImpact(r.data)) throw new Error('Invalid review')
+        setImpact(r.data); setStep('review')
       }
-      if (state.destination === 'volume' && state.targetVolume && info?.target.volume_name !== state.targetVolume) {
-        opts.target_path = `/var/lib/docker/volumes/${state.targetVolume}/_data`
+    } catch(e) { if (!signal.aborted && ownsSession(owner)) { setPrivateKey(''); setError(responseStatus(e) === 400 ? 'Destination rejected or unsupported. Correct the path or volume and review again.' : 'Destination or configured workload discovery unavailable. Retry review; nothing has been restored.') } }
+    finally { lock.current = false; if (!signal.aborted && ownsSession(owner)) setBusy(false) }
+  }
+  const restore = async () => {
+    if (lock.current || !impact || !acknowledged) return
+    lock.current = true; setBusy(true); setError(''); setStep('pending')
+    const {owner,signal} = ownerRequest()
+    try {
+      const r = await api.post(`/backups/${backupId}/restore`, {...selection,review_fingerprint:impact.fingerprint,...(info?.backup.encrypted ? {private_key:privateKey}: {})}, {signal})
+      if (!signal.aborted && ownsSession(owner)) {
+        if (r.data.status !== 'restored' || !validImpact(r.data) || r.data.fingerprint !== impact.fingerprint || JSON.stringify(r.data.destination) !== JSON.stringify(impact.destination) || ('warnings' in r.data && (!Array.isArray(r.data.warnings) || r.data.warnings.length > 0))) throw new Error('Final result not confirmed')
+        setResult(r.data); setStep('result')
       }
-      if (isEncrypted && state.privateKey) {
-        opts.private_key = state.privateKey
-      }
-      const result = await api.post(`/backups/${backupId}/restore`, opts, { signal })
-      if (result.data.status !== 'restored') throw new Error('Restore not confirmed')
-      if (!ownsSession(owner) || signal.aborted) return
-      setState(s => ({ ...s, privateKey: '' }))
-      const phase = operationOutcome(result.data)
-      if (phase !== 'completed' && phase !== 'partial') throw new Error('Restore outcome unavailable')
-      useNotificationStore.getState().addNotification({ type: phase === 'partial' ? 'warning' : 'success', title: 'Restore result', message: phase === 'partial' ? 'Restore returned warnings. Review the archive and actual destination before retrying.' : 'Backend confirmed restoration. Verify the destination content.', target: { kind: 'archive', id: backupId }, phase, startedAt })
-      if (phase === 'partial') toast('Restore completed with warnings', { icon: '!' })
-      else toast.success('Restore completed successfully')
-      queryClient.invalidateQueries({ queryKey: queryKeys.backups.all })
-      onClose()
-    } catch {
-      if (ownsSession(owner) && !signal.aborted) {
-        setState(s => ({ ...s, privateKey: '' }))
-        setStep(isEncrypted ? 1 : 0)
-        useNotificationStore.getState().addNotification({ type: 'error', title: 'Restore result unknown', message: 'No final restore result was confirmed. Inspect the destination before submitting again.', target: { kind: 'archive', id: backupId }, phase: 'unknown', startedAt })
-        toast.error('Restore failed — enter your key again to retry; check backup logs for details')
+    } catch(e) {
+      if (!signal.aborted && ownsSession(owner)) {
+        const status = responseStatus(e)
+        setError(status === 409 ? 'Restore impact changed. No destination change was accepted. Return and review again.' : status === 400 ? 'Restore not confirmed: recovery key missing, incorrect or sidecar unavailable, or destination rejected. Inspect logs and destination before retrying.' : status === 404 ? 'Archive copy unavailable locally or remotely. Check storage availability before retrying.' : 'Restore result unknown / not confirmed. The backend may have written files or failed during restart. Inspect the destination and run logs before retrying.')
+        setImpact(null); setAcknowledged(false); setStep('destination')
       }
     } finally {
-      busy.current = false
-      if (ownsSession(owner) && !signal.aborted) setRestoring(false)
+      lock.current = false
+      if (!signal.aborted && ownsSession(owner)) { setPrivateKey(''); setBusy(false) }
     }
   }
-
-  const canProceed = useCallback((): boolean => {
-    const currentStepName = steps[step]
-    if (currentStepName === 'Destination') {
-      if (state.destination === 'path' && !state.targetPath.trim()) return false
-      if (state.destination === 'volume' && !state.targetVolume) return false
-      return true
-    }
-    if (currentStepName === 'Decryption') {
-      return state.privateKey.trim().length > 0
-    }
-    return true
-  }, [step, steps, state])
-
-  const handleNext = () => {
-    if (isLastStep) {
-      void restore()
-    } else {
-      setStep((s) => s + 1)
-    }
-  }
-
-  const getDestinationLabel = (): string => {
-    if (!info) return ''
-    if (state.destination === 'original') {
-      if (info.target.target_type === 'volume') return `Volume: ${info.target.volume_name}`
-      if (info.target.target_type === 'path') return `Path: ${info.target.host_path}`
-      return info.target.name
-    }
-    if (state.destination === 'volume') return `Volume: ${state.targetVolume}`
-    return `Path: ${state.targetPath}`
-  }
-
-  if (loading) {
-    return (
-      <Modal title="Restore Backup" onClose={onClose}>
-        <div className="bg-dark-800 rounded-xl p-8 flex items-center gap-3">
-          <Loader2 className="w-5 h-5 text-primary-500 animate-spin" />
-          <span className="text-dark-200">Loading restore info…</span>
-        </div>
-      </Modal>
-    )
-  }
-
-  if (error || !info) {
-    return (
-      <Modal title="Restore Backup" onClose={onClose}>
-        <div className="bg-dark-800 rounded-xl p-8 max-w-md">
-          <p className="text-red-400 mb-4">{error || 'Could not load backup information'}</p>
-          <button onClick={onClose} className="px-4 py-2 bg-dark-600 text-dark-200 rounded-lg hover:bg-dark-500">
-            Close
-          </button>
-        </div>
-      </Modal>
-    )
-  }
-
-  return (
-    <Modal title="Restore Backup" onClose={onClose} pending={restoring}>
-      <div
-        className="bg-dark-800 border border-dark-600 rounded-xl shadow-2xl w-full max-w-lg mx-4"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-dark-600">
-          <div className="flex items-center gap-2">
-            <RotateCcw className="w-5 h-5 text-primary-500" />
-            <h2 className="text-lg font-semibold text-dark-100">Restore Backup</h2>
-          </div>
-          <button onClick={onClose} disabled={restoring} aria-label="Close restore" className="p-2 text-dark-400 hover:text-dark-200 rounded">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Step indicator */}
-        <div className="flex items-center gap-2 px-6 pt-4">
-          {steps.map((label, i) => (
-            <div key={label} className="flex items-center gap-2">
-              <div
-                className={clsx(
-                  'w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium',
-                  i < step && 'bg-green-600 text-white',
-                  i === step && 'bg-primary-600 text-white',
-                  i > step && 'bg-dark-600 text-dark-400',
-                )}
-              >
-                {i < step ? <CheckCircle className="w-4 h-4" /> : i + 1}
-              </div>
-              <span className={clsx('text-sm', i === step ? 'text-dark-200 font-medium' : 'text-dark-400')}>
-                {label}
-              </span>
-              {i < steps.length - 1 && <ArrowRight className="w-3 h-3 text-dark-500" />}
-            </div>
-          ))}
-        </div>
-
-        {/* Content */}
-        <div className="px-6 py-5 min-h-[260px]">
-          {steps[step] === 'Destination' && (
-            <StepDestination info={info} state={state} setState={setState} />
-          )}
-          {steps[step] === 'Decryption' && (
-            <StepDecryption state={state} setState={setState} />
-          )}
-          {steps[step] === 'Confirm' && (
-            <StepConfirm
-              info={info}
-              destinationLabel={getDestinationLabel()}
-              isEncrypted={isEncrypted}
-            />
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-between px-6 py-4 border-t border-dark-600">
-          <button
-            onClick={() => (step === 0 ? onClose() : setStep((s) => s - 1))}
-            disabled={restoring}
-            className="flex items-center gap-1 px-4 py-2 text-sm text-dark-300 hover:text-dark-100 transition-colors"
-          >
-            <ChevronLeft className="w-4 h-4" />
-            {step === 0 ? 'Cancel' : 'Back'}
-          </button>
-          <button
-            onClick={handleNext}
-            disabled={!canProceed() || restoring}
-            className={clsx(
-              'flex items-center gap-1 px-5 py-2 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
-              isLastStep
-                ? 'bg-orange-600 hover:bg-orange-500 text-white'
-                : 'bg-primary-600 hover:bg-primary-500 text-white',
-            )}
-          >
-            {restoring ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Restoring…
-              </>
-            ) : isLastStep ? (
-              <>
-                <RotateCcw className="w-4 h-4" />
-                Restore Now
-              </>
-            ) : (
-              <>
-                Next
-                <ChevronRight className="w-4 h-4" />
-              </>
-            )}
-          </button>
-        </div>
-      </div>
-    </Modal>
-  )
-}
-
-// --- Step Components ---
-import { Modal } from './ui/dialog'
-
-function StepDestination({
-  info,
-  state,
-  setState,
-}: {
-  info: RestoreInfo
-  state: RestoreState
-  setState: React.Dispatch<React.SetStateAction<RestoreState>>
-}) {
-  const isVolume = info.target.target_type === 'volume'
-  const isPath = info.target.target_type === 'path'
-
-  return (
-    <div className="space-y-4">
-      <p className="text-sm text-dark-300">
-        Choose where to restore backup <span className="text-dark-100 font-medium">#{info.backup.id}</span>{' '}
-        from <span className="text-dark-100 font-medium">{info.target.name}</span>.
-      </p>
-
-      {/* Original location */}
-      <label
-        className={clsx(
-          'flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
-          state.destination === 'original'
-            ? 'border-primary-500 bg-primary-500/10'
-            : 'border-dark-600 hover:border-dark-500',
-        )}
-      >
-        <input
-          type="radio"
-          name="destination"
-          checked={state.destination === 'original'}
-          onChange={() => setState((s) => ({ ...s, destination: 'original' }))}
-          className="mt-1 accent-primary-500"
-        />
-        <div className="flex-1">
-          <div className="flex items-center gap-2 text-dark-200 font-medium text-sm">
-            {isVolume ? <HardDrive className="w-4 h-4" /> : <FolderOpen className="w-4 h-4" />}
-            Original location
-          </div>
-          <p className="text-xs text-dark-400 mt-1">
-            {isVolume && `Volume: ${info.target.volume_name}`}
-            {isPath && `Path: ${info.target.host_path}`}
-            {!isVolume && !isPath && info.target.name}
-          </p>
-        </div>
-      </label>
-
-      {/* Alternative volume */}
-      {isVolume && info.available_volumes.length > 0 && (
-        <label
-          className={clsx(
-            'flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
-            state.destination === 'volume'
-              ? 'border-primary-500 bg-primary-500/10'
-              : 'border-dark-600 hover:border-dark-500',
-          )}
-        >
-          <input
-            type="radio"
-            name="destination"
-            checked={state.destination === 'volume'}
-            onChange={() => setState((s) => ({ ...s, destination: 'volume' }))}
-            className="mt-1 accent-primary-500"
-          />
-          <div className="flex-1">
-            <div className="flex items-center gap-2 text-dark-200 font-medium text-sm">
-              <Server className="w-4 h-4" />
-              Different volume
-            </div>
-            {state.destination === 'volume' && (
-              <select
-                value={state.targetVolume}
-                onChange={(e) => setState((s) => ({ ...s, targetVolume: e.target.value }))}
-                className="mt-2 w-full px-3 py-1.5 bg-dark-700 border border-dark-500 rounded text-sm text-dark-200 focus:outline-none focus:ring-1 focus:ring-primary-500"
-              >
-                <option value="">Select volume…</option>
-                {info.available_volumes.map((v) => (
-                  <option key={v} value={v}>
-                    {v}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-        </label>
-      )}
-
-      {/* Custom path */}
-      <label
-        className={clsx(
-          'flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
-          state.destination === 'path'
-            ? 'border-primary-500 bg-primary-500/10'
-            : 'border-dark-600 hover:border-dark-500',
-        )}
-      >
-        <input
-          type="radio"
-          name="destination"
-          checked={state.destination === 'path'}
-          onChange={() => setState((s) => ({ ...s, destination: 'path' }))}
-          className="mt-1 accent-primary-500"
-        />
-        <div className="flex-1">
-          <div className="flex items-center gap-2 text-dark-200 font-medium text-sm">
-            <FolderOpen className="w-4 h-4" />
-            Custom path
-          </div>
-          {state.destination === 'path' && (
-            <input
-              type="text"
-              placeholder="/path/to/restore"
-              value={state.targetPath}
-              onChange={(e) => setState((s) => ({ ...s, targetPath: e.target.value }))}
-              className="mt-2 w-full px-3 py-1.5 bg-dark-700 border border-dark-500 rounded text-sm text-dark-200 placeholder-dark-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
-            />
-          )}
-        </div>
-      </label>
-
-      {!info.backup.local_available && (
-        <div className="flex items-center gap-2 p-3 bg-yellow-900/20 border border-yellow-700/30 rounded-lg text-yellow-400 text-sm">
-          <AlertTriangle className="w-4 h-4 shrink-0" />
-          Backup file is not available locally. Restore may fail.
-        </div>
-      )}
-    </div>
-  )
-}
-
-function StepDecryption({
-  state,
-  setState,
-}: {
-  state: RestoreState
-  setState: React.Dispatch<React.SetStateAction<RestoreState>>
-}) {
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-2 text-dark-200">
-        <Lock className="w-5 h-5 text-yellow-500" />
-        <span className="font-medium">Encrypted Backup</span>
-      </div>
-      <p className="text-sm text-dark-300">
-        This backup is encrypted. Provide the private key (age secret key) to decrypt it before restoring.
-      </p>
-      <textarea
-        rows={6}
-        placeholder="AGE-SECRET-KEY-1..."
-        value={state.privateKey}
-        onChange={(e) => setState((s) => ({ ...s, privateKey: e.target.value }))}
-        className="w-full px-3 py-2 bg-dark-700 border border-dark-500 rounded-lg text-sm text-dark-200 placeholder-dark-500 font-mono focus:outline-none focus:ring-1 focus:ring-primary-500 resize-none"
-        spellCheck={false}
-      />
-      <p className="text-xs text-dark-400">
-        The key is only sent to the server for this restore operation and is not stored.
-      </p>
-    </div>
-  )
-}
-
-function StepConfirm({
-  info,
-  destinationLabel,
-  isEncrypted,
-}: {
-  info: RestoreInfo
-  destinationLabel: string
-  isEncrypted: boolean
-}) {
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-2 p-3 bg-orange-900/20 border border-orange-700/30 rounded-lg text-orange-400 text-sm">
-        <AlertTriangle className="w-4 h-4 shrink-0" />
-        <span>
-          Restoring will <strong>overwrite existing data</strong> at the destination. This cannot be undone.
-        </span>
-      </div>
-
-      <div className="space-y-3 bg-dark-750 rounded-lg p-4">
-        <div className="flex justify-between text-sm">
-          <span className="text-dark-400">Backup</span>
-          <span className="text-dark-200">#{info.backup.id} — {info.backup.file_size_human || 'unknown size'}</span>
-        </div>
-        <div className="flex justify-between text-sm">
-          <span className="text-dark-400">Source Target</span>
-          <span className="text-dark-200">{info.target.name}</span>
-        </div>
-        <div className="flex justify-between text-sm">
-          <span className="text-dark-400">Restore to</span>
-          <span className="text-dark-200">{destinationLabel}</span>
-        </div>
-        {isEncrypted && (
-          <div className="flex justify-between text-sm">
-            <span className="text-dark-400">Encryption</span>
-            <span className="text-yellow-400 flex items-center gap-1">
-              <Lock className="w-3 h-3" /> Will be decrypted
-            </span>
-          </div>
-        )}
-        {info.containers_to_stop.length > 0 && (
-          <div className="flex justify-between text-sm">
-            <span className="text-dark-400">Containers to stop</span>
-            <span className="text-dark-200">{info.containers_to_stop.join(', ')}</span>
-          </div>
-        )}
-      </div>
-
-      {info.containers_to_stop.length > 0 && (
-        <p className="text-xs text-dark-400">
-          The listed containers will be stopped before restore and restarted after.
-        </p>
-      )}
-    </div>
-  )
+  const content = <section className="space-y-5 min-w-0 p-4 sm:p-6 max-w-3xl" aria-busy={busy}>
+    <div className="flex flex-wrap justify-between gap-3"><h1 className="text-2xl font-semibold">Restore Backup</h1><Button variant="outline" onClick={close} aria-label="Close restore">{step==='pending' ? 'Leave view (not cancel)' : 'Close restore'}</Button></div>
+    <p className="text-sm text-dark-300">{tracking}</p>
+    <h2 ref={heading} tabIndex={-1} className="text-xl font-semibold">{revoked ? 'Session changed' : step==='source' ? 'Source and availability' : step==='destination' ? 'Destination and effects' : step==='review' ? 'Review restore impact' : step==='pending' ? 'Restoring — awaiting final backend result' : 'Restore completed'}</h2>
+    {error && <p role="alert">{error}</p>}
+    {revoked ? <p>Private restore view cleared. Open the archive in your current session.</p> : !info ? <>{!error && <p role="status">Loading restore information…</p>}{error && <Button onClick={()=>{setError('');setAttempt(a=>a+1)}}>Retry loading</Button>}</> : <>
+      <p>Archive #{info.backup.id} — {info.target.name} — {info.backup.completed_at || info.backup.created_at} — {info.backup.file_size_human || 'Size unknown'}</p>
+      {step==='source' && <>
+        <p>{info.backup.local_available ? 'Local archive available (observed now).' : 'Local copy missing. Completed remote copies will be materialized on confirmation.'}</p>
+        {info.remote_copies.map(copy=><p key={copy.storage_id}>{copy.storage_name}: {copy.status} — provider access and encrypted sidecar availability checked only during restore.</p>)}
+        {!info.backup.local_available && !info.remote_copies.some(c=>c.status==='completed') && <p role="alert">No usable copy is recorded. Restore cannot proceed; recover an archive copy first.</p>}
+        <p>{info.backup.encrypted ? 'Encrypted archive: private recovery key required. It stays only in this open view.' : 'Unencrypted archive; no key needed.'}</p>
+        <Button disabled={!info.backup.local_available && !info.remote_copies.some(c=>c.status==='completed')} onClick={()=>setStep('destination')}>Next</Button>
+      </>}
+      {step==='destination' && <fieldset disabled={busy} className="space-y-4">
+        <legend>Destination</legend>
+        <label className="block"><input type="radio" name="destination" checked={selection.destination_type==='original'} disabled={!info.original_supported} onChange={()=>{setSelection({destination_type:'original'});setImpact(null)}} /> Original location</label>
+        {!info.original_supported && <p>Original container/stack mapping is unsupported. Use an explicit custom path or volume; archive roots are preserved.</p>}
+        <label className="block"><input type="radio" name="destination" checked={selection.destination_type==='path'} onChange={()=>{setSelection({destination_type:'path',target_path:''});setImpact(null)}} /> Custom path</label>
+        {selection.destination_type==='path' && <label className="block">Destination path<input className="input w-full" value={selection.target_path || ''} onChange={e=>setSelection({destination_type:'path',target_path:e.target.value})} /></label>}
+        <label className="block"><input type="radio" name="destination" disabled={info.volume_discovery!=='available' || !info.available_volumes.length} checked={selection.destination_type==='volume'} onChange={()=>{setSelection({destination_type:'volume',target_volume:''});setImpact(null)}} /> Different volume</label>
+        {info.volume_discovery!=='available' && <p>Volume discovery unavailable, not a confirmed empty inventory. Retry loading to discover volumes.</p>}
+        {info.volume_discovery==='available' && !info.available_volumes.length && <p>No alternative volumes found.</p>}
+        {selection.destination_type==='volume' && <label className="block">Destination volume<select aria-label="Destination volume" className="input w-full" value={selection.target_volume || ''} onChange={e=>setSelection({destination_type:'volume',target_volume:e.target.value})}><option value="">Select volume…</option>{info.available_volumes.map(v=><option key={v}>{v}</option>)}</select></label>}
+      </fieldset>}
+      {step==='destination' && <>
+        {info.backup.encrypted && <label className="block">Private recovery key<textarea className="input w-full" placeholder="AGE-SECRET-KEY-1..." autoComplete="off" spellCheck={false} value={privateKey} onChange={e=>setPrivateKey(e.target.value)} /></label>}
+        <p>Review validates destination identity and configured workload state, not archive contents, key correctness or remote provider access. Only configured, originally-running workloads are stopped/restarted, not every volume user.</p>
+        <div className="flex flex-wrap gap-3"><Button variant="outline" disabled={busy} onClick={()=>{setStep('source');setPrivateKey('')}}>Back</Button><Button disabled={busy || (selection.destination_type==='path' && !selection.target_path?.trim()) || (selection.destination_type==='volume' && !selection.target_volume) || (info.backup.encrypted && !privateKey.trim())} onClick={()=>void review()}>{busy ? 'Loading review…':'Review effects'}</Button><Button variant="outline" disabled={busy} onClick={()=>{setPrivateKey('');setAttempt(a=>a+1)}}>Reload source and volumes</Button></div>
+      </>}
+      {step==='review' && impact && <><Effects impact={impact}/><label className="block"><input type="checkbox" checked={acknowledged} onChange={e=>setAcknowledged(e.target.checked)} /> I reviewed the destination, overwrite and lifecycle effects and explicitly authorize this restore.</label><div className="flex flex-wrap gap-3"><Button variant="outline" onClick={()=>{setImpact(null);setAcknowledged(false);setStep('destination')}}>Back</Button><Button disabled={!acknowledged || busy} onKeyDown={e=>{if(e.key==='Enter')e.preventDefault()}} onClick={()=>void restore()}>Confirm restore</Button></div><p className="text-sm">Keyboard: activate Confirm restore with Space after checking the confirmation. Enter never submits this workspace.</p></>}
+      {step==='pending' && <p role="status">Restore is in progress; waiting for extraction and workload recovery. No progress percentage or cancellation is available.</p>}
+      {step==='result' && result && <><p role="status">Backend confirmed restoration and configured workload recovery. Verify destination file bytes and application health separately.</p><Effects impact={result}/></>}
+    </>}
+  </section>
+  return inline ? content : <Modal title="Restore Backup" onClose={close}>{content}</Modal>
 }

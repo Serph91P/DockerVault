@@ -2198,6 +2198,7 @@ class BackupEngine:
         *,
         archive_path: Optional[str] = None,
         key_path: Optional[str] = None,
+        review_guard=None,
     ) -> bool:
         """Restore a backup.
 
@@ -2314,10 +2315,14 @@ class BackupEngine:
                         raise ValueError(f"Failed to decrypt backup: {e}")
 
                 containers_to_stop = list(dict.fromkeys(identities.values()))
+                reviewed_states = {}
                 for container_name in containers_to_stop:
-                    original_states[
+                    reviewed_states[
                         container_name
                     ] = await docker_client.get_container_state(container_name)
+                if review_guard:
+                    await review_guard(target, identities, reviewed_states)
+                original_states = reviewed_states
                 operation_id = await journal.begin(
                     backup_id,
                     "restore",
@@ -2358,6 +2363,10 @@ class BackupEngine:
                     strip_root = (
                         "" if target.target_type in ("path", "volume") else None
                     )
+                if review_guard:
+                    await review_guard(
+                        target, identities, original_states, before_extract=True
+                    )
                 await self._run_executor_cancellation_safe(
                     lambda: self._extract_tar(
                         backup_file_to_extract, restore_path, mode, strip_root
@@ -2394,6 +2403,10 @@ class BackupEngine:
             return True
 
         except Exception as e:
+            from app.restore_review import RestoreReviewChanged
+
+            if isinstance(e, RestoreReviewChanged):
+                raise
             logger.error(f"Restore failed: {e}")
 
             return False
