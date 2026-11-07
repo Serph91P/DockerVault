@@ -198,7 +198,7 @@ def main():
             [
                 "python",
                 "-c",
-                "import sqlite3;from pathlib import Path;c=sqlite3.connect('/app/data/backup.db');assert not c.execute('pragma foreign_key_check').fetchall();assert c.execute(\"select count(*) from backups where status='completed'\").fetchone()[0]==3;assert Path('/backups/restore186/source/unrelated').read_bytes()==b'keep unrelated bytes';assert Path('/backups/restore186/unknown/nested/file.txt').read_bytes()==b'owned nested restore bytes\\n';print('PASS SQLite3 real completed engine runs / nested restored bytes / noncolliding bytes preserved')",
+                "import sqlite3;from pathlib import Path;c=sqlite3.connect('/app/data/backup.db');assert not c.execute('pragma foreign_key_check').fetchall();assert c.execute(\"select count(*) from backups where status='COMPLETED'\").fetchone()[0]==3;assert Path('/backups/restore186/source/unrelated').read_bytes()==b'keep unrelated bytes';assert Path('/backups/restore186/unknown/nested/file.txt').read_bytes()==b'owned nested restore bytes\\n';print('PASS SQLite3 real completed engine runs / nested restored bytes / noncolliding bytes preserved')",
             ],
         )
         (out / "effects.log").write_bytes(effects)
