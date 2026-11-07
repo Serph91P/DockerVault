@@ -93,7 +93,7 @@ async def restore_impact(backup, target, selection) -> dict:
         if not identity or state is None:
             raise ValueError("Configured workload is unavailable")
         containers.append({"name": name, "id": identity, "state": state})
-    unique_containers = {}
+    unique_containers: dict[str, dict[str, str]] = {}
     for container in containers:
         unique_containers.setdefault(container["id"], container)
     workloads = list(unique_containers.values())

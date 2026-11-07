@@ -106,7 +106,14 @@ function HistoryDetail({ view, rawId }: { view: string; rawId: string }) {
   const location = useLocation()
   const restoreLink = useRef<HTMLAnchorElement>(null)
   const returnedFocus = useRef(false)
-  useEffect(() => { if (location.state?.restoreReturnFocus && restoreLink.current && !returnedFocus.current) { restoreLink.current.focus(); returnedFocus.current = true } }, [location.key, location.state, record])
+  useEffect(() => {
+    if (!location.state?.restoreReturnFocus || returnedFocus.current) return
+    // The shell focuses main after child effects on route changes.
+    const frame = requestAnimationFrame(() => {
+      if (restoreLink.current) { restoreLink.current.focus(); returnedFocus.current = true }
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [location.key, location.state, record])
   const [files, setFiles] = useState(view === 'archives')
   const [logs, setLogs] = useState(view === 'runs')
   const [removal, setRemoval] = useState<'archive' | 'plan' | null>(null)
