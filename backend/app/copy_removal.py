@@ -279,6 +279,9 @@ async def _remove_entry(session, backup, entry):
             Path(path).unlink(missing_ok=True)
             entry["remaining"].remove(path)
         backup.file_path = None
+        backup.backup_metadata = dict(backup.backup_metadata or {}) | {
+            "local_copy_removed": True
+        }
         if not remote_remains:
             backup.encryption_key_path = None
     else:

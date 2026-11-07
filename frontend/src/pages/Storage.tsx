@@ -1,5 +1,6 @@
 import { queryKeys } from '../api/queryKeys'
 import { QueryFeedback } from '../components/QueryFeedback'
+import StorageLocationContext from '../components/StorageLocationContext'
 import NotificationContext from '../components/NotificationContext'
 import { useNotificationStore } from '../store/notifications'
 import { useValidationFeedback } from '../components/ValidationFeedback'
@@ -637,6 +638,7 @@ export default function Storage() {
 
       {/* Storage Type Overview */}
       <NotificationContext domain="storage" />
+      <StorageLocationContext storages={storages} />
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         {STORAGE_TYPES.map(({ value, label, icon: Icon, description }) => {
           const count = storages?.filter((s) => s.storage_type === value).length ?? 'Unknown';

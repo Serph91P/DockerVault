@@ -65,6 +65,24 @@ it.each([false, true])('keeps decryption material out of successful and failed b
   await waitFor(() => expect(client.getQueryCache().getAll()).toHaveLength(0))
 })
 
+it('distinguishes no matching archive paths from an empty archive and recovers on search', async () => {
+  server.use(http.get('/api/v1/backups/920/files', ({ request }) => {
+    const noMatch = new URL(request.url).searchParams.get('search') === 'absent'
+    return HttpResponse.json(noMatch ? [] : [{ name: 'data.txt', path: 'data.txt', size: 3, size_human: '3 B', is_dir: false, mode: '644', mtime: '' }], { headers: { 'X-Total-Count': noMatch ? '0' : '1', 'X-Has-More': 'false' } })
+  }))
+  render(<QueryClientProvider client={new QueryClient()}><BackupBrowser backup={{ id: 920, encrypted: false } as Backup} onClose={() => {}} /></QueryClientProvider>)
+  const user = userEvent.setup()
+  await screen.findByText('data.txt')
+  const input = screen.getByRole('textbox', { name: 'Search all archive paths' })
+  await user.type(input, 'absent')
+  await user.click(screen.getByRole('button', { name: 'Search files' }))
+  expect(await screen.findByText('No matching archive paths')).toBeVisible()
+  expect(screen.queryByText('This backup is empty')).not.toBeInTheDocument()
+  await user.clear(input)
+  await user.click(screen.getByRole('button', { name: 'Search files' }))
+  expect(await screen.findByRole('button', { name: 'Download data.txt' })).toBeVisible()
+})
+
 it('downloads the actual nested archive path, not a stripped display path', async () => {
   let requested = ''
   server.use(

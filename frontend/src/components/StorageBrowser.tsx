@@ -52,6 +52,7 @@ export interface StorageBrowserTarget {
 interface StorageBrowserProps {
   storage: RemoteStorage | StorageBrowserTarget
   onClose: () => void
+  initialPath?: string
 }
 
 function formatSize(bytes: number | null): string {
@@ -99,9 +100,9 @@ export default function StorageBrowser(props: StorageBrowserProps) {
   return <StorageBrowserContent key={`${props.storage.id}:${props.storage.base_path}:${owner}`} {...props} />
 }
 
-function StorageBrowserContent({ storage, onClose }: StorageBrowserProps) {
+function StorageBrowserContent({ storage, onClose, initialPath = '' }: StorageBrowserProps) {
   const queryClient = useQueryClient()
-  const [currentPath, setCurrentPath] = useState('')
+  const [currentPath, setCurrentPath] = useState(initialPath)
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set())
   const [isSelecting, setIsSelecting] = useState(false)

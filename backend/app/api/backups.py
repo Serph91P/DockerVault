@@ -18,9 +18,9 @@ from pathlib import Path
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, func, or_, text, String
 
 from app.backup_engine import backup_engine
 from app.config import settings
@@ -404,6 +404,300 @@ async def preview_copy_removal(selection: RemovalSelection):
 async def execute_copy_removal(execution: RemovalExecution):
     """Execute only the exact copies in a live confirmation or failed-scope retry."""
     return await execute_removal(execution.token)
+
+
+class HistoryCopy(RemoteSyncInfo):
+    availability: Literal["unknown", "inaccessible"]
+
+
+class HistoryRecord(BackupResponse):
+    remote_sync_details: list[HistoryCopy]
+    source_type: str
+    source_identity: str
+    local_storage_path: Optional[str] = None
+    plan_removed: bool
+    retention_context: str
+    archive_state: Literal["recorded", "never_created", "unknown"]
+    local_state: Literal[
+        "available", "missing", "inaccessible", "not_recorded", "deleted"
+    ]
+    stage: Optional[str] = None
+    can_restore: bool
+    can_sync: bool
+
+
+class HistoryPage(BaseModel):
+    items: list[HistoryRecord]
+    total: int
+    limit: int
+    offset: int
+    snapshot: int
+    dataset: str = "Catalog records up to snapshot ID; location is recorded placement, not a live availability scan. Existing records may change; restart pagination to include new IDs."
+
+
+def _local_history_state(path):
+    if not path:
+        return "not_recorded"
+    try:
+        resolved = _resolve_backup_path(path)
+        if not resolved:
+            # stat distinguishes inaccessible parents from confirmed absence.
+            os.stat(path)
+            return "missing"
+        if not os.path.isfile(resolved) or not os.access(resolved, os.R_OK):
+            return "inaccessible"
+        return "available"
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "inaccessible"
+
+
+async def _history_record(session, backup, target, syncs):
+    local = await asyncio.to_thread(_local_history_state, backup.file_path)
+    if (
+        local != "available"
+        and (backup.backup_metadata or {}).get("local_copy_removed") is True
+    ):
+        local = "deleted"
+    response = await asyncio.to_thread(
+        _build_backup_response, backup, target.name if target else None, syncs
+    )
+    recorded = bool(
+        backup.file_path
+        or backup.file_size is not None
+        or any(s.status == "completed" and s.remote_path for s in syncs)
+    )
+    archive_state = (
+        "recorded"
+        if recorded
+        else (
+            "never_created"
+            if backup.status
+            in (BackupStatus.FAILED, BackupStatus.CANCELLED, BackupStatus.PENDING)
+            else "unknown"
+        )
+    )
+    stage = await session.scalar(
+        select(BackupLog.step)
+        .where(BackupLog.backup_id == backup.id)
+        .order_by(BackupLog.created_at.desc(), BackupLog.id.desc())
+        .limit(1)
+    )
+    remote_ids = {s.storage_id for s in syncs}
+    enabled_ids = set(
+        (
+            await session.scalars(
+                select(RemoteStorage.id).where(
+                    RemoteStorage.id.in_(remote_ids), RemoteStorage.enabled.is_(True)
+                )
+            )
+        ).all()
+    )
+    copies = [
+        HistoryCopy(
+            **s.model_dump(),
+            availability="unknown" if s.storage_id in enabled_ids else "inaccessible",
+        )
+        for s in syncs
+    ]
+    can_sync = (
+        local == "available"
+        and (
+            backup.status == BackupStatus.COMPLETED
+            or (
+                backup.status == BackupStatus.FAILED
+                and (backup.error_message or "").startswith(
+                    ("Remote sync failed:", "Remote storage sync failed:")
+                )
+            )
+        )
+        and (
+            any(s.status == "failed" for s in syncs)
+            or bool(set(target.remote_storage_ids or []) - remote_ids)
+            if target
+            else False
+        )
+    )
+    local_storage_path = None
+    if backup.file_path:
+        try:
+            relative = Path(backup.file_path).relative_to(settings.BACKUP_BASE_PATH)
+            if ".." not in relative.parts:
+                local_storage_path = relative.as_posix()
+        except ValueError:
+            pass  # Imported paths outside the configured root are not storage links.
+    return HistoryRecord(
+        **(
+            response.model_dump()
+            | {"local_available": local == "available", "remote_sync_details": copies}
+        ),
+        source_type=target.target_type if target else "unknown",
+        source_identity=(
+            getattr(
+                target,
+                {
+                    "container": "container_name",
+                    "stack": "stack_name",
+                    "volume": "volume_name",
+                    "path": "host_path",
+                }.get(target.target_type, "name"),
+                None,
+            )
+            or target.name
+        )
+        if target
+        else "Unknown source",
+        local_storage_path=local_storage_path,
+        plan_removed=bool(target is None or target.removed_at),
+        retention_context="Retained after plan removal; automatic plan retention disabled"
+        if target and target.removed_at
+        else f"Assigned retention policy #{target.retention_policy_id}"
+        if target and target.retention_policy_id
+        else "Default retention policy fallback",
+        archive_state=archive_state,
+        local_state=local,
+        stage=stage,
+        can_restore=backup.status == BackupStatus.COMPLETED
+        and archive_state == "recorded"
+        and (
+            local == "available"
+            or any(
+                s.status == "completed" and s.storage_id in enabled_ids for s in syncs
+            )
+        ),
+        can_sync=bool(can_sync),
+    )
+
+
+@router.get("/history", response_model=HistoryPage)
+async def query_history(
+    view: Literal["runs", "archives"] = "runs",
+    q: str = Query(default="", max_length=200),
+    status: Optional[BackupStatus] = None,
+    source: Optional[Literal["container", "stack", "volume", "path"]] = None,
+    target_id: Optional[int] = Query(default=None, ge=1),
+    after: Optional[datetime] = None,
+    before: Optional[datetime] = None,
+    location: str = Query(default="", pattern=r"^(|local|remote|[1-9][0-9]*)$"),
+    sort: Literal["created", "name", "size"] = "created",
+    direction: Literal["asc", "desc"] = "desc",
+    limit: int = Query(default=50, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    snapshot: Optional[int] = Query(default=None, ge=0),
+):
+    """Full catalog query. No provider scans, sampled totals or availability filters.
+
+    An ID boundary excludes later insertions during paging; changes/deletions of
+    existing rows remain live. Count and page share one SQLite read transaction.
+    """
+    async with async_session() as session:
+        await session.execute(text("BEGIN"))
+        boundary = (
+            snapshot
+            if snapshot is not None
+            else (await session.scalar(select(func.max(Backup.id))) or 0)
+        )
+        copies = select(BackupStorageSync.id).where(
+            BackupStorageSync.backup_id == Backup.id
+        )
+        query = (
+            select(Backup, BackupTarget)
+            .outerjoin(BackupTarget, Backup.target_id == BackupTarget.id)
+            .where(Backup.id <= boundary)
+        )
+        if view == "archives":
+            query = query.where(
+                or_(
+                    Backup.file_path.is_not(None),
+                    Backup.file_size.is_not(None),
+                    copies.where(
+                        BackupStorageSync.sync_status == "completed",
+                        BackupStorageSync.remote_path.is_not(None),
+                    ).exists(),
+                )
+            )
+        if q.strip():
+            # Use literal search, not caller-supplied LIKE wildcards.
+            needle = (
+                "%"
+                + q.strip().replace("/", "//").replace("%", "/%").replace("_", "/_")
+                + "%"
+            )
+            query = query.where(
+                or_(
+                    BackupTarget.name.ilike(needle, escape="/"),
+                    BackupTarget.container_name.ilike(needle, escape="/"),
+                    BackupTarget.stack_name.ilike(needle, escape="/"),
+                    BackupTarget.volume_name.ilike(needle, escape="/"),
+                    BackupTarget.host_path.ilike(needle, escape="/"),
+                    Backup.file_path.ilike(needle, escape="/"),
+                    Backup.error_message.ilike(needle, escape="/"),
+                    func.cast(Backup.id, String).ilike(needle, escape="/"),
+                )
+            )
+        if status:
+            query = query.where(Backup.status == status)
+        if source:
+            query = query.where(BackupTarget.target_type == source)
+        if target_id:
+            query = query.where(Backup.target_id == target_id)
+        if after:
+            query = query.where(
+                Backup.created_at >= after.replace(tzinfo=None)
+                if after.tzinfo is None
+                else Backup.created_at
+                >= after.astimezone(timezone.utc).replace(tzinfo=None)
+            )
+        if before:
+            query = query.where(
+                Backup.created_at <= before.replace(tzinfo=None)
+                if before.tzinfo is None
+                else Backup.created_at
+                <= before.astimezone(timezone.utc).replace(tzinfo=None)
+            )
+        if location == "local":
+            query = query.where(Backup.file_path.is_not(None))
+        elif location:
+            if location != "remote":
+                copies = copies.where(BackupStorageSync.storage_id == int(location))
+            query = query.where(copies.exists())
+        total = await session.scalar(select(func.count()).select_from(query.subquery()))
+        column = {
+            "created": Backup.created_at,
+            "name": BackupTarget.name,
+            "size": Backup.file_size,
+        }[sort]
+
+        def order(col):
+            return col.asc() if direction == "asc" else col.desc()
+
+        rows = (
+            await session.execute(
+                query.order_by(order(column), order(Backup.id))
+                .limit(limit)
+                .offset(offset)
+            )
+        ).all()
+        sync_map = await _get_sync_details(session, [backup.id for backup, _ in rows])
+        items = [
+            await _history_record(session, backup, target, sync_map.get(backup.id, []))
+            for backup, target in rows
+        ]
+        return HistoryPage(
+            items=items, total=total, limit=limit, offset=offset, snapshot=boundary
+        )
+
+
+@router.get("/history/{backup_id}", response_model=HistoryRecord)
+async def history_detail(backup_id: int):
+    async with async_session() as session:
+        backup = await session.get(Backup, backup_id)
+        if backup is None:
+            raise HTTPException(404, "Run or archive not found")
+        target = await session.get(BackupTarget, backup.target_id)
+        syncs = await _get_sync_details(session, [backup_id])
+        return await _history_record(session, backup, target, syncs.get(backup_id, []))
 
 
 @router.get("/{backup_id}", response_model=BackupResponse)
@@ -946,9 +1240,11 @@ def _archive_identity(path):
     )
 
 
-def _cached_archive_entries(archive_path, mode, limit, offset, cache_identity=None):
+def _cached_archive_entries(
+    archive_path, mode, limit, offset, cache_identity=None, search=""
+):
     before = _archive_identity(archive_path)
-    key = (cache_identity or before, mode)
+    key = (cache_identity or before, mode, search.casefold())
     with _archive_cache_lock:
         now = time.monotonic()
         for expired in [
@@ -970,10 +1266,23 @@ def _cached_archive_entries(archive_path, mode, limit, offset, cache_identity=No
         else:
             # shortcut: archives beyond the bounded metadata prefix scan uncached
             # pages; upgrade only if profiling justifies an encrypted disk index.
-            result = _scan_archive_entries(archive_path, mode, limit, offset)
+            result = _scan_archive_entries(
+                archive_path,
+                mode,
+                limit,
+                offset,
+                **({"search": search} if search else {}),
+            )
     else:
         index = []
-        result = _scan_archive_entries(archive_path, mode, limit, offset, index)
+        result = _scan_archive_entries(
+            archive_path,
+            mode,
+            limit,
+            offset,
+            index,
+            **({"search": search} if search else {}),
+        )
     if _archive_identity(archive_path) != before:
         raise OSError("Archive changed during listing")
     if not cached:
@@ -1007,7 +1316,7 @@ def _member_to_info(member: tarfile.TarInfo) -> BackupFileInfo:
 
 
 def _scan_archive_entries(
-    archive_path: str, mode: str, limit: int, offset: int, index=None
+    archive_path: str, mode: str, limit: int, offset: int, index=None, search=""
 ):
     """Blocking archive scan returning (members, total). Runs in a worker thread."""
     window = []
@@ -1017,6 +1326,8 @@ def _scan_archive_entries(
     # Native stream=True disables TarFile's otherwise unbounded TarInfo cache.
     with tarfile.open(archive_path, mode, stream=True) as tar:
         for member in tar:
+            if search.casefold() not in member.name.casefold():
+                continue
             info = None
             if indexing:
                 info = _member_to_info(member)
@@ -1036,17 +1347,29 @@ def _scan_archive_entries(
 
 
 async def _list_archive_entries(
-    archive_path: str, mode: str, limit: int, offset: int, *, cache_identity=None
+    archive_path: str,
+    mode: str,
+    limit: int,
+    offset: int,
+    *,
+    cache_identity=None,
+    search="",
 ) -> tuple[List[BackupFileInfo], int]:
     """Join the real scan before the caller releases its slot or deletes input."""
     return await _await_io_settled(
         asyncio.to_thread(
-            _cached_archive_entries, archive_path, mode, limit, offset, cache_identity
+            _cached_archive_entries,
+            archive_path,
+            mode,
+            limit,
+            offset,
+            cache_identity,
+            search,
         )
     )
 
 
-async def _browse_archive(backup, limit, offset, private_key=None):
+async def _browse_archive(backup, limit, offset, private_key=None, search=""):
     """One capacity owner for remote preparation, decryption, scan and cleanup."""
     async with _archive_scan_semaphore:
         remote_temp_dir = None
@@ -1079,7 +1402,12 @@ async def _browse_archive(backup, limit, offset, private_key=None):
             ):
                 raise OSError("Archive changed during preparation")
             result = await _list_archive_entries(
-                archive, mode, limit, offset, cache_identity=identity
+                archive,
+                mode,
+                limit,
+                offset,
+                cache_identity=identity,
+                **({"search": search} if search else {}),
             )
             if (
                 await _await_io_settled(asyncio.to_thread(_archive_identity, resolved))
@@ -1351,6 +1679,7 @@ async def list_encrypted_backup_files(
     backup_id: int,
     body: BrowseEncryptedRequest,
     response: Response,
+    search: str = Query(default="", max_length=200),
     limit: int = Query(default=MAX_ARCHIVE_LISTING, ge=1, le=MAX_ARCHIVE_LISTING),
     offset: int = Query(default=0, ge=0),
 ):
@@ -1371,7 +1700,13 @@ async def list_encrypted_backup_files(
                 detail="Backup is not encrypted. Use GET endpoint instead.",
             )
 
-    files, total = await _browse_archive(backup, limit, offset, body.private_key)
+    files, total = await _browse_archive(
+        backup,
+        limit,
+        offset,
+        body.private_key,
+        **({"search": search} if search else {}),
+    )
     response.headers["X-Total-Count"] = str(total)
     response.headers["X-Has-More"] = "true" if offset + limit < total else "false"
     return files
@@ -1530,6 +1865,7 @@ async def download_encrypted_backup_file(
 async def list_backup_files(
     backup_id: int,
     response: Response,
+    search: str = Query(default="", max_length=200),
     limit: int = Query(default=MAX_ARCHIVE_LISTING, ge=1, le=MAX_ARCHIVE_LISTING),
     offset: int = Query(default=0, ge=0),
 ):
@@ -1549,10 +1885,66 @@ async def list_backup_files(
         if backup.status != BackupStatus.COMPLETED:
             raise HTTPException(status_code=400, detail="Backup is not completed")
 
-    files, total = await _browse_archive(backup, limit, offset)
+    files, total = await _browse_archive(
+        backup, limit, offset, **({"search": search} if search else {})
+    )
     response.headers["X-Total-Count"] = str(total)
     response.headers["X-Has-More"] = "true" if offset + limit < total else "false"
     return files
+
+
+class _WholeArchiveResponse(Response):
+    """Use the canonical remote preparation; own its slot/temp files through send."""
+
+    def __init__(self, backup, sidecar=False):
+        self.backup = backup
+        self.sidecar = sidecar
+        super().__init__()
+
+    async def __call__(self, scope, receive, send):
+        async with _archive_scan_semaphore:
+            remote_dir = None
+            try:
+                resolved, remote_dir = await _ensure_backup_locally(self.backup)
+                if not resolved:
+                    raise HTTPException(404, "Archive content unavailable")
+                path = Path(resolved)
+                if self.sidecar:
+                    if not self.backup.encrypted:
+                        raise HTTPException(404, "Archive has no encryption sidecar")
+                    path = (
+                        Path(key_sidecar_path(resolved))
+                        if remote_dir
+                        else Path(
+                            self.backup.encryption_key_path
+                            or key_sidecar_path(resolved)
+                        )
+                    )
+                if not await asyncio.to_thread(path.is_file):
+                    raise HTTPException(404, "Archive content unavailable")
+                await FileResponse(
+                    path,
+                    filename=path.name,
+                    media_type="application/octet-stream",
+                    headers={"Cache-Control": "no-store"},
+                )(scope, receive, send)
+            finally:
+                if remote_dir:
+                    await _await_io_settled(
+                        asyncio.to_thread(shutil.rmtree, remote_dir, ignore_errors=True)
+                    )
+
+
+@router.get("/{backup_id}/download")
+async def download_whole_archive(backup_id: int, sidecar: bool = False):
+    """Download original archive bytes (ciphertext stays encrypted) or its DEK sidecar."""
+    async with async_session() as session:
+        backup = await session.get(Backup, backup_id)
+        if not backup:
+            raise HTTPException(404, "Archive not found")
+        if backup.status != BackupStatus.COMPLETED:
+            raise HTTPException(409, "Run has no completed archive")
+    return _WholeArchiveResponse(backup, sidecar)
 
 
 @router.get("/{backup_id}/files/{file_path:path}")

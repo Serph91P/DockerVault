@@ -11,7 +11,7 @@ const checks = []
 const check = (condition, label) => { assert.ok(condition, label); checks.push(label); console.log('PASS ' + label) }
 const username = 'truthful-states-operator', password = randomBytes(24).toString('hex')
 const routes = [
-  ['/', '/targets', 'Plans'], ['/protection', '/targets', 'Plans'], ['/history', '/backups', 'Archives'],
+  ['/', '/targets', 'Plans'], ['/protection', '/targets', 'Plans'], ['/history', '/backups/history', 'History'],
   ['/protection/schedules', '/schedules', 'Schedules'], ['/protection/retention', '/retention', 'Retention policies'],
   ['/storage', '/storage', 'Storage locations'], ['/settings', '/settings/storage', 'Storage settings'],
 ]
@@ -49,10 +49,10 @@ try {
   await page.getByRole('button', { name: /Continue without encryption/ }).click()
   await page.getByRole('button', { name: 'Continue to DockerVault' }).click()
   check((await context.cookies()).some(cookie => cookie.name === 'session_token' && cookie.httpOnly), 'real HttpOnly cookie authentication')
-  for (const [route, endpoint, label] of routes.filter(r => ['/targets', '/backups', '/schedules', '/storage'].includes(r[1]))) {
+  for (const [route, endpoint, label] of routes.filter(r => ['/targets', '/backups/history', '/schedules', '/storage'].includes(r[1]))) {
     await ready(route, label)
     const rows = await api(endpoint)
-    check(Array.isArray(rows) && rows.length === 0, `${route}: real confirmed initial empty resource`)
+    check(endpoint === '/backups/history' ? Array.isArray(rows.items) && rows.items.length === 0 && rows.total === 0 : Array.isArray(rows) && rows.length === 0, `${route}: real confirmed initial empty resource`)
   }
   const schedule = await api('/schedules', 'POST', { name: 'Synthetic shared schedule', cron_expression: '0 2 * * *', enabled: true })
   const target = await api('/targets', 'POST', { name: 'Synthetic path plan', target_type: 'path', host_path: '/app/data/ux183-source', schedule_id: schedule.id, enabled: true, compression_enabled: true })
@@ -156,11 +156,11 @@ try {
   await page.waitForURL(base + '/protection')
   await page.getByRole('link', { name: 'Synthetic path plan', exact: true }).waitFor()
   check(await search.inputValue() === '', 'filtered empty Clear filters restores list')
-  await ready('/history', 'Archives')
+  await ready('/history', 'History')
   const stopPlans = await fault('/targets', 503)
   await page.reload()
-  await page.getByRole('alert', { name: 'Plans status', exact: true }).waitFor()
-  await page.getByLabel('Available archives', { exact: true }).getByRole('button', { name: 'Archive actions', exact: true }).waitFor()
+  await page.getByLabel('History status', { exact: true }).filter({ hasText: /updated/ }).waitFor()
+  await page.getByRole('link', { name: `Run #${run.id}`, exact: true }).waitFor()
   check(true, 'failed target lookup preserves successful archive rows instead of inventing missing plans')
   await stopPlans()
 
@@ -207,7 +207,7 @@ try {
   await page.waitForURL(new RegExp('/protection/' + target.id + '(\\?|$)'))
   check((await api('/targets/' + target.id)).name === 'Synthetic plan revised', 'retry saves preserved input through the real API and SQLite')
   await page.goto(base + '/history?run=' + run.id)
-  await page.getByRole('button', { name: 'Open run logs' }).click()
+  await page.getByRole('heading', { name: `Run #${run.id}`, exact: true }).waitFor()
   await page.getByLabel('Run logs status', { exact: true }).filter({ hasText: /updated/ }).waitFor()
   check((await api('/backups/' + run.id + '/logs')).length > 0, 'linked run opens real persisted backend logs')
   await page.keyboard.press('Escape')
@@ -225,12 +225,12 @@ try {
   await page.getByText('Partial', { exact: true }).waitFor()
   check(true, 'HTTP200 warning is partial after a real local-provider test')
   await page.unroute(`**/api/v1/storage/${storage.id}/test`, partialTest)
-  const mixedCopies = async route => { const response = await route.fetch(); const rows = await response.json(); await route.fulfill({ response, json: rows.map(row => row.id === run.id ? { ...row, remote_sync_details: [{ storage_id: storage.id, storage_name: storage.name, status: 'failed' }] } : row) }) }
-  await page.route('**/api/v1/backups?*', mixedCopies)
-  await ready('/history', 'Archives')
-  await page.getByText('partial', { exact: true }).first().waitFor()
+  const mixedCopies = async route => { const response = await route.fetch(); const envelope = await response.json(); await route.fulfill({ response, json: { ...envelope, items: envelope.items.map(row => row.id === run.id ? { ...row, remote_sync_details: [{ storage_id: storage.id, storage_name: storage.name, status: 'failed', availability: 'unknown' }] } : row) } }) }
+  await page.route('**/api/v1/backups/history?*', mixedCopies)
+  await ready('/history', 'History')
+  await page.getByText('Outcome: partial', { exact: true }).first().waitFor()
   check(true, 'transport-injected HTTP200 mixed copy result is partial in history, not completed')
-  await page.unroute('**/api/v1/backups?*', mixedCopies)
+  await page.unroute('**/api/v1/backups/history?*', mixedCopies)
 
   await page.getByRole('button', { name: /^Notifications \(/ }).click()
   const center = page.getByRole('dialog', { name: 'Notifications', exact: true })
@@ -310,24 +310,24 @@ try {
   const realHistory = await api('/backups?limit=500')
   check(realHistory.length === 61 && realHistory.every(row => row.status === 'completed'), 'B3: oversized history consists of 61 real completed backend runs')
   const newestIds = [...realHistory].sort((a, b) => Date.parse(b.completed_at) - Date.parse(a.completed_at) || b.id - a.id).slice(0, 50).map(row => row.id)
-  await ready('/history', 'Archives')
+  await ready('/history', 'History')
   await page.waitForFunction(() => JSON.parse(sessionStorage.getItem('dockervault-notifications-v1'))?.items.filter(item => item.target?.kind === 'run').length === 50)
   let retained = await page.evaluate(() => JSON.parse(sessionStorage.getItem('dockervault-notifications-v1')).items)
   check(JSON.stringify(retained.map(item => item.target.id)) === JSON.stringify(newestIds), 'B3: newest 50 backend results survive the bounded history ingestion')
   await page.getByRole('button', { name: /^Notifications \(/ }).click()
   await center.getByRole('button', { name: 'Mark all as read', exact: true }).click()
   await page.keyboard.press('Escape')
-  await page.getByRole('button', { name: 'Refresh Archives', exact: true }).click()
-  await page.getByLabel('Archives status', { exact: true }).filter({ hasText: /updated/ }).waitFor()
+  await page.getByRole('button', { name: 'Refresh History', exact: true }).click()
+  await page.getByLabel('History status', { exact: true }).filter({ hasText: /updated/ }).waitFor()
   await page.reload()
-  await page.getByLabel('Archives status', { exact: true }).filter({ hasText: /updated/ }).waitFor()
+  await page.getByLabel('History status', { exact: true }).filter({ hasText: /updated/ }).waitFor()
   retained = await page.evaluate(() => JSON.parse(sessionStorage.getItem('dockervault-notifications-v1')).items)
   check(retained.length === 50 && retained.every(item => item.read) && JSON.stringify(retained.map(item => item.target.id)) === JSON.stringify(newestIds), 'B3: read state and latest membership survive identical oversized refetch and verified-owner reload')
   await page.getByRole('button', { name: /^Notifications \(/ }).click()
   await center.getByRole('button', { name: 'Clear all', exact: true }).click()
   await page.keyboard.press('Escape')
   await page.reload()
-  await page.getByLabel('Archives status', { exact: true }).filter({ hasText: /updated/ }).waitFor()
+  await page.getByLabel('History status', { exact: true }).filter({ hasText: /updated/ }).waitFor()
   await page.getByRole('button', { name: /^Notifications \(/ }).click()
   await center.getByText('No notifications', { exact: true }).waitFor()
   retained = await page.evaluate(() => JSON.parse(sessionStorage.getItem('dockervault-notifications-v1')).items)

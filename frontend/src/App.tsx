@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { Routes, Route, Navigate, Link } from 'react-router-dom'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
-import Backups from './pages/Backups'
+import History from './pages/History'
 import Protection from './pages/Protection'
 import ProtectionPlan, { ProtectionNew } from './pages/ProtectionPlan'
 import Schedules from './pages/Schedules'
@@ -59,7 +59,7 @@ function App() {
         <Route index element={<Dashboard />} />
         <Route path="protection" element={<Protection />} />
         <Route path="protection/new" element={<ProtectionNew />} />
-        <Route path="history" element={<Backups workspace="history" />} />
+        <Route path="history/*" element={<History />} />
         <Route path="protection/schedules/new" element={<Schedules />} />
         <Route path="protection/schedules/:policyId" element={<Schedules />} />
         <Route path="protection/schedules/:policyId/edit" element={<Schedules />} />
