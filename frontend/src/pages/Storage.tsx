@@ -4,7 +4,11 @@ import StorageLocationContext from '../components/StorageLocationContext'
 import NotificationContext from '../components/NotificationContext'
 import { useNotificationStore } from '../store/notifications'
 import { useValidationFeedback } from '../components/ValidationFeedback'
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useSearchParams } from 'react-router-dom'
+import { ownsSession, sessionGeneration, sessionSignal } from '../store/session'
+import { responseStatus } from '../api/responses'
+import { storageEndpoint } from '../api/storagePrivacy'
 import { operationOutcome, type Outcome } from '../api/outcomes'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -29,10 +33,10 @@ import {
 } from 'lucide-react';
 import api, { RemoteStorage } from '../api';
 import { storageApi, type SSHKeyInfo } from '../api';
-import StorageBrowser from '../components/StorageBrowser';
+
 import ConfirmDialog from '../components/ConfirmDialog';
 import { Modal } from '../components/ui/dialog';
-import SSHKeyManager from '../components/SSHKeyManager';
+
 
 interface StorageFormData {
   name: string;
@@ -56,6 +60,7 @@ interface StorageFormData {
 const STORAGE_TYPES = [
   { value: 'local', label: 'Local / NFS', icon: HardDrive, description: 'Local directory or NFS mount' },
   { value: 'ssh', label: 'SSH / SFTP', icon: Key, description: 'SSH server with rsync or SFTP' },
+  { value: 'sftp', label: 'SFTP', icon: Key, description: 'SFTP connection (preserves the SFTP provider ID)' },
   { value: 's3', label: 'S3 Compatible', icon: Cloud, description: 'AWS S3, MinIO, Backblaze B2' },
   { value: 'webdav', label: 'WebDAV', icon: Globe, description: 'Nextcloud, ownCloud, etc.' },
   { value: 'ftp', label: 'FTP (unencrypted)', icon: Server, description: 'Plain FTP; use SFTP for secure transport. FTPS is not supported.' },
@@ -67,7 +72,14 @@ const getStorageIcon = (type: string) => {
   return found?.icon || Database;
 };
 
+const subscribeSession = (listener: () => void) => { const signal = sessionSignal(); signal.addEventListener('abort',listener); return () => signal.removeEventListener('abort',listener) }
 export default function Storage() {
+  const generation = useSyncExternalStore(subscribeSession, sessionGeneration)
+  return <StorageWorkspace key={generation} />
+}
+function StorageWorkspace() {
+  const [params, setParams] = useSearchParams()
+  const openLocation = (id: number | 'local') => { const next = new URLSearchParams(); next.set('storage', String(id)); next.set('tab','files'); setParams(next) }
   const queryClient = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [editingStorage, setEditingStorage] = useState<RemoteStorage | null>(null);
@@ -83,12 +95,17 @@ export default function Storage() {
       return next;
     });
   };
-  const [browsingStorage, setBrowsingStorage] = useState<RemoteStorage | null>(null);
-  const [localBrowserOpen, setLocalBrowserOpen] = useState(false);
+
   const [confirmDialog, setConfirmDialog] = useState<{ id: number; name: string } | null>(null);
   const [formStep, setFormStep] = useState(1); // ST1: 1=Name+Type, 2=Details, 3=Review
+  const [draftTest, setDraftTest] = useState<{revision: number; status: string} | null>(null)
+  const [draftPending, setDraftPending] = useState(false)
+  const revision = useRef(0)
+  const draftController = useRef<AbortController | null>(null)
+  const [clearSecrets, setClearSecrets] = useState<string[]>([])
+  const submitGuard = useRef(false)
 
-  const [formData, setFormData] = useState<StorageFormData>({
+  const [formData, storeFormData] = useState<StorageFormData>({
     name: '',
     storage_type: 'local',
     enabled: true,
@@ -107,6 +124,31 @@ export default function Storage() {
     rclone_remote: '',
   });
 
+  const setFormData = (value: StorageFormData) => { revision.current++; storeFormData(value) }
+  const payload = () => {
+    const { storage_type, ...fields } = formData
+    const data = { ...fields, port: formData.port ? Number(formData.port) : null, ...Object.fromEntries(clearSecrets.map(key => [key,null])) }
+    if (editingStorage) {
+      // An unchanged redacted endpoint preserves its full stored value server-side.
+      const updates: Record<string, unknown> = {...data}
+      for (const key of ['host','webdav_url','s3_endpoint_url'] as const) if (formData[key] === (editingStorage[key] ?? '')) delete updates[key]
+      return updates
+    }
+    return { ...data, storage_type }
+  }
+  const testDraft = async () => {
+    if (draftPending) return
+    const owner = sessionGeneration(), current = revision.current
+    const controller = new AbortController(); draftController.current = controller
+    setDraftPending(true)
+    try {
+      const response = await api.post('/storage/test-config', editingStorage ? {mode:'edit',storage_id:editingStorage.id,config:payload()} : {mode:'create',config:payload()}, {signal:controller.signal})
+      if (ownsSession(owner) && !controller.signal.aborted) setDraftTest({revision:current,status:response.data.success === true ? 'Draft test succeeded (observation only)' : 'Draft test failed'})
+    } catch { if (ownsSession(owner) && !controller.signal.aborted) setDraftTest({revision:current,status:'Draft test unknown: response unavailable; no success confirmed'}) }
+    finally { if (ownsSession(owner) && !controller.signal.aborted) setDraftPending(false) }
+  }
+  useEffect(() => () => draftController.current?.abort(), [])
+
   const { data: storages, isLoading, ...storagesQuery } = useQuery<RemoteStorage[]>({
     queryKey: queryKeys.storages.list(),
     queryFn: async () => {
@@ -121,7 +163,8 @@ export default function Storage() {
   });
 
   const createMutation = useMutation({
-    mutationFn: () => api.post('/storage', { ...formData, port: formData.port ? parseInt(formData.port) : null }).then(r => r.data),
+    mutationFn: () => api.post('/storage', payload()).then(r => r.data),
+    onError: error => { if ([400,401,403,404,409,422,429].includes(responseStatus(error) ?? 0)) submitGuard.current = false },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.storages.all });
       resetForm();
@@ -129,7 +172,8 @@ export default function Storage() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: () => api.put(`/storage/${editingStorage!.id}`, { ...formData, port: formData.port ? parseInt(formData.port) : null }).then(r => r.data),
+    mutationFn: () => api.put(`/storage/${editingStorage!.id}`, payload()).then(r => r.data),
+    onError: () => { submitGuard.current = false },
     onSuccess: () => {
       setTestResults({});
       queryClient.invalidateQueries({ queryKey: queryKeys.storages.all });
@@ -165,6 +209,7 @@ export default function Storage() {
   });
 
   const resetForm = () => {
+    draftController.current?.abort(); setDraftPending(false); setDraftTest(null); setClearSecrets([]); submitGuard.current = false
     setFormData({
       name: '',
       storage_type: 'local',
@@ -198,10 +243,10 @@ export default function Storage() {
       port: storage.port?.toString() || '',
       username: storage.username || '',
       password: '',
-      base_path: storage.base_path || '/backups',
+      base_path: storage.base_path ?? '/backups',
       ssh_key_path: storage.ssh_key_path || '',
       s3_bucket: storage.s3_bucket || '',
-      s3_region: storage.s3_region || 'eu-central-1',
+      s3_region: storage.s3_region ?? 'eu-central-1',
       s3_access_key: '',
       s3_secret_key: '',
       s3_endpoint_url: storage.s3_endpoint_url || '',
@@ -214,7 +259,8 @@ export default function Storage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (formStep !== 3 || createMutation.isPending || updateMutation.isPending) return;
+    if (formStep !== 3 || submitGuard.current || createMutation.isPending || updateMutation.isPending) return;
+    submitGuard.current = true
     if (editingStorage) {
       updateMutation.mutate();
     } else {
@@ -241,6 +287,7 @@ export default function Storage() {
         );
 
       case 'ssh':
+      case 'sftp':
         return (
           <>
             <div className="grid grid-cols-2 gap-4">
@@ -636,30 +683,11 @@ export default function Storage() {
         </button>
       </div>
 
-      {/* Storage Type Overview */}
       <NotificationContext domain="storage" />
-      <StorageLocationContext storages={storages} />
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-        {STORAGE_TYPES.map(({ value, label, icon: Icon, description }) => {
-          const count = storages?.filter((s) => s.storage_type === value).length ?? 'Unknown';
-          return (
-            <div
-              key={value}
-              className="bg-white dark:bg-slate-800 rounded-lg p-4 border border-slate-200 dark:border-slate-700"
-            >
-              <div className="flex items-center gap-3 mb-2">
-                <Icon className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                <span className="font-medium text-slate-900 dark:text-white">{label}</span>
-              </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">{description}</p>
-              <span className="text-2xl font-bold text-slate-900 dark:text-white">{count}</span>
-            </div>
-          );
-        })}
-      </div>
+      <StorageLocationContext storages={storages} onEdit={handleEdit} onTest={id => testMutation.mutate(id)} onRemove={storage => setConfirmDialog({id:storage.id,name:storage.name})} />
 
       {/* Local Backups */}
-      <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 px-6 py-4">
+      {!params.has('storage') && <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 px-6 py-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
             <div className="p-3 rounded-lg bg-green-100 dark:bg-green-900/30">
@@ -675,20 +703,17 @@ export default function Storage() {
             </div>
           </div>
           <button
-            onClick={() => setLocalBrowserOpen(true)}
+            onClick={() => openLocation('local')}
             className="p-2 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
             title="Browse Files"
           >
             <FolderOpen className="w-5 h-5" />
           </button>
         </div>
-      </div>
-
-      {/* SSH Keys */}
-      <SSHKeyManager />
+      </div>}
 
       {/* Storage List */}
-      <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+      {!params.has('storage') && <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700">
           <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Configured Storage Locations</h2>
         </div>
@@ -713,7 +738,7 @@ export default function Storage() {
               const Icon = getStorageIcon(storage.storage_type);
               const typeInfo = STORAGE_TYPES.find((t) => t.value === storage.storage_type);
               return (
-                <div key={storage.id} className="px-6 py-4 flex items-center justify-between">
+                <div key={storage.id} className="px-4 py-4 flex flex-wrap gap-3 items-center justify-between">
                   <div className="flex items-center gap-4">
                     <div
                       className={`p-3 rounded-lg ${
@@ -779,7 +804,7 @@ export default function Storage() {
                         </span>
                       )}
                       <button
-                        onClick={() => setBrowsingStorage(storage)}
+                        onClick={() => openLocation(storage.id)}
                         className="p-2 text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-lg transition-colors"
                         title="Browse Files"
                       >
@@ -833,32 +858,11 @@ export default function Storage() {
             <p className="text-sm">Add a storage location to backup off-site</p>
           </div>
         ) : null}
-      </div>
-
-      {/* Storage Browser Modal */}
-      {browsingStorage && (
-        <StorageBrowser
-          storage={browsingStorage}
-          onClose={() => setBrowsingStorage(null)}
-        />
-      )}
-
-      {/* Local Backup Browser Modal */}
-      {localBrowserOpen && (
-        <StorageBrowser
-          storage={{
-            id: 'local' as const,
-            name: 'Local Backups',
-            storage_type: 'local',
-            base_path: '/backups',
-          }}
-          onClose={() => setLocalBrowserOpen(false)}
-        />
-      )}
+      </div>}
 
       {/* Add/Edit Form Modal - ST1: Step-based */}
       {showForm && (
-        <Modal title={editingStorage ? 'Edit Storage' : 'Add New Storage'} onClose={() => setShowForm(false)} pending={createMutation.isPending || updateMutation.isPending}>
+        <Modal title={editingStorage ? 'Edit Storage' : 'Add New Storage'} onClose={resetForm} pending={createMutation.isPending || updateMutation.isPending}>
           <div className="bg-white dark:bg-slate-800 rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
             {/* Header with step indicator */}
             <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700">
@@ -908,7 +912,7 @@ export default function Storage() {
                     <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
                       Storage Type
                     </label>
-                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                    {editingStorage ? <p>Provider {editingStorage.storage_type} cannot be changed.</p> : <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                       {STORAGE_TYPES.map(({ value, label, icon: Icon, description }) => (
                         <button
                           key={value}
@@ -927,7 +931,7 @@ export default function Storage() {
                           <span className="text-xs text-slate-500 dark:text-slate-400">{description}</span>
                         </button>
                       ))}
-                    </div>
+                    </div>}
                   </div>
                 </>
               )}
@@ -940,6 +944,8 @@ export default function Storage() {
                     <span>{STORAGE_TYPES.find(t => t.value === formData.storage_type)?.label} — {formData.name || 'Unnamed'}</span>
                   </div>
                   {renderTypeFields()}
+                  <label>Name<input className="input" aria-label="Location name" value={formData.name} onChange={e => setFormData({...formData,name:e.target.value})} /></label>
+                  {editingStorage && <fieldset><legend>Stored credentials: blank keeps the existing value; checked explicitly clears.</legend>{(formData.storage_type === 's3' ? ['s3_access_key','s3_secret_key'] : ['ssh','sftp','ftp','webdav'].includes(formData.storage_type) ? ['password'] : []).map(key => <label className="block" key={key}><input type="checkbox" checked={clearSecrets.includes(key)} onChange={e => { revision.current++; setClearSecrets(e.target.checked ? [...clearSecrets,key] : clearSecrets.filter(value => value !== key)) }} />Clear stored {key}</label>)}</fieldset>}
                 </>
               )}
 
@@ -970,7 +976,7 @@ export default function Storage() {
                     {formData.storage_type === 'webdav' && formData.webdav_url && (
                       <div className="flex justify-between py-2 border-b border-slate-200 dark:border-slate-700">
                         <span className="text-slate-500">WebDAV</span>
-                        <span className="font-mono text-slate-900 dark:text-white text-right break-all">{formData.webdav_url}</span>
+                        <span className="font-mono text-slate-900 dark:text-white text-right break-all">{storageEndpoint(formData.webdav_url)}</span>
                       </div>
                     )}
                     {formData.storage_type === 'rclone' && formData.rclone_remote && (
@@ -1004,6 +1010,8 @@ export default function Storage() {
                 </>
               )}
 
+              {formStep >= 2 && <div className="space-y-2"><p>Optional test: does not save or enable this location. Local tests may create a directory and make an exclusive write probe.</p><button type="button" className="btn-secondary" disabled={draftPending} onClick={() => void testDraft()}>{draftPending ? 'Testing draft…' : 'Test draft'}</button>{draftTest && <p role="status">{draftTest.revision === revision.current ? draftTest.status : 'Draft changed; test observation is stale. Test again if needed.'}</p>}</div>}
+              {createMutation.isError && <p>Create was not confirmed. Inspect the location list before creating again; a lost response may have saved it.</p>}
               {/* Navigation */}
               <div className="flex justify-between pt-4 border-t border-slate-200 dark:border-slate-700">
                 <div>

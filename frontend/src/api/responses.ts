@@ -77,6 +77,7 @@ function validOperation(job: unknown) {
 // Validate before data enters the shared cache; malformed is never confirmed empty.
 export function validateWrite(url: string | undefined, data: unknown) {
   if (!url) return
+  if (url === '/storage/test-config' && !fields(data, { success: boolean, message: string })) throw new ResponseError()
   if (url === '/retention/cleanup-orphaned') {
     if (!fields(data, { deleted: count, failed: count, protected: count, scan_errors: count, scan_complete: boolean, freed_bytes: count, freed_human: string }) || !object(data)) throw new ResponseError()
     const errors = Number(data.failed) + Number(data.scan_errors)

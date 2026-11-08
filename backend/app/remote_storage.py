@@ -255,18 +255,48 @@ class LocalStorage(StorageBackend):
             )
         )
 
-    async def test_connection(self) -> Dict[str, Any]:
+    def _test_writable(self) -> None:
         path = Path(self.config.base_path)
+        path.mkdir(parents=True, exist_ok=True)
+        directory = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        probe = None
+        name = ".backup_test-" + os.urandom(16).hex()
         try:
-            path.mkdir(parents=True, exist_ok=True)
-            test_file = path / ".backup_test"
-            test_file.write_text("test")
-            test_file.unlink()
-            return {"success": True, "message": f"Path {path} is writable"}
-        except Exception as e:
-            message = _format_exception_message(e)
-            logger.warning("Local storage test failed: %s", message)
-            return {"success": False, "message": message}
+            root_identity = os.fstat(directory)
+            probe = os.open(
+                name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=directory,
+            )
+            identity = os.fstat(probe)
+            try:
+                if os.write(probe, b"test") != 4:
+                    raise OSError("Incomplete probe write")
+            finally:
+                # A random name is not ownership: both names must still bind our fds.
+                current_root = path.stat(follow_symlinks=False)
+                current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if (current_root.st_dev, current_root.st_ino) != (
+                    root_identity.st_dev,
+                    root_identity.st_ino,
+                ) or (current.st_dev, current.st_ino) != (
+                    identity.st_dev,
+                    identity.st_ino,
+                ):
+                    raise OSError("Probe identity changed")
+                os.unlink(name, dir_fd=directory)
+        finally:
+            if probe is not None:
+                os.close(probe)
+            os.close(directory)
+
+    async def test_connection(self) -> Dict[str, Any]:
+        try:
+            await _await_io_settled(asyncio.to_thread(self._test_writable))
+            return {"success": True, "message": "Local directory is writable"}
+        except Exception:
+            return {"success": False, "message": "Local directory test failed"}
 
 
 class SSHStorage(StorageBackend):
@@ -706,11 +736,11 @@ class SSHStorage(StorageBackend):
                 message = details or (
                     f"SSH/SFTP connection failed (exit code {process.returncode})"
                 )
-                logger.warning("SSH storage test failed: %s", message)
+                logger.warning("SSH storage test failed")
                 return {"success": False, "message": message}
         except Exception as e:
             message = _format_exception_message(e)
-            logger.warning("SSH storage test failed: %s", message)
+            logger.warning("SSH storage test failed")
             return {"success": False, "message": message}
 
 
@@ -1150,11 +1180,11 @@ class WebDAVStorage(StorageBackend):
                             if details
                             else f"HTTP {resp.status}.{hint}"
                         )
-                        logger.warning("WebDAV storage test failed: %s", message)
+                        logger.warning("WebDAV storage test failed")
                         return {"success": False, "message": message}
         except Exception as e:
             message = _format_exception_message(e)
-            logger.warning("WebDAV storage test failed: %s", message)
+            logger.warning("WebDAV storage test failed")
             return {"success": False, "message": message}
 
 
@@ -1429,7 +1459,7 @@ class S3Storage(StorageBackend):
             }
         except Exception as e:
             message = _format_exception_message(e)
-            logger.warning("S3 storage test failed: %s", message)
+            logger.warning("S3 storage test failed")
             return {"success": False, "message": message}
 
 
@@ -1545,11 +1575,11 @@ class RcloneStorage(StorageBackend):
             else:
                 details = stderr.strip() or stdout.strip()
                 message = details or f"Rclone connection failed (exit code {code})"
-                logger.warning("Rclone storage test failed: %s", message)
+                logger.warning("Rclone storage test failed")
                 return {"success": False, "message": message}
         except Exception as e:
             message = _format_exception_message(e)
-            logger.warning("Rclone storage test failed: %s", message)
+            logger.warning("Rclone storage test failed")
             return {"success": False, "message": message}
 
 
@@ -1694,7 +1724,7 @@ class FTPStorage(StorageBackend):
             return {"success": True, "message": "FTP connection successful"}
         except Exception as e:
             message = _format_exception_message(e)
-            logger.warning("FTP storage test failed: %s", message)
+            logger.warning("FTP storage test failed")
             return {"success": False, "message": message}
 
 

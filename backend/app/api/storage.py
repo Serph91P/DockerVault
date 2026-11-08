@@ -7,7 +7,10 @@ import re
 import tempfile
 import shutil
 from pathlib import Path
-from typing import List, Optional
+from typing import Annotated, List, Literal, Optional
+from dataclasses import asdict
+
+from anyio import CancelScope
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -18,7 +21,13 @@ from starlette.background import BackgroundTask
 
 from ..database import RemoteStorage as RemoteStorageModel
 from ..database import get_db
-from ..remote_storage import StorageConfig, StorageType, storage_manager
+from ..remote_storage import (
+    RemoteStorageManager,
+    StorageConfig,
+    StorageType,
+    storage_manager,
+    _await_io_settled,
+)
 from ..credential_encryption import decrypt_value, encrypt_value
 from ..config import settings
 from ..storage_validation import storage_errors, stored_storage_errors
@@ -127,6 +136,73 @@ class StorageTestResult(BaseModel):
 
     success: bool
     message: str
+
+
+class StorageDraftUpdate(StorageUpdate):
+    model_config = {"extra": "forbid"}
+
+
+class StorageCreateTest(BaseModel):
+    model_config = {"extra": "forbid"}
+    mode: Literal["create"]
+    config: StorageCreate
+
+
+class StorageEditTest(BaseModel):
+    model_config = {"extra": "forbid"}
+    mode: Literal["edit"]
+    storage_id: int = Field(gt=0)
+    config: StorageDraftUpdate
+
+
+@router.post("/test-config", response_model=StorageTestResult)
+async def test_storage_config(
+    data: Annotated[StorageCreateTest | StorageEditTest, Field(discriminator="mode")],
+    db: AsyncSession = Depends(get_db),
+):
+    """Explicitly probe a private draft; never register it globally or write a row."""
+    if data.mode == "edit":
+        storage = await db.get(RemoteStorageModel, data.storage_id)
+        if storage is None:
+            raise HTTPException(status_code=404, detail="Storage not found")
+        effective = asdict(_db_to_config(storage))
+        updates = data.config.model_dump(exclude_unset=True)
+        effective.update(
+            {
+                key: value
+                for key, value in updates.items()
+                if not (
+                    key in ("password", "s3_access_key", "s3_secret_key")
+                    and value == ""
+                )
+            }
+        )
+    else:
+        effective = {"id": 0, **data.config.model_dump()}
+    errors = storage_errors(effective)
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Invalid storage configuration", "errors": errors},
+        )
+    if effective.get("ssh_key_path"):
+        effective["ssh_key_path"] = _validate_ssh_key_path(effective["ssh_key_path"])
+    manager = RemoteStorageManager()
+    try:
+        backend = manager.add_storage(StorageConfig(**effective))
+        result = await backend.test_connection()
+        success = result.get("success") is True
+        return StorageTestResult(
+            success=success,
+            message="Connection test succeeded"
+            if success
+            else "Connection test failed",
+        )
+    except Exception:
+        return StorageTestResult(success=False, message="Connection test failed")
+    finally:
+        with CancelScope(shield=True):
+            await _await_io_settled(manager.close())
 
 
 @router.get("", response_model=List[StorageResponse])
@@ -687,13 +763,14 @@ async def test_storage(storage_id: int, db: AsyncSession = Depends(get_db)):
 
     try:
         result = await backend.test_connection()
-    except Exception as exc:
-        logger.exception("Remote storage test failed for %s", storage_id)
-        message = str(exc).strip() or exc.__class__.__name__
-        return StorageTestResult(success=False, message=message)
+    except Exception:
+        return StorageTestResult(success=False, message="Connection test failed")
 
-    message = result.get("message") or "Connection test failed"
-    return StorageTestResult(success=bool(result.get("success")), message=message)
+    success = result.get("success") is True
+    return StorageTestResult(
+        success=success,
+        message="Connection test succeeded" if success else "Connection test failed",
+    )
 
 
 def _validate_remote_path(path: str) -> str:
