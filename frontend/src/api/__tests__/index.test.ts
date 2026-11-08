@@ -57,6 +57,12 @@ describe('API Layer', () => {
       expect(response.data.status).toBe('deleted')
     })
 
+    it('preserves typed server volume identity and review binding', async () => {
+      let payload: unknown
+      server.use(http.post('/api/v1/backups/1/restore', async ({request})=>{payload=await request.json(); return HttpResponse.json({status:'restored'})}))
+      await backupsApi.restore(1,{destination_type:'volume',target_volume:'actual-volume',review_fingerprint:'bound'})
+      expect(payload).toEqual({destination_type:'volume',target_volume:'actual-volume',review_fingerprint:'bound'})
+    })
     it('should restore backup', async () => {
       const response = await backupsApi.restore(1)
       expect(response.data).toMatchObject({

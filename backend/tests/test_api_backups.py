@@ -277,7 +277,7 @@ class TestBackupsAPI:
 
     @patch("app.api.backups.backup_engine")
     async def test_restore_backup_success(
-        self, mock_engine, async_client: AsyncClient, db_session, tmp_path
+        self, mock_engine, async_client: AsyncClient, db_session, tmp_path, monkeypatch
     ):
         """Test successful backup restoration."""
         # Create target and backup
@@ -309,7 +309,27 @@ class TestBackupsAPI:
         await db_session.commit()
         mock_engine.restore_backup = AsyncMock(return_value=True)
 
-        # Send empty JSON body since endpoint expects RestoreBackupRequest
+        # The API now resolves volume identity, even for legacy original requests.
+        from types import SimpleNamespace
+        from app.docker_client import docker_client
+        from unittest.mock import ANY
+
+        destination = tmp_path / "volume-mount"
+        destination.mkdir()
+        monkeypatch.setattr(
+            docker_client,
+            "list_volumes",
+            AsyncMock(
+                return_value=[
+                    SimpleNamespace(
+                        name="test-volume",
+                        mountpoint=str(destination),
+                        driver="local",
+                        created_at="fixture",
+                    )
+                ]
+            ),
+        )
         response = await async_client.post(
             f"/api/v1/backups/{backup.id}/restore", json={}
         )
@@ -318,9 +338,14 @@ class TestBackupsAPI:
         data = response.json()
         assert data["status"] == "restored"
 
-        # Verify restore was called with target_path=None and private_key=None
+        assert data["destination"]["path"] == str(destination)
         mock_engine.restore_backup.assert_called_once_with(
-            backup.id, None, None, archive_path=str(archive), key_path=None
+            backup.id,
+            str(destination),
+            None,
+            archive_path=str(archive),
+            key_path=None,
+            review_guard=ANY,
         )
 
     async def test_restore_backup_path_traversal_prevention(

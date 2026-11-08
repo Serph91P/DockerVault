@@ -19,7 +19,14 @@ from typing import List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse, FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
+from app.restore_review import (
+    RestoreReviewChanged,
+    restore_impact,
+    public_impact,
+    path_identity,
+    target_identity,
+)
 from sqlalchemy import select, func, or_, text, String
 
 from app.backup_engine import backup_engine
@@ -146,11 +153,12 @@ async def _ensure_backup_locally(
             return None, None
 
         for sync in syncs:
+            # A cached provider is not authority to access a now-disabled copy.
+            storage = await session.get(RemoteStorage, sync.storage_id)
+            if not storage or not storage.enabled:
+                continue
             backend = storage_manager.get_backend(sync.storage_id)
             if not backend:
-                storage = await session.get(RemoteStorage, sync.storage_id)
-                if not storage or not storage.enabled:
-                    continue
                 config = _db_to_storage_config(storage)
                 backend = storage_manager.add_storage(config)
 
@@ -267,8 +275,31 @@ class CreateBackupRequest(BaseModel):
 class RestoreBackupRequest(BaseModel):
     """Restore backup request."""
 
+    destination_type: Optional[Literal["original", "volume", "path"]] = None
+    target_volume: Optional[str] = None
     target_path: Optional[str] = None
     private_key: Optional[str] = None  # Required for encrypted backups
+    review_fingerprint: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_destination(self):
+        kind = self.destination_type or ("path" if self.target_path else "original")
+        if (
+            (
+                kind == "path"
+                and (not self.target_path or self.target_volume is not None)
+            )
+            or (
+                kind == "volume"
+                and (not self.target_volume or self.target_path is not None)
+            )
+            or (
+                kind == "original"
+                and (self.target_path is not None or self.target_volume is not None)
+            )
+        ):
+            raise ValueError("Contradictory or missing restore destination")
+        return self
 
 
 def format_size(size_bytes: Optional[int]) -> Optional[str]:
@@ -915,12 +946,13 @@ async def get_restore_info(backup_id: int):
 
     # For volume backups list available volumes as alternative destinations
     available_volumes: list[str] = []
-    if target and target.target_type == "volume":
+    volume_discovery = "available"
+    if target:
         try:
             volumes = await docker_client.list_volumes()
             available_volumes = sorted(v.name for v in volumes)
         except Exception:
-            pass
+            volume_discovery = "unavailable"
 
     containers_to_stop: list[str] = []
     if target:
@@ -948,7 +980,41 @@ async def get_restore_info(backup_id: int):
         },
         "containers_to_stop": containers_to_stop,
         "available_volumes": available_volumes,
+        "volume_discovery": volume_discovery,
+        "original_supported": bool(target and target.target_type in ("path", "volume")),
+        "remote_copies": [
+            s.model_dump() for s in (await _get_restore_copies(backup_id))
+        ],
     }
+
+
+async def _get_restore_copies(backup_id):
+    async with async_session() as session:
+        return (await _get_sync_details(session, [backup_id])).get(backup_id, [])
+
+
+async def _restore_impact(backup_id, selection):
+    async with async_session() as session:
+        backup = await session.get(Backup, backup_id)
+        if not backup:
+            raise HTTPException(404, "Backup not found")
+        if backup.status != BackupStatus.COMPLETED:
+            raise HTTPException(400, "Only completed backups can be restored")
+        target = await session.get(BackupTarget, backup.target_id)
+    try:
+        return await restore_impact(backup, target, selection)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            503, "Destination or workload discovery unavailable"
+        ) from exc
+
+
+@router.post("/{backup_id}/restore-review")
+async def review_restore(backup_id: int, selection: RestoreBackupRequest):
+    """Read-only impact review. Does not materialize, decrypt, stop or write."""
+    return public_impact(await _restore_impact(backup_id, selection))
 
 
 @router.post("/{backup_id}/restore")
@@ -973,31 +1039,43 @@ async def _restore_backup_claimed(
     If target_path is provided, it must be within allowed restore directories
     to prevent path traversal attacks.
     """
-    if restore_request.target_path:
-        # Resolve symlinks and normalize to prevent TOCTOU attacks
-        abs_path = os.path.realpath(restore_request.target_path)
+    if restore_request.destination_type and not restore_request.review_fingerprint:
+        raise HTTPException(409, "Review the destination before confirmation")
+    impact = await _restore_impact(backup_id, restore_request)
+    if (
+        restore_request.review_fingerprint
+        and impact["fingerprint"] != restore_request.review_fingerprint
+    ):
+        raise HTTPException(409, "Restore impact changed; review again")
 
-        # Ensure path is within allowed restore directories
-        allowed_prefixes = [
-            os.path.realpath(settings.BACKUP_BASE_PATH),
-            "/var/lib/docker/volumes",
-        ]
-
-        is_allowed = any(
-            abs_path == prefix or abs_path.startswith(prefix + os.sep)
-            for prefix in allowed_prefixes
-        )
-
-        if not is_allowed:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid restore path: must be within allowed directories",
-            )
+    async def guard(target, identities, states, *, before_extract=False):
+        try:
+            if (
+                path_identity(impact["destination"]["path"])
+                != impact["destination_identity"]
+            ):
+                raise RestoreReviewChanged("Destination changed")
+            if before_extract:
+                return
+            current = await _restore_impact(backup_id, restore_request)
+            expected_ids = {c["name"]: c["id"] for c in impact["containers"]}
+            expected_states = {c["id"]: c["state"] for c in impact["containers"]}
+            if (
+                current["fingerprint"] != impact["fingerprint"]
+                or target_identity(target) != impact["target"]
+                or identities != expected_ids
+                or states != expected_states
+            ):
+                raise RestoreReviewChanged("Restore impact changed")
+        except Exception as exc:
+            raise RestoreReviewChanged("Restore impact changed; review again") from exc
 
     async with async_session() as session:
         backup = await session.get(Backup, backup_id)
         if not backup:
             raise HTTPException(status_code=404, detail="Backup not found")
+    if backup.encrypted and not restore_request.private_key:
+        raise HTTPException(400, "Private key required")
     resolved, temporary = await _ensure_backup_locally(backup)
     if not resolved:
         raise HTTPException(
@@ -1014,11 +1092,14 @@ async def _restore_backup_claimed(
             )
         success = await backup_engine.restore_backup(
             backup_id,
-            restore_request.target_path,
+            impact["destination"]["path"],
             restore_request.private_key,
             archive_path=resolved,
             key_path=key_path,
+            review_guard=guard,
         )
+    except RestoreReviewChanged as exc:
+        raise HTTPException(409, "Restore impact changed; review again") from exc
     finally:
         if temporary:
             shutil.rmtree(temporary, ignore_errors=True)
@@ -1026,7 +1107,7 @@ async def _restore_backup_claimed(
     if not success:
         raise HTTPException(status_code=500, detail="Restore failed")
 
-    return {"status": "restored"}
+    return {"status": "restored", **public_impact(impact)}
 
 
 @router.delete("/{backup_id}")
@@ -1486,11 +1567,11 @@ async def _download_key_from_remote(
 
         for sync in syncs:
             key_remote = key_sidecar_path(sync.remote_path)
+            storage = await session.get(RemoteStorage, sync.storage_id)
+            if not storage or not storage.enabled:
+                continue
             backend = storage_manager.get_backend(sync.storage_id)
             if not backend:
-                storage = await session.get(RemoteStorage, sync.storage_id)
-                if not storage or not storage.enabled:
-                    continue
                 config = _db_to_storage_config(storage)
                 backend = storage_manager.add_storage(config)
 

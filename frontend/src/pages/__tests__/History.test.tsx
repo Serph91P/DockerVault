@@ -6,14 +6,32 @@ import { http, HttpResponse } from 'msw'
 import { expect, it } from 'vitest'
 import { server } from '../../test/mocks/server'
 import History from '../History'
+import Layout from '../../components/Layout'
 
 const row = { id: 507, target_id: 1, target_name: 'Retained source', backup_type: 'full', status: 'completed', created_at: '2026-01-01T00:00:00Z', file_size: 7, file_size_human: '7 B', encrypted: false, local_available: true, remote_synced: false, remote_sync_details: [], source_type: 'path', source_identity: '/fixture', plan_removed: true, retention_context: 'Retained after plan removal', archive_state: 'recorded', local_state: 'available', can_restore: true, can_sync: false }
 const page = { items: [row], total: 507, offset: 0, limit: 50, snapshot: 507, dataset: 'Catalog placement, not a live availability scan' }
 function Location() { const l = useLocation(); return <output aria-label="Location">{l.pathname}{l.search}</output> }
-function mount(path = '/history?q=Retained&custom=keep', client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
-  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><Location /><Routes><Route path="/history/*" element={<History />} /></Routes></MemoryRouter></QueryClientProvider>)
+function mount(path = '/history?q=Retained&custom=keep', client = new QueryClient({ defaultOptions: { queries: { retry: false } } }), shell = false) {
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><Location /><Routes>{shell ? <Route element={<Layout />}><Route path="/history/*" element={<History />} /></Route> : <Route path="/history/*" element={<History />} />}</Routes></MemoryRouter></QueryClientProvider>)
   return userEvent.setup()
 }
+it.each(['archives','runs'])('enters the restore route from %s and returns with every query parameter intact', async kind => {
+  fixtures()
+  server.use(http.get('/api/v1/backups/507/restore-info', () => HttpResponse.json({backup:{id:507,encrypted:false,created_at:row.created_at,local_available:true},target:{id:1,name:'Retained source',target_type:'path'},original_supported:true,volume_discovery:'available',available_volumes:[],remote_copies:[]})))
+  const client=new QueryClient({defaultOptions:{queries:{retry:false}}})
+  const user=mount(`/history/${kind}/507?q=keep&custom=value&offset=500`,client,true)
+  await user.click(await screen.findByRole('link',{name:'Restore archive'}))
+  await screen.findByRole('heading',{name:'Source and availability'})
+  expect(screen.getByLabelText('Location')).toHaveTextContent('/history/archives/507/restore?q=keep&custom=value&offset=500')
+  await user.click(screen.getByRole('button',{name:'Close restore'}))
+  expect(screen.getByLabelText('Location')).toHaveTextContent(`/history/${kind}/507?q=keep&custom=value&offset=500`)
+  await waitFor(()=>expect(screen.getByRole('link',{name:'Restore archive'})).toHaveFocus())
+  const refresh=screen.getByRole('button',{name:`Refresh ${kind==='runs'?'Run':'Archive'} #507`})
+  server.use(http.get('/api/v1/backups/history/507',()=>HttpResponse.json({...row,file_size:8})))
+  await user.click(refresh)
+  await waitFor(()=>expect(client.isFetching()).toBe(0))
+  expect(refresh).toHaveFocus()
+})
 function fixtures() {
   server.use(http.get('/api/v1/backups/history', () => HttpResponse.json(page)), http.get('/api/v1/backups/history/507', () => HttpResponse.json(row)), http.get('/api/v1/backups/507/logs', () => HttpResponse.json([])))
 }
