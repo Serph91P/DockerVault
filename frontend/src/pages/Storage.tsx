@@ -4,7 +4,7 @@ import StorageLocationContext from '../components/StorageLocationContext'
 import NotificationContext from '../components/NotificationContext'
 import { useNotificationStore } from '../store/notifications'
 import { useValidationFeedback } from '../components/ValidationFeedback'
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useEffectEvent, useRef, useState, useSyncExternalStore } from 'react';
 import { useSearchParams } from 'react-router-dom'
 import { ownsSession, sessionGeneration, sessionSignal } from '../store/session'
 import { responseStatus } from '../api/responses'
@@ -264,6 +264,15 @@ function StorageWorkspace() {
     setFormStep(2); // When editing, start at connection details
   };
 
+  const revokeEditor = useEffectEvent(() => resetForm())
+  const editedRoot = editingStorage?.base_path
+  const currentRoot = storages?.find(storage => storage.id === editingStorage?.id)?.base_path
+  const activeStorage = storages?.find(storage => String(storage.id) === params.get('storage'))
+  const activeTest = activeStorage && testResults[activeStorage.id]
+  useEffect(() => {
+    if (showForm && editingStorage && storages && currentRoot !== editedRoot) revokeEditor()
+  }, [showForm, editingStorage, storages, currentRoot, editedRoot])
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (formStep !== 3 || submitGuard.current || createMutation.isPending || updateMutation.isPending) return;
@@ -366,6 +375,7 @@ function StorageWorkspace() {
                 return (
                   <>
                     <select
+                      aria-label="Managed SSH key"
                       value={selectValue}
                       onChange={(e) => {
                         const v = e.target.value;
@@ -390,7 +400,7 @@ function StorageWorkspace() {
                       ))}
                       <option value="__custom__">Custom path…</option>
                     </select>
-                    {isCustom && (
+                    {(
                       <input
                         type="text"
                         value={formData.ssh_key_path} aria-label="SSH key path" {...validation.field('ssh_key_path')}
@@ -403,7 +413,7 @@ function StorageWorkspace() {
                     )}
                     {(sshKeys || []).length === 0 && (
                       <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                        Tip: generate a key in the “SSH Keys” panel above and it will appear here.
+                        Manage keys in Settings / Security, or enter an allowed custom key path here.
                       </p>
                     )}
                   </>
@@ -692,7 +702,7 @@ function StorageWorkspace() {
 
       <NotificationContext domain="storage" />
       <StorageLocationContext storages={storages} onEdit={handleEdit} onTest={id => testMutation.mutate(id)} onRemove={storage => setConfirmDialog({id:storage.id,name:storage.name})} />
-      {params.has('storage') && testResults[Number(params.get('storage'))] && <p role="status">{testResults[Number(params.get('storage'))].message} (observed {testResults[Number(params.get('storage'))].testedAt}; not continuous health).</p>}
+      {activeTest && <p role="status">{activeTest.revision === activeStorage?.updated_at ? `${activeTest.message} (observed ${activeTest.testedAt}; not continuous health).` : 'Test observation stale; configuration changed. No current connection result confirmed.'}</p>}
 
       {/* Local Backups */}
       {!params.has('storage') && <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 px-6 py-4">
@@ -779,8 +789,8 @@ function StorageWorkspace() {
                         <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded text-xs">
                           {typeInfo?.label || storage.storage_type}
                         </span>
-                        {storage.storage_type === 'ssh' && storage.host && (
-                          <span>{storage.username}@{storage.host}</span>
+                        {['ssh','sftp'].includes(storage.storage_type) && storage.host && (
+                          <span>{storageEndpoint(storage.host)}</span>
                         )}
                         {storage.storage_type === 's3' && storage.s3_bucket && (
                           <span>s3://{storage.s3_bucket}</span>
@@ -974,10 +984,10 @@ function StorageWorkspace() {
                       <span className="text-slate-500">Type</span>
                       <span className="font-medium text-slate-900 dark:text-white">{STORAGE_TYPES.find(t => t.value === formData.storage_type)?.label}</span>
                     </div>
-                    {formData.storage_type === 'ssh' && formData.host && (
+                    {['ssh','sftp'].includes(formData.storage_type) && formData.host && (
                       <div className="flex justify-between py-2 border-b border-slate-200 dark:border-slate-700">
                         <span className="text-slate-500">Host</span>
-                        <span className="font-mono text-slate-900 dark:text-white">{formData.username ? `${formData.username}@` : ''}{formData.host}{formData.port ? `:${formData.port}` : ''}</span>
+                        <span className="font-mono text-slate-900 dark:text-white">{storageEndpoint(formData.host)}{formData.port ? `:${formData.port}` : ''}</span>
                       </div>
                     )}
                     {formData.storage_type === 's3' && formData.s3_bucket && (
@@ -1002,7 +1012,7 @@ function StorageWorkspace() {
                       <div className="flex justify-between py-2 border-b border-slate-200 dark:border-slate-700">
                         <span className="text-slate-500">{formData.storage_type === 'ftp' ? 'Host' : 'Path'}</span>
                         <span className="font-mono text-slate-900 dark:text-white">
-                          {formData.storage_type === 'ftp' && formData.host ? `${formData.host}:${formData.base_path}` : formData.base_path}
+                          {formData.storage_type === 'ftp' && formData.host ? `${storageEndpoint(formData.host)}:${formData.base_path}` : formData.base_path}
                         </span>
                       </div>
                     )}

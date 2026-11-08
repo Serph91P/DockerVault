@@ -122,12 +122,15 @@ function StorageBrowserContent({ storage, onClose, initialPath = '', inline = fa
   const [selectionScope, setSelectionScope] = useState(scope)
   const [downloadError, setDownloadError] = useState('')
   const [downloadUrl, setDownloadUrl] = useState('')
+  const [downloadRequest, setDownloadRequest] = useState(0)
   if (scope !== selectionScope) {
     setSelectionScope(scope)
     setSelectedFiles(new Set())
     setDeleteTarget(null)
     setBulkDeleteTarget(null)
     setSelectionNotice('Selection cleared after folder or filter change.')
+    setDownloadError('')
+    setDownloadUrl('')
   }
 
   const isLocal = storage.id === 'local'
@@ -241,6 +244,7 @@ function StorageBrowserContent({ storage, onClose, initialPath = '', inline = fa
       ? `/api/v1/storage/local/files/download?path=${encodeURIComponent(filePath)}`
       : `/api/v1/storage/${storage.id}/files/download?path=${encodeURIComponent(filePath)}`
     setDownloadError('')
+    setDownloadRequest(request => request + 1)
     setDownloadUrl(url)
   }
 
@@ -301,7 +305,7 @@ function StorageBrowserContent({ storage, onClose, initialPath = '', inline = fa
   return (
     <BrowserFrame inline={inline} title={`Browse ${storage.name}`} onClose={onClose}>
       <div
-        className="bg-dark-800 border border-dark-700 shadow-2xl w-full max-h-[90dvh] flex flex-col"
+        className={clsx('bg-dark-800 border border-dark-700 shadow-2xl w-full flex flex-col', !inline && 'max-h-[90dvh]')}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -332,6 +336,7 @@ function StorageBrowserContent({ storage, onClose, initialPath = '', inline = fa
                   : 'text-dark-400 hover:text-dark-200 hover:bg-dark-700'
               )}
               title="Select files"
+              aria-pressed={isSelecting}
             >
               <CheckSquare className="w-4 h-4" />
             </button>
@@ -398,7 +403,7 @@ function StorageBrowserContent({ storage, onClose, initialPath = '', inline = fa
         </div>}
         {selectionNotice && <p role="status" aria-label="Selection notice">{selectionNotice}</p>}
         {downloadError && <p role="alert">{downloadError}</p>}
-        {downloadUrl && <><p role="status">Download requested for {currentPath || '/'}. Browser saving is not confirmed.</p><iframe title="Storage download response" className="hidden" src={downloadUrl} onError={() => setDownloadError('File download response unavailable.')} onLoad={e => {
+        {downloadUrl && <><p role="status">Download requested for {new URL(downloadUrl, window.location.origin).searchParams.get('path')}. Browser saving is not confirmed.</p><iframe key={downloadRequest} title="Storage download response" className="hidden" src={downloadUrl} onError={() => setDownloadError('File download response unavailable.')} onLoad={e => {
           try { if (e.currentTarget.contentDocument?.body?.textContent?.trim()) setDownloadError('File download failed. Check access and refresh this folder before retrying.') } catch { setDownloadError('File download response unavailable.') }
         }} /></>}
         <div className="flex flex-wrap gap-3 items-center p-3 border-b border-dark-700">
@@ -410,7 +415,7 @@ function StorageBrowserContent({ storage, onClose, initialPath = '', inline = fa
           <span className="text-sm" aria-live="polite">{selectedFiles.size} selected</span>
         </div>
         {/* Content */}
-        <div className="flex-1 overflow-y-auto">
+        <div className={clsx('overflow-y-auto', inline ? 'min-h-40 max-h-[60dvh]' : 'flex-1')}>
           {isLoading ? (
             <div className="flex flex-col items-center justify-center py-16">
               <Loader2 className="w-8 h-8 text-primary-500 animate-spin mb-3" />
@@ -515,6 +520,7 @@ function StorageBrowserContent({ storage, onClose, initialPath = '', inline = fa
                           <span className="text-sm text-dark-200 whitespace-nowrap">
                             {file.name}
                           </span>
+                          {file.is_symlink && <span className="text-xs text-dark-400">Symbolic link</span>}
                           {file.is_dir && !isSelecting && (
                             <ChevronRight className="w-3 h-3 text-dark-600 ml-auto shrink-0" />
                           )}
