@@ -6,6 +6,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import and_, exists, func, or_, select, text
+from sqlalchemy.sql.elements import ColumnElement
 
 from app import database
 from app.auth import get_current_user
@@ -121,7 +122,7 @@ async def summary(
                 )
             ) or 0
 
-        current = BackupTarget.removed_at.is_(None)
+        current: ColumnElement[bool] = BackupTarget.removed_at.is_(None)
         automatic = or_(
             BackupTarget.schedule_id.is_not(None),
             and_(
