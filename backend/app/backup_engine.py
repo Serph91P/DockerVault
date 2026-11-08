@@ -158,6 +158,7 @@ class BackupEngine:
 
     def __init__(self):
         self.active_backups: Dict[int, asyncio.Task] = {}
+        self._observed_runs: dict[asyncio.Task, tuple[int, str]] = {}
         self.progress_callbacks: List[Callable] = []
         self.metrics = BackupMetrics()
         self._backup_semaphore = asyncio.Semaphore(2)  # Max concurrent backups
@@ -453,6 +454,9 @@ class BackupEngine:
         details: Optional[Dict[str, Any]] = None,
     ):
         """Write a structured log entry for a backup job."""
+        task = asyncio.current_task()
+        if task in self._observed_runs:
+            self._observed_runs[task] = (backup_id, step)
         try:
             async with backup_db_session(async_session) as session:
                 entry = BackupLog(
@@ -618,6 +622,10 @@ class BackupEngine:
             await session.refresh(backup)
             return backup
 
+    def observed_backups(self) -> dict[int, str]:
+        """Point-in-time evidence in this process only; not a durable job registry."""
+        return {id: stage for id, stage in self._observed_runs.values()}
+
     async def run_backup(self, backup_id: int, skip_validation: bool = False) -> bool:
         """Run a backup by ID.
 
@@ -642,9 +650,16 @@ class BackupEngine:
 
         target_lock = self._get_target_lock(peek_target_id)
 
-        async with target_lock:
-            async with self._backup_semaphore:
-                return await self._run_backup_inner(backup_id, skip_validation)
+        task = asyncio.current_task()
+        assert task is not None
+        self._observed_runs[task] = (backup_id, "waiting")
+        try:
+            async with target_lock:
+                async with self._backup_semaphore:
+                    self._observed_runs[task] = (backup_id, "starting")
+                    return await self._run_backup_inner(backup_id, skip_validation)
+        finally:
+            self._observed_runs.pop(task, None)
 
     async def _run_backup_inner(
         self, backup_id: int, skip_validation: bool = False

@@ -1,4 +1,5 @@
 import { http, HttpResponse } from 'msw'
+import { mockOverview, mockHistoryRecord } from './overview'
 import type { Backup, Container, Volume, Stack, BackupTarget } from '../../api'
 
 // Mock data
@@ -128,6 +129,12 @@ const mockTargets: BackupTarget[] = [
 ]
 
 export const handlers = [
+  http.get('/api/v1/overview/summary', () => HttpResponse.json(mockOverview)),
+  http.get('/api/v1/backups/history', ({ request }) => {
+    const params = new URL(request.url).searchParams
+    const rows = mockBackups.filter(row => (!params.get('status') || row.status === params.get('status')) && (params.get('view') !== 'archives' || Boolean(row.file_path)))
+    return HttpResponse.json({ total: rows.length, items: rows.slice(0, Number(params.get('limit') ?? 5)).map(row => mockHistoryRecord({ ...row })), limit: Number(params.get('limit') ?? 5), offset: 0, snapshot: 2, dataset: 'retained_catalog' })
+  }),
   // Backups API
   http.get('/api/v1/backups', () => {
     return HttpResponse.json(mockBackups)

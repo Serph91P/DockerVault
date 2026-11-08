@@ -488,6 +488,7 @@ export interface KomodoTestResult {
 }
 
 export interface SystemInfo {
+  disk_status?: 'available' | 'unavailable'
   backup_dir: string
   database_path: string
   timezone: string

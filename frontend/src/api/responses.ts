@@ -98,7 +98,28 @@ function validHistory(row: unknown) {
     remote_sync_details: v => Array.isArray(v) && v.every(copy => fields(copy, { storage_id: id, storage_name: string, status: string, availability: value => value === 'unknown' || value === 'inaccessible' })),
   })
 }
+function validOverview(data: unknown) {
+  const nullable = (check: (v: unknown) => boolean) => (v: unknown) => v === null || check(v)
+  const items = (shape: Record<string, (v: unknown) => boolean>) => (v: unknown) => Array.isArray(v) && v.length <= 20 && v.every(row => fields(row, shape))
+  const gap = (v: unknown) => fields(v, { total: count, enabled: count, items: items({ plan_id: id, name: string }) }) && object(v) && Number(v.enabled) <= Number(v.total) && (v.items as unknown[]).length <= Number(v.total)
+  if (!object(data) || !fields(data, { observed_at: timestamp, dataset: v => v === 'retained_catalog_and_current_process' }) || !fields(data.window, { after: timestamp, before: timestamp, time_field: v => v === 'created_at' }) || !object(data.window)) return false
+  if (data.window.before !== data.observed_at || Date.parse(String(data.window.before)) - Date.parse(String(data.window.after)) !== 86400000) return false
+  if (!fields(data.plans, { total: count, enabled: count, disabled: count, manual: count, automatic_enabled: count, automatic_paused: count, without_recorded_run: gap, without_recorded_completed_run: gap }) || !object(data.plans)) return false
+  const p = data.plans
+  if (Number(p.enabled) + Number(p.disabled) !== p.total || Number(p.manual) + Number(p.automatic_enabled) + Number(p.automatic_paused) !== p.total) return false
+  for (const key of ['without_recorded_run', 'without_recorded_completed_run']) if (Number((p[key] as Record<string, unknown>).total) > Number(p.total)) return false
+  if (!fields(data.backup_activity, { recorded_pending: count, recorded_running: count, live: count, total: count, items: items({ backup_id: id, plan_id: nullable(id), name: nullable(string), catalog_status: nullable(v => typeof v === 'string' && ['pending', 'running', 'completed', 'failed', 'cancelled'].includes(v)), stage: nullable(string), live_worker: boolean }) })) return false
+  if (!fields(data.storage_activity, { total: count, items: items({ operation_id: v => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v), storage_id: v => v === 'local' || (typeof v === 'string' && /^[1-9][0-9]*$/.test(v)), state: v => v === 'queued' || v === 'running', stage: string }) })) return false
+  if (!fields(data.recorded_copy_failures, { total: count, backups: count, items: items({ backup_id: id, storage_id: id, storage_name: nullable(string), status: v => v === 'failed' }) })) return false
+  for (const key of ['backup_activity', 'storage_activity', 'recorded_copy_failures']) {
+    const section = data[key] as { total: number; items: unknown[] }
+    if (section.items.length > section.total) return false
+  }
+  return true
+}
 export function validateRead(url: string | undefined, data: unknown) {
+  if (url === '/overview/summary' && !validOverview(data)) throw new ResponseError()
+  if (url === '/settings/system-info' && object(data) && data.disk_status !== undefined && (data.disk_status !== 'available' && data.disk_status !== 'unavailable')) throw new ResponseError()
   if (url === '/backups/history') {
     if (!fields(data, { total: count, limit: id, offset: count, snapshot: count, dataset: string, items: Array.isArray }) || !object(data) || !Array.isArray(data.items) || !data.items.every(validHistory) || data.items.length > Number(data.limit) || data.items.length > Math.max(0, Number(data.total) - Number(data.offset))) throw new ResponseError()
   }

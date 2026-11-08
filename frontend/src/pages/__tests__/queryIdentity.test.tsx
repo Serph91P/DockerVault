@@ -24,16 +24,19 @@ it.each([[false, true], [true, false]])('active/historical target navigation %s 
 })
 
 // Catches callers sharing a fresh cache entry despite sending different limits.
-it.each([[10, 500], [500, 10]])('navigation %i -> %i reads the requested archive window', async (first, second) => {
+it.each([[5, 500], [500, 5]])('navigation %i -> %i reads the requested archive window', async (first, second) => {
   const reads: number[] = []
-  server.use(http.get('/api/v1/backups', ({ request }) => {
-    const limit = Number(new URL(request.url).searchParams.get('limit'))
-    reads.push(limit)
-    return HttpResponse.json([])
-  }))
+  server.use(
+    http.get('/api/v1/backups', ({ request }) => { reads.push(Number(new URL(request.url).searchParams.get('limit'))); return HttpResponse.json([]) }),
+    http.get('/api/v1/backups/history', ({ request }) => {
+      const params = new URL(request.url).searchParams
+      if (params.get('view') === 'archives') reads.push(Number(params.get('limit')))
+      return HttpResponse.json({total:0,items:[],limit:Number(params.get('limit')),offset:0,snapshot:0,dataset:'retained_catalog'})
+    }),
+  )
   const client = new QueryClient({ defaultOptions: { queries: { staleTime: 10000, retry: false } } })
   clients.push(client)
-  const page = (limit: number) => <QueryClientProvider client={client}><MemoryRouter>{limit === 10 ? <Dashboard /> : <Backups />}</MemoryRouter></QueryClientProvider>
+  const page = (limit: number) => <QueryClientProvider client={client}><MemoryRouter>{limit === 5 ? <Dashboard /> : <Backups />}</MemoryRouter></QueryClientProvider>
   const view = render(page(first))
   await waitFor(() => expect(reads).toEqual([first]))
   await waitFor(() => expect(client.isFetching()).toBe(0))

@@ -3,7 +3,8 @@ import { Link2, Check, X, RefreshCw, Save, Eye, EyeOff, TestTube, HardDrive, Shi
 import { dockerApi, settingsApi } from '../api'
 import toast from 'react-hot-toast'
 import EncryptionSetup from '../components/EncryptionSetup'
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
+import { useLocation } from 'react-router-dom'
 import { operationOutcome, type Outcome } from '../api/outcomes'
 import { useNotificationStore } from '../store/notifications'
 import { useValidationFeedback } from '../components/ValidationFeedback'
@@ -490,6 +491,10 @@ function SystemInfoCard() {
 }
 
 export default function Settings() {
+  const { hash } = useLocation()
+  useEffect(() => {
+    if (hash === '#connection' || hash === '#encryption') document.getElementById(hash.slice(1))?.focus()
+  }, [hash])
   const { data: dockerHealth, refetch: refetchDocker, ...dockerQuery } = useQuery({
     queryKey: ['docker-health'],
     queryFn: () => dockerApi.getHealth().then(response => response.data.status === 'healthy'),
@@ -504,7 +509,7 @@ export default function Settings() {
       </div>
 
       {/* Docker Status */}
-      <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
+      <section id="connection" tabIndex={-1} aria-label="Docker connection settings" className="bg-dark-800 rounded-xl border border-dark-700 p-6">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-blue-500/10 rounded-lg flex items-center justify-center">
@@ -542,10 +547,10 @@ export default function Settings() {
         <div className="mt-4 text-sm text-dark-400">
           <p>Docker Socket: /var/run/docker.sock</p>
         </div>
-      </div>
+      </section>
 
       {/* Encryption Settings */}
-      <EncryptionSetup />
+      <section id="encryption" tabIndex={-1} aria-label="Encryption settings"><EncryptionSetup /></section>
 
       {/* Storage & Upload Settings */}
       <StorageSettingsCard />
