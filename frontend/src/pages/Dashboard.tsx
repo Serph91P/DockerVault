@@ -1,15 +1,16 @@
-import { useQuery } from '@tanstack/react-query'
+import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import api, { backupsApi, dockerApi, schedulesApi, settingsApi, storageApi, targetsApi } from '../api'
 import { overviewApi } from '../api/overview'
 import { queryKeys } from '../api/queryKeys'
 import { QueryFeedback } from '../components/QueryFeedback'
 import { useAuthStore } from '../store/auth'
+import { ownsSession, sessionGeneration } from '../store/session'
 
 const link = 'inline-flex min-h-11 items-center underline underline-offset-4 text-primary-300 break-words'
 const section = 'space-y-3 border-t border-dark-700 pt-5 min-w-0'
 type FailureSnapshot = { page: Awaited<ReturnType<typeof backupsApi.history>>['data']; window: { after: string; before: string } }
-const failureSnapshots = new Map<number | undefined, FailureSnapshot>()
+
 function bytes(value: number) {
   if (!value) return '0 B'
   const power = Math.min(4, Math.floor(Math.log(value) / Math.log(1024)))
@@ -17,6 +18,10 @@ function bytes(value: number) {
 }
 export default function Dashboard() {
   const owner = useAuthStore(state => state.user?.id)
+  const client = useQueryClient()
+  const generation = sessionGeneration()
+  const snapshotKey = queryKeys.overview.failureSnapshot(owner, generation)
+  const { data: snapshot } = useQuery<FailureSnapshot>({ queryKey: snapshotKey, queryFn: skipToken, gcTime: Infinity })
   const summaryQuery = useQuery({ queryKey: queryKeys.overview.summary(5, owner), queryFn: ({ signal }) => overviewApi.summary(5, signal).then(r => r.data), retry: false })
   const summary = summaryQuery.data
   const targets = useQuery({ queryKey: queryKeys.targets.list(), queryFn: () => targetsApi.list().then(r => r.data) })
@@ -36,15 +41,13 @@ export default function Dashboard() {
   const completedParams = { view: 'runs', status: 'completed', limit: 1 }
   const completed = useQuery({ queryKey: queryKeys.backups.history(completedParams), queryFn: ({ signal }) => backupsApi.history(completedParams, signal).then(r => r.data), retry: false })
   const failureParams = { view: 'runs', status: 'failed', limit: 5, after: summary?.window.after ?? '', before: summary?.window.before ?? '' }
-  // Keep the last confirmed failure page and its window so a later error for a
-  // newer window shows the old snapshot (with original bounds) as stale. The
-  // snapshot is owner-scoped so a session/owner change can never relabel or
-  // resurrect another operator's confirmed failures.
+  // Retain original bounds across window refreshes in the existing session cache;
+  // clearSession revokes both cached snapshots and late responses.
   const failures = useQuery({ queryKey: queryKeys.backups.history(failureParams), queryFn: ({ signal }) => backupsApi.history(failureParams, signal).then(r => {
-    failureSnapshots.set(owner, { page: r.data, window: { after: failureParams.after, before: failureParams.before } })
+    if (ownsSession(generation) && !signal.aborted) client.setQueryData<FailureSnapshot>(snapshotKey, { page: r.data, window: { after: failureParams.after, before: failureParams.before } })
     return r.data
   }), enabled: Boolean(summary), retry: false })
-  const snapshot = failureSnapshots.get(owner) ?? null
+
   const failureData = failures.data ?? snapshot?.page
   const failureStale = failures.isError && Boolean(snapshot)
   const failureWindow = (failureStale || (failures.data == null && snapshot)) && snapshot ? snapshot.window : { after: summary?.window.after ?? '', before: summary?.window.before ?? '' }

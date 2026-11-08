@@ -1,7 +1,8 @@
 import { act, render, screen, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useAuthStore } from '../../store/auth'
-import { clearSession } from '../../store/session'
+import { clearSession, queryClient as sessionClient } from '../../store/session'
+import api from '../../api'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { http, HttpResponse } from 'msw'
@@ -132,6 +133,45 @@ describe('Overview contract', () => {
     })
     expect(await screen.findByText('Failed runs in window: unavailable')).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Failed run #7: Fixture archive' })).not.toBeInTheDocument()
+  })
+  it.each(['logout', 'expiry'] as const)('discards confirmed failures after %s and a same-owner session remount', async (reason) => {
+    const identity = { id: 188, username: 'same-operator', is_admin: false, created_at: '', last_login: null }
+    useAuthStore.setState({ user: identity, isAuthenticated: true })
+    server.use(http.get('/api/v1/overview/summary', () => HttpResponse.json(summary)))
+    let fail = false
+    server.use(http.get('/api/v1/backups/history', ({ request }) => {
+      const failed = new URL(request.url).searchParams.get('status') === 'failed'
+      if (failed && fail) return new HttpResponse(null, { status: 503 })
+      return HttpResponse.json({ total: 1, items: [{ ...historyRow, status: failed ? 'failed' : 'completed' }], limit: 5, offset: 0, snapshot: 7, dataset: 'retained_catalog' })
+    }))
+    const mount = () => render(<QueryClientProvider client={sessionClient}><MemoryRouter><Dashboard /></MemoryRouter></QueryClientProvider>)
+    const first = mount()
+    expect(await screen.findByRole('link', { name: 'Failed run #7: Fixture archive' })).toBeInTheDocument()
+    first.unmount()
+    fail = true
+    const sameSession = mount()
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Refresh Failed runs in window', exact: true }))
+    expect(await screen.findByText('Failed runs in window: stale data')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Failed run #7: Fixture archive' })).toBeInTheDocument()
+    sameSession.unmount()
+    server.use(
+      http.post('/api/v1/auth/logout', () => HttpResponse.json({})),
+      http.get('/api/v1/targets', () => new HttpResponse(null, { status: 401 })),
+    )
+    await act(async () => {
+      if (reason === 'logout') await useAuthStore.getState().logout()
+      else await api.get('/targets').catch(() => undefined)
+    })
+    expect(useAuthStore.getState().isAuthenticated).toBe(false)
+    server.use(http.get('/api/v1/targets', () => HttpResponse.json([])))
+    useAuthStore.setState({ user: identity, isAuthenticated: true })
+    mount()
+    expect(await screen.findByText('Failed runs in window: unavailable')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Failed run #7: Fixture archive' })).not.toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: 'Fixture archive' })).toBeInTheDocument()
+    fail = false
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Retry Failed runs in window', exact: true }))
+    expect(await screen.findByRole('link', { name: 'Failed run #7: Fixture archive' })).toBeInTheDocument()
   })
   it('accepts the complete summary with unknown optional reference values', () => {
     expect(() => validateRead('/overview/summary', summary)).not.toThrow()
