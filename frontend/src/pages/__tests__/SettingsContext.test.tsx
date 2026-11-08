@@ -1,8 +1,15 @@
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import Layout from '../../components/Layout'
 import { it, expect } from 'vitest'
 import Settings from '../Settings'
+
+it.each(['connection', 'encryption'])('shell preserves Settings %s fragment focus instead of stealing it', async id => {
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter initialEntries={[`/settings#${id}`]}><Routes><Route element={<Layout />}><Route path="/settings" element={<Settings />} /></Route></Routes></MemoryRouter></QueryClientProvider>)
+  const section = await screen.findByRole('region', { name: id === 'connection' ? 'Docker connection settings' : 'Encryption settings' })
+  expect(section).toHaveFocus()
+})
 
 it.each(['connection', 'encryption'])('opens and focuses the real Settings %s context', async id => {
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter initialEntries={[`/settings#${id}`]}><Settings /></MemoryRouter></QueryClientProvider>)
