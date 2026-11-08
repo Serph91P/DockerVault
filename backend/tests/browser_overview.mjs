@@ -77,20 +77,21 @@ try {
   // B1 regression: a later History(status=failed) error must keep the confirmed
   // failure run with its original UTC window, shown as stale, and retry replaces it.
   await overview()
-  const historyFailure=route=>{const url=new URL(route.request().url());return url.searchParams.get('status')==='failed'?route.fulfill({status:503,body:'explicit failed-window transport fault'}):route.continue()}
-  await page.route('**/api/v1/backups/history?*',historyFailure)
-  const failedBefore=await page.getByRole('link',{name:new RegExp('^Failed run #'+failed.run+':')}).count()
-  check(failedBefore===1,'B1 confirmed failed run visible before refresh')
-  await page.getByRole('button',{name:'Refresh Overview summary',exact:true}).click()
-  await expect(page.getByText('Failed runs in window: stale data',{exact:true})).toBeVisible()
-  check((await page.getByRole('link',{name:new RegExp('^Failed run #'+failed.run+':')}).count())===1,'B1 last confirmed failure retained through newer-window error')
-  check((await page.getByRole('link',{name:new RegExp('^Failed run #'+failed.run+':')}).getAttribute('href'))===href,'B1 retained failure keeps original UTC bounds')
+  const hrefBeforeRefresh = await page.getByRole('link', { name: new RegExp('^Failed run #' + failed.run + ':') }).getAttribute('href')
+  const historyFailure = route => { const url = new URL(route.request().url()); return url.searchParams.get('status') === 'failed' ? route.fulfill({ status: 503, body: 'explicit failed-window transport fault' }) : route.continue() }
+  await page.route('**/api/v1/backups/history?*', historyFailure)
+  const failedBefore = await page.getByRole('link', { name: new RegExp('^Failed run #' + failed.run + ':') }).count()
+  check(failedBefore === 1, 'B1 confirmed failed run visible before refresh')
+  await page.getByRole('button', { name: 'Refresh Overview summary', exact: true }).click()
+  await expect(page.getByText('Failed runs in window: stale data', { exact: true })).toBeVisible()
+  check((await page.getByRole('link', { name: new RegExp('^Failed run #' + failed.run + ':') }).count()) === 1, 'B1 last confirmed failure retained through newer-window error')
+  check((await page.getByRole('link', { name: new RegExp('^Failed run #' + failed.run + ':') }).getAttribute('href')) === hrefBeforeRefresh, 'B1 retained failure keeps original UTC bounds')
   await shot('failed-window-stale')
-  await page.unroute('**/api/v1/backups/history?*',historyFailure)
-  await page.getByRole('button',{name:'Retry Failed runs in window',exact:true}).click()
-  await expect(page.getByText('Failed runs in window: stale data',{exact:true})).toBeHidden()
-  await expect(page.getByRole('link',{name:new RegExp('^Failed run #'+failed.run+':')})).toBeVisible()
-  check(true,'B1 retry restores confirmed failure in the exact new server window')
+  await page.unroute('**/api/v1/backups/history?*', historyFailure)
+  await page.getByRole('button', { name: 'Retry Failed runs in window', exact: true }).click()
+  await expect(page.getByText('Failed runs in window: stale data', { exact: true })).toBeHidden()
+  await expect(page.getByRole('link', { name: new RegExp('^Failed run #' + failed.run + ':') })).toBeVisible()
+  check(true, 'B1 retry restores confirmed failure in the exact new server window')
   // B2 regression: the capacity attention action must focus and reveal the real
   // capacity section, not just change the hash or reset to main.
   await api('/test-overview188/mode/unavailable','POST')
