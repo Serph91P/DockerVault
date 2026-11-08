@@ -75,6 +75,16 @@ describe('Overview contract', () => {
   ])('rejects malformed nested summary before it can become cached truth %#', value => {
     expect(() => validateRead('/overview/summary', value)).toThrow()
   })
+  it('keeps incomplete encryption readiness in attention instead of claiming no issues', async () => {
+    server.use(
+      http.get('/api/v1/docker/health', () => HttpResponse.json({ status: 'healthy' })),
+      http.get('/api/v1/settings/system-info', () => HttpResponse.json({ disk_status: 'available', disk_total: 8 * 1024 ** 3, disk_used: 2 * 1024 ** 3, disk_free: 6 * 1024 ** 3, backup_count: 1, target_count: 1, uptime_seconds: 1, app_version: 'fixture' })),
+      http.get('/api/v1/encryption/status', () => HttpResponse.json({ setup_completed: false, encryption_enabled: true, onboarding_deferred: false })),
+    )
+    setup()
+    expect(await screen.findByText('Encryption decision incomplete — confirm custody or explicitly defer.')).toBeInTheDocument()
+    expect(screen.queryByText(/No attention items recorded in these scopes/)).not.toBeInTheDocument()
+  })
   it('accepts the complete summary with unknown optional reference values', () => {
     expect(() => validateRead('/overview/summary', summary)).not.toThrow()
   })

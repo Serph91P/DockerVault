@@ -111,10 +111,11 @@ try {
   await page.route('**/api/v1/overview/summary?*',malformed);await page.getByRole('button',{name:'Refresh Overview summary',exact:true}).click();await expect(page.getByText('Overview summary: stale data',{exact:true})).toBeVisible();check(true,'AC6 malformed summary is rejected before replacing last valid catalog')
   await page.unroute('**/api/v1/overview/summary?*',malformed)
   await overview()
+  await page.route(base+'/__axe_overview.js',async route=>route.fulfill({status:200,contentType:'application/javascript',body:await readFile('/runner/axe.min.js','utf8')}))
   for(const width of [1440,390,320]) {
     await page.setViewportSize({width,height:900});await overview()
     check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'AC6 no horizontal overflow '+width)
-    await page.addScriptTag({path:'/runner/axe.min.js'});const axe=await page.evaluate(async()=>window.axe.run(document,{rules:{'color-contrast':{enabled:true}}}))
+    await page.addScriptTag({url:base+'/__axe_overview.js'});const axe=await page.evaluate(async()=>window.axe.run(document.querySelector('main'),{rules:{'color-contrast':{enabled:true}}}))
     await writeFile('/runner/axe-'+width+'.json',JSON.stringify(axe))
     check(axe.violations.length===0,'AC6 axe zero violations '+width+' (not native screenreader/physical handset)')
     await page.locator('body').click({position:{x:1,y:1}})

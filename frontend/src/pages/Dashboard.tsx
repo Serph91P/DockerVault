@@ -42,7 +42,8 @@ export default function Dashboard() {
   const noRecordedRun = summary?.plans.without_recorded_run
   const noCompletedRun = summary?.plans.without_recorded_completed_run
   const nextJobs = jobs.data?.filter(job => job.next_run).sort((a, b) => a.next_run!.localeCompare(b.next_run!) || a.id.localeCompare(b.id))
-  const problems = summaryQuery.isError || failures.isError || health.isError || system.isError || encryption.isError || low || (summary?.recorded_copy_failures.total ?? 0) > 0 || (noCompletedRun?.total ?? 0) > 0 || (failures.data?.total ?? 0) > 0 || disk?.disk_status !== 'available'
+  const readinessIncomplete = encryption.data && !encryption.data.setup_completed && !encryption.data.onboarding_deferred
+  const problems = summaryQuery.isError || failures.isError || health.isError || health.data !== true || system.isError || encryption.isError || !encryption.data || readinessIncomplete || low || (summary?.recorded_copy_failures.total ?? 0) > 0 || (noCompletedRun?.total ?? 0) > 0 || (failures.data?.total ?? 0) > 0 || disk?.disk_status !== 'available'
   return <div className="space-y-6 min-w-0 break-words">
     <header className="flex flex-wrap items-start justify-between gap-3">
       <div><h1 className="text-2xl font-bold">Overview</h1><p className="text-dark-300">Overview of your Docker backups</p></div>
@@ -51,6 +52,10 @@ export default function Dashboard() {
     <section aria-labelledby="overview-attention" className={section}>
       <h2 id="overview-attention" className="text-xl font-semibold">Needs attention</h2>
       <QueryFeedback name="Overview summary" query={summaryQuery} />
+      {empty && <p className="font-semibold">Start with your first successful backup. Follow the readiness sequence below; a saved plan is not an archive.</p>}
+      {low && <p role="alert">Low local capacity: {bytes(disk.disk_free)} free. The engine requires at least 1 GiB (1,073,741,824 bytes). <Link className={link} to="/storage?storage=local">Inspect local storage</Link></p>}
+      {!empty && summary && failures.data && !problems && <p>No attention items recorded in these scopes. This is not a health score or evidence of restore readiness.</p>}
+      {readinessIncomplete && <p>Encryption decision incomplete — confirm custody or explicitly defer.</p>}
       {summary && <p className="text-sm text-dark-300">Retained catalog and current process observed <time dateTime={summary.observed_at}>{summary.observed_at}</time>. Retention can remove earlier evidence; this is not lifetime history or a restore guarantee.</p>}
       {summary && <QueryFeedback name="Failed runs in window" query={failures} />}
       {failures.data && failures.data.total > 0 && <div className="space-y-2">
@@ -68,11 +73,9 @@ export default function Dashboard() {
       </section>}
       {!!noRecordedRun?.total && <div><h3 className="font-semibold">{noRecordedRun.total} plans without a recorded run ({noRecordedRun.enabled} enabled)</h3><p>Not proof that these plans have never run. Open a plan to review and run it.</p>{noRecordedRun.items.map(plan => <Link className={`${link} mr-4`} key={plan.plan_id} to={`/protection/${plan.plan_id}`}>{plan.name}</Link>)}<p className="text-sm">Currently shown {noRecordedRun.items.length} of {noRecordedRun.total} plans.</p></div>}
       {!!noCompletedRun?.total && <div><h3 className="font-semibold">{noCompletedRun.total} plans without a recorded completed run ({noCompletedRun.enabled} enabled)</h3><p>Retained-catalog evidence only. Completed runs do not establish copy availability.</p>{noCompletedRun.items.map(plan => <Link className={`${link} mr-4`} key={plan.plan_id} to={`/protection/${plan.plan_id}`}>Review {plan.name}</Link>)}<p className="text-sm">Currently shown {noCompletedRun.items.length} of {noCompletedRun.total} plans.</p></div>}
-      {low && <p role="alert">Low local capacity: {bytes(disk.disk_free)} free. The engine requires at least 1 GiB (1,073,741,824 bytes). <Link className={link} to="/storage?storage=local">Inspect local storage</Link></p>}
       {disk && disk.disk_status !== 'available' && <p>Local capacity unavailable — no measured free-space claim. <Link className={link} to="#overview-capacity">Review capacity and retry</Link></p>}
       <div className="flex flex-wrap gap-x-5"><Link className={link} to="/settings#connection">Check Docker connection{health.isError ? ' — unavailable' : health.data ? ' — healthy response' : ' — unknown'}</Link><Link className={link} to="/settings#encryption">{encryption.isError ? 'Encryption status unavailable' : !encryption.data ? 'Encryption status unknown' : encryption.data.encryption_enabled && encryption.data.setup_completed ? 'Encryption enabled; custody confirmed' : encryption.data.onboarding_deferred ? 'Encryption deliberately deferred' : 'Review encryption and key custody'}</Link></div>
       <QueryFeedback name="Docker connection" query={health} /><QueryFeedback name="Encryption readiness" query={encryption} />
-      {!empty && summary && failures.data && !problems && <p>No attention items recorded in these scopes. This is not a health score or evidence of restore readiness.</p>}
       {empty && <section aria-label="First backup readiness" className="space-y-2">
         <h3 className="font-semibold">Start with your first successful backup</h3>
         <p>No active plans or retained runs. Account creation and saved plans do not create an archive.</p>
