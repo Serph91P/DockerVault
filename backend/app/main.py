@@ -155,6 +155,11 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Handle request validation errors without leaking internal details."""
+    if request.url.path == "/api/v1/storage/test-config":
+        # Discriminator errors can echo a private input tag, not just field names.
+        return JSONResponse(
+            status_code=422, content={"detail": "Invalid storage draft configuration"}
+        )
     errors = []
     for error in exc.errors():
         errors.append(

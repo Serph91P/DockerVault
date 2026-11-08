@@ -52,12 +52,44 @@ it('records the admitted operation ID in the current location URL without recons
   expect(screen.getByLabelText('Route')).toHaveTextContent('storage=local&path=nested')
   expect(screen.getByText('0 selected')).toBeVisible()
 })
+it('filters the loaded location list without offering provider tiles as daily navigation', async () => {
+  fixtures(); mount(); const user=userEvent.setup()
+  expect(await screen.findByText('Configured local',{exact:true})).toBeVisible()
+  expect(screen.queryByRole('button',{name:/Local \/ NFS/})).not.toBeInTheDocument()
+  await user.type(screen.getByLabelText('Filter locations'), 'not-present')
+  expect(screen.queryByText('Configured local',{exact:true})).not.toBeInTheDocument()
+  expect(screen.getByText('No locations match this filter.')).toBeVisible()
+})
 it('never renders endpoint credentials in location summaries or review', async () => {
   fixtures(); server.use(http.get('/api/v1/storage', () => HttpResponse.json([{...row,storage_type:'webdav',webdav_url:'https://private-user:private-password@example.invalid/path?token=private-query'}])))
   mount(); const user=userEvent.setup()
   await user.click(await screen.findByTitle('Edit'))
   await user.click(screen.getByRole('button',{name:'Next',exact:true}))
   expect(screen.queryByText(/private-user|private-password|private-query/)).not.toBeInTheDocument()
+})
+it.each(['local','ssh','sftp','s3','webdav','ftp','rclone'])('shares %s edit fields with draft testing and saving while preserving identity and blank secrets', async provider => {
+  fixtures()
+  const savedRow={...row,storage_type:provider,host:'example.invalid',port:2222,username:'synthetic',base_path:provider==='s3' ? '' : 'nested',ssh_key_path:'/app/data/ssh_keys/synthetic',s3_bucket:'bucket',s3_region:'',s3_endpoint_url:'https://example.invalid',webdav_url:'https://example.invalid/dav',rclone_remote:'synthetic'}
+  const tests: Record<string,unknown>[]=[], puts: Record<string,unknown>[]=[]
+  server.use(http.get('/api/v1/storage',()=>HttpResponse.json([savedRow])),http.post('/api/v1/storage/test-config',async({request})=>{tests.push(await request.json() as Record<string,unknown>);return HttpResponse.json({success:true,message:'Observed'})}),http.put('/api/v1/storage/7',async({request})=>{puts.push(await request.json() as Record<string,unknown>);return HttpResponse.json(savedRow)}))
+  mount(); const user=userEvent.setup()
+  await user.click(await screen.findByTitle('Edit'))
+  const dialog=screen.getByRole('dialog',{name:'Edit Storage'})
+  expect(within(dialog).getByLabelText('Base path')).toHaveValue(savedRow.base_path)
+  if (['ssh','sftp','ftp'].includes(provider)) { expect(within(dialog).getByLabelText('Host')).toHaveValue(savedRow.host); expect(within(dialog).getByLabelText('Port')).toHaveValue(2222) }
+  if (provider==='s3') { expect(within(dialog).getByLabelText('S3 region')).toHaveValue(''); expect(within(dialog).getByLabelText('S3 bucket')).toHaveValue('bucket') }
+  if (provider==='webdav') expect(within(dialog).getByLabelText('WebDAV URL')).toHaveValue(savedRow.webdav_url)
+  if (provider==='rclone') expect(within(dialog).getByLabelText('Rclone remote')).toHaveValue('synthetic')
+  await user.click(within(dialog).getByRole('button',{name:'Test draft',exact:true}))
+  await within(dialog).findByText(/Draft test succeeded/)
+  expect(tests[0]).toMatchObject({mode:'edit',storage_id:7,config:{base_path:savedRow.base_path,s3_region:'',password:'',s3_access_key:'',s3_secret_key:''}})
+  expect(tests[0].config).not.toHaveProperty('storage_type')
+  await user.click(within(dialog).getByRole('button',{name:'Next',exact:true}))
+  await user.click(within(dialog).getByRole('checkbox',{name:'Storage enabled'}))
+  await user.click(within(dialog).getByRole('button',{name:'Save',exact:true}))
+  await waitFor(()=>expect(puts).toHaveLength(1))
+  expect(puts[0]).toMatchObject({base_path:savedRow.base_path,s3_region:'',enabled:false})
+  expect(puts[0]).not.toHaveProperty('storage_type')
 })
 it('tests an unsaved draft without create and invalidates the observation on field change', async () => {
   fixtures(); const posts: unknown[] = [], drafts: unknown[] = []

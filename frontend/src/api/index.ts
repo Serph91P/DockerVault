@@ -399,6 +399,7 @@ export const retentionApi = {
 
 // Remote Storage Types
 export interface RemoteStorage {
+  validation_errors?: string[]
   id: number
   name: string
   storage_type: 'local' | 'ssh' | 'sftp' | 'webdav' | 's3' | 'ftp' | 'rclone'

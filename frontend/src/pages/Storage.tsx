@@ -75,19 +75,26 @@ const getStorageIcon = (type: string) => {
 const subscribeSession = (listener: () => void) => { const signal = sessionSignal(); signal.addEventListener('abort',listener); return () => signal.removeEventListener('abort',listener) }
 export default function Storage() {
   const generation = useSyncExternalStore(subscribeSession, sessionGeneration)
-  return <StorageWorkspace key={generation} />
+  const [params] = useSearchParams()
+  return <StorageWorkspace key={`${generation}:${params.get('storage') ?? ''}`} />
 }
 function StorageWorkspace() {
   const [params, setParams] = useSearchParams()
   const openLocation = (id: number | 'local') => { const next = new URLSearchParams(); next.set('storage', String(id)); next.set('tab','files'); setParams(next) }
   const queryClient = useQueryClient();
+  const [locationFilter, setLocationFilter] = useState('')
+  const [locationSort, setLocationSort] = useState('name')
   const [showForm, setShowForm] = useState(false);
   const [editingStorage, setEditingStorage] = useState<RemoteStorage | null>(null);
   const [testingId, setTestingId] = useState<number | null>(null);
+  const [sessionOwner] = useState(sessionGeneration)
+  const active = useRef(true)
+  useEffect(() => { active.current = true; return () => { active.current = false } }, [])
   useEffect(() => { try { localStorage.removeItem('storage-test-results') } catch { /* Never load unscoped provider results. */ } }, [])
 
   const [testResults, setTestResults] = useState<Record<number, { success: boolean; outcome: Outcome; message: string; testedAt: string; revision?: string }>>({});
   const saveTestResult = (id: number, result: { success: boolean; outcome: Outcome; message: string }, revision = queryClient.getQueryData<RemoteStorage[]>(queryKeys.storages.list())?.find(storage => storage.id === id)?.updated_at) => {
+    if (!active.current || !ownsSession(sessionOwner)) return
     useNotificationStore.getState().addNotification({ type: result.success ? 'success' : 'warning', title: `Storage #${id} test result`, message: result.message, phase: result.outcome })
     setTestResults((prev) => {
       const next = { ...prev, [id]: { ...result, revision, testedAt: new Date().toISOString() } };
@@ -685,6 +692,7 @@ function StorageWorkspace() {
 
       <NotificationContext domain="storage" />
       <StorageLocationContext storages={storages} onEdit={handleEdit} onTest={id => testMutation.mutate(id)} onRemove={storage => setConfirmDialog({id:storage.id,name:storage.name})} />
+      {params.has('storage') && testResults[Number(params.get('storage'))] && <p role="status">{testResults[Number(params.get('storage'))].message} (observed {testResults[Number(params.get('storage'))].testedAt}; not continuous health).</p>}
 
       {/* Local Backups */}
       {!params.has('storage') && <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 px-6 py-4">
@@ -700,6 +708,7 @@ function StorageWorkspace() {
               <p className="text-sm text-slate-500 dark:text-slate-400">
                 Browse the local backup directory
               </p>
+              <p className="text-sm">System-Local · health unknown · filesystem capacity available in Usage only after measurement.</p>
             </div>
           </div>
           <button
@@ -716,6 +725,8 @@ function StorageWorkspace() {
       {!params.has('storage') && <div className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700">
           <h2 className="text-lg font-semibold text-slate-900 dark:text-white">Configured Storage Locations</h2>
+          <div className="flex flex-wrap gap-3"><label>Filter locations<input className="input" value={locationFilter} onChange={e => setLocationFilter(e.target.value)} /></label><label>Sort locations<select className="input" value={locationSort} onChange={e => setLocationSort(e.target.value)}><option value="name">Name</option><option value="provider">Provider</option></select></label></div>
+          {storages?.length && !storages.some(storage => `${storage.name} ${storage.storage_type}`.toLocaleLowerCase().includes(locationFilter.toLocaleLowerCase())) ? <p>No locations match this filter.</p> : null}
         </div>
 
         <QueryFeedback name="Storage locations" query={storagesQuery} />
@@ -734,7 +745,7 @@ function StorageWorkspace() {
           </div>
         ) : storages && storages.length > 0 ? (
           <div className="divide-y divide-slate-200 dark:divide-slate-700">
-            {storages.map((storage) => {
+            {storages.filter(storage => `${storage.name} ${storage.storage_type}`.toLocaleLowerCase().includes(locationFilter.toLocaleLowerCase())).sort((a,b) => (locationSort === 'provider' ? a.storage_type.localeCompare(b.storage_type) : a.name.localeCompare(b.name)) || a.id-b.id).map((storage) => {
               const Icon = getStorageIcon(storage.storage_type);
               const typeInfo = STORAGE_TYPES.find((t) => t.value === storage.storage_type);
               return (
@@ -784,6 +795,8 @@ function StorageWorkspace() {
                           <span>{storage.base_path}</span>
                         )}
                       </div>
+                      <p className="text-sm">{storage.enabled ? 'Enabled' : 'Disabled'} configuration · quota unavailable · {testResults[storage.id] && testResults[storage.id].revision === storage.updated_at ? `Test observed ${testResults[storage.id].testedAt}` : 'Health unknown / no current test'}</p>
+                      {!!storage.validation_errors?.length && <p role="alert">Configuration needs repair. Open Edit and review the provider fields.</p>}
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-1">

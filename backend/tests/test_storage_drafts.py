@@ -47,6 +47,118 @@ async def test_connection_errors_do_not_log_credentials(
     await manager.close()
 
 
+PROVIDERS = {
+    "local": {"base_path": "/synthetic"},
+    "ssh": {
+        "host": "example.invalid",
+        "port": 2222,
+        "username": "synthetic",
+        "password": "fixture",
+        "base_path": "/synthetic",
+    },
+    "sftp": {
+        "host": "example.invalid",
+        "port": 2222,
+        "username": "synthetic",
+        "password": "fixture",
+        "base_path": "/synthetic",
+    },
+    "ftp": {
+        "host": "example.invalid",
+        "port": 2121,
+        "username": "synthetic",
+        "password": "fixture",
+        "base_path": "/synthetic",
+    },
+    "webdav": {
+        "webdav_url": "https://example.invalid/dav",
+        "username": "synthetic",
+        "password": "fixture",
+        "base_path": "nested",
+    },
+    "s3": {
+        "s3_bucket": "synthetic",
+        "s3_region": "",
+        "s3_access_key": "fixture",
+        "s3_secret_key": "fixture",
+        "s3_endpoint_url": "https://example.invalid",
+        "base_path": "",
+    },
+    "rclone": {"rclone_remote": "synthetic", "base_path": "nested"},
+}
+
+
+@pytest.mark.parametrize("provider", list(PROVIDERS))
+async def test_all_provider_draft_fields_and_catalog_roundtrip(
+    async_client, db_session, monkeypatch, provider
+):
+    from dataclasses import asdict
+
+    seen = []
+    real_add = RemoteStorageManager.add_storage
+
+    async def observe(backend):
+        seen.append(asdict(backend.config))
+        return {"success": True, "message": "observed"}
+
+    def add(manager, config):
+        backend = real_add(manager, config)
+        backend.test_connection = lambda: observe(backend)
+        return backend
+
+    monkeypatch.setattr(RemoteStorageManager, "add_storage", add)
+    data = {
+        "name": "Synthetic " + provider,
+        "storage_type": provider,
+        "enabled": True,
+        **PROVIDERS[provider],
+    }
+    response = await async_client.post(
+        "/api/v1/storage/test-config", json={"mode": "create", "config": data}
+    )
+    assert response.status_code == 200 and response.json()["success"]
+    assert len((await db_session.execute(select(RemoteStorage))).scalars().all()) == 0
+    for key, value in data.items():
+        assert seen[-1][key] == value
+    created = await async_client.post("/api/v1/storage", json=data)
+    assert created.status_code == 200
+    sid = created.json()["id"]
+    edited = await async_client.put(
+        f"/api/v1/storage/{sid}", json={"name": "Edited", "enabled": False}
+    )
+    assert edited.status_code == 200
+    assert edited.json()["enabled"] is False
+    assert edited.json()["storage_type"] == provider
+    for key, value in PROVIDERS[provider].items():
+        if key not in ("password", "s3_access_key", "s3_secret_key"):
+            assert edited.json()[key] == value
+    response = await async_client.post(
+        "/api/v1/storage/test-config",
+        json={
+            "mode": "edit",
+            "storage_id": sid,
+            "config": {"name": "Unsaved", "password": ""},
+        },
+    )
+    assert response.status_code == 200 and response.json()["success"]
+    assert seen[-1]["storage_type"] == provider
+    assert seen[-1]["name"] == "Unsaved"
+    for key, value in PROVIDERS[provider].items():
+        assert seen[-1][key] == value
+    assert (await async_client.get(f"/api/v1/storage/{sid}")).json()["name"] == "Edited"
+    assert (await async_client.delete(f"/api/v1/storage/{sid}")).status_code == 200
+    assert (await db_session.execute(select(RemoteStorage))).scalars().all() == []
+
+
+async def test_draft_validation_does_not_echo_input(async_client):
+    response = await async_client.post(
+        "/api/v1/storage/test-config",
+        json={"mode": "synthetic-private-value", "config": {}},
+    )
+    assert response.status_code == 422
+    assert "synthetic-private-value" not in response.text
+
+
 async def test_create_draft_real_local_no_rows(async_client, db_session, tmp_path):
     root = tmp_path / "draft"
     managers = dict(storage_manager.backends)
