@@ -46,7 +46,7 @@ export default function Dashboard() {
   return <div className="space-y-6 min-w-0 break-words">
     <header className="flex flex-wrap items-start justify-between gap-3">
       <div><h1 className="text-2xl font-bold">Overview</h1><p className="text-dark-300">Overview of your Docker backups</p></div>
-      <Link className="btn-primary min-h-11 inline-flex items-center" to="/protection/new">New backup plan</Link>
+      <Link className="min-h-11 inline-flex items-center rounded-lg border border-transparent bg-primary-700 px-4 py-2 text-sm font-medium text-white hover:bg-primary-800" to="/protection/new">New backup plan</Link>
     </header>
     <section aria-labelledby="overview-attention" className={section}>
       <h2 id="overview-attention" className="text-xl font-semibold">Needs attention</h2>

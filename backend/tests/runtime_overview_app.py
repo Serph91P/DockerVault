@@ -151,7 +151,7 @@ async def fixture(value: str):
             )
             db.add(plan)
             await db.commit()
-            backup = await backup_engine.create_backup(plan.id)
+            backup = await backup_engine.create_backup(plan)
             # Native queue path; the controlled delay is only at the actual upload boundary.
             await backup_engine.enqueue(backup.id)
             return {"run": backup.id, "plan": plan.id}

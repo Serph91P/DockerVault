@@ -1,6 +1,7 @@
 """Overview counts the retained catalog; examples never define a total."""
 
 import asyncio
+import hashlib
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 from uuid import uuid4
@@ -45,7 +46,7 @@ async def test_overview_full_catalog_and_owner_scoped_examples(
             User(id=2, username="two", password_hash="synthetic"),
             Session(
                 user_id=1,
-                token=__import__("hashlib").sha256(b"test-token").hexdigest(),
+                token=hashlib.sha256(b"test-token").hexdigest(),
                 expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             ),
         ]
@@ -98,7 +99,7 @@ async def test_overview_full_catalog_and_owner_scoped_examples(
     assert response.status_code == 200
     body = response.json()
     assert body["dataset"] == "retained_catalog_and_current_process"
-    assert body["plans"] | {} == {
+    assert body["plans"] == {
         "total": 506,
         "enabled": 505,
         "disabled": 1,
@@ -168,7 +169,7 @@ async def test_overview_empty_and_disk_unavailable(
     db_session.add(
         Session(
             user_id=1,
-            token=__import__("hashlib").sha256(b"test-token").hexdigest(),
+            token=hashlib.sha256(b"test-token").hexdigest(),
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         )
     )
@@ -234,7 +235,7 @@ async def test_shared_run_observation_survives_early_completed_and_cleans_up(
         assert engine.observed_backups() == {backup.id: "upload"}
         assert (
             BackupEngine().observed_backups() == {}
-        )  # A new process has no live evidence.
+        )  # Another engine instance has no live evidence.
         if ending == "cancel":
             task.cancel()
         else:
@@ -364,6 +365,113 @@ async def test_overview_missing_storage_live_union_auth_and_exact_history_window
     after = (await async_client.get("/api/v1/overview/summary")).json()
     assert after["plans"]["without_recorded_run"]["total"] == 1
     assert after["plans"]["without_recorded_completed_run"]["total"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller", ["direct", "batch", "queue"])
+async def test_real_engine_activity_covers_all_entrypoints_and_upload(
+    async_client, test_db, db_session, monkeypatch, tmp_path, caller
+):
+    from app import backup_engine as engine_module
+    from app.remote_storage import storage_manager
+    from sqlalchemy import select
+    import subprocess
+    import sys
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "nested").mkdir()
+    payload = b"actual observed archive bytes"
+    (source / "nested/payload").write_bytes(payload)
+    location = RemoteStorage(
+        name="Physical test copy",
+        storage_type="local",
+        base_path=str(tmp_path / "remote"),
+        enabled=True,
+    )
+    db_session.add(location)
+    await db_session.flush()
+    plan = BackupTarget(
+        name="Observed real engine",
+        target_type="path",
+        host_path=str(source),
+        remote_storage_ids=[location.id],
+    )
+    db_session.add(plan)
+    await db_session.commit()
+    engine = BackupEngine()
+    monkeypatch.setattr(engine_module, "async_session", test_db)
+    monkeypatch.setattr(
+        engine_module.settings, "BACKUP_BASE_PATH", str(tmp_path / "backups")
+    )
+    monkeypatch.setattr(engine, "_sudo_available", lambda: False)
+    monkeypatch.setattr(storage_manager, "backends", {})
+    monkeypatch.setattr(storage_manager, "configs", {})
+    reached, release = asyncio.Event(), asyncio.Event()
+    original = engine._sync_to_remote
+
+    async def held(*args, **kwargs):
+        reached.set()
+        await release.wait()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "_sync_to_remote", held)
+    row = await engine.create_backup(plan)
+    task = None
+    try:
+        if caller == "queue":
+            await engine.start_queue_worker()
+            await engine.enqueue(row.id)
+        else:
+            task = asyncio.create_task(
+                engine.run_batch_sequential([row.id])
+                if caller == "batch"
+                else engine.run_backup(row.id)
+            )
+        await asyncio.wait_for(reached.wait(), 10)
+        async with test_db() as db:
+            current = await db.get(Backup, row.id)
+            assert current.status == BackupStatus.COMPLETED
+        assert engine.observed_backups() == {row.id: "upload"}
+        if caller == "direct":
+            child = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    'from app.backup_engine import backup_engine; assert backup_engine.observed_backups() == {}; print("new process has no live observation")',
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            assert child.stdout.strip().endswith("new process has no live observation")
+    finally:
+        release.set()
+        if task:
+            await asyncio.wait_for(task, 20)
+        await engine.shutdown()
+    assert engine.observed_backups() == {}
+    async with test_db() as db:
+        stored = await db.get(Backup, row.id)
+        sync = (
+            await db.execute(
+                select(BackupStorageSync).where(BackupStorageSync.backup_id == row.id)
+            )
+        ).scalar_one()
+        from pathlib import Path
+        import tarfile
+
+        local = Path(stored.file_path)
+        remote = tmp_path / "remote" / plan.name / local.name
+        assert (
+            stored.status == BackupStatus.COMPLETED and sync.sync_status == "completed"
+        )
+        assert remote.read_bytes() == local.read_bytes()
+        with tarfile.open(local) as archive:
+            member = next(
+                m for m in archive.getmembers() if m.name.endswith("nested/payload")
+            )
+            assert archive.extractfile(member).read() == payload
 
 
 @pytest.mark.asyncio
