@@ -42,7 +42,7 @@ export default function Layout() {
 
   useEffect(() => {
     document.title = `${title} · DockerVault`
-    const section = location.pathname === '/settings' && ['#connection', '#encryption'].includes(location.hash) ? document.getElementById(location.hash.slice(1)) : null
+    const section = location.pathname === '/settings' && ['#connection', '#encryption'].includes(location.hash) ? document.getElementById(location.hash.slice(1)) : location.pathname === '/' && location.hash === '#overview-capacity' ? document.getElementById('overview-capacity') : null
     if (section) section.focus()
     else {
       main.current?.focus({ preventScroll: true })

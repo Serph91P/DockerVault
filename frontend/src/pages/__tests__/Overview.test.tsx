@@ -1,4 +1,7 @@
-import { render, screen, within } from '@testing-library/react'
+import { act, render, screen, within, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { useAuthStore } from '../../store/auth'
+import { clearSession } from '../../store/session'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { http, HttpResponse } from 'msw'
@@ -84,6 +87,51 @@ describe('Overview contract', () => {
     setup()
     expect(await screen.findByText('Encryption decision incomplete — confirm custody or explicitly defer.')).toBeInTheDocument()
     expect(screen.queryByText(/No attention items recorded in these scopes/)).not.toBeInTheDocument()
+  })
+  it('retains the last confirmed failure window through a newer-window error, then replaces it on retry', async () => {
+    const user = userEvent.setup()
+    setup()
+    let current = summary
+    let fail = false
+    const requested: string[] = []
+    server.use(
+      http.get('/api/v1/overview/summary', () => HttpResponse.json(current)),
+      http.get('/api/v1/backups/history', ({ request }) => {
+        const params = new URL(request.url).searchParams
+        const failed = params.get('status') === 'failed'
+        if (failed) requested.push(params.get('before')!)
+        if (failed && fail) return new HttpResponse(null, { status: 503 })
+        return HttpResponse.json({ total: 1, items: [{ ...historyRow, status: failed ? 'failed' : 'completed' }], limit: 5, offset: 0, snapshot: 7, dataset: 'retained_catalog' })
+      }),
+    )
+    const failure = await screen.findByRole('link', { name: 'Failed run #7: Fixture archive' })
+    const originalHref = failure.getAttribute('href')
+    fail = true
+    current = { ...summary, observed_at: '2026-11-08T13:00:00Z', window: { ...summary.window, after: '2026-11-07T13:00:00Z', before: '2026-11-08T13:00:00Z' } }
+    await user.click(screen.getByRole('button', { name: 'Refresh Overview summary', exact: true }))
+    await waitFor(() => expect(requested).toContain(current.window.before))
+    expect(await screen.findByText('Failed runs in window: stale data')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Failed run #7: Fixture archive' })).toHaveAttribute('href', originalHref)
+    expect(screen.getByText(`${summary.window.after} through ${summary.window.before}; created_at, not the time failure occurred.`)).toBeInTheDocument()
+    expect(screen.getByText('Currently shown 1 of 1 retained archives')).toBeInTheDocument()
+    fail = false
+    await user.click(screen.getByRole('button', { name: 'Retry Failed runs in window', exact: true }))
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Failed run #7: Fixture archive' })).not.toHaveAttribute('href', originalHref))
+    expect(new URL(screen.getByRole('link', { name: 'Failed run #7: Fixture archive' }).getAttribute('href')!, 'http://localhost').searchParams.get('before')).toBe(current.window.before)
+    expect(screen.queryByText('Failed runs in window: stale data')).not.toBeInTheDocument()
+  })
+  it('does not retain a failure snapshot across an owner/session boundary', async () => {
+    const client = setup()
+    server.use(http.get('/api/v1/backups/history', ({ request }) => HttpResponse.json({ total: 1, items: [{ ...historyRow, status: new URL(request.url).searchParams.get('status') === 'failed' ? 'failed' : 'completed' }], limit: 5, offset: 0, snapshot: 7, dataset: 'retained_catalog' })))
+    expect(await screen.findByRole('link', { name: 'Failed run #7: Fixture archive' })).toBeInTheDocument()
+    server.use(http.get('/api/v1/backups/history', () => new HttpResponse(null, { status: 503 })))
+    await act(async () => {
+      clearSession()
+      client.clear()
+      useAuthStore.setState({ user: { id: 188, username: 'next', is_admin: false, created_at: '', last_login: null } })
+    })
+    expect(await screen.findByText('Failed runs in window: unavailable')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Failed run #7: Fixture archive' })).not.toBeInTheDocument()
   })
   it('accepts the complete summary with unknown optional reference values', () => {
     expect(() => validateRead('/overview/summary', summary)).not.toThrow()

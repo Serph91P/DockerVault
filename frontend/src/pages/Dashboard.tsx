@@ -8,6 +8,8 @@ import { useAuthStore } from '../store/auth'
 
 const link = 'inline-flex min-h-11 items-center underline underline-offset-4 text-primary-300 break-words'
 const section = 'space-y-3 border-t border-dark-700 pt-5 min-w-0'
+type FailureSnapshot = { page: Awaited<ReturnType<typeof backupsApi.history>>['data']; window: { after: string; before: string } }
+const failureSnapshots = new Map<number | undefined, FailureSnapshot>()
 function bytes(value: number) {
   if (!value) return '0 B'
   const power = Math.min(4, Math.floor(Math.log(value) / Math.log(1024)))
@@ -34,8 +36,19 @@ export default function Dashboard() {
   const completedParams = { view: 'runs', status: 'completed', limit: 1 }
   const completed = useQuery({ queryKey: queryKeys.backups.history(completedParams), queryFn: ({ signal }) => backupsApi.history(completedParams, signal).then(r => r.data), retry: false })
   const failureParams = { view: 'runs', status: 'failed', limit: 5, after: summary?.window.after ?? '', before: summary?.window.before ?? '' }
-  const failures = useQuery({ queryKey: queryKeys.backups.history(failureParams), queryFn: ({ signal }) => backupsApi.history(failureParams, signal).then(r => r.data), enabled: Boolean(summary), retry: false })
-  const failureSearch = new URLSearchParams(Object.entries(failureParams).map(([key, value]) => [key, String(value)])).toString()
+  // Keep the last confirmed failure page and its window so a later error for a
+  // newer window shows the old snapshot (with original bounds) as stale. The
+  // snapshot is owner-scoped so a session/owner change can never relabel or
+  // resurrect another operator's confirmed failures.
+  const failures = useQuery({ queryKey: queryKeys.backups.history(failureParams), queryFn: ({ signal }) => backupsApi.history(failureParams, signal).then(r => {
+    failureSnapshots.set(owner, { page: r.data, window: { after: failureParams.after, before: failureParams.before } })
+    return r.data
+  }), enabled: Boolean(summary), retry: false })
+  const snapshot = failureSnapshots.get(owner) ?? null
+  const failureData = failures.data ?? snapshot?.page
+  const failureStale = failures.isError && Boolean(snapshot)
+  const failureWindow = (failureStale || (failures.data == null && snapshot)) && snapshot ? snapshot.window : { after: summary?.window.after ?? '', before: summary?.window.before ?? '' }
+  const failureSearch = new URLSearchParams({ view: 'runs', status: 'failed', limit: '5', after: failureWindow.after, before: failureWindow.before }).toString()
   const empty = summary?.plans.total === 0 && runs.data?.total === 0 && !summaryQuery.isError && !runs.isError
   const disk = system.data
   const low = disk?.disk_status === 'available' && disk.disk_free < 1024 ** 3
@@ -43,7 +56,7 @@ export default function Dashboard() {
   const noCompletedRun = summary?.plans.without_recorded_completed_run
   const nextJobs = jobs.data?.filter(job => job.next_run).sort((a, b) => a.next_run!.localeCompare(b.next_run!) || a.id.localeCompare(b.id))
   const readinessIncomplete = encryption.data && !encryption.data.setup_completed && !encryption.data.onboarding_deferred
-  const problems = summaryQuery.isError || failures.isError || health.isError || health.data !== true || system.isError || encryption.isError || !encryption.data || readinessIncomplete || low || (summary?.recorded_copy_failures.total ?? 0) > 0 || (noCompletedRun?.total ?? 0) > 0 || (failures.data?.total ?? 0) > 0 || disk?.disk_status !== 'available'
+  const problems = summaryQuery.isError || failures.isError || health.isError || health.data !== true || system.isError || encryption.isError || !encryption.data || readinessIncomplete || low || (summary?.recorded_copy_failures.total ?? 0) > 0 || (noCompletedRun?.total ?? 0) > 0 || (failureData?.total ?? 0) > 0 || disk?.disk_status !== 'available'
   return <div className="space-y-6 min-w-0 break-words">
     <header className="flex flex-wrap items-start justify-between gap-3">
       <div><h1 className="text-2xl font-bold">Overview</h1><p className="text-dark-300">Overview of your Docker backups</p></div>
@@ -54,14 +67,14 @@ export default function Dashboard() {
       <QueryFeedback name="Overview summary" query={summaryQuery} />
       {empty && <p className="font-semibold">Start with your first successful backup. Follow the readiness sequence below; a saved plan is not an archive.</p>}
       {low && <p role="alert">Low local capacity: {bytes(disk.disk_free)} free. The engine requires at least 1 GiB (1,073,741,824 bytes). <Link className={link} to="/storage?storage=local">Inspect local storage</Link></p>}
-      {!empty && summary && failures.data && !problems && <p>No attention items recorded in these scopes. This is not a health score or evidence of restore readiness.</p>}
+      {!empty && summary && failureData && !problems && <p>No attention items recorded in these scopes. This is not a health score or evidence of restore readiness.</p>}
       {readinessIncomplete && <p>Encryption decision incomplete — confirm custody or explicitly defer.</p>}
       {summary && <p className="text-sm text-dark-300">Retained catalog and current process observed <time dateTime={summary.observed_at}>{summary.observed_at}</time>. Retention can remove earlier evidence; this is not lifetime history or a restore guarantee.</p>}
-      {summary && <QueryFeedback name="Failed runs in window" query={failures} />}
-      {failures.data && failures.data.total > 0 && <div className="space-y-2">
-        <h3 className="font-semibold">{failures.data.total} failed runs created in the UTC 24-hour window</h3>
-        <p className="text-sm">{summary?.window.after} through {summary?.window.before}; created_at, not the time failure occurred.</p>
-        {failures.data.items.map(run => <div key={run.id}><Link className={link} to={`/history/runs/${run.id}?${failureSearch}`}>Failed run #{run.id}: {run.target_name ?? 'Unknown plan'}</Link></div>)}
+      {summary && <QueryFeedback name="Failed runs in window" query={failures} stale={failureStale} />}
+      {failureData && failureData.total > 0 && <div className="space-y-2">
+        <h3 className="font-semibold">{failureData.total} failed runs created in the UTC 24-hour window</h3>
+        <p className="text-sm">{failureWindow.after} through {failureWindow.before}; created_at, not the time failure occurred.</p>
+        {failureData.items.map(run => <div key={run.id}><Link className={link} to={`/history/runs/${run.id}?${failureSearch}`}>Failed run #{run.id}: {run.target_name ?? 'Unknown plan'}</Link></div>)}
         <Link className={link} to={`/history?${failureSearch}`}>View all failed runs in this exact window</Link>
       </div>}
       {summary && summary.recorded_copy_failures.total > 0 && <section aria-label="Recorded copy failures" className="space-y-2">
