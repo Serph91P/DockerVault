@@ -8,7 +8,7 @@ import os
 import shutil
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import httpx
 from fastapi import APIRouter, HTTPException
@@ -254,6 +254,7 @@ class SystemInfoResponse(BaseModel):
     database_path: str
     timezone: str
     disk_total: int
+    disk_status: Literal["available", "unavailable"]
     disk_used: int
     disk_free: int
     db_size: int
@@ -275,8 +276,10 @@ async def get_system_info():
         disk_total = disk.total
         disk_used = disk.used
         disk_free = disk.free
+        disk_status = "available"
     except OSError:
         disk_total = disk_used = disk_free = 0
+        disk_status = "unavailable"
 
     # Database file size
     db_path = settings.DATABASE_URL.replace("sqlite+aiosqlite:///", "")
@@ -304,6 +307,7 @@ async def get_system_info():
         database_path="[configured]",
         timezone=tz,
         disk_total=disk_total,
+        disk_status=disk_status,
         disk_used=disk_used,
         disk_free=disk_free,
         db_size=db_size,

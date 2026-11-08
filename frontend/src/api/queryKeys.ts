@@ -2,6 +2,11 @@ type BackupParams = { target_id?: number; status?: string; limit?: number }
 const family = <T extends string>(name: T) => ({ all: [name] as const, list: () => [name, 'list'] as const })
 
 export const queryKeys = {
+  overview: {
+    all: ['overview'] as const,
+    summary: (limit: number, owner?: number) => ['overview', 'summary', { limit, owner }] as const,
+    failureSnapshot: (owner: number | undefined, generation: number) => ['overview', 'failure-snapshot', { owner, generation }] as const,
+  },
   backups: {
     all: ['backups'] as const,
     list: (params: BackupParams = {}) => ['backups', 'list', params] as const,

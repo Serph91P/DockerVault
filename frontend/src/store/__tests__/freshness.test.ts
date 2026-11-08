@@ -44,6 +44,30 @@ it('fallback is bounded, skips active2s storage jobs, stops hidden and revokes o
   stop(); unsubscribe(); unjob()
 })
 
+it.each(['backup_completed', 'operation_update'])('overview summary refreshes after %s without a socket business-result claim', async kind => {
+  vi.useFakeTimers()
+  const sockets: { onmessage: ((event: { data: string }) => void) | null }[] = []
+  vi.stubGlobal('WebSocket', class {
+    static OPEN = 1
+    static CONNECTING = 0
+    readyState = 0
+    onmessage = null
+    constructor() { sockets.push(this) }
+    close() {}
+  })
+  let revision = 1
+  const observer = new QueryObserver(queryClient, { queryKey: queryKeys.overview.summary(5, 1), queryFn: async () => revision, staleTime: Infinity })
+  const unsubscribe = observer.subscribe(() => {})
+  await observer.refetch()
+  const stop = startQueryFreshness()
+  useWebSocketStore.getState().connect()
+  revision = 2
+  sockets[0]?.onmessage?.({ data: JSON.stringify({ type: kind, backup_id: 1, operation_id: 'synthetic' }) })
+  await vi.advanceTimersByTimeAsync(150)
+  expect(observer.getCurrentResult().data).toBe(2)
+  stop(); unsubscribe()
+})
+
 it('fallback does not invalidate an active detail that already owns the two-second poll', async () => {
   vi.useFakeTimers()
   useWebSocketStore.setState({ connected: false })

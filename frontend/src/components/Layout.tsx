@@ -42,9 +42,13 @@ export default function Layout() {
 
   useEffect(() => {
     document.title = `${title} · DockerVault`
-    main.current?.focus({ preventScroll: true })
-    main.current?.scrollTo?.(0, 0)
-  }, [location.pathname, title])
+    const section = location.pathname === '/settings' && ['#connection', '#encryption'].includes(location.hash) ? document.getElementById(location.hash.slice(1)) : location.pathname === '/' && location.hash === '#overview-capacity' ? document.getElementById('overview-capacity') : null
+    if (section) section.focus()
+    else {
+      main.current?.focus({ preventScroll: true })
+      main.current?.scrollTo?.(0, 0)
+    }
+  }, [location.pathname, location.hash, title])
 
   const links = (mobile = false) => <nav aria-label={mobile ? 'Mobile navigation' : 'Primary navigation'} className="shell-links">
     {navigation.map((item) => <Link key={item.href} to={item.href} aria-current={current?.href === item.href ? 'page' : undefined} title={item.name} onClick={() => setMobileOpen(false)}>

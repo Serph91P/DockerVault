@@ -5,7 +5,7 @@ import type { Backup } from '../api'
 import type { StorageOperation } from '../api/operations'
 import type { Query } from '@tanstack/react-query'
 
-const families = new Set(['targets', 'backups', 'storages', 'schedules', 'retention-policies', 'containers', 'volumes', 'stacks', 'system-info', 'settings', 'docker-health', 'encryption-status', 'ssh-keys', 'storage-files', 'storage-size', 'storage-operations'])
+const families = new Set(['overview', 'targets', 'backups', 'storages', 'schedules', 'retention-policies', 'containers', 'volumes', 'stacks', 'system-info', 'settings', 'docker-health', 'encryption-status', 'ssh-keys', 'storage-files', 'storage-size', 'storage-operations'])
 let activeStop: (() => void) | undefined
 
 // One lifecycle owner for authorized readers; websocket never supplies business results.
@@ -21,8 +21,8 @@ export function startQueryFreshness() {
     const matches = (query: Query) => {
       const family = String(query.queryKey[0])
       if (!families.has(family) || (!kind && query.state.fetchStatus === 'fetching')) return false
-      if (kind === 'operation_update') return ['storage-operations', 'storage-files', 'storage-size'].includes(family)
-      if (kind?.startsWith('backup_')) return ['backups', 'targets', 'system-info', 'schedules'].includes(family)
+      if (kind === 'operation_update') return ['overview', 'storage-operations', 'storage-files', 'storage-size'].includes(family)
+      if (kind?.startsWith('backup_')) return ['overview', 'backups', 'targets', 'system-info', 'schedules'].includes(family)
       // StorageBrowser already polls active jobs every two seconds.
       const jobs = Array.isArray(query.state.data) ? query.state.data : [query.state.data]
       if (!kind && family === 'storage-operations' && jobs.some(job => job && ['queued', 'running'].includes(job.state))) return false
