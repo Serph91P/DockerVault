@@ -91,7 +91,7 @@ with patched bundled SQLite 3.54.1. Keep the lockfile; do not substitute a syste
 SQLite whose security patch level has not been qualified.
 
 Migration and incremental `sqlite3_backup` access use the safe rusqlite 0.41.1
-binding (Rust 1.89, MIT, only the backup feature) to the **same** libsqlite3-sys.
+binding (Rust 1.89, MIT, backup plus cancellation progress hooks) to the **same** libsqlite3-sys.
 SQLx does not expose a safe incremental backup API, and its serialization API
 would allocate the entire database. This avoids custom unsafe FFI and keeps
 backup work incremental and cancellation-aware. Application connections remain

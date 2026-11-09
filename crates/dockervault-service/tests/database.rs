@@ -347,6 +347,74 @@ async fn migration_backup_includes_committed_wal_bytes_and_can_be_restored_indep
     owner.shutdown(None).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_the_migration_waiter_cancels_backup_and_joins_rollback_before_release() {
+    let fixture = Fixture::new();
+    let conn = fixture.legacy();
+    conn.execute_batch(
+        "CREATE TABLE synthetic_payload(id INTEGER PRIMARY KEY,payload BLOB NOT NULL);
+        WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1024)
+        INSERT INTO synthetic_payload SELECT x,randomblob(65536) FROM n;",
+    )
+    .unwrap();
+    conn.close().unwrap();
+    let original = std::fs::read(fixture.db()).unwrap();
+    let owner = Owner::new(1).unwrap();
+    let worker_owner = owner.clone();
+    let path = fixture.db();
+    let backups = fixture.backups();
+    let waiter = tokio::spawn(async move { Database::open(path, backups, &worker_owner).await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let copying = std::fs::read_dir(fixture.backups()).is_ok_and(|entries| {
+                entries.filter_map(Result::ok).any(|entry| {
+                    entry.path().extension().is_some_and(|ext| ext == "partial")
+                        && entry.metadata().is_ok_and(|metadata| {
+                            metadata.len() >= 256 * 1024 && metadata.len() < original.len() as u64
+                        })
+                })
+            });
+            if copying {
+                break;
+            }
+            assert!(
+                !waiter.is_finished(),
+                "migration finished before its cancellation window was observed"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    waiter.abort();
+    assert!(waiter.await.is_err_and(|error| error.is_cancelled()));
+    tokio::time::timeout(std::time::Duration::from_secs(5), owner.shutdown(None))
+        .await
+        .unwrap();
+    assert_eq!(owner.active(), 0);
+    assert_eq!(std::fs::read(fixture.db()).unwrap(), original);
+    assert_eq!(
+        std::fs::read_dir(fixture.backups()).unwrap().count(),
+        0,
+        "owned partial files survived cooperative settlement"
+    );
+    let conn = Connection::open(fixture.db()).unwrap();
+    assert_eq!(
+        conn.query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name='schema_migrations'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+
 #[tokio::test]
 async fn a_complete_ledger_with_missing_columns_or_constraints_is_not_readiness() {
     let fixture = Fixture::new();

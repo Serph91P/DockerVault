@@ -22,3 +22,7 @@ dockervault-core = { path = "../dockervault-core" }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "migration_crash"
+harness = false

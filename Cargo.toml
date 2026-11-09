@@ -16,7 +16,7 @@ nix = { version = "=0.31.3", default-features = false, features = ["process", "s
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 sqlx = { version = "=0.9.0", git = "https://github.com/transact-rs/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c", default-features = false, features = ["runtime-tokio", "sqlite"] }
-rusqlite = { version = "=0.41.1", default-features = false, features = ["backup"] }
+rusqlite = { version = "=0.41.1", default-features = false, features = ["backup", "hooks"] }
 tokio = { version = "=1.54.1", default-features = false, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { version = "=0.7.20", default-features = false, features = ["rt"] }
 tracing = "=0.1.44"

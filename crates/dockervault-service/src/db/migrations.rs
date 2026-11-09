@@ -24,6 +24,12 @@ fn check_cancel(cancel: &CancellationToken) -> Result<(), DbError> {
         Ok(())
     }
 }
+fn observe_cancel(conn: &mut Connection, cancel: &CancellationToken) -> Result<(), DbError> {
+    let cancel = cancel.clone();
+    // Long SQL statements must cooperate too, not only the outer migration loop.
+    conn.progress_handler(1000, Some(move || cancel.is_cancelled()))?;
+    Ok(())
+}
 fn table_exists(conn: &Connection, name: &str) -> Result<bool, DbError> {
     Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
@@ -356,16 +362,18 @@ fn consistent_backup(
         std::process::id(),
         NEXT_BACKUP.fetch_add(1, Ordering::Relaxed)
     ));
+    let staging = destination.with_extension("sqlite.partial");
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(&destination)?;
+        .open(&staging)?;
     drop(file);
     let copied = (|| {
         let source = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let mut target =
-            Connection::open_with_flags(&destination, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+            Connection::open_with_flags(&staging, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        observe_cancel(&mut target, cancel)?;
         {
             let backup = Backup::new(&source, &mut target)?;
             let mut busy_since: Option<Instant> = None;
@@ -391,13 +399,22 @@ fn consistent_backup(
         validate_integrity(&target)?;
         target.close().map_err(|(_, error)| DbError::from(error))?;
         source.close().map_err(|(_, error)| DbError::from(error))?;
-        File::open(&destination)?.sync_all()?;
+        File::open(&staging)?.sync_all()?;
+        check_cancel(cancel)?;
+        // Same-directory hard-link promotion is atomic and never overwrites a
+        // prior backup, unlike rename() without RENAME_NOREPLACE.
+        fs::hard_link(&staging, &destination)?;
+        fs::remove_file(&staging)?;
         File::open(directory)?.sync_all()?;
         Ok(())
     })();
     if let Err(error) = copied {
         // All SQLite handles are settled before the incomplete owned file is removed.
-        fs::remove_file(&destination)?;
+        match fs::remove_file(&staging) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
         return Err(error);
     }
     Ok(destination)
@@ -411,6 +428,7 @@ pub(super) fn run(
     check_cancel(cancel)?;
     let mut conn = Connection::open(path)?;
     conn.busy_timeout(Duration::from_secs(5))?;
+    observe_cancel(&mut conn, cancel)?;
     conn.pragma_update(None, "foreign_keys", false)?;
     // Fence all other writers before snapshotting, and hold it through commit.
     // The backup reads through a separate connection, so the source backup API

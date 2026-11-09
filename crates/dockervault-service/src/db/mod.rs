@@ -36,6 +36,7 @@ impl From<rusqlite::Error> for DbError {
             Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
                 Self::Busy
             }
+            Some(rusqlite::ErrorCode::OperationInterrupted) => Self::Cancelled,
             _ => Self::Database,
         }
     }
