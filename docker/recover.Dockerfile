@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install --yes --no-install-recommends libssl3 \
 COPY --from=build /source/target/release/dockervault-recover /usr/local/bin/dockervault-recover
 COPY --from=build /licenses /usr/share/licenses/dockervault
 COPY docs/RUST_DEPENDENCY_NOTICES.md /usr/share/licenses/dockervault/DEPENDENCIES.md
+COPY docs/licenses/PYTHON-LICENSE.txt /usr/share/licenses/dockervault/PYTHON-LICENSE.txt
 WORKDIR /work
 USER 1000:1000
 ENTRYPOINT ["/usr/local/bin/dockervault-recover"]

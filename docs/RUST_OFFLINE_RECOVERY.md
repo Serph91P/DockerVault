@@ -57,9 +57,11 @@ toolchain. The runtime image runs as UID1000 and contains no Python, age/OpenSSL
 CLI, application server or application database. Runtime distributions retain
 the dependency/source notices described in `RUST_DEPENDENCY_NOTICES.md`.
 
-Local evidence covers amd64 recovery of original Python v1 and legacy fixtures,
-independently byte-verified, with network disabled and read-only root; the same
-real standalone binary was also executed directly with empty environment/PATH.
-Native arm64, the service custody/onboarding consumers, exported instruction
-migration, full performance matrix and the final release packaging/security gates
-remain required work. This document is not an R5/R13 or whole-rewrite acceptance.
+The standalone target has recovered original Python v1 and legacy fixtures on
+actual native amd64 and arm64 hosted runners, with independent byte comparisons,
+network disabled and read-only root. The same real standalone amd64 binary also
+ran directly with empty environment/PATH. These are foundation checkpoints, not
+a complete native application runtime acceptance. Service custody/onboarding,
+exported instruction migration, full performance matrix and the remaining
+application architecture/packaging/security gates remain required work. This
+document is not an R5/R13 or whole-rewrite acceptance.
