@@ -1,4 +1,6 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
+import { ownsSession, sessionGeneration } from '../store/session';
+import type { Outcome } from '../api/outcomes';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Key, Plus, Trash2, Upload, Copy, Check, Loader2, Download } from 'lucide-react';
 import axios from 'axios';
@@ -258,25 +260,28 @@ function InstallKeyModal(props: { keyInfo: SSHKeyInfo; onClose: () => void }) {
   const [password, setPassword] = useState('');
   const [method, setMethod] = useState<'auto' | 'hetzner' | 'authorized_keys'>('auto');
 
-  const installMut = useMutation({
-    mutationFn: () =>
-      storageApi.installSSHKey(props.keyInfo.name, {
-        host: host.trim(),
-        port: Number(port) || 22,
-        username: username.trim(),
-        password,
-        method,
-      }).then(response => ({ outcome: operationOutcome(response.data) })),
-  });
-
-  const errorText = installMut.error
-    ? axios.isAxiosError(installMut.error)
-      ? installMut.error.response?.data?.detail || String(installMut.error)
-      : String(installMut.error)
-    : null;
+  const [pending, setPending] = useState(false);
+  const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const [errorText, setErrorText] = useState<string | null>(null);
+  const alive = useRef(true), busy = useRef(false);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const install = async () => {
+    if (busy.current) return;
+    const owner = sessionGeneration();
+    busy.current = true; setPending(true); setOutcome(null); setErrorText(null);
+    try {
+      const response = await storageApi.installSSHKey(props.keyInfo.name, { host: host.trim(), port: Number(port) || 22, username: username.trim(), password, method });
+      if (alive.current && ownsSession(owner)) setOutcome(operationOutcome(response.data));
+    } catch {
+      if (alive.current && ownsSession(owner)) setErrorText('Installation result unavailable. Inspect the remote before retrying.');
+    } finally {
+      busy.current = false;
+      if (alive.current && ownsSession(owner)) { setPending(false); setPassword(''); }
+    }
+  };
 
   return (
-    <Modal title="Install key on remote" onClose={props.onClose} pending={installMut.isPending}>
+    <Modal title="Install key on remote" onClose={props.onClose} pending={pending}>
       <div className="bg-white dark:bg-slate-900 rounded-lg shadow-xl max-w-lg w-full p-5 space-y-4">
         <div>
           <h3 className="font-semibold text-slate-900 dark:text-white">
@@ -288,6 +293,8 @@ function InstallKeyModal(props: { keyInfo: SSHKeyInfo; onClose: () => void }) {
             password is never stored.
           </p>
         </div>
+        <fieldset disabled={pending} className="space-y-4">
+        <legend className="sr-only">Remote installation credentials</legend>
         <div className="grid grid-cols-3 gap-2">
           <div className="col-span-2">
             <label htmlFor={`${id}-host`} className="block text-sm mb-1">Host</label>
@@ -348,11 +355,8 @@ function InstallKeyModal(props: { keyInfo: SSHKeyInfo; onClose: () => void }) {
           </select>
         </div>
 
-        {installMut.isSuccess && installMut.data.outcome === 'completed' && (
-          <div className="text-sm text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/30 p-2 rounded">
-            Key installed successfully.
-          </div>
-        )}
+        </fieldset>
+        {outcome && <p role="status" aria-label="SSH installation result">SSH installation: {outcome}. {outcome === 'completed' ? 'Key installed successfully.' : 'Installation is not confirmed complete. Inspect the remote before retrying.'}</p>}
         {errorText && (
           <pre className="text-xs text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-900/30 p-2 rounded whitespace-pre-wrap">
             {errorText}
@@ -362,17 +366,17 @@ function InstallKeyModal(props: { keyInfo: SSHKeyInfo; onClose: () => void }) {
         <div className="flex justify-end gap-2 pt-2">
           <button
             onClick={props.onClose}
-            disabled={installMut.isPending}
+            disabled={pending}
             className="px-4 py-2 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded"
           >
             Close
           </button>
           <button
-            disabled={!host || !username || !password || installMut.isPending}
-            onClick={() => installMut.mutate()}
+            disabled={!host || !username || !password || pending}
+            onClick={() => void install()}
             className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
           >
-            {installMut.isPending && <Loader2 className="w-4 h-4 animate-spin inline mr-1" />}
+            {pending && <Loader2 className="w-4 h-4 animate-spin inline mr-1" />}
             Install
           </button>
         </div>

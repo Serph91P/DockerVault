@@ -19,7 +19,7 @@ const routes = [
   ['Schedules', '/protection/schedules', '/schedules', 'Schedules', <Schedules />],
   ['Retention', '/protection/retention', '/retention', 'Retention policies', <Retention />],
   ['Storage', '/storage', '/storage', 'Storage locations', <Storage />],
-  ['Settings', '/settings', '/settings/storage', 'Storage settings', <Settings />],
+  ['Settings', '/settings#storage-safeguards', '/settings/storage', 'Storage settings', <Settings />],
 ] as const
 it('malformed compatibility items keep independent schedules visible with a scoped Retry', async () => {
   let malformed = true

@@ -2,17 +2,19 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClient } from './store/session'
-import { BrowserRouter } from 'react-router-dom'
+import { createBrowserRouter, RouterProvider } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import App from './App'
 import './index.css'
 
 
+const router = createBrowserRouter([{ path: '*', element: <App /> }])
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <App />
+      <>
+        <RouterProvider router={router} />
         <Toaster
           position="bottom-right"
           toastOptions={{
@@ -23,7 +25,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             },
           }}
         />
-      </BrowserRouter>
+      </>
     </QueryClientProvider>
   </React.StrictMode>,
 )

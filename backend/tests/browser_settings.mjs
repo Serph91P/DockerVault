@@ -1,0 +1,162 @@
+// #190 real cookie/API/SQLite/age/SSH files; explicitly synthetic Komodo/SSH transport.
+import assert from 'node:assert/strict'
+import { randomBytes } from 'node:crypto'
+import { chmod, readFile, writeFile } from 'node:fs/promises'
+import { chromium } from 'playwright'
+import { expect } from 'playwright/test'
+const browser = await chromium.launch({ args: ['--no-sandbox', '--disable-dev-shm-usage'] })
+const context = await browser.newContext({ acceptDownloads: true, reducedMotion: 'reduce', permissions: ['clipboard-read', 'clipboard-write'] })
+const page = await context.newPage(); page.setDefaultTimeout(15000)
+const base = 'http://127.0.0.1', root = '/app/data/settings190', checks = []
+const check = (value, label) => { assert.ok(value, label); checks.push(label); console.log('PASS ' + label) }
+async function api(path, method = 'GET', data) { const r = await context.request.fetch(base + '/api/v1' + path, { method, data }); assert.ok(r.ok(), `${method} ${path}: ${r.status()}`); return r.json() }
+async function section(name) { await page.getByRole('link', { name, exact: true }).click() }
+async function connections() { await page.goto(base + '/settings#connection'); await expect(page.getByRole('button', { name: 'Edit Settings', exact: true })).toBeEnabled() }
+async function edit() { await page.getByRole('button', { name: 'Edit Settings', exact: true }).click() }
+async function saveKomodo() { await page.getByRole('button', { name: 'Save', exact: true }).click(); await expect(page.getByLabel('Komodo save result')).toHaveText('Komodo settings saved; canonical values confirmed.') }
+async function restart() {
+  const before = (await api('/test-settings190/restarted')).restarted
+  await api('/test-settings190/restart', 'POST')
+  await expect.poll(async () => { try { return (await api('/test-settings190/restarted')).restarted } catch { return before } }, { timeout: 30000 }).toBe(before + 1)
+  await page.reload()
+}
+try {
+  await page.goto(base)
+  const password = randomBytes(24).toString('hex')
+  await page.getByLabel('Username', { exact: true }).fill('settings-operator')
+  await page.getByLabel('Account password', { exact: true }).fill(password)
+  await page.getByLabel('Confirm account password', { exact: true }).fill(password)
+  await page.getByRole('button', { name: 'Create account', exact: true }).click()
+  await page.getByRole('button', { name: /Continue without encryption/ }).click()
+  await page.getByRole('button', { name: 'Continue to DockerVault', exact: true }).click()
+  check((await context.cookies()).some(c => c.name === 'session_token' && c.httpOnly), 'AC2/5 real HttpOnly cookie authentication')
+  await connections()
+  check((await api('/settings/komodo')).api_url === 'http://127.0.0.1:9100/env', 'AC3 real effective ENV fallback before any DB override')
+  check(!(await api('/test-settings190/effects')).settings.komodo_api_url, 'AC2 reading and initial connection observation did not save')
+  await page.getByRole('button', { name: 'Test saved connection' }).click()
+  await expect(page.getByText(/Komodo test: completed/)).toBeVisible()
+  await api('/test-settings190/komodo/failed', 'POST')
+  await page.getByRole('button', { name: 'Test saved connection' }).click()
+  await expect(page.getByText(/Komodo test: failed/)).toBeVisible()
+  check(!(await api('/test-settings190/effects')).settings.komodo_api_url, 'AC2 failed native saved test never stores credentials')
+  await api('/test-settings190/komodo/good', 'POST')
+  await edit()
+  await page.getByLabel('Komodo API URL', { exact: true }).fill('http://127.0.0.1:9100/db')
+  const key = randomBytes(24).toString('hex'), secret = randomBytes(24).toString('hex')
+  await page.getByLabel('Komodo API key', { exact: true }).fill(key)
+  await page.getByLabel('Komodo API secret', { exact: true }).fill(secret)
+  await expect(page.getByRole('button', { name: 'Test saved connection' })).toBeDisabled()
+  await section('System')
+  await expect(page.getByRole('dialog', { name: 'Discard unsaved settings?' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByLabel('Komodo API URL', { exact: true })).toHaveValue('http://127.0.0.1:9100/db')
+  check(true, 'AC2/3/7 dirty section navigation Escape retains correction context')
+  await saveKomodo()
+  const effects = await api('/test-settings190/effects')
+  check(effects.settings.komodo_api_url === 'http://127.0.0.1:9100/db' && effects.client_matches_effective && effects.transport.headers_present, 'AC1/3 SQLite override and actual Komodo client refreshed atomically (synthetic HTTP peer)')
+  await page.reload(); await expect(page.getByText('http://127.0.0.1:9100/db', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Test saved connection' }).click(); await expect(page.getByText(/Komodo test: completed/)).toBeVisible()
+  check((await api('/test-settings190/effects')).transport.path === '/db/read', 'AC2 saved-only test reaches DB endpoint instead of previous ENV endpoint')
+  for (const status of [422, 503]) {
+    await edit(); await page.getByLabel('Komodo API URL', { exact: true }).fill('http://127.0.0.1:9100/correction')
+    const fault = route => route.fulfill({ status, json: status === 422 ? { detail: [{ loc: ['body', 'api_url'], type: 'value_error', msg: 'synthetic transport validation' }] } : {} })
+    await page.route('**/api/v1/settings/komodo', route => route.request().method() === 'PUT' ? fault(route) : route.continue())
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    await expect(page.getByText('Request failed. Review the highlighted fields or retry.')).toBeVisible()
+    await expect(page.getByLabel('Komodo API URL', { exact: true })).toHaveValue('http://127.0.0.1:9100/correction')
+    if (status === 422) await expect(page.getByLabel('Komodo API URL', { exact: true })).toHaveAttribute('aria-invalid', 'true')
+    await page.unroute('**/api/v1/settings/komodo')
+    check((await api('/test-settings190/effects')).settings.komodo_api_url === 'http://127.0.0.1:9100/db', `AC2/3 injected ${status} save retains safe input and no SQLite effect`)
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+  }
+  await edit(); await page.getByLabel('Komodo API URL', { exact: true }).fill('not-an-http-endpoint')
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect(page.getByText('Request failed. Review the highlighted fields or retry.')).toBeVisible()
+  check((await api('/test-settings190/effects')).settings.komodo_api_url === 'http://127.0.0.1:9100/db', 'AC3 actual backend invalid URL rejection preserves previous DB values')
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await edit(); await page.getByLabel('Komodo API URL', { exact: true }).fill('http://127.0.0.1:9100/readback')
+  let written = false
+  await page.route('**/api/v1/settings/komodo', async route => {
+    if (route.request().method() === 'PUT') { const r = await route.fetch(); written = true; return route.fulfill({ response: r }) }
+    return written ? route.fulfill({ status: 503, json: {} }) : route.continue()
+  })
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect(page.getByLabel('Komodo save result')).toContainText('Write accepted, but canonical readback is unconfirmed')
+  check((await api('/test-settings190/effects')).settings.komodo_api_url.endsWith('/readback'), 'AC2 accepted write + readback503 has real durable effect but no false UI save success')
+  await page.unroute('**/api/v1/settings/komodo'); await page.getByRole('button', { name: 'Cancel', exact: true }).click(); await page.reload()
+  await expect(page.getByText('http://127.0.0.1:9100/readback', { exact: true })).toBeVisible()
+  await edit(); await page.getByRole('switch', { name: 'Enable Komodo integration' }).click(); await page.getByRole('checkbox', { name: 'Clear API key' }).check(); await page.getByRole('checkbox', { name: 'Clear API secret' }).check(); await saveKomodo()
+  const cleared = await api('/settings/komodo')
+  check(!cleared.enabled && !cleared.has_api_key && !cleared.has_api_secret, 'AC1/3 explicit empty DB overrides do not fall back to ENV credentials')
+  await section('Storage safeguards')
+  for (const value of [true, false]) {
+    const toggle = page.getByRole('switch', { name: 'Check quota before upload' })
+    await expect(toggle).toBeVisible()
+    if ((await toggle.getAttribute('aria-checked')) !== String(value)) await toggle.click()
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    await expect(page.getByLabel('Storage save result')).toHaveText('Storage settings saved; canonical values confirmed.')
+    check((await api('/test-settings190/effects')).settings.storage_check_quota_before_upload === String(value), `AC1/2 SQLite quota canonical ${value}`)
+    await restart(); await expect(toggle).toHaveAttribute('aria-checked', String(value))
+    check((await api('/settings/storage')).check_quota_before_upload === value, `AC2/3 quota ${value} survives actual backend exec/reload`)
+  }
+  await section('Encryption & SSH keys')
+  await page.getByRole('button', { name: 'Set Up Encryption', exact: true }).click()
+  const custody = page.getByRole('dialog', { name: 'Save Your Private Key', exact: true })
+  await expect(custody.getByRole('button', { name: 'I have saved my private key' })).toBeDisabled()
+  const [download] = await Promise.all([page.waitForEvent('download'), custody.getByRole('button', { name: 'Download Private Key File' }).click()])
+  await download.saveAs(root + '/exported.key'); await chmod(root + '/exported.key', 0o600)
+  check(!(await api('/encryption/status')).setup_completed, 'AC5 actual key download initiation is not custody confirmation (no secret artifacts)')
+  await custody.getByRole('button', { name: 'I have saved my private key' }).click(); await expect(custody).toBeHidden()
+  const plan = await api('/targets', 'POST', { name: 'settings encrypted proof', target_type: 'path', host_path: root + '/source', stop_container: false, compression_enabled: true })
+  const run = await api('/backups', 'POST', { target_id: plan.id, backup_type: 'full' })
+  await expect.poll(async () => (await api('/backups/' + run.id)).status, { timeout: 30000 }).toBe('completed')
+  check((await api('/test-settings190/verify-age/' + run.id, 'POST')).payload_bytes_equal, 'AC5 downloaded age identity decrypts actual encrypted engine archive to exact source bytes')
+  await page.getByRole('button', { name: 'Disable', exact: true }).click(); await expect(page.getByRole('button', { name: 'Enable', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Enable', exact: true }).click(); await expect(page.getByRole('button', { name: 'Disable', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'View Recovery Instructions', exact: true }).click(); await expect(page.getByRole('dialog', { name: 'Backup Recovery Instructions', exact: true })).toBeVisible(); await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: 'Regenerate Keys', exact: true }).click(); await expect(page.getByRole('dialog')).toContainText(/existing|old|previous/i); await page.keyboard.press('Escape')
+  check((await api('/test-settings190/verify-age/' + run.id, 'POST')).exported_identity_decrypts, 'AC5 encryption toggle/recovery/regeneration warning preserve old archive and exported-key decryptability')
+  await page.getByRole('button', { name: 'Generate', exact: true }).click()
+  const generate = page.getByRole('dialog', { name: 'Generate SSH key', exact: true })
+  await generate.getByLabel('Name', { exact: true }).fill('settings_key'); await generate.getByRole('button', { name: 'Generate', exact: true }).click(); await expect(generate).toBeHidden()
+  const ssh = (await api('/storage/ssh-keys')).find(k => k.name === 'settings_key')
+  check(ssh?.public_key.startsWith('ssh-ed25519 '), 'AC1/5 actual SSH generation and filesystem listing')
+  await page.getByRole('button', { name: 'Copy public key', exact: true }).click(); check((await page.evaluate(() => navigator.clipboard.readText())).trim() === ssh.public_key.trim(), 'AC5 copy real SSH public key')
+  const [pub] = await Promise.all([page.waitForEvent('download'), page.getByRole('link', { name: 'Download .pub', exact: true }).click()]); check((await readFile(await pub.path(), 'utf8')).trim() === ssh.public_key.trim(), 'AC5 downloaded .pub bytes equal actual key file')
+  for (const method of ['auto', 'hetzner', 'authorized_keys']) {
+    await page.getByRole('button', { name: 'Install on remote', exact: true }).click()
+    const install = page.getByRole('dialog', { name: 'Install key on remote', exact: true })
+    await install.getByLabel('Host', { exact: true }).fill('synthetic.example'); await install.getByLabel('Username', { exact: true }).fill('synthetic'); await install.getByLabel('Password', { exact: true }).fill(randomBytes(24).toString('hex')); await install.getByLabel('Install method', { exact: true }).selectOption(method)
+    await install.getByRole('button', { name: 'Install', exact: true }).click(); await expect(install.getByLabel('SSH installation result')).toContainText('completed'); await expect(install.getByLabel('Password', { exact: true })).toHaveValue(''); await install.getByRole('button', { name: 'Close', exact: true }).click()
+    check(true, `AC5 native ${method} install API with named synthetic remote transport`)
+  }
+  const location = await api('/storage', 'POST', { name: 'SSH reference proof', storage_type: 'ssh', enabled: false, host: 'synthetic.example', username: 'synthetic', base_path: '/backups', ssh_key_path: ssh.private_path })
+  const refused = await context.request.delete(base + '/api/v1/storage/ssh-keys/settings_key')
+  check(!refused.ok() && (await api('/storage/ssh-keys')).some(k => k.name === 'settings_key'), 'AC5 referenced key delete rejected with file retained')
+  await api('/storage/' + location.id, 'DELETE')
+  await page.getByRole('button', { name: 'Delete key', exact: true }).click(); await page.getByRole('dialog', { name: 'Delete SSH key', exact: true }).getByRole('button', { name: 'Delete', exact: true }).click(); await expect(page.getByText('settings_key', { exact: true })).toBeHidden()
+  check((await api('/storage/ssh-keys')).length === 0 && (await api('/test-settings190/effects')).ssh_files.length === 0, 'AC5 native key deletion removes both actual files')
+  // No screenshot or axe snapshot is taken while a private key/password is visible.
+  for (const width of [320, 390, 768, 1024, 1440]) {
+    await page.setViewportSize({ width, height: 900 })
+    for (const [name, id] of [['System', 'system'], ['Connections', 'connection'], ['Encryption & SSH keys', 'encryption'], ['Storage safeguards', 'storage-safeguards'], ['System recovery', 'system-recovery']]) {
+      const link = page.getByRole('link', { name, exact: true }); await link.focus(); await page.keyboard.press('Enter'); await expect(page.locator('#' + id)).toBeFocused()
+      await page.addScriptTag({ path: '/runner/axe.min.js' })
+      const violations = await page.evaluate(async () => (await axe.run(document.querySelector('main'))).violations)
+      await writeFile(`/runner/axe-settings-${width}-${id}.json`, JSON.stringify(violations.map(v => ({ id: v.id, impact: v.impact, targets: v.nodes.map(n => n.target) }))))
+      check(violations.length === 0, `AC7 axe keyboard context ${id} at ${width}`)
+      check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `AC7 no horizontal page overflow ${id} at ${width}`)
+    }
+    await page.screenshot({ path: `/runner/settings-${width}.png`, fullPage: true })
+  }
+  check(await page.getByRole('region', { name: 'System recovery', exact: true }).getByText(/#143/).isVisible(), 'AC6 distinct recovery dependency without fake controls')
+  await connections(); await edit(); await page.getByLabel('Komodo API URL', { exact: true }).fill('http://127.0.0.1:9100/discard')
+  await section('System'); await page.getByRole('button', { name: 'Discard and leave', exact: true }).click(); await page.goBack(); await expect(page.locator('#connection')).toBeFocused(); await expect(page.getByRole('button', { name: 'Edit Settings', exact: true })).toBeVisible(); await page.goForward(); await expect(page.locator('#system')).toBeFocused()
+  check(true, 'AC3/7 discard and Back/Forward preserve durable focused contexts')
+  await connections(); await edit(); await page.getByLabel('Komodo API secret', { exact: true }).fill(secret)
+  await page.route('**/api/v1/settings/komodo', route => route.request().method() === 'PUT' ? route.fulfill({ status: 401, json: {} }) : route.continue())
+  await page.getByRole('button', { name: 'Save', exact: true }).click(); await expect(page.getByRole('button', { name: /Sign in/ })).toBeVisible()
+  check(await page.evaluate(values => values.every(v => !JSON.stringify(localStorage).includes(v) && !JSON.stringify(sessionStorage).includes(v) && !location.href.includes(v)), [key, secret, password]), 'AC3/5 401 revokes editor and private values never enter browser persistence or URLs')
+  check((await api('/test-settings190/effects')).foreign_key_errors.length === 0, 'AC1 final real SQLite foreign-key integrity')
+  await writeFile('/runner/settings190-result.json', JSON.stringify({ checks, count: checks.length, doubles: ['loopback synthetic Komodo HTTP', 'SSH remote transport with real local shell/file effects'], native_at_or_device: false }, null, 2))
+} finally { await browser.close() }
