@@ -32,6 +32,8 @@ pub struct ProcessSpec {
     pub args: Vec<OsString>,
     pub env: Vec<(OsString, OsString)>,
     pub input: Vec<u8>,
+    /// Explicit owned spool descriptor; no in-memory stdout capture when set.
+    pub stdout_file: Option<std::fs::File>,
     pub timeout: Option<Duration>,
     pub discard_output: bool,
     pub allow_relative_program: bool,
@@ -48,6 +50,7 @@ impl ProcessSpec {
             args: args.into_iter().map(Into::into).collect(),
             env: Vec::new(),
             input: Vec::new(),
+            stdout_file: None,
             timeout: None,
             discard_output: false,
             allow_relative_program: false,
@@ -229,7 +232,7 @@ async fn run(spec: ProcessSpec, cancel: CancellationToken) -> Result<ProcessOutp
         .env("LANG", "C.UTF-8")
         .envs(spec.env)
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
+        .stdout(spec.stdout_file.map_or_else(Stdio::piped, Stdio::from))
         .stderr(Stdio::piped())
         .process_group(0)
         .kill_on_drop(true)
@@ -242,10 +245,11 @@ async fn run(spec: ProcessSpec, cancel: CancellationToken) -> Result<ProcessOutp
     // Linux pid_t values are positive signed integers.
     let group = Pid::from_raw(pid as i32);
     let overflow = CancellationToken::new();
-    let stdout = child.stdout.take().expect("configured stdout pipe");
+    let stdout = child.stdout.take();
     let stderr = child.stderr.take().expect("configured stderr pipe");
     let mut stdin = child.stdin.take().expect("configured stdin pipe");
-    let stdout = tokio::spawn(read_bounded(stdout, overflow.clone(), spec.discard_output));
+    let stdout =
+        stdout.map(|pipe| tokio::spawn(read_bounded(pipe, overflow.clone(), spec.discard_output)));
     let stderr = tokio::spawn(read_bounded(stderr, overflow.clone(), spec.discard_output));
     let input = tokio::spawn(async move {
         stdin.write_all(&spec.input).await?;
@@ -277,7 +281,10 @@ async fn run(spec: ProcessSpec, cancel: CancellationToken) -> Result<ProcessOutp
     }
     // No task, pipe, environment/input buffer or permit is abandoned on cancel.
     let input = joined(input).await;
-    let stdout = joined(stdout).await;
+    let stdout = match stdout {
+        Some(task) => joined(task).await,
+        None => Ok(Vec::new()),
+    };
     let stderr = joined(stderr).await;
     if overflow.is_cancelled() && failure.is_none() {
         failure = Some(ProcessError::OutputLimit);

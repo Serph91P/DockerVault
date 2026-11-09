@@ -55,7 +55,7 @@ fn plain_and_gzip6_preserve_data_modes_links_and_never_follow_directory_symlinks
         .unwrap();
         symlink(root.0.join("outside"), root.0.join("source/link-dir")).unwrap();
         let report = create_archive(&root.request(compressed), &root.backups(), &|| false).unwrap();
-        assert!(report.skipped_files.is_empty());
+        assert_eq!(report.skipped_count(), 0);
         let file = File::open(root.0.join("backups/result.tar")).unwrap();
         let reader: Box<dyn Read> = if compressed {
             Box::new(flate2::read::GzDecoder::new(file))
@@ -252,13 +252,66 @@ fn selected_nested_files_keep_ancestor_directories_and_excluded_subtrees_are_pru
 }
 
 #[test]
+fn spooled_skipped_paths_preserve_raw_filesystem_bytes() {
+    use std::os::unix::ffi::OsStringExt;
+    let root = Fixture::new();
+    let denied = root
+        .0
+        .join("source")
+        .join(std::ffi::OsString::from_vec(vec![b'd', 0xff]));
+    fs::write(&denied, b"PUBLIC unavailable").unwrap();
+    fs::set_permissions(&denied, fs::Permissions::from_mode(0o000)).unwrap();
+    let mut report = create_archive(&root.request(false), &root.backups(), &|| false).unwrap();
+    assert_eq!(report.skipped_count(), 1);
+    assert_eq!(
+        report
+            .skipped_files()
+            .unwrap()
+            .collect::<std::io::Result<Vec<_>>>()
+            .unwrap(),
+        vec![denied]
+    );
+}
+
+#[test]
+fn skipped_file_report_is_spooled_and_replays_every_path_without_truncation() {
+    let root = Fixture::new();
+    for index in 0..2500 {
+        let path = root.0.join("source").join(format!("denied-{index:04}"));
+        fs::write(&path, b"PUBLIC unavailable").unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    let mut report = create_archive(&root.request(false), &root.backups(), &|| false).unwrap();
+    assert_eq!(report.skipped_count(), 2500);
+    let paths: std::collections::BTreeSet<_> = report
+        .skipped_files()
+        .unwrap()
+        .collect::<std::io::Result<_>>()
+        .unwrap();
+    assert_eq!(paths.len(), 2500);
+    for path in paths {
+        assert!(path.starts_with(root.0.join("source")));
+        assert!(path.exists());
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    assert_eq!(fs::read_dir(root.0.join("backups")).unwrap().count(), 1);
+}
+
+#[test]
 fn unreadable_files_are_reported_without_corrupting_the_remaining_tar() {
     let root = Fixture::new();
     let denied = root.0.join("source/denied");
     fs::write(&denied, b"PUBLIC unavailable").unwrap();
     fs::set_permissions(&denied, fs::Permissions::from_mode(0o000)).unwrap();
-    let report = create_archive(&root.request(false), &root.backups(), &|| false).unwrap();
-    assert_eq!(report.skipped_files, vec![denied.clone()]);
+    let mut report = create_archive(&root.request(false), &root.backups(), &|| false).unwrap();
+    assert_eq!(
+        report
+            .skipped_files()
+            .unwrap()
+            .collect::<std::io::Result<Vec<_>>>()
+            .unwrap(),
+        vec![denied.clone()]
+    );
     fs::set_permissions(denied, fs::Permissions::from_mode(0o600)).unwrap();
     let mut archive = tar::Archive::new(File::open(root.0.join("backups/result.tar")).unwrap());
     assert_eq!(archive.entries().unwrap().count(), 1);

@@ -37,15 +37,22 @@ async fn main() {
     assert_eq!(nix::unistd::getuid().as_raw(), 1000);
     let owner = ProcessOwner::new(1).unwrap();
     // None is the published timeout=0 contract, not an arbitrary long deadline.
-    let output = owner
-        .start(spec("/backups/supervised.tar", false))
-        .unwrap()
-        .wait()
-        .await
-        .unwrap()
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut report = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open("/backups/report.json")
         .unwrap();
+    let mut request = spec("/backups/supervised.tar", false);
+    request.stdout_file = Some(report.try_clone().unwrap());
+    let output = owner.start(request).unwrap().wait().await.unwrap().unwrap();
     assert!(output.status.success());
-    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(output.stdout.is_empty());
+    use std::io::Seek;
+    report.rewind().unwrap();
+    let result: serde_json::Value = serde_json::from_reader(report).unwrap();
     assert_eq!(result["status"], "ok");
     assert_eq!(owner.active(), 0);
     assert_no_helper();

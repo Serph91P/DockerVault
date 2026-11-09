@@ -57,6 +57,13 @@ private-staging absence are checked afterwards. The event is observed through a
 readable parent-directory watch; no privileged source read or test-only hook is
 granted to the unprivileged supervisor.
 
+Skipped paths are replayed from an unlinked private file, preserving the complete
+existing JSON array (including surrogateescaped names) without a growing list.
+`ProcessSpec.stdout_file` can hand an owned private spool descriptor directly to
+the child; its default remains bounded in-memory capture. The caller waits for
+settlement and rewinds its descriptor before reading. This does not yet replace
+the complete service/job result consumer.
+
 Remaining mandatory work includes stalled source-filesystem I/O/process-loss
 cases, complete service/job integration and bounded skipped-report transport,
 restore prevalidation/spooling/FD-safe mutation, complete file metadata/type

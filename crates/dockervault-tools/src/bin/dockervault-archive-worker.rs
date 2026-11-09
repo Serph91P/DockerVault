@@ -15,8 +15,8 @@ fn main() {
     let result = run(&signal);
     let mut stdout = io::BufWriter::new(io::stdout().lock());
     let code = match result {
-        Ok(report) => {
-            if write_report(&mut stdout, &report)
+        Ok(mut report) => {
+            if write_report(&mut stdout, &mut report)
                 .and_then(|()| stdout.flush())
                 .is_ok()
             {
@@ -83,13 +83,14 @@ fn run(signal: &Arc<AtomicUsize>) -> Result<Report, &'static str> {
         .map_err(|_| "Archive creation failed or cancelled")
 }
 
-fn write_report(output: &mut impl Write, report: &Report) -> io::Result<()> {
+fn write_report(output: &mut impl Write, report: &mut Report) -> io::Result<()> {
     output.write_all(b"{\"status\":\"ok\",\"skipped_files\":[")?;
-    for (index, path) in report.skipped_files.iter().enumerate() {
+    for (index, path) in report.skipped_files()?.enumerate() {
+        let path = path?;
         if index != 0 {
             output.write_all(b",")?;
         }
-        write_path(output, path)?;
+        write_path(output, &path)?;
     }
     output.write_all(b"]}")
 }
@@ -123,6 +124,39 @@ fn write_path(output: &mut impl Write, path: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::ffi::OsStringExt;
+
+    #[test]
+    fn spooled_report_keeps_the_complete_existing_json_array_above_capture_limit() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("dv-report-json-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let source = root.join("source");
+        let backups = root.join("backups");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&backups).unwrap();
+        for i in 0..2500 {
+            let p = source.join(format!("denied-{i:04}"));
+            std::fs::write(&p, b"PUBLIC unavailable").unwrap();
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let request=Request::parse(&serde_json::to_vec(&serde_json::json!({"version":1,"sources":[["data",source]],"dest":"/backups/report.tar","compress":false,"allowed_sources":[source]})).unwrap()).unwrap();
+        let mut report =
+            create_archive(&request, &File::open(&backups).unwrap(), &|| false).unwrap();
+        let mut output = Vec::new();
+        write_report(&mut output, &mut report).unwrap();
+        assert!(output.len() > 65536);
+        let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(value["status"], "ok");
+        let paths = value["skipped_files"].as_array().unwrap();
+        assert_eq!(paths.len(), 2500);
+        let unique: std::collections::BTreeSet<_> =
+            paths.iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(unique.len(), 2500);
+        for i in 0..2500 {
+            assert!(unique.contains(source.join(format!("denied-{i:04}")).to_str().unwrap()));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn skipped_paths_keep_surrogateescaped_bytes_and_json_metacharacters() {

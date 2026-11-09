@@ -16,9 +16,45 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-#[derive(Default)]
+/// The unlinked private spool keeps only one skipped path in memory during replay.
 pub struct Report {
-    pub skipped_files: Vec<PathBuf>,
+    skipped: File,
+    count: u64,
+}
+
+impl Report {
+    pub fn skipped_count(&self) -> u64 {
+        self.count
+    }
+
+    pub fn skipped_files(&mut self) -> io::Result<impl Iterator<Item = io::Result<PathBuf>> + '_> {
+        use std::io::Seek;
+        self.skipped.rewind()?;
+        let mut remaining = self.count;
+        let file = &mut self.skipped;
+        Ok(std::iter::from_fn(move || {
+            if remaining == 0 {
+                return None;
+            }
+            remaining -= 1;
+            Some((|| {
+                let mut length = [0u8; 4];
+                file.read_exact(&mut length)?;
+                let mut path = vec![0; u32::from_be_bytes(length) as usize];
+                file.read_exact(&mut path)?;
+                Ok(std::ffi::OsString::from_vec(path).into())
+            })())
+        }))
+    }
+
+    fn push(&mut self, path: &Path) -> io::Result<()> {
+        let bytes = path.as_os_str().as_bytes();
+        let length = u32::try_from(bytes.len()).map_err(|_| invalid("Skipped path is too long"))?;
+        self.skipped.write_all(&length.to_be_bytes())?;
+        self.skipped.write_all(bytes)?;
+        self.count += 1;
+        Ok(())
+    }
 }
 
 /// The binary supplies its fixed /backups directory capability; never a caller-selected output root.
@@ -63,7 +99,10 @@ pub fn create_archive(
     }
     let stage = Stage::new(&parent)?;
     let mut output = stage.file("archive.partial", true)?;
-    let mut report = Report::default();
+    let mut report = Report {
+        skipped: stage.file("skipped.report", true)?,
+        count: 0,
+    };
     if request.compress {
         let gzip = flate2::write::GzEncoder::new(&mut output, flate2::Compression::new(6));
         let mut archive = tar::Builder::new(gzip);
@@ -194,7 +233,7 @@ impl Stage {
     }
     fn file(&self, name: &str, create: bool) -> io::Result<File> {
         let flags = if create {
-            OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL
+            OFlag::O_RDWR | OFlag::O_CREAT | OFlag::O_EXCL
         } else {
             OFlag::O_RDONLY
         };
@@ -301,7 +340,7 @@ fn walk<W: Write>(
         let stat = match fstatat(directory, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
             Ok(stat) => stat,
             Err(_) => {
-                report.skipped_files.push(original);
+                report.push(&original)?;
                 continue;
             }
         };
@@ -321,7 +360,7 @@ fn walk<W: Write>(
                     options,
                     report,
                 )?,
-                Err(_) => report.skipped_files.push(original),
+                Err(_) => report.push(&original)?,
             }
         } else if filters.includes_bytes(filter_path) {
             if kind == SFlag::S_IFLNK.bits() {
@@ -352,7 +391,7 @@ fn walk<W: Write>(
                 ) {
                     Ok(fd) => File::from(fd),
                     Err(_) => {
-                        report.skipped_files.push(original);
+                        report.push(&original)?;
                         continue;
                     }
                 };
@@ -361,7 +400,7 @@ fn walk<W: Write>(
                     || metadata.dev() != stat.st_dev
                     || metadata.ino() != stat.st_ino
                 {
-                    report.skipped_files.push(original);
+                    report.push(&original)?;
                     continue;
                 }
                 if let Some(target) = stage.known_link(&metadata)? {
