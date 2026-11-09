@@ -33,6 +33,8 @@ pub struct ProcessSpec {
     pub env: Vec<(OsString, OsString)>,
     pub input: Vec<u8>,
     pub timeout: Option<Duration>,
+    pub discard_output: bool,
+    pub allow_relative_program: bool,
 }
 
 impl ProcessSpec {
@@ -47,6 +49,8 @@ impl ProcessSpec {
             env: Vec::new(),
             input: Vec::new(),
             timeout: None,
+            discard_output: false,
+            allow_relative_program: false,
         }
     }
 }
@@ -109,7 +113,9 @@ impl ProcessOwner {
     }
 
     pub fn start(&self, spec: ProcessSpec) -> Result<ProcessWork, ProcessError> {
-        if !spec.program.is_absolute() || spec.input.len() > INPUT_LIMIT {
+        if (!spec.program.is_absolute() && !spec.allow_relative_program)
+            || spec.input.len() > INPUT_LIMIT
+        {
             return Err(ProcessError::InvalidSpec);
         }
         self.owner
@@ -129,6 +135,7 @@ impl ProcessOwner {
 async fn read_bounded(
     mut pipe: impl AsyncRead + Unpin,
     overflow: CancellationToken,
+    discard: bool,
 ) -> io::Result<Vec<u8>> {
     let mut result = Vec::new();
     let mut buffer = [0; 8192];
@@ -136,6 +143,9 @@ async fn read_bounded(
         let count = pipe.read(&mut buffer).await?;
         if count == 0 {
             return Ok(result);
+        }
+        if discard {
+            continue;
         }
         let remaining = OUTPUT_LIMIT - result.len();
         result.extend_from_slice(&buffer[..count.min(remaining)]);
@@ -235,8 +245,8 @@ async fn run(spec: ProcessSpec, cancel: CancellationToken) -> Result<ProcessOutp
     let stdout = child.stdout.take().expect("configured stdout pipe");
     let stderr = child.stderr.take().expect("configured stderr pipe");
     let mut stdin = child.stdin.take().expect("configured stdin pipe");
-    let stdout = tokio::spawn(read_bounded(stdout, overflow.clone()));
-    let stderr = tokio::spawn(read_bounded(stderr, overflow.clone()));
+    let stdout = tokio::spawn(read_bounded(stdout, overflow.clone(), spec.discard_output));
+    let stderr = tokio::spawn(read_bounded(stderr, overflow.clone(), spec.discard_output));
     let input = tokio::spawn(async move {
         stdin.write_all(&spec.input).await?;
         stdin.shutdown().await

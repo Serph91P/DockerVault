@@ -168,6 +168,29 @@ slow-reader-with-backup, architecture or performance acceptance by themselves.
 **Cost of being wrong:** an old identity receiving protected events, early revoke
 success while a writer remains alive, lost control messages or resource growth.
 
+## D8 — Hook argv and ignored-output compatibility
+
+**Decision:** port Python shlex.split(posix=True, comments=False), not a subtly
+different shell lexer. Actual installed Rust shlex2.0.1 qualification changes
+literal # arguments, escaped newlines, double-quoted backslash-dollar, and CR
+splitting. The shell-words documentation also explicitly describes incompatible
+POSIX behavior. A minimal four-state lexer is therefore required; all595 actual
+unchanged Python stdlib vectors in hook-argv.json are native assertions. Parsing
+never implies expansion or shell execution. Allowlisting still compares argv0
+exactly against the untrimmed CSV, and timeout0 still means immediate timeout.
+
+Generic process capture remains bounded/fail-closed by default. Hooks explicitly
+select discard-and-drain because the Python hook ignores both captured pipes;
+a verbose successful hook must not become a failure merely for writing64KiB.
+Hooks explicitly retain the parent environment and allowlisted PATH lookup,
+without changing the generic process owner's clean-environment/absolute-program
+defaults. Individual cancellation handles request cleanup while the hook still
+awaits the actual process/pipe/group join. Arguments and discarded output are
+not logged. Job/source claims must remain in the owning job until that join.
+
+**Cost of being wrong:** changed database dump commands, unintended shell
+execution, leaked argument secrets, or early workload restart during a hook.
+
 ## Not decisions and not completed gates
 
 - No new cryptography, key rotation, archive encoding or database system.

@@ -54,6 +54,9 @@ pub struct Work<T> {
 }
 
 impl<T> Work<T> {
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancel.clone()
+    }
     pub fn cancel(&self) {
         self.cancel.cancel();
     }
