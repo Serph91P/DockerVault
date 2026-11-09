@@ -73,6 +73,36 @@ equivalent serializer.
 **Cost of being wrong:** destructive operation replay against a changed/reused
 storage target, or incorrectly rejecting a legitimate unchanged operation.
 
+## D5 — Auth mutation ownership and transaction boundaries
+
+**Decision:** preserve bcrypt's first 72 UTF-8 **bytes**, cost 12 for newly
+written passwords, 64 random session bytes encoded URL-safe without padding,
+SHA-256 token storage, and seven-day UTC expiry. `bcrypt-vectors.json` is an
+executed unchanged Python control including a prefix ending inside a UTF-8
+codepoint and an embedded NUL; all credentials are explicitly public test data.
+Raw tokens are redacted in Debug and cannot be registered as a WS identity:
+registration requires the separate `SessionHash` type.
+
+Setup retains its immediate SQLite singleton transaction. Auth mutations run
+under the bounded service owner rather than their HTTP waiter's lifetime;
+rollback/connection closure is awaited before failed work is released. Revocation
+must cancel registered connection owners and await their physical ownership
+leases, including after the HTTP waiter disappears. Socket loops must drop those
+leases only after their actual I/O resources settle; domain lease tests alone
+are not a WebSocket runtime receipt.
+
+Login rechecks its verified password hash inside the write claim. A concurrent
+password change therefore cannot issue a late session authenticated with a stale
+hash. Password update, old-session deletion and replacement session publication
+share a transaction. This deliberately prevents partial password/session effects
+on replacement-insert failure, unlike the Python handler's separate commits;
+no credential precedence, key rotation, schema or successful response changes
+are implied. Login's last-login update and session insert are likewise atomic.
+
+**Cost of being wrong:** resurrected sessions after revocation, an unusable
+account after a failed setup/password change, or false settlement. HTTP/WS
+runtime, independent-process setup, restart and P gates remain required.
+
 ## Not decisions and not completed gates
 
 - No new cryptography, key rotation, archive encoding or database system.

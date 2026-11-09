@@ -1,0 +1,21 @@
+{
+  "warning": "PUBLIC SYNTHETIC TEST PASSWORDS/HASHES ONLY; never operational credentials",
+  "encoding": "actual unchanged Python-control bcrypt; first72 UTF8 bytes including partial codepoints and NUL",
+  "vectors": [
+    {
+      "password": "PUBLIC-TEST-ONLY-\u00e4PUBLIC-TEST-ONLY-\u00e4PUBLIC-TEST-ONLY-\u00e4PUBLIC-TEST-ONLY-\u00e4PUBLIC-TEST-ONLY-\u00e4PUBLIC-TEST-ONLY-\u00e4",
+      "hash": "$2b$12$4DEfcjg46yncxvI40qTcfeRrujIy/hNamzDlYoX0L4PTNNQDnjaHK",
+      "same_prefix_password": "PUBLIC-TEST-ONLY-\u00e4PUBLIC-TEST-ONLY-\u00e4PUBLIC-TEST-ONLY-\u00e4PUBLIC-TEST-ONLY-\u00e4different suffix"
+    },
+    {
+      "password": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\u00e4X",
+      "hash": "$2b$12$Xcx0bDxrl0c58czAniUHeOwr9xvwdxMtMtR99rS8kbl5r5oNXHER2",
+      "same_prefix_password": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\u00e3Y"
+    },
+    {
+      "password": "PUBLIC\u0000PASSWORD",
+      "hash": "$2b$12$X/a0o2e0jmO7qOcgm4bfCOvzfu1X7cUfcbImt8552.pZzzRcedHMe",
+      "same_prefix_password": "PUBLIC\u0000PASSWORD"
+    }
+  ]
+}
