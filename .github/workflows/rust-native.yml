@@ -1,0 +1,76 @@
+name: Rust foundations
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  native-workspace:
+    name: Native workspace and offline recovery (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Build native isolated Rust development image
+        run: docker build -f docker/rust-dev.Dockerfile -t dockervault-rust-ci .
+      - name: Native offline workspace tests and lints
+        run: |
+          docker run --rm --network none --cpus 2 --memory 6g \
+            --user 1000:1000 --env CARGO_BUILD_JOBS=2 \
+            --entrypoint /bin/sh dockervault-rust-ci -ec '
+              cargo fmt --all -- --check
+              cargo test --workspace --locked --offline
+              cargo clippy --workspace --all-targets --locked --offline -- -D warnings
+            '
+      - name: Dependency advisories, licenses and sources
+        run: |
+          docker run --rm --user 1000:1000 --entrypoint /bin/sh dockervault-rust-ci -ec '
+            cargo deny check advisories licenses sources
+            cargo audit --deny warnings
+          '
+      - name: Build native standalone recovery image
+        run: |
+          docker build --build-arg VCS_REF="$(git rev-parse HEAD)" \
+            -f docker/recover.Dockerfile -t dockervault-recovery-ci .
+          test "$(docker image inspect --format '{{.Architecture}}' dockervault-recovery-ci)" = '${{ matrix.arch }}'
+      - name: Recover original v1 and legacy bytes without network or Python
+        shell: bash
+        run: |
+          set -euo pipefail
+          container=$(docker run --detach --rm --network none --read-only \
+            --tmpfs /work:rw,uid=1000,gid=1000,mode=0700,size=16m \
+            --user 1000:1000 --entrypoint /bin/sleep dockervault-recovery-ci infinity)
+          trap 'docker stop --time 1 "$container" >/dev/null' EXIT
+          docker exec "$container" mkdir /work/fixtures
+          tar -C crates/dockervault-core/tests/fixtures -cf - . | \
+            docker exec --interactive "$container" tar -xf - -C /work/fixtures
+          docker exec "$container" /bin/sh -ec '
+            for program in python python3 age openssl sqlite3 dockervault-service; do
+              if command -v "$program" >/dev/null 2>&1; then exit 1; fi
+            done
+            test ! -e /app/data
+            test -s /usr/share/licenses/dockervault/fernet-MPL-2.0.txt
+            for variant in "" .legacy; do
+              /usr/local/bin/dockervault-recover \
+                --archive "/work/fixtures/pax-links.tar.gz${variant}.enc" \
+                --output /work/recovered.gz \
+                --identity /work/fixtures/pax-links.tar.gz.identity.TEST_ONLY \
+                --key "/work/fixtures/pax-links.tar.gz${variant}.key.TEST_ONLY"
+              cmp /work/fixtures/pax-links.tar.gz /work/recovered.gz
+            done
+          '
