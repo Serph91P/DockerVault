@@ -128,7 +128,13 @@ fn quarantine(conn: &Connection, cancel: &CancellationToken) -> Result<(), DbErr
             "SELECT * FROM backup_storage_syncs WHERE backup_id NOT IN (SELECT id FROM backups) OR storage_id NOT IN (SELECT id FROM remote_storages)",
         ),
     ] {
-        let mut statement = conn.prepare(query)?;
+        // Snapshot complete original rows before retained DELETE triggers can
+        // alter other orphans; spill through SQLite instead of buffering all rows.
+        conn.execute_batch(&format!(
+            "CREATE TEMP TABLE dv_quarantine_snapshot AS {query}"
+        ))?;
+        let mut statement =
+            conn.prepare("SELECT * FROM temp.dv_quarantine_snapshot ORDER BY id")?;
         let names: Vec<String> = statement.column_names().map(str::to_owned).collect();
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
@@ -149,6 +155,9 @@ fn quarantine(conn: &Connection, cancel: &CancellationToken) -> Result<(), DbErr
             conn.execute("INSERT OR IGNORE INTO catalog_quarantine(table_name,row_id,row_json,reason) VALUES(?,?,?,'missing parent reference')", (table, id, json))?;
             conn.execute(&format!("DELETE FROM {table} WHERE id=?"), [id])?;
         }
+        drop(rows);
+        drop(statement);
+        conn.execute_batch("DROP TABLE temp.dv_quarantine_snapshot")?;
     }
     validate_foreign_keys(conn)
 }
@@ -407,6 +416,7 @@ pub(super) fn run(
     let mut conn = Connection::open(path)?;
     conn.busy_timeout(Duration::from_secs(5))?;
     observe_cancel(&mut conn, cancel)?;
+    conn.execute_batch("PRAGMA temp_store=FILE; PRAGMA temp.cache_size=-1024;")?;
     conn.pragma_update(None, "foreign_keys", false)?;
     // Fence all other writers before snapshotting, and hold it through commit.
     // The backup reads through a separate connection, so the source backup API

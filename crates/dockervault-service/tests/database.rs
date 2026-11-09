@@ -59,6 +59,68 @@ fn versions(conn: &Connection) -> Vec<i64> {
 }
 
 #[tokio::test]
+async fn a_retained_trigger_creating_new_orphans_fails_closed_instead_of_chasing_new_rows() {
+    let fixture = Fixture::new();
+    let conn = fixture.legacy();
+    conn.execute_batch("INSERT INTO backup_logs(id,backup_id,step,message) VALUES(72,999,'PUBLIC','original');
+        CREATE TRIGGER creates_new_orphan AFTER DELETE ON backup_logs WHEN old.id=72 BEGIN INSERT INTO backup_logs(id,backup_id,step,message) VALUES(73,999,'PUBLIC','new orphan'); END;").unwrap();
+    conn.close().unwrap();
+    let before = schema(&fixture.db());
+    let owner = Owner::new(1).unwrap();
+    assert!(matches!(
+        Database::open(fixture.db(), fixture.backups(), &owner).await,
+        Err(dockervault_service::db::DbError::ForeignKey)
+    ));
+    assert_eq!(schema(&fixture.db()), before);
+    let conn = Connection::open(fixture.db()).unwrap();
+    let ids = conn
+        .prepare("SELECT id FROM backup_logs ORDER BY id")
+        .unwrap()
+        .query_map([], |row| row.get::<_, i64>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(ids, vec![72]);
+    owner.shutdown(None).await;
+}
+
+#[tokio::test]
+async fn quarantine_snapshots_orphan_rows_before_preserved_delete_triggers_can_remove_them() {
+    let fixture = Fixture::new();
+    let conn = fixture.legacy();
+    conn.execute_batch("INSERT INTO backup_logs(id,backup_id,step,message) VALUES(72,999,'PUBLIC','first'),(73,999,'PUBLIC','second');
+        CREATE TRIGGER preserve_legacy_delete_behavior AFTER DELETE ON backup_logs WHEN old.id=72 BEGIN DELETE FROM backup_logs WHERE id=73; END;").unwrap();
+    conn.close().unwrap();
+    let owner = Owner::new(1).unwrap();
+    let db = Database::open(fixture.db(), fixture.backups(), &owner)
+        .await
+        .unwrap();
+    let ids = sqlx::query_scalar::<_, i64>(
+        "SELECT row_id FROM catalog_quarantine WHERE table_name='backup_logs' ORDER BY row_id",
+    )
+    .fetch_all(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        ids,
+        vec![72, 73],
+        "migration silently lost a pre-existing orphan through a retained trigger"
+    );
+    let second: String = sqlx::query_scalar(
+        "SELECT row_json FROM catalog_quarantine WHERE table_name='backup_logs' AND row_id=73",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&second).unwrap()["message"],
+        "second"
+    );
+    db.close().await;
+    owner.shutdown(None).await;
+}
+
+#[tokio::test]
 async fn orphan_quarantine_keeps_python_encoding_of_nonfinite_legacy_extension_values() {
     let fixture = Fixture::new();
     let conn = fixture.legacy();
