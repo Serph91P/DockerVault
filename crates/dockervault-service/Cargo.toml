@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+bollard.workspace = true
 indexmap.workspace = true
 base64.workspace = true
 bcrypt.workspace = true
@@ -32,6 +33,10 @@ workspace = true
 [dev-dependencies]
 futures-util.workspace = true
 tokio-tungstenite.workspace = true
+
+[[example]]
+name = "docker_lifecycle"
+path = "tests/bin/docker_lifecycle.rs"
 
 [[test]]
 name = "auth_process"
