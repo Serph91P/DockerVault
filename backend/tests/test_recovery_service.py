@@ -18,6 +18,65 @@ SECRET = "synthetic-portable-credential"
 NOW = datetime(2026, 7, 11, 12, 30, 45)
 
 
+@pytest.mark.asyncio
+async def test_import_rejects_removed_rclone_configuration_even_with_consistent_manifest(
+    db_session, monkeypatch
+):
+    monkeypatch.setattr(
+        settings, "RCLONE_CONFIG", "/nonexistent/synthetic-source-config"
+    )
+    db_session.add(
+        db.RemoteStorage(
+            id=1, name="synthetic rclone", storage_type="rclone", rclone_remote="vault"
+        )
+    )
+    await db_session.commit()
+    payload = await service().export_state(db_session)
+    payload["rclone"] = {"schema_version": 1, "roots": [], "remotes": {}, "files": {}}
+    payload["manifest"] = service().state_manifest(payload)
+    with pytest.raises(service().RecoveryStateError):
+        await service().validate_state(payload)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["password", "s3_access_key", "s3_secret_key"])
+async def test_accepted_long_provider_credential_roundtrips_under_new_key(
+    db_session, monkeypatch, field
+):
+    secret = "synthetic-long-provider-credential-" + "x" * 1024
+    monkeypatch.setattr(
+        settings, "CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode()
+    )
+    monkeypatch.setattr(credentials, "_fernet", None)
+    db_session.add(
+        db.RemoteStorage(
+            id=1,
+            name="synthetic credential",
+            storage_type="s3",
+            **{field: credentials.encrypt_value(secret)},
+        )
+    )
+    await db_session.commit()
+    payload = await service().export_state(db_session)
+    assert payload["tables"]["remote_storages"][0][field] == secret
+    await service().validate_state(payload)
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(db.Base.metadata.create_all)
+        monkeypatch.setattr(
+            settings, "CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode()
+        )
+        monkeypatch.setattr(credentials, "_fernet", None)
+        async with async_sessionmaker(engine, expire_on_commit=False)() as destination:
+            await service().insert_state(destination, payload)
+            await destination.commit()
+            restored = await destination.get(db.RemoteStorage, 1)
+            assert credentials.decrypt_value(getattr(restored, field)) == secret
+    finally:
+        await engine.dispose()
+
+
 def service():
     return importlib.import_module("app.recovery_service")
 

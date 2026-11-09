@@ -67,6 +67,9 @@ async def test_authenticated_export_to_new_installation_preview_import_and_sessi
         )
         assert exported.status_code == 200
         assert exported.headers["Cache-Control"] == "no-store"
+        assert (
+            "content-length" not in exported.headers
+        )  # Stream the bounded encrypted envelope.
         assert ".dockervault" in exported.headers["Content-Disposition"]
         assert b"synthetic-portable-credential" not in exported.content
         assert b"synthetic-bundle-password" not in exported.content

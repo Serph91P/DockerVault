@@ -3,7 +3,9 @@ Backup scheduler using APScheduler.
 """
 
 import asyncio
+import json
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
@@ -17,7 +19,13 @@ from sqlalchemy.orm import selectinload
 from app.backup_engine import BackupType, backup_engine
 from app.config import settings
 from app.cron import cron_trigger, next_run
-from app.database import BackupSchedule, BackupTarget, async_session, backup_db_session
+from app.database import (
+    AppSettings,
+    BackupSchedule,
+    BackupTarget,
+    async_session,
+    backup_db_session,
+)
 from app.retention import retention_manager
 from app.auth import cleanup_expired_sessions
 from app.recovery_activation import recovery_pending
@@ -39,6 +47,7 @@ class BackupScheduler:
         )
         self._running = False
         self._reconcile_lock = asyncio.Lock()
+        self._recovery_generation = None
 
     async def start(self):
         """Start the scheduler and load existing jobs."""
@@ -50,6 +59,13 @@ class BackupScheduler:
 
         # Load existing schedules from database
         await self._load_schedules()
+        self.scheduler.add_job(
+            self._reconcile_recovery,
+            "interval",
+            seconds=1,
+            id="recovery_projection",
+            replace_existing=True,
+        )
 
         # Schedule retention cleanup (daily at 3 AM)
         self.scheduler.add_job(
@@ -75,6 +91,110 @@ class BackupScheduler:
             self.scheduler.shutdown(wait=False)
             self._running = False
             logger.info("Backup scheduler stopped")
+
+    async def _reconcile_recovery(self):
+        """Other worker processes consume the durable activation generation too."""
+        try:
+            async with backup_db_session(async_session) as session:
+                value = await session.scalar(
+                    select(AppSettings.value).where(
+                        AppSettings.key == "recovery_activation"
+                    )
+                )
+            if not value:
+                return
+            marker = json.loads(value)
+            if (
+                marker["state"] == "active"
+                and marker["generation"] != self._recovery_generation
+            ):
+                await self.reconcile()
+                self._recovery_generation = marker["generation"]
+        except Exception as error:
+            logger.error(
+                "Recovery schedule projection unavailable (%s)", type(error).__name__
+            )
+
+    @asynccontextmanager
+    async def recovery_projection(self, session, generation):
+        """Prepare RAM jobs while the durable preparation fence still blocks execution."""
+        if not self._running:
+            yield
+            return
+        async with self._reconcile_lock:
+            snapshot = {
+                job.id: (
+                    job.func,
+                    {
+                        field: getattr(job, field)
+                        for field in (
+                            "id",
+                            "name",
+                            "args",
+                            "kwargs",
+                            "trigger",
+                            "executor",
+                            "misfire_grace_time",
+                            "coalesce",
+                            "max_instances",
+                            "next_run_time",
+                        )
+                    },
+                )
+                for job in self.scheduler.get_jobs()
+                if job.id.startswith("backup_target_")
+            }
+            installed, removed = set(), set()
+            try:
+                targets = (
+                    (
+                        await session.execute(
+                            select(BackupTarget).options(
+                                selectinload(BackupTarget.schedule)
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                desired = set()
+                for target in targets:
+                    cron = self._get_target_cron(target) if target.enabled else None
+                    if not cron:
+                        continue
+                    identifier = f"backup_target_{target.id}"
+                    desired.add(identifier)
+                    self._install_job(target, self._trigger(cron))
+                    installed.add(identifier)
+                    await session.execute(
+                        update(BackupSchedule)
+                        .where(BackupSchedule.target_id == target.id)
+                        .values(next_run=self.get_next_run(cron))
+                    )
+                for identifier in snapshot.keys() - desired:
+                    self.scheduler.remove_job(identifier)
+                    removed.add(identifier)
+                yield
+            except BaseException:
+                for identifier in installed:
+                    if self.scheduler.get_job(identifier):
+                        self.scheduler.remove_job(identifier)
+                for identifier in (installed & snapshot.keys()) | removed:
+                    function, options = snapshot[identifier]
+                    self.scheduler.add_job(function, **options, replace_existing=True)
+                raise
+            else:
+                self._recovery_generation = generation
+
+    def _install_job(self, target, trigger):
+        self.scheduler.add_job(
+            self._run_scheduled_backup,
+            trigger,
+            args=[target.id],
+            id=f"backup_target_{target.id}",
+            replace_existing=True,
+            name=f"Backup: {target.name}",
+        )
 
     async def _load_schedules(self):
         """Reconcile existing records without requiring a user re-save."""
@@ -154,21 +274,12 @@ class BackupScheduler:
         if not cron_expr:
             return False
 
-        job_id = f"backup_target_{target.id}"
-
         try:
             # Parse cron expression
             trigger = self._trigger(cron_expr)
 
             # Add job
-            self.scheduler.add_job(
-                self._run_scheduled_backup,
-                trigger,
-                args=[target.id],
-                id=job_id,
-                replace_existing=True,
-                name=f"Backup: {target.name}",
-            )
+            self._install_job(target, trigger)
 
             # Update next run time in database
             next_run = self.get_next_run(cron_expr)

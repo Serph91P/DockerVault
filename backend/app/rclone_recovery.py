@@ -22,6 +22,7 @@ import shutil
 import socket
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -512,7 +513,7 @@ def _config_command(config, unlock, args):
     common, environment = _common(config, unlock)
     try:
         result = subprocess.run(
-            common + args,
+            _owner_bound(common + args),
             env=environment,
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -523,6 +524,27 @@ def _config_command(config, unlock, args):
         return result.stdout
     except (OSError, subprocess.TimeoutExpired):
         _invalid()
+
+
+def _owner_bound(command):
+    return [
+        sys.executable,
+        "-I",
+        str(Path(__file__).with_name("recovery_child.py")),
+        str(os.getpid()),
+        *command,
+    ]
+
+
+@contextlib.contextmanager
+def _rpc_address(directory):
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        # Both addresses stay short even when the private generation path is long.
+        yield f"/proc/self/fd/{descriptor}/rc"
+    finally:
+        (directory / "rc").unlink(missing_ok=True)
+        os.close(descriptor)
 
 
 def _create_managed(payload, directory):
@@ -538,13 +560,12 @@ def _create_managed(payload, directory):
         refs = {}
         overrides = {}
         common, environment = _common(config, unlock)
-        with tempfile.TemporaryDirectory(prefix="dvrc-") as rpc_directory:
-            os.chmod(rpc_directory, 0o700)
-            address = str(Path(rpc_directory) / "rc")
-            if len(os.fsencode(address)) >= 108:
-                _invalid()
+        with _rpc_address(directory) as address:
             daemon = subprocess.Popen(
-                common + ["rcd", "--rc-addr", "unix://" + address, "--rc-no-auth"],
+                _owner_bound(
+                    common + ["rcd", "--rc-addr", "unix://rc", "--rc-no-auth"]
+                ),
+                cwd=directory,
                 env=environment,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -822,7 +843,9 @@ def _run_managed(state, remote, args, timeout):
                         f"/proc/self/fd/{descriptor}"
                     )
             result = subprocess.run(
-                common + ["--timeout", "300s", "--contimeout", "30s"] + args,
+                _owner_bound(
+                    common + ["--timeout", "300s", "--contimeout", "30s"] + args
+                ),
                 env=environment,
                 pass_fds=tuple(descriptors),
                 stdin=subprocess.DEVNULL,

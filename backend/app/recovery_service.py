@@ -240,7 +240,16 @@ def _typed_rows(payload):
                 elif isinstance(column.type, String):
                     if type(value) is not str:
                         _invalid()
-                    if column.type.length and len(value) > column.type.length:
+                    # SQLite and the storage API accept long provider credentials;
+                    # VARCHAR metadata is not their plaintext length contract.
+                    credential = (
+                        name == "remote_storages" and column.name in STORAGE_SECRETS
+                    )
+                    if (
+                        column.type.length
+                        and len(value) > column.type.length
+                        and not credential
+                    ):
                         _invalid()
                 typed[column.name] = value
             if type(row["id"]) is not int or row["id"] <= 0:
@@ -296,7 +305,9 @@ def _validate_references_and_paths(payload):
     for row in tables["backup_storage_syncs"]:
         if row["remote_path"]:
             _path(row["remote_path"])
-    if payload["rclone"] != {
+    if any(
+        row["storage_type"] == "rclone" for row in tables["remote_storages"]
+    ) or payload["rclone"] != {
         "schema_version": 1,
         "roots": [],
         "remotes": {},

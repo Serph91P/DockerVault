@@ -12,7 +12,7 @@ import os
 import re
 import shutil
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 from weakref import WeakKeyDictionary
 
@@ -174,7 +174,7 @@ def _sync_generation(directory):
             os.close(descriptor)
 
 
-async def activate_state(payload, username, password, sessions):
+async def activate_state(payload, username, password, sessions, *, projection=None):
     """Logically activate only after EVERY fallible internal preparation succeeds."""
     from app.auth import create_session, hash_password
     from app.recovery_service import (
@@ -254,12 +254,28 @@ async def activate_state(payload, username, password, sessions):
                     },
                     "result": result,
                 }
-                await _await_io_settled(asyncio.to_thread(_sync_generation, directory))
-                # No live config rename, cache mutation or network action follows this commit.
-                await session.commit()
+                context = (
+                    projection.recovery_projection(session, generation)
+                    if projection is not None
+                    else nullcontext()
+                )
+                cancellation = None
+                async with context:
+                    await _await_io_settled(
+                        asyncio.to_thread(_sync_generation, directory)
+                    )
+                    # Settle the durable decision before compensating RAM state on disconnect.
+                    commit = asyncio.create_task(session.commit())
+                    try:
+                        await _await_io_settled(commit)
+                    except asyncio.CancelledError as error:
+                        commit.result()
+                        cancellation = error
+                if cancellation is not None:
+                    raise cancellation
                 return response
         except BaseException as error:
-            # SQLite has already rolled back the transaction, including account/session.
+            # Failed pre-commit work rolled back; a settled successful commit stays authoritative.
             # After a completed commit, user presence deliberately protects its generation.
             await _discard_incomplete(sessions)
             if isinstance(error, asyncio.CancelledError):
@@ -267,5 +283,5 @@ async def activate_state(payload, username, password, sessions):
             if isinstance(error, SetupClaimError):
                 raise
             raise RecoveryActivationError(
-                "System recovery activation failed; setup was not changed"
+                "System recovery activation failed; check setup status before retrying"
             ) from None

@@ -6,6 +6,7 @@ import logging
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select, text
 
 from app import database
@@ -108,8 +109,11 @@ async def export_recovery(request: Request, user: User = Depends(get_current_use
             bundle = await _await_io_settled(
                 asyncio.to_thread(encode_bundle, payload, data["password"])
             )
-        return Response(
-            content=bundle,
+        return StreamingResponse(
+            content=(
+                bundle[offset : offset + 65536]
+                for offset in range(0, len(bundle), 65536)
+            ),
             media_type="application/octet-stream",
             headers={
                 "Cache-Control": "no-store",
@@ -165,7 +169,11 @@ async def restore_recovery(request: Request, response: Response):
                 )
             )
         result = await activate_state(
-            payload, data["username"], data["admin_password"], database.async_session
+            payload,
+            data["username"],
+            data["admin_password"],
+            database.async_session,
+            projection=getattr(request.app.state, "scheduler", None),
         )
         response.set_cookie(
             key="session_token",
