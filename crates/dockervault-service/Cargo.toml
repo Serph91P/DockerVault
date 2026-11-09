@@ -1,0 +1,22 @@
+[package]
+name = "dockervault-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dotenvy.workspace = true
+axum.workspace = true
+nix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dockervault-core = { path = "../dockervault-core" }
+
+[lints]
+workspace = true
