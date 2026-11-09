@@ -140,6 +140,34 @@ or breaking a legitimate proxy/client. Real browser/proxy, malformed-header,
 open-socket revocation, native-platform and P receipts are still mandatory;
 the initial TCP auth journeys are not whole-product acceptance.
 
+## D7 — WebSocket transport and notification ownership
+
+**Decision:** retain the existing cookie/query precedence independently of HTTP:
+without Origin only the explicit query token is used; with Origin a nonempty
+cookie wins. Missing/foreign/null origin-cookie handshakes are denied before
+acceptance. The executed control uses Uvicorn's websockets-sansio protocol and
+its actual preaccept denial is HTTP403 with an empty body; do not mistake the
+in-process close intent4001/4003 for an established WebSocket close frame.
+
+Each accepted socket has a separate SHA256 identity and fixed authenticated
+user ID. Register before the final DB check to prevent a lost-revocation race;
+revalidate the same user before every output and each idle second. Logout or
+password-change acknowledgment waits until owned socket transport destruction.
+Expiry/deletion closes with4001; shutdown uses1001; notification pressure1013.
+The queue remains32 messages with the existing protected control types; progress
+coalescing retains the newest event without dropping an initial control frame.
+No producer awaits a network send or spawns an unbounded per-event task.
+
+The current control's actual ws_max_size is16MiB. Native input/output metadata
+and write buffers are bounded; archive bytes do not travel through this queue.
+Python json.dumps-compatible text encoding is shared with the frozen core codec.
+Native TCP/WS tests retain the existing two-second acceptance/revocation bounds,
+including broadcast-after-delete and idle validation; they are not browser,
+slow-reader-with-backup, architecture or performance acceptance by themselves.
+
+**Cost of being wrong:** an old identity receiving protected events, early revoke
+success while a writer remains alive, lost control messages or resource growth.
+
 ## Not decisions and not completed gates
 
 - No new cryptography, key rotation, archive encoding or database system.

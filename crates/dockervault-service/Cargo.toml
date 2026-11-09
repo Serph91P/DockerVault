@@ -28,6 +28,14 @@ dockervault-core = { path = "../dockervault-core" }
 [lints]
 workspace = true
 
+[dev-dependencies]
+futures-util.workspace = true
+tokio-tungstenite.workspace = true
+
+[[test]]
+name = "auth_process"
+harness = false
+
 [[test]]
 name = "migration_crash"
 harness = false

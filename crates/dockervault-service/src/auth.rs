@@ -138,6 +138,9 @@ pub struct SessionLease {
     connection: Arc<Connection>,
 }
 impl SessionLease {
+    pub fn is_cancelled(&self) -> bool {
+        self.connection.cancel.is_cancelled()
+    }
     pub async fn cancelled(&self) {
         self.connection.cancel.cancelled().await
     }
@@ -157,6 +160,12 @@ pub struct SessionRegistry {
     connections: Mutex<RegistryState>,
 }
 impl SessionRegistry {
+    pub fn is_closed(&self) -> bool {
+        self.connections
+            .lock()
+            .map(|state| state.closed)
+            .unwrap_or(true)
+    }
     pub fn register(&self, identity: SessionHash, user_id: i64) -> Result<SessionLease, AuthError> {
         let mut state = self.connections.lock().map_err(|_| AuthError::Busy)?;
         if state.closed {

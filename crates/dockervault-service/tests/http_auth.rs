@@ -20,9 +20,16 @@ struct Server {
     task: JoinHandle<()>,
     auth: AuthService,
     db: Database,
+    notifications: std::sync::Arc<http::ws::Notifications>,
 }
 impl Server {
     async fn start(cors: &str) -> Self {
+        Self::configured(
+            Config::from_pairs([("COOKIE_SECURE", "false"), ("CORS_ORIGINS", cors)]).unwrap(),
+        )
+        .await
+    }
+    async fn configured(config: Config) -> Self {
         let path = std::env::temp_dir().join(format!(
             "dv-http-auth-{}-{}",
             std::process::id(),
@@ -35,12 +42,12 @@ impl Server {
             .unwrap();
         owner.shutdown(None).await;
         let auth = AuthService::new(db.pool().clone());
-        let config =
-            Config::from_pairs([("COOKIE_SECURE", "false"), ("CORS_ORIGINS", cors)]).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (stop, receiver) = oneshot::channel();
-        let app = http::router(auth.clone(), config);
+        let state = http::HttpState::new(auth.clone(), config);
+        let notifications = state.notifications.clone();
+        let app = http::router(state);
         let task = tokio::spawn(async move {
             axum::serve(
                 listener,
@@ -59,6 +66,7 @@ impl Server {
             task,
             auth,
             db,
+            notifications,
         }
     }
     async fn request(
@@ -474,6 +482,224 @@ async fn a_body_without_content_type_cannot_bootstrap_an_account() {
     );
     assert!(!server.auth.setup_complete().await.unwrap());
     server.close().await;
+}
+
+#[tokio::test]
+async fn enabled_docs_do_not_bypass_the_existing_global_auth_guard() {
+    let server = Server::configured(
+        Config::from_pairs([("COOKIE_SECURE", "false"), ("ENABLE_DOCS", "true")]).unwrap(),
+    )
+    .await;
+    for path in ["/docs", "/redoc", "/openapi.json"] {
+        assert_eq!(server.request("GET", path, &[], None).await.0, 403);
+    }
+    let _ = server.setup().await;
+    for path in ["/docs", "/redoc", "/openapi.json"] {
+        assert_eq!(server.request("GET", path, &[], None).await.0, 401);
+    }
+    server.close().await;
+}
+
+#[tokio::test]
+async fn secure_cookie_creation_and_deletion_have_matching_transport_attributes() {
+    let server = Server::configured(Config::from_pairs([("COOKIE_SECURE", "true")]).unwrap()).await;
+    let cookie = server.setup().await;
+    let login = server
+        .request(
+            "POST",
+            "/api/v1/auth/login",
+            &[],
+            Some(json!({"username":"public-admin","password":"PUBLIC-password!"})),
+        )
+        .await;
+    assert_eq!(login.0, 200);
+    assert!(login.1.contains("; Secure"));
+    let logout = server
+        .request("POST", "/api/v1/auth/logout", &[("Cookie", &cookie)], None)
+        .await;
+    for attribute in [
+        "; Secure",
+        "HttpOnly",
+        "SameSite=lax",
+        "Path=/",
+        "Max-Age=0",
+    ] {
+        assert!(logout.1.contains(attribute));
+    }
+    server.close().await;
+}
+
+type Socket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>;
+async fn socket(
+    server: &Server,
+    cookie: Option<&str>,
+    origin: Option<&str>,
+    query: Option<&str>,
+) -> Result<Socket, tokio_tungstenite::tungstenite::Error> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let url = format!(
+        "ws://{}/ws/updates{}",
+        server.address,
+        query
+            .map(|token| format!("?token={token}"))
+            .unwrap_or_default()
+    );
+    let mut request = url.into_client_request().unwrap();
+    if let Some(cookie) = cookie {
+        request
+            .headers_mut()
+            .insert("cookie", cookie.parse().unwrap());
+    }
+    if let Some(origin) = origin {
+        request
+            .headers_mut()
+            .insert("origin", origin.parse().unwrap());
+    }
+    tokio_tungstenite::connect_async(request)
+        .await
+        .map(|(socket, _)| socket)
+}
+async fn frame(socket: &mut Socket) -> tokio_tungstenite::tungstenite::Message {
+    use futures_util::StreamExt;
+    tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+}
+#[tokio::test]
+async fn actual_websocket_origin_matrix_retains_cookie_and_query_precedence() {
+    let server = Server::start("https://trusted.invalid").await;
+    let cookie = server.setup().await;
+    let raw = cookie.strip_prefix("session_token=").unwrap();
+    let same = format!("http://{}", server.address);
+    let cases = [
+        (Some(cookie.as_str()), Some(same.as_str()), None, true),
+        (
+            Some(cookie.as_str()),
+            Some("https://trusted.invalid"),
+            None,
+            true,
+        ),
+        (
+            Some(cookie.as_str()),
+            Some("https://foreign.invalid"),
+            None,
+            false,
+        ),
+        (Some(cookie.as_str()), Some("null"), None, false),
+        (Some(cookie.as_str()), None, None, false),
+        (None, None, Some(raw), true),
+        (
+            Some(cookie.as_str()),
+            None,
+            Some("invalid-public-token"),
+            false,
+        ),
+        (None, Some(same.as_str()), None, false),
+        (
+            Some("session_token=invalid-public-token"),
+            Some(same.as_str()),
+            Some(raw),
+            false,
+        ),
+    ];
+    for (cookie, origin, query, allowed) in cases {
+        let connected = socket(&server, cookie, origin, query).await;
+        if allowed {
+            let mut connected = connected.unwrap();
+            assert_eq!(
+                frame(&mut connected).await.into_text().unwrap(),
+                "{\"type\": \"connected\", \"message\": \"Connected to backup manager\"}"
+            );
+            connected.close(None).await.unwrap();
+        } else {
+            assert!(
+                matches!(connected,Err(tokio_tungstenite::tungstenite::Error::Http(response)) if response.status().as_u16()==403)
+            );
+        }
+    }
+    server.close().await;
+}
+#[tokio::test]
+async fn actual_websocket_preserves_control_messages_and_broadcast_bytes() {
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+    let server = Server::start("http://localhost").await;
+    let cookie = server.setup().await;
+    let origin = format!("http://{}", server.address);
+    let mut connected = socket(&server, Some(&cookie), Some(&origin), None)
+        .await
+        .unwrap();
+    let _ = frame(&mut connected).await;
+    connected
+        .send(Message::Text("{\"type\":\"ping\"}".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        frame(&mut connected).await.into_text().unwrap(),
+        "{\"type\": \"pong\"}"
+    );
+    connected
+        .send(Message::Text(
+            "{\"type\":\"subscribe\",\"backup_id\":77}".into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        frame(&mut connected).await.into_text().unwrap(),
+        "{\"type\": \"subscribed\", \"backup_id\": 77}"
+    );
+    connected
+        .send(Message::Text("not-json".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&frame(&mut connected).await.into_text().unwrap()).unwrap(),
+        json!({"type":"error","message":"Invalid JSON"})
+    );
+    server.notifications.broadcast(&json!({"type":"backup_progress","backup_id":77,"progress":50,"message":"public protected payload"}));
+    assert_eq!(
+        serde_json::from_str::<Value>(&frame(&mut connected).await.into_text().unwrap()).unwrap()["backup_id"],
+        77
+    );
+    connected.close(None).await.unwrap();
+    server.close().await;
+}
+#[tokio::test]
+async fn actual_open_websockets_revoke_on_logout_password_expiry_and_deleted_rows() {
+    for (cause, idle) in [
+        ("logout", false),
+        ("password", false),
+        ("expiry", false),
+        ("delete", false),
+        ("expiry", true),
+        ("delete", true),
+    ] {
+        let server = Server::start("http://localhost").await;
+        let cookie = server.setup().await;
+        let origin = format!("http://{}", server.address);
+        let mut connected = socket(&server, Some(&cookie), Some(&origin), None)
+            .await
+            .unwrap();
+        let _ = frame(&mut connected).await;
+        match cause {
+            "logout"=>assert_eq!(server.request("POST","/api/v1/auth/logout",&[("Cookie",&cookie)],None).await.0,200),
+            "password"=>assert_eq!(server.request("POST","/api/v1/auth/change-password",&[("Cookie",&cookie)],Some(json!({"current_password":"PUBLIC-password!","new_password":"PUBLIC-new-password!","confirm_password":"PUBLIC-new-password!"}))).await.0,200),
+            "expiry"=> {sqlx::query("UPDATE sessions SET expires_at='2020-01-01 00:00:00.000000'").execute(server.db.pool()).await.unwrap();},
+            "delete"=> {sqlx::query("DELETE FROM sessions").execute(server.db.pool()).await.unwrap();},_=>unreachable!(),
+        }
+        if !idle {
+            server.notifications.broadcast(&json!({"type":"backup_progress","backup_id":77,"progress":50,"message":"protected"}));
+        }
+        let closed = frame(&mut connected).await;
+        assert!(
+            matches!(closed,tokio_tungstenite::tungstenite::Message::Close(Some(close)) if u16::from(close.code)==4001),
+            "revoked socket must close without publishing the protected event"
+        );
+        drop(connected);
+        server.close().await;
+    }
 }
 
 #[tokio::test]

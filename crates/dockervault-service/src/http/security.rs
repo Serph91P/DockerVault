@@ -123,7 +123,7 @@ pub(super) fn rate_limit(
         ))
     }
 }
-fn valid_origin(origin: &str) -> bool {
+pub(super) fn valid_origin(origin: &str) -> bool {
     let Some((scheme, authority)) = origin.split_once("://") else {
         return false;
     };
@@ -301,8 +301,7 @@ pub(super) async fn guard(
         "/api/v1/auth/login",
     ]
     .contains(&path)
-        || path.starts_with("/ws/")
-        || state.config.enable_docs && ["/docs", "/redoc", "/openapi.json"].contains(&path);
+        || path.starts_with("/ws/");
     let mut response = if public {
         next.run(request).await
     } else {

@@ -1,6 +1,7 @@
 //! HTTP contracts; protocol state is shared, never retained in request-owned jobs.
 mod auth;
 pub mod security;
+pub mod ws;
 use crate::{auth::AuthService, config::Config};
 use axum::{
     Json, Router, middleware,
@@ -14,13 +15,19 @@ pub struct HttpState {
     pub auth: AuthService,
     pub config: Arc<Config>,
     limits: Arc<security::RateLimits>,
+    pub notifications: Arc<ws::Notifications>,
 }
-pub fn router(auth: AuthService, config: Config) -> Router {
-    let state = HttpState {
-        auth,
-        config: Arc::new(config),
-        limits: Arc::new(security::RateLimits::default()),
-    };
+impl HttpState {
+    pub fn new(auth: AuthService, config: Config) -> Self {
+        Self {
+            auth,
+            config: Arc::new(config),
+            limits: Arc::new(security::RateLimits::default()),
+            notifications: Arc::new(ws::Notifications::default()),
+        }
+    }
+}
+pub fn router(state: HttpState) -> Router {
     Router::new()
         .route(
             "/health",
@@ -32,6 +39,7 @@ pub fn router(auth: AuthService, config: Config) -> Router {
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/auth/change-password", post(auth::change_password))
+        .route("/ws/updates", get(ws::updates))
         .fallback(|| async {
             (
                 axum::http::StatusCode::NOT_FOUND,
