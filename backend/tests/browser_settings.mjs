@@ -146,11 +146,12 @@ try {
   await page.getByRole('button', { name: 'Delete key', exact: true }).click(); await page.getByRole('dialog', { name: 'Delete SSH key', exact: true }).getByRole('button', { name: 'Delete', exact: true }).click(); await expect(page.getByText('settings_key', { exact: true })).toBeHidden()
   check((await api('/storage/ssh-keys')).length === 0 && (await api('/test-settings190/effects')).ssh_files.length === 0, 'AC5 native key deletion removes both actual files')
   // No screenshot or axe snapshot is taken while a private key/password is visible.
+  await page.route(base + '/__axe_settings.js', async route => route.fulfill({ status: 200, contentType: 'application/javascript', body: await readFile('/runner/axe.min.js', 'utf8') }))
   for (const width of [320, 390, 768, 1024, 1440]) {
     await page.setViewportSize({ width, height: 900 })
     for (const [name, id] of [['System', 'system'], ['Connections', 'connection'], ['Encryption & SSH keys', 'encryption'], ['Storage safeguards', 'storage-safeguards'], ['System recovery', 'system-recovery']]) {
       const link = page.getByRole('link', { name, exact: true }); await link.focus(); await page.keyboard.press('Enter'); await expect(page.locator('#' + id)).toBeFocused()
-      await page.addScriptTag({ path: '/runner/axe.min.js' })
+      await page.addScriptTag({ url: base + '/__axe_settings.js' })
       const violations = await page.evaluate(async () => (await axe.run(document.querySelector('main'))).violations)
       await writeFile(`/runner/axe-settings-${width}-${id}.json`, JSON.stringify(violations.map(v => ({ id: v.id, impact: v.impact, targets: v.nodes.map(n => n.target) }))))
       check(violations.length === 0, `AC7 axe keyboard context ${id} at ${width}`)
