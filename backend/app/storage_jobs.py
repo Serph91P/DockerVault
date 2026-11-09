@@ -16,6 +16,7 @@ from app.config import settings
 from app.database import RemoteStorage, StorageOperation, StorageOperationItem, _utcnow
 from app.remote_storage import LocalStorage, RemoteStorageManager, _await_io_settled
 from app.storage_operations import open_local_directory, validate_relative_path
+from app.recovery_activation import recovery_pending
 
 logger = logging.getLogger(__name__)
 ACTIVE = ("queued", "running")
@@ -110,6 +111,8 @@ class StorageJobs:
         data["paths"] = paths
         data["parent_id"] = parent_id
         async with self.lock, self.sessions() as db:
+            if await recovery_pending(db):
+                raise HTTPException(409, "System recovery setup is in progress")
             existing = (
                 await db.execute(
                     select(StorageOperation).where(
@@ -269,6 +272,8 @@ class StorageJobs:
     async def recover(self):
         """Startup only: uncertain effects stay unknown; no automatic replay."""
         async with self.lock, self.sessions() as db:
+            if await recovery_pending(db):
+                return
             rows = (
                 (
                     await db.execute(
@@ -346,11 +351,15 @@ class StorageJobs:
             while not self.stopping:
                 self.wake.clear()
                 async with self.sessions() as db:
-                    id = await db.scalar(
-                        select(StorageOperation.id)
-                        .where(StorageOperation.state == "queued")
-                        .order_by(StorageOperation.created_at)
-                        .limit(1)
+                    id = (
+                        None
+                        if await recovery_pending(db)
+                        else await db.scalar(
+                            select(StorageOperation.id)
+                            .where(StorageOperation.state == "queued")
+                            .order_by(StorageOperation.created_at)
+                            .limit(1)
+                        )
                     )
                 if id is None:
                     await self.wake.wait()

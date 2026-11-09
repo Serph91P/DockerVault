@@ -381,6 +381,34 @@ async def test_export_uses_explicit_source_then_active_generation(
     assert await m.export_rclone(db_session, [root()]) == source
 
 
+@pytest.mark.asyncio
+async def test_product_runner_prefers_generation_over_foreign_default_and_environment(
+    db_session, test_db, tmp_path, monkeypatch
+):
+    from app import database
+    from app.remote_storage import RcloneStorage, StorageConfig, StorageType
+
+    m = module()
+    payload = m.package_rclone(
+        {"vault": {"type": "memory"}}, [root()], m.provider_options()
+    )
+    state = await m.create_managed_config(payload, tmp_path / "generation")
+    db_session.add(database.AppSettings(key="recovery_rclone", value=json.dumps(state)))
+    await db_session.commit()
+    monkeypatch.setattr(database, "async_session", test_db)
+    external = tmp_path / "foreign.conf"
+    external.write_text("[vault]\ntype=alias\nremote=" + str(tmp_path) + "\n")
+    (tmp_path / "foreign-sentinel.txt").write_text("foreign synthetic data")
+    monkeypatch.setenv("RCLONE_CONFIG", str(external))
+    backend = RcloneStorage(
+        StorageConfig(
+            id=1, name="fixture", storage_type=StorageType.RCLONE, rclone_remote="vault"
+        )
+    )
+    code, output, error = await backend._run_rclone(["lsjson", "vault:"])
+    assert code == 0 and json.loads(output) == [] and error == ""
+
+
 def test_import_rejects_unreferenced_config_and_private_ssh():
     m = module()
     result = m.package_rclone({"vault": {"type": "s3"}}, [root()], OPTIONS)

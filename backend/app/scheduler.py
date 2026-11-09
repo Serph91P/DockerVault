@@ -20,6 +20,7 @@ from app.cron import cron_trigger, next_run
 from app.database import BackupSchedule, BackupTarget, async_session, backup_db_session
 from app.retention import retention_manager
 from app.auth import cleanup_expired_sessions
+from app.recovery_activation import recovery_pending
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,8 @@ class BackupScheduler:
                     select(BackupTarget).options(selectinload(BackupTarget.schedule))
                 )
                 targets = result.scalars().all()
+                if await recovery_pending(session):
+                    targets = []
             desired = {}
             failures = []
             for target in targets:

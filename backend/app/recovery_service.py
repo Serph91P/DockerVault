@@ -346,6 +346,26 @@ async def insert_state(session, payload: dict, *, protect_credentials=True):
             await session.execute(table.insert().values(**row))
 
 
+def _credentials_required(row, payload):
+    from app.storage_validation import storage_errors
+
+    if storage_errors(row):
+        return True
+    if row["storage_type"] in {"ssh", "sftp"} and row["ssh_key_path"]:
+        return True
+    if row["storage_type"] == "rclone":
+        root = next(
+            (
+                root
+                for root in payload["rclone"]["roots"]
+                if root["storage_id"] == row["id"]
+            ),
+            None,
+        )
+        return root is None or root["state"] != "portable"
+    return False
+
+
 async def validate_state(payload: dict) -> dict:
     """Offline compatibility/manifest/relational/path validation and redacted preview."""
     stage = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -363,7 +383,7 @@ async def validate_state(payload: dict) -> dict:
                     "id": row["id"],
                     "type": row["storage_type"],
                     "state": "credentials_required"
-                    if row["storage_type"] in {"ssh", "sftp"} and row["ssh_key_path"]
+                    if _credentials_required(row, payload)
                     else "not_tested",
                 }
                 for row in payload["tables"]["remote_storages"]
@@ -375,3 +395,153 @@ async def validate_state(payload: dict) -> dict:
         _invalid()
     finally:
         await stage.dispose()
+
+
+async def inspect_import(session, payload, managed, directory):
+    """One non-destructive post-insert observation, not a second health engine."""
+    import asyncio
+    import httpx
+
+    from app.api.backups import _resolve_backup_path
+    from app.api.storage import _db_to_config
+    from app.komodo_config import validate_komodo_url
+    from app.remote_storage import RemoteStorageManager, SSHStorage, StorageType
+    from app.rclone_recovery import run_managed
+
+    manager = RemoteStorageManager()
+    connections, catalog = [], []
+    backends, states = {}, {}
+    try:
+        for row in (
+            await session.scalars(
+                select(database.RemoteStorage).order_by(database.RemoteStorage.id)
+            )
+        ).all():
+            config = _db_to_config(row)
+            if _credentials_required(
+                {
+                    column.name: getattr(row, column.name)
+                    for column in row.__table__.columns
+                },
+                payload,
+            ):
+                state = "credentials_required"
+            else:
+                if config.storage_type == StorageType.RCLONE:
+                    config.extra_options["recovery_state"] = managed
+                backend = manager.add_storage(config)
+                backends[row.id] = backend
+                if isinstance(backend, SSHStorage):
+                    backend.KNOWN_HOSTS_FILE = str(directory / "ssh_known_hosts")
+                try:
+                    async with asyncio.timeout(10):
+                        if config.storage_type == StorageType.LOCAL:
+                            # The ordinary local connection test writes a probe; recovery only reads.
+                            await asyncio.to_thread(
+                                lambda: next(Path(config.base_path).iterdir(), None)
+                            )
+                            connected = True
+                        elif config.storage_type == StorageType.RCLONE:
+                            code, _, _ = await run_managed(
+                                managed,
+                                config.rclone_remote,
+                                [
+                                    "lsd",
+                                    f"{config.rclone_remote}:",
+                                    "--retries",
+                                    "1",
+                                    "--low-level-retries",
+                                    "1",
+                                ],
+                                timeout=10,
+                            )
+                            connected = code == 0
+                        else:
+                            connected = (await backend.test_connection())[
+                                "success"
+                            ] is True
+                    state = "connected" if connected else "offline"
+                except (OSError, ValueError, TimeoutError):
+                    state = "offline"
+            states[row.id] = state
+            connections.append({"id": row.id, "type": row.storage_type, "state": state})
+        for backup in (
+            await session.scalars(select(database.Backup).order_by(database.Backup.id))
+        ).all():
+            local = _resolve_backup_path(backup.file_path)
+            local_state = "available" if local else "unavailable"
+            if (
+                local
+                and backup.encrypted
+                and (
+                    not backup.encryption_key_path
+                    or not Path(backup.encryption_key_path).is_file()
+                )
+            ):
+                local_state = "credentials_required"
+            copies = []
+            for sync in (
+                await session.scalars(
+                    select(database.BackupStorageSync).where(
+                        database.BackupStorageSync.backup_id == backup.id
+                    )
+                )
+            ).all():
+                state = states[sync.storage_id]
+                if state == "connected":
+                    backend = backends[sync.storage_id]
+                    try:
+                        async with asyncio.timeout(10):
+                            parent = str(PurePosixPath(sync.remote_path).parent)
+                            entries = await backend.list_files(
+                                "" if parent == "." else parent
+                            )
+                            found = any(
+                                item.get("name") == PurePosixPath(sync.remote_path).name
+                                and not item.get("is_dir")
+                                for item in entries
+                            )
+                        state = "available" if found else "unavailable"
+                    except FileNotFoundError:
+                        state = "unavailable"
+                    except (OSError, ValueError, TimeoutError):
+                        state = "offline"
+                copies.append({"storage_id": sync.storage_id, "state": state})
+            catalog.append({"id": backup.id, "local": local_state, "copies": copies})
+        values = {
+            row.key: row.value
+            for row in (await session.scalars(select(database.AppSettings))).all()
+        }
+        komodo = effective_config(values)
+        komodo_state = "disabled"
+        if komodo.enabled:
+            komodo_state = "credentials_required"
+            if komodo.api_url and komodo.api_key and komodo.api_secret:
+                try:
+                    await asyncio.to_thread(validate_komodo_url, komodo.api_url)
+                    async with httpx.AsyncClient(
+                        timeout=5, follow_redirects=False, trust_env=False
+                    ) as client:
+                        response = await client.post(
+                            komodo.api_url + "/read",
+                            json={"type": "GetVersion"},
+                            headers={
+                                "X-Api-Key": komodo.api_key,
+                                "X-Api-Secret": komodo.api_secret,
+                            },
+                        )
+                        connected = response.status_code == 200 and isinstance(
+                            response.json().get("version"), str
+                        )
+                    komodo_state = "connected" if connected else "offline"
+                except (OSError, ValueError, httpx.HTTPError):
+                    komodo_state = "offline"
+        return {
+            "storages": connections,
+            "komodo": {"state": komodo_state},
+            "catalog": catalog,
+            "counts": {name: len(rows) for name, rows in payload["tables"].items()},
+            "archives_modified": False,
+        }
+    finally:
+        await manager.close()

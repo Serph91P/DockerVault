@@ -66,6 +66,8 @@ PUBLIC_PATHS = {
     "/api/v1/auth/status",
     "/api/v1/auth/setup",
     "/api/v1/auth/login",
+    "/api/v1/recovery/preview",
+    "/api/v1/recovery/restore",
 }
 
 # Path prefixes that don't require authentication
@@ -236,6 +238,20 @@ async def auth_middleware(request: Request, call_next):
 
     # Continue with request
     return await call_next(request)
+
+
+@app.middleware("http")
+async def recovery_response_privacy(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path in {
+        "/api/v1/recovery/export",
+        "/api/v1/recovery/preview",
+        "/api/v1/recovery/restore",
+        "/api/v1/recovery/status",
+    }:
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 
 # CORS Configuration

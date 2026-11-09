@@ -318,6 +318,11 @@ class BackupEngine:
         return claim, identities, sources
 
     async def recover_operations(self) -> None:
+        from app.recovery_activation import recovery_pending
+
+        async with backup_db_session(async_session) as session:
+            if await recovery_pending(session):
+                return
         await OperationJournal(async_session, docker_client).reconcile(
             self._restart_containers_cancellation_safe
         )
@@ -602,9 +607,12 @@ class BackupEngine:
         backup_type: BackupType = BackupType.FULL,
     ) -> Backup:
         """Create a new backup for the target."""
+        from app.recovery_activation import require_recovery_ready
+
         async with backup_db_session(async_session) as session:
             # Serialize plan removal without blocking creation behind running jobs.
             await session.execute(text("BEGIN IMMEDIATE"))
+            await require_recovery_ready(session)
             current = await session.get(BackupTarget, target.id)
             if current is None or current.removed_at is not None:
                 raise ValueError("Plan removed; cannot create a backup")
@@ -665,11 +673,15 @@ class BackupEngine:
         self, backup_id: int, skip_validation: bool = False
     ) -> bool:
         """Backup logic, called with the target lock and global permit held."""
+        from app.recovery_activation import recovery_pending
+
         start_time = time.time()
         file_size = 0
         target_id = None
 
         async with backup_db_session(async_session) as session:
+            if await recovery_pending(session):
+                return False
             result = await session.execute(select(Backup).where(Backup.id == backup_id))
             backup = result.scalar_one_or_none()
 
