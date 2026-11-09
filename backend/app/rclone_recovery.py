@@ -29,10 +29,10 @@ from pathlib import Path
 from typing import NoReturn
 
 from app.credential_encryption import decrypt_value, encrypt_value
+from app.rclone_paths import NAME as _NAME, parse as _parse_reference, environment_name
 
 MAX_MATERIAL_BYTES = 1024 * 1024
 MAX_REMOTES = 256
-_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_. -]{0,127}\Z")
 _WRAPPERS = {"alias", "crypt", "chunker", "compress", "hasher", "archive", "cache"}
 _FILE_OPTIONS = {
     "drive": {"service_account_file"},
@@ -130,35 +130,63 @@ def _space_list(value):
         _invalid()
 
 
-def _dependencies(remote):
-    kind = remote["type"]
-    paths = []
+def _normalize_reference(value, config):
+    name, overrides, path = _parse_reference(value)
+    if ".." in path.split("/") or "\x00" in path or "\\" in path:
+        _invalid()
+    if name is None:
+        return str(Path(path).absolute()), None
+    if name.startswith(":") or overrides:
+        if name.startswith(":"):
+            node = {"type": name[1:]}
+        else:
+            node = config.get(name)
+            if type(node) is not dict:
+                _invalid()
+            node = dict(node)
+        if "type" in overrides:
+            _invalid()
+        node.update(overrides)
+        name = (
+            "__dv_inline_"
+            + hashlib.sha256(
+                json.dumps(node, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+        )
+        if name in config and config[name] != node:
+            _invalid()
+        config[name] = node
+    return name + ":" + path, name
+
+
+def _dependencies(remote, config):
+    kind, dependencies = remote["type"], []
     if kind in _WRAPPERS:
-        paths = [remote.get("remote", "")]
+        reference, name = _normalize_reference(remote.get("remote", ""), config)
+        remote["remote"] = reference
+        if name is not None:
+            dependencies.append(name)
     elif kind in {"union", "combine"}:
+        normalized = []
         for upstream in _space_list(remote.get("upstreams", "")):
+            mount, suffix = "", ""
             if kind == "combine":
                 mount, separator, upstream = upstream.partition("=")
                 if not separator or not mount or "/" in mount or mount in {".", ".."}:
                     _invalid()
+                mount += "="
             else:
-                if upstream.endswith(":writeback"):
-                    _invalid()
-                for suffix in (":ro", ":nc"):
-                    if upstream.endswith(suffix):
-                        upstream = upstream[: -len(suffix)]
-            paths.append(upstream)
-    dependencies = []
-    for path in paths:
-        name, separator, relative = path.partition(":")
-        if (
-            not separator
-            or not _NAME.fullmatch(name)
-            or ".." in relative.split("/")
-            or "\x00" in relative
-        ):
-            _invalid()
-        dependencies.append(name)
+                for flag in (":writeback", ":ro", ":nc"):
+                    if upstream.endswith(flag):
+                        upstream, suffix = upstream[: -len(flag)], flag
+                        break
+            reference, name = _normalize_reference(upstream, config)
+            normalized.append(mount + reference + suffix)
+            if name is not None:
+                dependencies.append(name)
+        output = io.StringIO()
+        csv.writer(output, delimiter=" ", lineterminator="\n").writerow(normalized)
+        remote["upstreams"] = output.getvalue().rstrip("\n")
     return dependencies
 
 
@@ -281,18 +309,44 @@ def _material(value, files, source_files, *, provider=None, field=None, profile=
     return {"file_ref": key}
 
 
+def _external_command(kind, field):
+    return field == "ssh" or (
+        field.endswith("_command")
+        and not (kind == "sftp" and field in {"md5sum_command", "sha1sum_command"})
+    )
+
+
 def package_rclone(
-    config, storages, options=None, *, source_files=None, source_requirements=None
+    config,
+    storages,
+    options=None,
+    *,
+    source_files=None,
+    source_requirements=None,
+    source_commands=None,
 ):
     """Resolve only referenced roots; unavailable source requirements remain explicit."""
     options = provider_options() if options is None else options
     if type(config) is not dict or len(config) > MAX_REMOTES:
         _invalid()
+    config = dict(config)
     result = {"schema_version": 1, "roots": [], "remotes": {}, "files": {}}
     for storage in storages:
         name = storage["rclone_remote"]
         root = {"storage_id": storage["id"], "remote_name": name, "state": "portable"}
         collected, files, active = {}, {}, set()
+        external_identity = False
+        commands = list((source_commands or {}).get(storage["id"], []))
+        for command in commands:
+            if type(command) is not dict or set(command) != {"remote", "field"}:
+                _invalid()
+            kind = config.get(command["remote"], {}).get("type")
+            if (
+                kind not in options
+                or command["field"] not in options[kind]
+                or not _external_command(kind, command["field"])
+            ):
+                _invalid()
         requirements = list((source_requirements or {}).get(storage["id"], []))
         for requirement in requirements:
             if type(requirement) is not dict or set(requirement) != {
@@ -316,6 +370,7 @@ def package_rclone(
                 _invalid()
 
         def visit(name, depth=0):
+            nonlocal external_identity
             if (
                 type(name) is not str
                 or not _NAME.fullmatch(name)
@@ -328,9 +383,25 @@ def package_rclone(
             remote = config.get(name)
             if type(remote) is not dict or len(remote) > 256:
                 _invalid()
+            remote = dict(remote)
             kind = remote.get("type")
-            if kind not in options:
+            if type(kind) is not str or kind not in options:
                 _invalid()
+            if kind == "oracleobjectstorage":
+                provider = remote.get("provider", "env_auth")
+                if provider == "user_principal_auth" and not remote.get("config_file"):
+                    default = Path("~/.oci/config").expanduser()
+                    if source_files is None and default.is_file():
+                        remote["config_file"] = str(default)
+                    else:
+                        external_identity = True
+                elif provider in {
+                    "env_auth",
+                    "instance_principal_auth",
+                    "workload_identity_auth",
+                    "resource_principal_auth",
+                }:
+                    external_identity = True
             if kind == "sftp" and any(
                 remote.get(field) not in (None, "", "false", "0")
                 for field in _SSH_PRIVATE
@@ -357,9 +428,9 @@ def package_rclone(
                     "google cloud storage",
                 } and remote.get("service_account_credentials")
                 if not explicit_file and not explicit_inline:
-                    _invalid()
+                    external_identity = True
             # Commands, ambient agent auth and writable caches aren't portable credentials.
-            for field, value in remote.items():
+            for field, value in list(remote.items()):
                 if field != "type" and field not in options[kind]:
                     _invalid()
                 if type(value) is not str and field not in _FILE_OPTIONS.get(
@@ -368,19 +439,13 @@ def package_rclone(
                     _invalid()
                 if type(value) is str and len(value) > MAX_MATERIAL_BYTES:
                     _invalid()
-                if value and (
-                    (
-                        field.endswith("_command")
-                        and not (
-                            kind == "sftp"
-                            and field in {"md5sum_command", "sha1sum_command"}
-                        )
-                    )
-                    or field in {"ssh", "db_path", "chunk_path", "tmp_upload_path"}
-                ):
+                if value and _external_command(kind, field):
+                    commands.append({"remote": name, "field": field})
+                    del remote[field]
+                if value and field in {"db_path", "chunk_path", "tmp_upload_path"}:
                     _invalid()
             active.add(name)
-            for dependency in _dependencies(remote):
+            for dependency in _dependencies(remote, config):
                 visit(dependency, depth + 1)
             copy = dict(remote)
             for field in _FILE_OPTIONS.get(kind, set()):
@@ -418,6 +483,15 @@ def package_rclone(
                 root["ssh_requirements"] = sorted(
                     requirements, key=lambda item: item["remote"]
                 )
+            if external_identity or commands:
+                root["state"] = "credentials_required"
+                root["reason"] = "external_credentials_required"
+                if external_identity:
+                    root["external_identity_required"] = True
+                if commands:
+                    root["external_commands"] = sorted(
+                        commands, key=lambda item: (item["remote"], item["field"])
+                    )
             result["remotes"].update(collected)
             result["files"].update(files)
         result["roots"].append(root)
@@ -446,6 +520,10 @@ def validate_rclone(payload, storages, options=None):
             source_files=payload["files"],
             source_requirements={
                 root["storage_id"]: root.get("ssh_requirements", [])
+                for root in payload["roots"]
+            },
+            source_commands={
+                root["storage_id"]: root.get("external_commands", [])
                 for root in payload["roots"]
             },
         )
@@ -694,6 +772,10 @@ def _managed_snapshot(state, storages):
                 root["storage_id"]: root.get("ssh_requirements", [])
                 for root in state["roots"]
             },
+            source_commands={
+                root["storage_id"]: root.get("external_commands", [])
+                for root in state["roots"]
+            },
         )
         validate_rclone(payload, storages)
         return payload
@@ -805,8 +887,8 @@ def _run_managed(state, remote, args, timeout):
                 or not any(path.is_relative_to(directory) for directory in allowed)
             ):
                 return 1, "", "Storage credentials required"
-            ssh_overrides[f"RCLONE_CONFIG_{requirement['remote'].upper()}_KEY_FILE"] = (
-                str(path)
+            ssh_overrides[environment_name(requirement["remote"], "key_file")] = str(
+                path
             )
     if root is None or (root["state"] != "portable" and not ssh_overrides):
         return 1, "", "Storage credentials required"
@@ -814,7 +896,9 @@ def _run_managed(state, remote, args, timeout):
     try:
         with (
             _config_lock(state) as (config, unlock),
-            tempfile.TemporaryDirectory(prefix="dvrc-cache-") as cache,
+            tempfile.TemporaryDirectory(
+                prefix="dvrc-cache-", dir=state["directory"]
+            ) as cache,
         ):
             common, environment = _common(config, unlock)
             environment.update(ssh_overrides)
@@ -832,14 +916,14 @@ def _run_managed(state, remote, args, timeout):
                 decrypt_value(state.get("overrides")) or "{}"
             ).items():
                 for field, value in fields.items():
-                    environment[f"RCLONE_CONFIG_{name.upper()}_{field.upper()}"] = value
+                    environment[environment_name(name, field)] = value
             allocated = {}
             for name, fields in state["file_refs"].items():
                 for field, reference in fields.items():
                     descriptor = _materialize_credential(
                         reference, files, descriptors, allocated
                     )
-                    environment[f"RCLONE_CONFIG_{name.upper()}_{field.upper()}"] = (
+                    environment[environment_name(name, field)] = (
                         f"/proc/self/fd/{descriptor}"
                     )
             result = subprocess.run(

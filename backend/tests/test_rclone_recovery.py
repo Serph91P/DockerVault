@@ -177,8 +177,15 @@ def test_private_ssh_or_execution_dependency_blocks_root_without_opening_key(
     assert result["roots"][0]["state"] == "credentials_required"
     assert result["files"] == {}
     if field == "server_command":
-        assert result["remotes"] == {}
+        assert result["remotes"]["vault"] == config["vault"]
+        assert result["remotes"]["ssh"] == {
+            key: value for key, value in config["ssh"].items() if key != field
+        }
+        assert result["roots"][0]["external_commands"] == [
+            {"remote": "ssh", "field": field}
+        ]
         assert value not in json.dumps(result)
+        m.validate_rclone(result, [root()], OPTIONS)
     else:
         # The private-SSH exclusion must NOT discard other recoverable credentials.
         assert result["remotes"]["vault"] == config["vault"]
@@ -212,10 +219,31 @@ def test_private_ssh_or_execution_dependency_blocks_root_without_opening_key(
         {"vault": {"type": "s3", "env_auth": "true"}},
     ],
 )
-def test_unsafe_or_unresolved_source_is_not_advertised_as_portable(config):
-    result = module().package_rclone(config, [root()], OPTIONS)
-    assert result["roots"][0]["state"] == "credentials_required"
-    assert result["remotes"] == {}
+def test_source_dependency_classification_preserves_supported_flags_and_fails_closed(
+    config,
+):
+    m = module()
+    result = m.package_rclone(config, [root()], OPTIONS)
+    if config["vault"]["type"] == "union":
+        assert result["roots"][0]["state"] == "portable"
+        assert (
+            result["remotes"] == config
+        )  # Native :writeback/:ro/:nc are configuration, not credential loss.
+    else:
+        assert result["roots"][0]["state"] == "credentials_required"
+        if config["vault"].get("env_auth"):
+            assert result["remotes"] == config
+            assert result["roots"][0]["external_identity_required"] is True
+        elif config["vault"].get("remote", "").startswith(":s3,"):
+            assert result["roots"][0]["external_identity_required"] is True
+            assert len(result["remotes"]) == 2
+            assert any(
+                remote.get("env_auth") == "true"
+                for remote in result["remotes"].values()
+            )
+        else:
+            assert result["remotes"] == {}
+    m.validate_rclone(result, [root()], OPTIONS)
 
 
 def test_excluding_ssh_private_material_preserves_other_credentials_in_dependency_chain():
@@ -260,7 +288,10 @@ def test_credential_files_export_only_selected_profile_and_nested_nonssh_key(tmp
         + str(signing_key)
         + "\n[unrelated]\npass_phrase=never-export-unrelated-oci-profile\n"
     )
-    options = {**OPTIONS, "oracleobjectstorage": {"config_file", "config_profile"}}
+    options = {
+        **OPTIONS,
+        "oracleobjectstorage": {"config_file", "config_profile", "provider"},
+    }
     options["s3"] = OPTIONS["s3"] | {"profile"}
     config = {
         "vault": {
@@ -271,6 +302,7 @@ def test_credential_files_export_only_selected_profile_and_nested_nonssh_key(tmp
         },
         "oci": {
             "type": "oracleobjectstorage",
+            "provider": "user_principal_auth",
             "config_file": str(oci),
             "config_profile": "DEFAULT",
         },
@@ -367,8 +399,9 @@ async def test_native_encrypted_config_materialization_reexport_and_secret_scan(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("remote_name", ["vault", "Speicher groß+@.1"])
 async def test_native_provider_file_is_used_without_plaintext_disk(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, remote_name
 ):
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -407,7 +440,7 @@ async def test_native_provider_file_is_used_without_plaintext_disk(
         )
         m = module()
         config = {
-            "vault": {
+            remote_name: {
                 "type": "s3",
                 "provider": "Other",
                 "shared_credentials_file": str(material),
@@ -417,18 +450,26 @@ async def test_native_provider_file_is_used_without_plaintext_disk(
                 "env_auth": "true",
             }
         }
-        payload = m.package_rclone(config, [root()], m.provider_options())
+        payload = m.package_rclone(config, [root(remote_name)], m.provider_options())
+        assert payload["roots"][0]["state"] == "portable"
         state = await m.create_managed_config(payload, tmp_path / "generation")
         material.unlink()
         code, output, error = await m.run_managed(
             state,
-            "vault",
-            ["lsjson", "vault:fixture", "--retries", "1", "--low-level-retries", "1"],
+            remote_name,
+            [
+                "lsjson",
+                f"{remote_name}:fixture",
+                "--retries",
+                "1",
+                "--low-level-retries",
+                "1",
+            ],
             timeout=10,
         )
         assert code == 0 and json.loads(output) == [] and error == ""
         assert observed and all(observed)
-        assert await m.export_managed_config(state, [root()]) == payload
+        assert await m.export_managed_config(state, [root(remote_name)]) == payload
         for path in tmp_path.rglob("*"):
             if path.is_file():
                 assert b"synthetic-file-access" not in path.read_bytes()

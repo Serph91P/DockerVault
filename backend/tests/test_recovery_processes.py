@@ -161,6 +161,15 @@ def _request_worker(pipe, database_path, backup_path, key, request, stage):
             return result
 
         rclone_recovery.create_managed_config = prepare
+        native_run = rclone_recovery.subprocess.run
+
+        def probe(command, *args, **kwargs):
+            if stage == "probe_running" and "lsd" in command:
+                pipe.send({"stage": stage, "cache_path": kwargs["env"]["TMPDIR"]})
+                pipe.recv()
+            return native_run(command, *args, **kwargs)
+
+        rclone_recovery.subprocess.run = probe
 
         @event.listens_for(AsyncSession.sync_session_class, "before_commit")
         def before_commit(session):
@@ -196,7 +205,9 @@ def _request_worker(pipe, database_path, backup_path, key, request, stage):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stage", ["prepared", "before_commit", "after_commit"])
+@pytest.mark.parametrize(
+    "stage", ["prepared", "probe_running", "before_commit", "after_commit"]
+)
 async def test_real_restore_crash_and_competing_setup_have_one_durable_activation(
     stage, file_database, db_session, tmp_path, monkeypatch
 ):
@@ -278,7 +289,8 @@ async def test_real_restore_crash_and_competing_setup_have_one_durable_activatio
         assert await asyncio.to_thread(parent.poll, 30), (
             "restore never reached requested real persistence boundary"
         )
-        assert parent.recv() == {"stage": stage}
+        boundary = parent.recv()
+        assert boundary["stage"] == stage
         async with file_database() as session:
             assert await recovery_pending(session) is (stage != "after_commit")
             assert await session.scalar(select(func.count(database.User.id))) == (
@@ -373,6 +385,10 @@ async def test_real_restore_crash_and_competing_setup_have_one_durable_activatio
                 }
                 assert current == original
                 assert not directory.exists()
+                if stage == "probe_running":
+                    assert not Path(boundary["cache_path"]).exists(), (
+                        "uncommitted probe cache survived recovery restart"
+                    )
     finally:
         if worker.is_alive():
             worker.kill()
