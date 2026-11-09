@@ -26,6 +26,7 @@ ROOT = Path("/app/data") / ("system143-" + MODE)
 SHARED = Path("/app/data/system143-retained")
 SOURCE = Path("/app/data/system143-source")
 ROOT.mkdir(parents=True, exist_ok=True)
+Path("/backups/system143-" + MODE).mkdir(parents=True, exist_ok=True)
 SHARED.mkdir(parents=True, exist_ok=True)
 seed = os.environ["DV143_SEED"]
 
@@ -327,7 +328,7 @@ async def finalize():
                     backup_id=backup.id,
                     storage_id=index,
                     remote_path=Path(backup.file_path).name,
-                    status="completed",
+                    sync_status="completed",
                 )
                 for index in [1, 7]
             ]
@@ -394,6 +395,14 @@ async def switch():
 
     threading.Timer(0.3, execute).start()
     return {"accepted": True, "not_completed": True}
+
+
+BOOT_ID = os.urandom(16).hex()
+
+
+@app.get("/api/v1/test-system143/boot")
+async def boot():
+    return {"boot_id": BOOT_ID}
 
 
 @app.post("/api/v1/test-system143/restart")

@@ -191,13 +191,23 @@ def main():
             [
                 "python",
                 "-c",
-                "from pathlib import Path; expected=b'DockerVault143 retained archive bytes\\x00\\xff\\n'; files=list(Path('/backups/system143-restored').rglob('payload.txt')); assert len(files)==1 and files[0].read_bytes()==expected; print('PASS retained remote-only encrypted archive restored with exact original bytes')",
+                "from pathlib import Path; expected=b'DockerVault143 retained archive bytes\\x00\\xff\\n'; files=list(Path('/backups/system143-destination/restored').rglob('payload.txt')); assert len(files)==1 and files[0].read_bytes()==expected; print('PASS retained remote-only encrypted archive restored with exact original bytes')",
             ]
         )
         (out / "archive-byte-proof.log").write_bytes(proof.output)
         assert proof.exit_code == 0
         (out / "canonical-result.json").write_text(json.dumps(after, indent=2))
         gather()
+        # Provider secrets must remain encrypted even in the synthetic source installation.
+        probe = backend.exec_run(
+            [
+                "python",
+                "-c",
+                "import os,hashlib;from pathlib import Path;seed=os.environ['DV143_SEED'];labels=['komodo:key','komodo:secret','crypt:password','crypt:salt']+[kind+':'+field for kind in ['local','ssh','sftp','webdav','s3','ftp','rclone'] for field in ['password','s3_access_key','s3_secret_key']];canaries=[hashlib.sha256((seed+':'+label).encode()).hexdigest().encode() for label in labels];files=[p for root in ['/app/data','/backups','/tmp','/var/log'] for p in Path(root).rglob('*') if p.is_file() and not p.is_symlink()];assert all(not any(value in p.read_bytes() for value in canaries) for p in files),'Provider plaintext found';print('PASS provider canaries absent from actual SQLite/files/cache/temp/logs')",
+            ]
+        )
+        (out / "provider-disk-canaries.log").write_bytes(probe.output)
+        assert probe.exit_code == 0, "Provider plaintext on disk"
     finally:
         if runner:
             try:
@@ -231,6 +241,40 @@ def main():
                 raise AssertionError("Owned resource remains: " + identifier)
         (out / "cleanup.json").write_text(
             json.dumps({"all_absent": True, "owned": owned}, indent=2)
+        )
+        labels = [
+            "account",
+            "bundle",
+            "replacement",
+            "komodo:key",
+            "komodo:secret",
+            "pre-hook",
+            "post-hook",
+            "crypt:password",
+            "crypt:salt",
+        ] + [
+            kind + ":" + field
+            for kind in ["local", "ssh", "sftp", "webdav", "s3", "ftp", "rclone"]
+            for field in ["password", "s3_access_key", "s3_secret_key"]
+        ]
+        canaries = [seed.encode()] + [
+            hashlib.sha256((seed + ":" + label).encode()).hexdigest().encode()
+            for label in labels
+        ]
+        evidence = [path for path in out.rglob("*") if path.is_file()]
+        assert all(
+            not any(value in path.read_bytes() for value in canaries)
+            for path in evidence
+        ), "Secret canary found in evidence"
+        (out / "artifact-canaries.json").write_text(
+            json.dumps(
+                {
+                    "files_scanned": len(evidence),
+                    "all_absent": True,
+                    "screenshots": "captured only with private fields empty; image-byte scan is not OCR",
+                },
+                indent=2,
+            )
         )
         client.close()
 

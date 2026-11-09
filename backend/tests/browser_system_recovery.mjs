@@ -22,7 +22,7 @@ async function scan() {
   while(queue.length){const fiber=queue.pop();if(!fiber||seen.has(fiber))continue;seen.add(fiber);queue.push(fiber.child,fiber.sibling);for(const value of [fiber.memoizedProps?.client,fiber.memoizedProps?.value])if(value&&typeof value.getQueryCache==='function')clients.add(value)}
   const values=[...clients].map(client=>({queries:client.getQueryCache().getAll().map(query=>query.state),mutations:client.getMutationCache().getAll().map(mutation=>mutation.state)}))
   const visited=new WeakSet()
-  return {clients:clients.size,bytes:JSON.stringify({url:location.href,local:{...localStorage},session:{...sessionStorage},history:history.state,values},(key,value)=>{if(value&&typeof value==='object'){if(visited.has(value))return '[cycle]';visited.add(value)}return value})}
+  return {clients:clients.size,bytes:JSON.stringify({rendered:document.body.innerText,url:location.href,local:{...localStorage},session:{...sessionStorage},history:history.state,values},(key,value)=>{if(value&&typeof value==='object'){if(visited.has(value))return '[cycle]';visited.add(value)}return value})}
  })
  check(snapshot.clients>0,'actual running React Query client located')
  check(secrets.every(value=>!snapshot.bytes.includes(value))&&(!ageKey||!snapshot.bytes.includes(ageKey)),'canaries absent from actual query/mutation cache, URL, history and browser persistence')
@@ -31,7 +31,10 @@ async function widths(label) {
  for(const width of [320,390,768,1024,1440]){
   await page.setViewportSize({width,height:900})
   check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`${label} ${width}px no overflow`)
-  if(!await page.evaluate(()=>Boolean(window.axe)))await page.addScriptTag({path:'/runner/axe.min.js'})
+  if(!await page.evaluate(()=>Boolean(window.axe))){
+   await page.route(base+'/__axe_system143.js',async route=>route.fulfill({status:200,contentType:'application/javascript',body:await readFile('/runner/axe.min.js','utf8')}))
+   await page.addScriptTag({url:base+'/__axe_system143.js'})
+  }
   const violations=await page.evaluate(async()=>{const result=await window.axe.run(document);return result.violations.map(item=>({id:item.id,impact:item.impact,nodes:item.nodes.map(node=>node.target)}))})
   await writeFile(`/runner/system143-${phase}-${label}-${width}-axe.json`,JSON.stringify(violations))
   check(violations.length===0,`${label} ${width}px automated axe`)
@@ -42,7 +45,9 @@ async function widths(label) {
  await page.evaluate(()=>{document.body.style.zoom=''})
 }
 async function chooseFile(password=marker('bundle')) {
- await page.getByRole('button',{name:'Restore system backup',exact:true}).click()
+ await page.getByRole('button',{name:'Restore system backup',exact:true}).focus()
+ await page.keyboard.press('Enter')
+ await expect(page.getByRole('heading',{name:'Restore system backup',exact:true})).toBeVisible()
  await page.getByLabel('System backup file',{exact:true}).setInputFiles(shared+'/bundle.dockervault')
  await expect(page.getByLabel('System-backup password',{exact:true})).toBeEnabled()
  await page.getByLabel('System-backup password',{exact:true}).fill(password)
@@ -50,6 +55,8 @@ async function chooseFile(password=marker('bundle')) {
 async function preview() {
  await page.getByRole('button',{name:'Validate and preview',exact:true}).click()
  await expect(page.getByRole('heading',{name:'Validated preview — not restored',exact:true})).toBeFocused()
+ await page.keyboard.press('Escape')
+ check(await page.getByRole('heading',{name:'Validated preview — not restored',exact:true}).isVisible()&&imports===0,'Escape on inline preview neither activates nor silently discards the validated view')
 }
 async function restore(username) {
  await page.getByLabel('New administrator username',{exact:true}).fill(username)
@@ -127,13 +134,14 @@ try {
   check(auth.authenticated&&auth.user.username==='replacement'&&auth.user.is_admin,'new administrator and real server session authoritative')
   check((await context.cookies()).some(cookie=>cookie.name==='session_token'&&cookie.httpOnly&&cookie.sameSite==='Lax'),'new HttpOnly session cookie')
   check(encryptionSetups===0&&(await api('/encryption/status')).setup_completed,'public age custody preserved without regenerating a key')
-  const targets=await api('/targets'), schedules=await api('/schedules'), policies=await api('/retention/policies'), storages=await api('/storage')
+  const targets=await api('/targets'), schedules=await api('/schedules'), policies=await api('/retention'), storages=await api('/storage')
   check(targets.some(target=>target.id===42)&&schedules.some(schedule=>schedule.id===41)&&policies.some(policy=>policy.id===40)&&storages.length===7,'actual target/schedule/policy/storage APIs after import')
   await page.reload()
   await expect(page.getByRole('heading',{name:'Previous system recovery',exact:true})).toBeVisible()
   await scan()
+  const oldBoot=(await api('/test-system143/boot')).boot_id
   await api('/test-system143/restart','POST')
-  await expect.poll(async()=>{try{return (await api('/auth/status')).authenticated}catch{return false}},{timeout:30000}).toBe(true)
+  await expect.poll(async()=>{try{return (await api('/test-system143/boot')).boot_id!==oldBoot&&(await api('/auth/status')).authenticated}catch{return false}},{timeout:30000}).toBe(true)
   await page.reload()
   await expect(page.getByRole('heading',{name:'Previous system recovery',exact:true})).toBeVisible()
   const original=JSON.parse(await readFile(shared+'/expected-public.json','utf8'))
@@ -141,9 +149,12 @@ try {
   await expect(page.getByRole('heading',{name:'Source and availability',exact:true})).toBeVisible()
   await page.getByRole('button',{name:'Next',exact:true}).click()
   await page.getByRole('radio',{name:'Custom path',exact:true}).check()
-  await page.getByLabel('Destination path',{exact:true}).fill('/backups/system143-restored')
+  await page.getByLabel('Destination path',{exact:true}).fill('/backups/system143-destination/restored')
   await page.getByLabel('Private recovery key',{exact:true}).fill(ageKey)
+  const reviewed=page.waitForResponse(response=>response.url().endsWith('/restore-review'))
   await page.getByRole('button',{name:'Review effects',exact:true}).click()
+  const reviewResponse=await reviewed
+  assert.equal(reviewResponse.status(),200,await reviewResponse.text())
   await expect(page.getByRole('heading',{name:'Review restore impact',exact:true})).toBeVisible()
   await page.getByLabel(/I reviewed the destination/).check()
   await page.getByRole('button',{name:'Confirm restore',exact:true}).click()
