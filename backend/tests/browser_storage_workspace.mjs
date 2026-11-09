@@ -4,6 +4,7 @@ import {randomBytes, randomUUID} from 'node:crypto'
 import {readFile, writeFile} from 'node:fs/promises'
 import {inflateRawSync} from 'node:zlib'
 import {chromium} from 'playwright'
+import {expect} from 'playwright/test'
 const base='http://127.0.0.1:5173', root=process.env.FIXTURE_ROOT ?? '/opt/data/tmp/dv189-native-local'
 const browser=await chromium.launch({args:['--no-sandbox','--disable-dev-shm-usage']})
 const context=await browser.newContext({acceptDownloads:true,reducedMotion:'reduce'})
@@ -49,6 +50,7 @@ try{
  const locations=await api('/storage');check(creates===1&&locations.length===1,'only final reviewed Create makes exactly one POST and row')
  const location=locations[0]
  await page.goto(base+`/storage?storage=${location.id}&tab=connection`)
+ await expect(page).toHaveURL(url=>url.searchParams.get('storage')===String(location.id)&&url.searchParams.get('tab')==='connection')
  await page.getByRole('button',{name:'Edit connection'}).click()
  dialog=page.getByRole('dialog',{name:'Edit Storage'})
  await dialog.getByLabel('Location name').fill('Edited synthetic location')
@@ -64,14 +66,17 @@ try{
  await page.getByRole('region',{name:'SSH key security'}).waitFor()
  check(await page.getByRole('region',{name:'SSH key security'}).evaluate(e=>e===document.activeElement),'Settings SSH key anchor receives focus')
  await page.getByRole('link',{name:'Return to storage connection'}).click()
+ await expect(page).toHaveURL(url=>url.pathname==='/storage'&&url.searchParams.get('storage')===String(location.id)&&url.searchParams.get('tab')==='connection')
  check(new URL(page.url()).searchParams.get('storage')===String(location.id),'SSH settings returns to same numeric location')
  await page.getByRole('link',{name:'Usage',exact:true}).click()
  await page.getByText(/Location quota \/ capacity unavailable/).waitFor()
+ await expect(page).toHaveURL(url=>url.searchParams.get('storage')===String(location.id)&&url.searchParams.get('tab')==='usage')
  check(await page.getByText(/Location quota \/ capacity unavailable/).isVisible(),'configured Local does not inherit System-Local quota')
  await page.goto(base+'/storage?storage=local')
  let panel=page.getByRole('region',{name:'Browse Local Backups'})
  await panel.getByText('nested',{exact:true}).click()
  await panel.getByText('payload.txt',{exact:true}).waitFor()
+ await expect(page).toHaveURL(url=>url.searchParams.get('storage')==='local'&&url.searchParams.get('path')==='nested')
  check(new URL(page.url()).searchParams.get('path')==='nested','folder navigation writes relative URL')
  const payload=Buffer.from('exact synthetic storage bytes\x00\xff','latin1')
  let download=page.waitForEvent('download')
@@ -83,7 +88,11 @@ try{
  file=await download
  check((await readFile(await file.path())).equals(payload),'repeated single-file download reissues the same explicit scope')
  await panel.getByLabel('Filter loaded directory').fill('payload')
+ // fill/selectOption finish before the router's controlled-input commit.
+ await expect(page).toHaveURL(url=>url.searchParams.get('q')==='payload')
+ await expect(panel.getByLabel('Filter loaded directory')).toHaveValue('payload')
  await panel.getByRole('button',{name:'Select All',exact:true}).click()
+ await expect(panel.getByText('1 selected',{exact:true})).toBeVisible()
  check(await panel.getByText('1 selected',{exact:true}).isVisible(),'Select All scopes only visible entries')
  download=page.waitForEvent('download')
  await panel.getByRole('button',{name:'Download',exact:true}).click()
@@ -91,8 +100,13 @@ try{
  const entries=zipEntries(await readFile(await file.path()))
  check(Object.keys(entries).length===1&&entries['payload.txt']?.equals(payload),'selected ZIP has exact scope, member and payload bytes')
  await panel.getByLabel('Sort entries').selectOption('modified')
+ await expect(page).toHaveURL(url=>url.searchParams.get('sort')==='modified'&&url.searchParams.get('q')==='payload')
+ await expect(panel.getByLabel('Sort entries')).toHaveValue('modified')
  check(await panel.getByText('1 selected',{exact:true}).isVisible(),'sort preserves selection')
  await panel.getByLabel('Filter loaded directory').fill('remove.txt')
+ await expect(page).toHaveURL(url=>url.searchParams.get('q')==='remove.txt'&&url.searchParams.get('sort')==='modified')
+ await expect(panel.getByLabel('Filter loaded directory')).toHaveValue('remove.txt')
+ await expect(panel.getByText('0 selected',{exact:true})).toBeVisible()
  check(await panel.getByText('0 selected',{exact:true}).isVisible(),'filter change revokes hidden selection')
  await panel.getByRole('button',{name:'Select All',exact:true}).click()
  await panel.getByRole('button',{name:'Delete',exact:true}).click()
@@ -115,6 +129,8 @@ try{
  const failure=await settled(retried.operation_id)
  check(failure.total===1&&failure.failed===1&&failure.items[0].path==='nested/missing.txt','failed-only retry does not replay successful deletions')
  await panel.getByLabel('Filter loaded directory').fill('')
+ await expect(page).toHaveURL(url=>!url.searchParams.has('q')&&url.searchParams.get('path')==='nested')
+ await expect(panel.getByLabel('Filter loaded directory')).toHaveValue('')
  if(await panel.getByTitle('Select files').getAttribute('aria-pressed')==='true') await panel.getByTitle('Select files').click()
  await page.route('**/api/v1/storage/local/files/download?*',route=>route.fulfill({status:404,contentType:'application/json',body:'{"detail":"Synthetic unavailable"}'}))
  await panel.getByRole('row').filter({has:page.getByText('payload.txt',{exact:true})}).getByTitle('Download',{exact:true}).click()
