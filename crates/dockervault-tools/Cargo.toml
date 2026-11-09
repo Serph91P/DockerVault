@@ -7,7 +7,12 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+signal-hook.workspace = true
 dockervault-core = { path = "../dockervault-core", default-features = false }
+
+[dev-dependencies]
+serde_json.workspace = true
+nix.workspace = true
 
 [lints]
 workspace = true

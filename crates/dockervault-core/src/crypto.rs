@@ -1,4 +1,7 @@
 //! Existing encryption formats only; cryptographic primitives stay in qualified libraries.
+mod envelope;
+pub use envelope::{decrypt_dek, decrypt_dek_file, encrypt_dek};
+const KEY_MAGIC: &[u8; 8] = b"DVKEY\0\x01\n";
 #[cfg(unix)]
 mod archive;
 #[cfg(unix)]

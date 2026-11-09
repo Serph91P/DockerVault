@@ -1,4 +1,4 @@
-use super::CryptoError;
+use super::{CryptoError, KEY_MAGIC};
 use openssl::{
     hash::MessageDigest,
     pkcs5::pbkdf2_hmac,
@@ -15,7 +15,7 @@ use std::{
 };
 use zeroize::Zeroizing;
 const ARCHIVE_MAGIC: &[u8; 8] = b"DVENC\0\x01\n";
-const KEY_MAGIC: &[u8; 8] = b"DVKEY\0\x01\n";
+
 const SALTED: &[u8; 8] = b"Salted__";
 const CHUNK: usize = 1024 * 1024;
 fn checkpoint(cancel: &dyn Fn() -> bool) -> Result<(), CryptoError> {

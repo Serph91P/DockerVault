@@ -10,6 +10,8 @@ license = "MIT"
 repository = "https://github.com/Serph91P/DockerVault"
 
 [workspace.dependencies]
+signal-hook = { version = "=0.4.6", default-features = false }
+age = { git = "https://github.com/str4d/rage", rev = "b5b68c4f4f7ea5c368bc060f6fe0237549c3a13f", default-features = false, features = ["armor"] }
 zeroize = "=1.9.1"
 openssl = "=0.10.82"
 fernet = "=0.2.2"
@@ -33,6 +35,10 @@ tokio = { version = "=1.54.1", default-features = false, features = ["fs", "io-u
 tokio-util = { version = "=0.7.20", default-features = false, features = ["rt"] }
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["env-filter", "fmt", "json", "registry"] }
+
+# Upstream replacement of unmaintained basic-toml; no advisory waiver.
+[patch.crates-io]
+i18n-config = { git = "https://github.com/kellpossible/cargo-i18n", rev = "44b6e5a69d56df5918a860623180db2834680666" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
