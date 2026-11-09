@@ -43,7 +43,7 @@ fn documented_four_flag_invocation_recovers_v1_and_legacy_without_external_execu
             .arg("--identity")
             .arg(fixtures.join("pax-links.tar.gz.identity.TEST_ONLY"))
             .arg("--key")
-            .arg(fixtures.join(format!("pax-links.tar.gz{suffix}.key")))
+            .arg(fixtures.join(format!("pax-links.tar.gz{suffix}.key.TEST_ONLY")))
             .output()
             .unwrap();
         assert!(
@@ -71,7 +71,7 @@ fn offline_errors_preserve_destination_and_never_include_private_identity() {
         .arg("--identity")
         .arg(fixtures.join("pax-links.tar.identity.TEST_ONLY"))
         .arg("--key")
-        .arg(fixtures.join("pax-links.tar.key"))
+        .arg(fixtures.join("pax-links.tar.key.TEST_ONLY"))
         .output()
         .unwrap();
     assert_eq!(result.status.code(), Some(1));
@@ -122,7 +122,7 @@ fn sigterm_during_actual_plaintext_staging_joins_before_exit_and_preserves_desti
             .arg("--identity")
             .arg(fixtures().join("pax-links.tar.identity.TEST_ONLY"))
             .arg("--key")
-            .arg(fixtures().join("pax-links.tar.key"))
+            .arg(fixtures().join("pax-links.tar.key.TEST_ONLY"))
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()

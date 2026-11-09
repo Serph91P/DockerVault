@@ -19,22 +19,22 @@ fn expected() -> Vec<u8> {
 fn original_age_cli_sidecars_recover_v1_and_legacy_binary_material() {
     for (cipher, identity, versioned) in [
         (
-            include_bytes!("fixtures/pax-links.tar.key").as_slice(),
+            include_bytes!("fixtures/pax-links.tar.key.TEST_ONLY").as_slice(),
             ID,
             true,
         ),
         (
-            include_bytes!("fixtures/pax-links.tar.legacy.key").as_slice(),
+            include_bytes!("fixtures/pax-links.tar.legacy.key.TEST_ONLY").as_slice(),
             ID,
             false,
         ),
         (
-            include_bytes!("fixtures/pax-links.tar.gz.key").as_slice(),
+            include_bytes!("fixtures/pax-links.tar.gz.key.TEST_ONLY").as_slice(),
             include_str!("fixtures/pax-links.tar.gz.identity.TEST_ONLY"),
             true,
         ),
         (
-            include_bytes!("fixtures/pax-links.tar.gz.legacy.key").as_slice(),
+            include_bytes!("fixtures/pax-links.tar.gz.legacy.key.TEST_ONLY").as_slice(),
             include_str!("fixtures/pax-links.tar.gz.identity.TEST_ONLY"),
             false,
         ),
@@ -74,7 +74,7 @@ fn offline_identity_files_accept_comments_and_try_every_identity_without_caching
         ID.trim()
     );
     let material = dockervault_core::crypto::decrypt_dek_file(
-        include_bytes!("fixtures/pax-links.tar.key").as_slice(),
+        include_bytes!("fixtures/pax-links.tar.key.TEST_ONLY").as_slice(),
         std::io::Cursor::new(identities),
     )
     .unwrap();
