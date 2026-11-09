@@ -1,6 +1,7 @@
 """Recovery must carry dependency closure and non-SSH provider key material."""
 
 import importlib
+import copy
 import json
 
 import pytest
@@ -174,8 +175,26 @@ def test_private_ssh_or_execution_dependency_blocks_root_without_opening_key(
     }
     result = m.package_rclone(config, [root()], OPTIONS)
     assert result["roots"][0]["state"] == "credentials_required"
-    assert result["remotes"] == {} and result["files"] == {}
-    assert value not in json.dumps(result)
+    assert result["files"] == {}
+    if field == "server_command":
+        assert result["remotes"] == {}
+        assert value not in json.dumps(result)
+    else:
+        # The private-SSH exclusion must NOT discard other recoverable credentials.
+        assert result["remotes"]["vault"] == config["vault"]
+        assert result["remotes"]["ssh"] == {
+            "type": "sftp",
+            "host": "example.invalid",
+            "pass": "synthetic-password",
+        }
+        assert result["roots"][0]["ssh_requirements"][0] == {
+            "remote": "ssh",
+            "key_path": value if field == "key_file" else None,
+            "agent": field == "key_use_agent",
+        }
+        if field == "key_pem":
+            assert value not in json.dumps(result)
+        m.validate_rclone(result, [root()], OPTIONS)
 
 
 @pytest.mark.parametrize(
@@ -197,6 +216,85 @@ def test_unsafe_or_unresolved_source_is_not_advertised_as_portable(config):
     result = module().package_rclone(config, [root()], OPTIONS)
     assert result["roots"][0]["state"] == "credentials_required"
     assert result["remotes"] == {}
+
+
+def test_excluding_ssh_private_material_preserves_other_credentials_in_dependency_chain():
+    m = module()
+    config = {
+        "vault": {
+            "type": "crypt",
+            "remote": "ssh:archives",
+            "password": "synthetic-crypt-credential",
+            "password2": "synthetic-crypt-salt",
+        },
+        "ssh": {
+            "type": "sftp",
+            "host": "example.invalid",
+            "pass": "synthetic-ssh-password",
+            "key_pem": "never-export-private-ssh-material",
+        },
+    }
+    result = m.package_rclone(config, [root()], OPTIONS)
+    assert result["roots"][0]["state"] == "credentials_required"
+    assert result["remotes"]["vault"] == config["vault"]
+    assert result["remotes"]["ssh"]["pass"] == "synthetic-ssh-password"
+    assert "key_pem" not in result["remotes"]["ssh"]
+    assert "never-export-private-ssh-material" not in json.dumps(result)
+    m.validate_rclone(result, [root()], OPTIONS)
+
+
+def test_credential_files_export_only_selected_profile_and_nested_nonssh_key(tmp_path):
+    import base64
+    import configparser
+
+    m = module()
+    aws = tmp_path / "aws.ini"
+    aws.write_text(
+        "[selected]\naws_access_key_id=synthetic-selected\naws_secret_access_key=synthetic-selected-secret\n[unrelated]\naws_secret_access_key=never-export-unrelated-profile\n"
+    )
+    signing_key = tmp_path / "oci-signing.pem"
+    signing_key.write_bytes(b"synthetic-nonssh-oci-private-signing-key")
+    oci = tmp_path / "oci.ini"
+    oci.write_text(
+        "[DEFAULT]\nuser=synthetic-user\ntenancy=synthetic-tenancy\nfingerprint=synthetic-fingerprint\nkey_file="
+        + str(signing_key)
+        + "\n[unrelated]\npass_phrase=never-export-unrelated-oci-profile\n"
+    )
+    options = {**OPTIONS, "oracleobjectstorage": {"config_file", "config_profile"}}
+    options["s3"] = OPTIONS["s3"] | {"profile"}
+    config = {
+        "vault": {
+            "type": "s3",
+            "shared_credentials_file": str(aws),
+            "profile": "selected",
+            "env_auth": "true",
+        },
+        "oci": {
+            "type": "oracleobjectstorage",
+            "config_file": str(oci),
+            "config_profile": "DEFAULT",
+        },
+    }
+    payload = m.package_rclone(config, [root(), root("oci", 2)], options)
+    assert all(row["state"] == "portable" for row in payload["roots"])
+    materials = [
+        base64.b64decode(record["content_b64"]) for record in payload["files"].values()
+    ]
+    assert not any(b"never-export-unrelated" in data for data in materials)
+    assert signing_key.read_bytes() in materials
+    aws_ref = payload["remotes"]["vault"]["shared_credentials_file"]["file_ref"]
+    parsed = configparser.ConfigParser(interpolation=None)
+    parsed.read_string(
+        base64.b64decode(payload["files"][aws_ref]["content_b64"]).decode()
+    )
+    assert parsed.sections() == ["selected"]
+    assert parsed["selected"]["aws_secret_access_key"] == "synthetic-selected-secret"
+    oci_ref = payload["remotes"]["oci"]["config_file"]["file_ref"]
+    assert len(payload["files"][oci_ref]["dependencies"]) == 1
+    assert str(signing_key).encode() not in base64.b64decode(
+        payload["files"][oci_ref]["content_b64"]
+    )
+    m.validate_rclone(payload, [root(), root("oci", 2)], options)
 
 
 def test_quoted_union_combine_dependencies_preserve_semantics():
@@ -339,6 +437,286 @@ async def test_native_provider_file_is_used_without_plaintext_disk(
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_native_nested_oci_private_key_signs_request_after_source_removal(
+    tmp_path, monkeypatch
+):
+    import base64
+    import re
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
+    from cryptography.fernet import Fernet
+    from app.config import settings
+    from app import credential_encryption
+
+    monkeypatch.setattr(
+        settings, "CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode()
+    )
+    monkeypatch.setattr(credential_encryption, "_fernet", None)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    )
+    observed = []
+
+    class Endpoint(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            try:
+                fields = dict(
+                    re.findall(
+                        r'(\w+)="([^"]*)"', self.headers.get("Authorization", "")
+                    )
+                )
+                values = [
+                    self.command.lower() + " " + self.path
+                    if header == "(request-target)"
+                    else self.headers[header]
+                    for header in fields["headers"].split()
+                ]
+                signed = "\n".join(
+                    header + ": " + value
+                    for header, value in zip(
+                        fields["headers"].split(), values, strict=True
+                    )
+                )
+                key.public_key().verify(
+                    base64.b64decode(fields["signature"]),
+                    signed.encode(),
+                    padding.PKCS1v15(),
+                    hashes.SHA256(),
+                )
+                observed.append(
+                    fields["keyId"]
+                    == "synthetic-tenancy/synthetic-user/synthetic-fingerprint"
+                )
+            except Exception:
+                observed.append(False)
+            body = b'{"objects":[]}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Endpoint)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        material = tmp_path / "oci.ini"
+        signing = tmp_path / "oci.pem"
+        signing.write_bytes(private)
+        material.write_text(
+            "[fixture-selected]\nuser=synthetic-user\ntenancy=synthetic-tenancy\nfingerprint=synthetic-fingerprint\nregion=us-ashburn-1\nkey_file="
+            + str(signing)
+            + "\n"
+        )
+        m = module()
+        config = {
+            "vault": {
+                "type": "oracleobjectstorage",
+                "provider": "user_principal_auth",
+                "config_file": str(material),
+                "config_profile": "fixture-selected",
+                "namespace": "fixture",
+                "region": "us-ashburn-1",
+                "endpoint": f"http://127.0.0.1:{server.server_port}",
+            }
+        }
+        payload = m.package_rclone(config, [root()], m.provider_options())
+        assert payload["roots"][0]["state"] == "portable"
+        state = await m.create_managed_config(payload, tmp_path / "generation")
+        material.unlink()
+        signing.unlink()
+        code, output, error = await m.run_managed(
+            state,
+            "vault",
+            ["lsjson", "vault:fixture", "--retries", "1", "--low-level-retries", "1"],
+            timeout=10,
+        )
+        assert code == 0 and json.loads(output) == [] and error == ""
+        assert observed and all(observed)
+        stored = json.loads(
+            m._config_command(
+                tmp_path / "generation" / "rclone.conf",
+                credential_encryption.decrypt_value(state["unlock"]),
+                ["config", "dump"],
+            )
+        )
+        assert (
+            "config_file" not in stored["vault"]
+        )  # Native API classifies config_* as ephemeral.
+        overrides = json.loads(credential_encryption.decrypt_value(state["overrides"]))
+        assert (
+            overrides["vault"]["config_file"]
+            == "dv-recovery-file:" + state["file_refs"]["vault"]["config_file"]
+        )
+        assert overrides["vault"]["config_profile"] == "fixture-selected"
+        assert await m.export_managed_config(state, [root()]) == payload
+        assert all(
+            private not in path.read_bytes()
+            and b"synthetic-tenancy" not in path.read_bytes()
+            for path in tmp_path.rglob("*")
+            if path.is_file()
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_native_ssh_chain_reconnects_only_after_operator_mounts_excluded_key(
+    tmp_path, monkeypatch
+):
+    import base64
+    import socket
+    import subprocess
+    import time
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+    from cryptography.fernet import Fernet
+    from app.config import settings
+    from app import credential_encryption
+
+    monkeypatch.setattr(
+        settings, "CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode()
+    )
+    monkeypatch.setattr(credential_encryption, "_fernet", None)
+    monkeypatch.setattr(settings, "ALLOWED_SSH_KEY_DIRS", str(tmp_path / "mounted"))
+    key = ed25519.Ed25519PrivateKey.generate()
+    private = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.OpenSSH,
+        serialization.NoEncryption(),
+    )
+    host = ed25519.Ed25519PrivateKey.generate()
+    host_file = tmp_path / "fixture-host-key"
+    host_file.write_bytes(
+        host.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.OpenSSH,
+            serialization.NoEncryption(),
+        )
+    )
+    authorized = tmp_path / "authorized_keys"
+    authorized.write_bytes(
+        key.public_key().public_bytes(
+            serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
+        )
+    )
+    (tmp_path / "mounted").mkdir()
+    private_file = tmp_path / "mounted" / "fixture-key"
+    private_file.write_bytes(private)
+    directory = tmp_path / "archive-server"
+    directory.mkdir()
+    (directory / "unchanged-sentinel.txt").write_bytes(
+        b"synthetic original archive bytes"
+    )
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    known = tmp_path / "known_hosts"
+    known.write_bytes(
+        f"[127.0.0.1]:{port} ".encode()
+        + host.public_key().public_bytes(
+            serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
+        )
+        + b"\n"
+    )
+    m = module()
+    server = subprocess.Popen(
+        [
+            m._binary(),
+            "--config",
+            "/dev/null",
+            "--log-level",
+            "ERROR",
+            "serve",
+            "sftp",
+            str(directory),
+            "--addr",
+            f"127.0.0.1:{port}",
+            "--authorized-keys",
+            str(authorized),
+            "--key",
+            str(host_file),
+        ],
+        env=m._environment(),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                    break
+            except OSError:
+                assert server.poll() is None and time.monotonic() < deadline
+                time.sleep(0.02)
+        source = {
+            "vault": {"type": "alias", "remote": "ssh:"},
+            "ssh": {
+                "type": "sftp",
+                "host": "127.0.0.1",
+                "port": str(port),
+                "user": "fixture",
+                "key_file": str(private_file),
+                "known_hosts_file": str(known),
+            },
+        }
+        payload = m.package_rclone(source, [root()], m.provider_options())
+        assert payload["roots"][0]["reason"] == "ssh_private_key_required"
+        assert private.decode() not in json.dumps(payload)
+        assert base64.b64encode(private).decode() not in json.dumps(payload)
+        state = await m.create_managed_config(payload, tmp_path / "generation")
+        private_file.unlink()
+        known.unlink()
+        args = ["lsjson", "vault:", "--retries", "1", "--low-level-retries", "1"]
+        code, output, error = await m.run_managed(state, "vault", args, timeout=10)
+        assert code != 0 and not output and error == "Storage credentials required"
+        private_file.write_bytes(
+            private
+        )  # Explicit operator mount; never restored from bundle.
+        code, output, error = await m.run_managed(state, "vault", args, timeout=10)
+        assert code == 0 and error == ""
+        assert [row["Name"] for row in json.loads(output)] == ["unchanged-sentinel.txt"]
+        assert (
+            directory / "unchanged-sentinel.txt"
+        ).read_bytes() == b"synthetic original archive bytes"
+        stored = json.loads(
+            m._config_command(
+                tmp_path / "generation" / "rclone.conf",
+                credential_encryption.decrypt_value(state["unlock"]),
+                ["config", "dump"],
+            )
+        )
+        discovered = {"shell_type", "md5sum_command", "sha1sum_command"}
+        assert set(stored["ssh"]) == set(payload["remotes"]["ssh"]) | discovered
+        # Native SFTP persists its detected shell/hash capabilities, like OAuth token rotation.
+        expected = copy.deepcopy(payload)
+        expected["remotes"]["ssh"].update(
+            {field: stored["ssh"][field] for field in discovered}
+        )
+        assert await m.export_managed_config(state, [root()]) == expected
+        assert all(
+            private not in path.read_bytes()
+            for path in (tmp_path / "generation").rglob("*")
+            if path.is_file()
+        )
+    finally:
+        server.terminate()
+        server.communicate(timeout=10)
 
 
 @pytest.mark.asyncio

@@ -7,6 +7,7 @@ SSH private keys and command/ambient-auth dependencies are explicitly excluded.
 import asyncio
 import base64
 import contextlib
+import configparser
 import fcntl
 import http.client
 import csv
@@ -160,41 +161,128 @@ def _dependencies(remote):
     return dependencies
 
 
-def _material(value, files, source_files):
+def _record(data, files, dependencies=None):
+    key = hashlib.sha256(data).hexdigest()
+    files[key] = {
+        "kind": "provider_credential",
+        "content_b64": base64.b64encode(data).decode(),
+    }
+    if dependencies:
+        files[key]["dependencies"] = sorted(set(dependencies))
+    return key
+
+
+def _profile_material(data, path, files, provider, profile):
+    source = configparser.ConfigParser(interpolation=None)
+    source.optionxform = lambda optionstr: optionstr
+    source.read_string(data.decode())
+    destination = configparser.ConfigParser(interpolation=None)
+    destination.optionxform = lambda optionstr: optionstr
+    visited, dependencies = set(), []
+
+    def visit(name):
+        if name in visited or len(visited) >= 32 or name not in source:
+            _invalid()
+        visited.add(name)
+        values = dict(source[name])
+        if provider == "s3" and values.get("source_profile"):
+            visit(values["source_profile"])
+        if provider == "oracleobjectstorage":
+            for field in ("key_file", "security_token_file"):
+                if values.get(field):
+                    reference = Path(values[field]).expanduser()
+                    if not reference.is_absolute():
+                        reference = Path(path).parent / reference
+                    child = _read_material(reference)
+                    if b"OPENSSH PRIVATE KEY" in child:
+                        _invalid()
+                    identifier = _record(child, files)
+                    dependencies.append(identifier)
+                    values[field] = "dv-recovery-file:" + identifier
+        if name == source.default_section:
+            destination.read_dict({source.default_section: values})
+        else:
+            destination[name] = values
+
+    visit(profile)
+    if not dependencies and set(source.sections()) == visited and not source.defaults():
+        return data, dependencies
+    output = io.StringIO()
+    destination.write(output)
+    return output.getvalue().encode(), dependencies
+
+
+def _load_record(key, source_files, files, active=None):
+    active = set() if active is None else active
+    if key in active or len(active) > 32 or len(files) >= MAX_REMOTES:
+        _invalid()
+    if key in files:
+        return
+    record = source_files.get(key)
+    if (
+        type(record) is not dict
+        or set(record)
+        not in ({"kind", "content_b64"}, {"kind", "content_b64", "dependencies"})
+        or record["kind"] != "provider_credential"
+    ):
+        _invalid()
+    data = base64.b64decode(record["content_b64"], validate=True)
+    if (
+        not data
+        or len(data) > MAX_MATERIAL_BYTES
+        or base64.b64encode(data).decode() != record["content_b64"]
+        or hashlib.sha256(data).hexdigest() != key
+    ):
+        _invalid()
+    dependencies = record.get("dependencies", [])
+    if (
+        type(dependencies) is not list
+        or len(dependencies) > 32
+        or len(dependencies) != len(set(dependencies))
+    ):
+        _invalid()
+    active.add(key)
+    for dependency in dependencies:
+        if (
+            type(dependency) is not str
+            or ("dv-recovery-file:" + dependency).encode() not in data
+        ):
+            _invalid()
+        _load_record(dependency, source_files, files, active)
+    active.remove(key)
+    files[key] = record
+
+
+def _material(value, files, source_files, *, provider=None, field=None, profile=None):
     if source_files is None:
         if type(value) is not str:
             _invalid()
-        data = _read_material(value)
-        key = hashlib.sha256(data).hexdigest()
-        record = {
-            "kind": "provider_credential",
-            "content_b64": base64.b64encode(data).decode(),
-        }
+        path = Path(value).expanduser()
+        data = _read_material(path)
+        dependencies = []
+        if (provider, field) in {
+            ("s3", "shared_credentials_file"),
+            ("oracleobjectstorage", "config_file"),
+        }:
+            data, dependencies = _profile_material(
+                data,
+                path,
+                files,
+                provider,
+                profile or ("default" if provider == "s3" else "DEFAULT"),
+            )
+        key = _record(data, files, dependencies)
     else:
         if type(value) is not dict or set(value) != {"file_ref"}:
             _invalid()
         key = value["file_ref"]
-        record = source_files.get(key)
-        if (
-            type(record) is not dict
-            or set(record) != {"kind", "content_b64"}
-            or record["kind"] != "provider_credential"
-        ):
-            _invalid()
-        data = base64.b64decode(record["content_b64"], validate=True)
-        if (
-            not data
-            or len(data) > MAX_MATERIAL_BYTES
-            or base64.b64encode(data).decode() != record["content_b64"]
-        ):
-            _invalid()
-        if hashlib.sha256(data).hexdigest() != key:
-            _invalid()
-    files[key] = record
+        _load_record(key, source_files, files)
     return {"file_ref": key}
 
 
-def package_rclone(config, storages, options=None, *, source_files=None):
+def package_rclone(
+    config, storages, options=None, *, source_files=None, source_requirements=None
+):
     """Resolve only referenced roots; unavailable source requirements remain explicit."""
     options = provider_options() if options is None else options
     if type(config) is not dict or len(config) > MAX_REMOTES:
@@ -204,6 +292,27 @@ def package_rclone(config, storages, options=None, *, source_files=None):
         name = storage["rclone_remote"]
         root = {"storage_id": storage["id"], "remote_name": name, "state": "portable"}
         collected, files, active = {}, {}, set()
+        requirements = list((source_requirements or {}).get(storage["id"], []))
+        for requirement in requirements:
+            if type(requirement) is not dict or set(requirement) != {
+                "remote",
+                "key_path",
+                "agent",
+            }:
+                _invalid()
+            if (
+                config.get(requirement["remote"], {}).get("type") != "sftp"
+                or type(requirement["agent"]) is not bool
+            ):
+                _invalid()
+            key_path = requirement["key_path"]
+            if key_path is not None and (
+                type(key_path) is not str
+                or not key_path.startswith("/")
+                or ".." in key_path.split("/")
+                or "\x00" in key_path
+            ):
+                _invalid()
 
         def visit(name, depth=0):
             if (
@@ -225,7 +334,19 @@ def package_rclone(config, storages, options=None, *, source_files=None):
                 remote.get(field) not in (None, "", "false", "0")
                 for field in _SSH_PRIVATE
             ):
-                _invalid()
+                requirements.append(
+                    {
+                        "remote": name,
+                        "key_path": remote.get("key_file") or None,
+                        "agent": remote.get("key_use_agent", "false").lower()
+                        not in {"false", "0", ""},
+                    }
+                )
+                remote = {
+                    key: value
+                    for key, value in remote.items()
+                    if key not in _SSH_PRIVATE
+                }
             if remote.get("env_auth", "false").lower() not in {"false", "0", ""}:
                 explicit_file = any(
                     remote.get(field) for field in _FILE_OPTIONS.get(kind, set())
@@ -247,7 +368,13 @@ def package_rclone(config, storages, options=None, *, source_files=None):
                 if type(value) is str and len(value) > MAX_MATERIAL_BYTES:
                     _invalid()
                 if value and (
-                    field.endswith("_command")
+                    (
+                        field.endswith("_command")
+                        and not (
+                            kind == "sftp"
+                            and field in {"md5sum_command", "sha1sum_command"}
+                        )
+                    )
                     or field in {"ssh", "db_path", "chunk_path", "tmp_upload_path"}
                 ):
                     _invalid()
@@ -257,7 +384,16 @@ def package_rclone(config, storages, options=None, *, source_files=None):
             copy = dict(remote)
             for field in _FILE_OPTIONS.get(kind, set()):
                 if copy.get(field):
-                    copy[field] = _material(copy[field], files, source_files)
+                    copy[field] = _material(
+                        copy[field],
+                        files,
+                        source_files,
+                        provider=kind,
+                        field=field,
+                        profile=remote.get("profile")
+                        if kind == "s3"
+                        else remote.get("config_profile"),
+                    )
             collected[name] = copy
             active.remove(name)
 
@@ -265,6 +401,7 @@ def package_rclone(config, storages, options=None, *, source_files=None):
             visit(name)
         except (
             RcloneRecoveryError,
+            configparser.Error,
             OSError,
             ValueError,
             TypeError,
@@ -274,6 +411,12 @@ def package_rclone(config, storages, options=None, *, source_files=None):
             root["state"] = "credentials_required"
             root["reason"] = "external_or_unsafe_dependency"
         else:
+            if requirements:
+                root["state"] = "credentials_required"
+                root["reason"] = "ssh_private_key_required"
+                root["ssh_requirements"] = sorted(
+                    requirements, key=lambda item: item["remote"]
+                )
             result["remotes"].update(collected)
             result["files"].update(files)
         result["roots"].append(root)
@@ -296,7 +439,14 @@ def validate_rclone(payload, storages, options=None):
         if len(payload["roots"]) != len(roots) or len(payload["files"]) > MAX_REMOTES:
             _invalid()
         expected = package_rclone(
-            payload["remotes"], roots, options, source_files=payload["files"]
+            payload["remotes"],
+            roots,
+            options,
+            source_files=payload["files"],
+            source_requirements={
+                root["storage_id"]: root.get("ssh_requirements", [])
+                for root in payload["roots"]
+            },
         )
         # An incomplete root may carry only its known redacted requirement, not runnable fragments.
         for actual, computed in zip(payload["roots"], expected["roots"], strict=True):
@@ -386,6 +536,7 @@ def _create_managed(payload, directory):
         _config_command(config, unlock, ["config", "touch"])
         _config_command(config, unlock, ["config", "encryption", "set"])
         refs = {}
+        overrides = {}
         common, environment = _common(config, unlock)
         with tempfile.TemporaryDirectory(prefix="dvrc-") as rpc_directory:
             os.chmod(rpc_directory, 0o700)
@@ -418,6 +569,13 @@ def _create_managed(payload, directory):
                             parameters[field] = "dv-recovery-file:" + value["file_ref"]
                     # Bootstrap as memory, then set the validated type in the same native
                     # config call: avoids ALL provider onboarding/network state machines.
+                    # Native config/create deliberately discards every config_* field,
+                    # including OCI config_file/config_profile; retain these encrypted.
+                    overrides[name] = {
+                        field: value
+                        for field, value in parameters.items()
+                        if field.startswith("config_")
+                    }
                     _rpc(
                         address,
                         "config/create",
@@ -454,6 +612,7 @@ def _create_managed(payload, directory):
             "unlock": encrypt_value(unlock),
             "file_refs": refs,
             "files": encrypt_value(json.dumps(payload["files"])),
+            "overrides": encrypt_value(json.dumps(overrides)),
             "roots": payload["roots"],
         }
     except BaseException:
@@ -489,6 +648,15 @@ def _config_lock(state):
 def _managed_snapshot(state, storages):
     with _config_lock(state) as (config, unlock):
         remotes = json.loads(_config_command(config, unlock, ["config", "dump"]))
+        for name, fields in json.loads(
+            decrypt_value(state.get("overrides")) or "{}"
+        ).items():
+            if name not in remotes:
+                _invalid()
+            for field, value in fields.items():
+                if field in remotes[name] and remotes[name][field] != value:
+                    _invalid()
+                remotes[name][field] = value
         for name, fields in state["file_refs"].items():
             if name not in remotes:
                 _invalid()
@@ -497,7 +665,15 @@ def _managed_snapshot(state, storages):
                     _invalid()
                 remotes[name][field] = {"file_ref": reference}
         files = json.loads(decrypt_value(state["files"]))
-        payload = package_rclone(remotes, storages, source_files=files)
+        payload = package_rclone(
+            remotes,
+            storages,
+            source_files=files,
+            source_requirements={
+                root["storage_id"]: root.get("ssh_requirements", [])
+                for root in state["roots"]
+            },
+        )
         validate_rclone(payload, storages)
         return payload
 
@@ -563,11 +739,55 @@ def _credential_fd():
     return descriptor
 
 
+def _materialize_credential(reference, files, descriptors, allocated):
+    if reference in allocated:
+        return allocated[reference]
+    record = files[reference]
+    data = base64.b64decode(record["content_b64"], validate=True)
+    for dependency in record.get("dependencies", []):
+        child = _materialize_credential(dependency, files, descriptors, allocated)
+        data = data.replace(
+            ("dv-recovery-file:" + dependency).encode(),
+            f"/proc/self/fd/{child}".encode(),
+        )
+    descriptor = _credential_fd()
+    descriptors.append(descriptor)
+    with os.fdopen(descriptor, "wb", closefd=False) as stream:
+        stream.write(data)
+        stream.flush()
+    allocated[reference] = descriptor
+    return descriptor
+
+
 def _run_managed(state, remote, args, timeout):
     root = next(
         (root for root in state["roots"] if root["remote_name"] == remote), None
     )
-    if root is None or root["state"] != "portable":
+    ssh_overrides = {}
+    if root is not None and root.get("reason") == "ssh_private_key_required":
+        from app.config import settings
+
+        allowed = [
+            Path(path.strip()).resolve()
+            for path in settings.ALLOWED_SSH_KEY_DIRS.split(",")
+            if path.strip()
+        ]
+        for requirement in root["ssh_requirements"]:
+            path = (
+                Path(requirement["key_path"]).resolve()
+                if requirement["key_path"]
+                else None
+            )
+            if (
+                path is None
+                or not path.is_file()
+                or not any(path.is_relative_to(directory) for directory in allowed)
+            ):
+                return 1, "", "Storage credentials required"
+            ssh_overrides[f"RCLONE_CONFIG_{requirement['remote'].upper()}_KEY_FILE"] = (
+                str(path)
+            )
+    if root is None or (root["state"] != "portable" and not ssh_overrides):
         return 1, "", "Storage credentials required"
     descriptors = []
     try:
@@ -576,6 +796,7 @@ def _run_managed(state, remote, args, timeout):
             tempfile.TemporaryDirectory(prefix="dvrc-cache-") as cache,
         ):
             common, environment = _common(config, unlock)
+            environment.update(ssh_overrides)
             environment.update(
                 {
                     "HOME": cache,
@@ -586,16 +807,17 @@ def _run_managed(state, remote, args, timeout):
                 }
             )
             files = json.loads(decrypt_value(state["files"]))
+            for name, fields in json.loads(
+                decrypt_value(state.get("overrides")) or "{}"
+            ).items():
+                for field, value in fields.items():
+                    environment[f"RCLONE_CONFIG_{name.upper()}_{field.upper()}"] = value
+            allocated = {}
             for name, fields in state["file_refs"].items():
                 for field, reference in fields.items():
-                    descriptor = _credential_fd()
-                    descriptors.append(descriptor)
-                    data = base64.b64decode(
-                        files[reference]["content_b64"], validate=True
+                    descriptor = _materialize_credential(
+                        reference, files, descriptors, allocated
                     )
-                    with os.fdopen(descriptor, "wb", closefd=False) as stream:
-                        stream.write(data)
-                        stream.flush()
                     environment[f"RCLONE_CONFIG_{name.upper()}_{field.upper()}"] = (
                         f"/proc/self/fd/{descriptor}"
                     )
