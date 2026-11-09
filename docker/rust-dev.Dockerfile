@@ -6,5 +6,7 @@ WORKDIR /workspace
 USER 1000:1000
 COPY --chown=1000:1000 Cargo.toml Cargo.lock rust-toolchain.toml deny.toml ./
 COPY --chown=1000:1000 crates ./crates
+COPY --chown=1000:1000 docs/contracts ./docs/contracts
+COPY --chown=1000:1000 backend/tests/fixtures/legacy_pre_schedule.sql ./backend/tests/fixtures/legacy_pre_schedule.sql
 RUN cargo fetch --locked
 CMD ["cargo", "test", "--workspace", "--locked", "--offline"]

@@ -61,9 +61,10 @@ Axum's matchit 0.8.4 dependency requires **both MIT and BSD-3-Clause**, not an
 MIT-only interpretation. The BSD attribution/non-endorsement conditions are
 compatible with this workspace; retain both license notices in delivered
 third-party notices. `deny.toml` explicitly permits the qualified MIT,
-Apache-2.0, BSD-3-Clause and Unicode-3.0 obligations, including development
-and build dependencies. New licenses require qualification, not a blanket
-exception. There are no ignored advisories; yanked versions and unknown sources
+Apache-2.0, BSD-3-Clause, Unicode-3.0 and Zlib obligations, including development
+and build dependencies. Zlib applies to foldhash: preserve the original license,
+do not misrepresent authorship, and mark any altered source. New licenses require
+qualification, not a blanket exception. There are no ignored advisories; yanked versions and unknown sources
 are rejected. Final SBOM/notices/provenance and architecture execution remain R13
 gates rather than claims made by this initial manifest.
 
@@ -75,6 +76,43 @@ Primary references:
 [Linux subreaper](https://docs.rs/nix/0.31.3/nix/sys/prctl/fn.set_child_subreaper.html),
 [dotenv iterator](https://docs.rs/dotenvy/0.15.7/dotenvy/fn.from_path_iter.html),
 [cargo-deny policy](https://embarkstudios.github.io/cargo-deny/checks/).
+
+## SQLite dependency qualification
+
+SQLx is fixed to upstream revision
+`10462fa4414c6c7f1ed1d39bb31678e3b726878c` (version 0.9.0, Rust 1.94,
+MIT OR Apache-2.0). The registry 0.9.0 release caps libsqlite3-sys below
+0.38.0 and cannot select the security fix for
+[RUSTSEC-2026-0459](https://rustsec.org/advisories/RUSTSEC-2026-0459).
+The pinned upstream commit widens the supported SQLite binding range; no local
+fork, copied patch or ignored advisory is used. Only that upstream Git source
+is allowed in addition to crates.io. The lockfile selects libsqlite3-sys 0.39.1
+with patched bundled SQLite 3.54.1. Keep the lockfile; do not substitute a system
+SQLite whose security patch level has not been qualified.
+
+Migration and incremental `sqlite3_backup` access use the safe rusqlite 0.41.1
+binding (Rust 1.89, MIT, only the backup feature) to the **same** libsqlite3-sys.
+SQLx does not expose a safe incremental backup API, and its serialization API
+would allocate the entire database. This avoids custom unsafe FFI and keeps
+backup work incremental and cancellation-aware. Application connections remain
+SQLx, with four bounded connections, five-second busy/acquire limits and foreign
+keys enabled on every connection. A disposable migration connection alone turns
+FK enforcement off for SQLite's documented transactional table rebuild, then
+checks schema, FKs and integrity before commit. Migration never performs remote
+I/O. Readers neither create a missing DB nor run migrations/recovery.
+
+The published ledger remains `schema_migrations` versions 1–7; SQLx's migration
+feature is disabled. Existing enum names, opaque credentials, JSON strings,
+identities, indices, triggers and extension columns are not rewritten casually.
+Migration/startup is not full crash-recovery or pre/post-write rollback acceptance;
+those must still be proved against the complete service and the old application.
+
+Primary references:
+[upstream fix](https://github.com/transact-rs/sqlx/commit/10462fa4414c6c7f1ed1d39bb31678e3b726878c),
+[SQLite backup](https://sqlite.org/backup.html),
+[rusqlite backup](https://docs.rs/rusqlite/0.41.1/rusqlite/backup/struct.Backup.html),
+[SQLite patched release](https://sqlite.org/releaselog/3_54_1.html),
+[Zlib license](https://spdx.org/licenses/Zlib.html).
 
 ## Ownership invariants
 
