@@ -158,6 +158,15 @@ it('a changed or stale saved configuration invalidates a prior test observation'
   await waitFor(() => expect(screen.queryByText(/Komodo test: completed/)).not.toBeInTheDocument())
 })
 
+it('refreshing even unchanged redacted flags invalidates a prior secret-configuration test', async () => {
+  komodo(); server.use(http.post('/api/v1/settings/komodo/test', () => HttpResponse.json({ success: true })))
+  const { client } = mount()
+  await userEvent.click(await screen.findByRole('button', { name: 'Test saved connection' }))
+  await screen.findByText(/Komodo test: completed/)
+  await client.refetchQueries({ queryKey: queryKeys.settings.komodo })
+  await waitFor(() => expect(screen.queryByText(/Komodo test: completed/)).not.toBeInTheDocument())
+})
+
 it('401 expires the private editor instead of retaining credentials for another operator', async () => {
   komodo(); onSessionExpired(() => clearSession())
   server.use(http.put('/api/v1/settings/komodo', () => new HttpResponse(null, { status: 401 })))
@@ -190,6 +199,37 @@ it('independent loads retain quota when Komodo is unavailable and disk fallback 
   expect(screen.queryByRole('meter')).not.toBeInTheDocument()
   await userEvent.click(screen.getByRole('link', { name: 'Storage safeguards', exact: true }))
   expect(screen.getByRole('switch')).toHaveAttribute('aria-checked', 'true')
+})
+
+it.each(['connection', 'storage-safeguards'])('a delayed pre-save refresh cannot replace canonical %s readback', async section => {
+  let release!: () => void, refreshStarted!: () => void
+  const held = new Promise<void>(r => { release = r }), started = new Promise<void>(r => { refreshStarted = r })
+  let reads = 0, saved = false
+  const komodoMode = section === 'connection'
+  const endpoint = komodoMode ? 'komodo' : 'storage'
+  const before = komodoMode ? config : { check_quota_before_upload: false }
+  const after = komodoMode ? { ...config, api_url: 'https://canonical.example' } : { check_quota_before_upload: true }
+  server.use(http.get('/api/v1/settings/' + endpoint, async () => { reads++; if (reads === 2) { refreshStarted(); await held; return HttpResponse.json(before) } return HttpResponse.json(saved ? after : before) }), http.put('/api/v1/settings/' + endpoint, () => { saved = true; return HttpResponse.json(after) }))
+  const { client } = mount(section)
+  if (komodoMode) { const url = await edit(); await userEvent.clear(url); await userEvent.type(url, 'https://draft.example') }
+  else await userEvent.click(await screen.findByRole('switch', { name: 'Check quota before upload' }))
+  const key = komodoMode ? queryKeys.settings.komodo : queryKeys.settings.storage
+  const refresh = client.refetchQueries({ queryKey: key })
+  await started
+  await userEvent.click(screen.getByRole('button', { name: 'Save', exact: true }))
+  await screen.findByText(`${komodoMode ? 'Komodo' : 'Storage'} settings saved; canonical values confirmed.`)
+  await act(async () => { release(); await refresh })
+  await waitFor(() => expect(client.getQueryData(key)).toEqual(after))
+})
+
+it('malformed canonical endpoint cannot be reported as saved', async () => {
+  let saved = false
+  komodo(() => HttpResponse.json(saved ? { ...config, api_url: 7 } : config))
+  server.use(http.put('/api/v1/settings/komodo', () => { saved = true; return HttpResponse.json(config) }))
+  mount(); const url = await edit(); await userEvent.type(url, '/draft')
+  await userEvent.click(screen.getByRole('button', { name: 'Save', exact: true }))
+  await screen.findByText(/Write accepted, but canonical readback is unconfirmed/)
+  expect(url).toHaveValue(config.api_url + '/draft')
 })
 
 it('explicit clears send empty strings while blank masked inputs keep credentials', async () => {

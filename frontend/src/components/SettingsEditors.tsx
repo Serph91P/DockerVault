@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query'
-import { settingsApi, type KomodoSettings } from '../api'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { settingsApi, type KomodoSettings, type StorageSettings } from '../api'
 import { queryKeys } from '../api/queryKeys'
 import { operationOutcome, type Outcome } from '../api/outcomes'
 import { ownsSession, sessionGeneration } from '../store/session'
@@ -13,11 +13,11 @@ const input = 'w-full rounded-lg border border-dark-500 bg-dark-900 px-3 py-2 te
 type Props = { discardRevision: number; onDirty: (dirty: boolean) => void }
 
 // Drafts (including credentials) never enter the Query/Mutation caches.
-function useSettingsEditor<T>({ key, read, write, label, onDirty }: { key: QueryKey; read: () => Promise<T>; write: (value: T) => Promise<unknown>; label: string; onDirty: Props['onDirty'] }) {
+export function StorageSettingsCard({ discardRevision, onDirty }: Props) {
   const client = useQueryClient()
-  const query = useQuery({ queryKey: key, queryFn: read })
-  const [draft, storeDraft] = useState<T | null>(null)
-  const [base, setBase] = useState<T | null>(null)
+  const query = useQuery({ queryKey: queryKeys.settings.storage, queryFn: () => settingsApi.getStorageSettings().then(r => r.data) })
+  const [draft, storeDraft] = useState<StorageSettings | null>(null)
+  const [base, setBase] = useState<StorageSettings | null>(null)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const [result, setResult] = useState('')
@@ -25,8 +25,8 @@ function useSettingsEditor<T>({ key, read, write, label, onDirty }: { key: Query
   const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(base)
   useEffect(() => { active.current = true; return () => { active.current = false } }, [])
   useEffect(() => { onDirty(dirty) }, [dirty, onDirty])
-  const change = (value: T) => { revision.current++; storeDraft(value); setResult(''); setError(null) }
-  const begin = (value: T) => { revision.current++; storeDraft(value); setBase(value); setResult(''); setError(null) }
+  const change = (value: StorageSettings) => { revision.current++; storeDraft(value); setResult(''); setError(null) }
+  const begin = (value: StorageSettings) => { revision.current++; storeDraft(value); setBase(value); setResult(''); setError(null) }
   const cancel = () => { revision.current++; storeDraft(null); setBase(null); setError(null); setResult('') }
   const save = async () => {
     if (draft === null || !dirty || submitting.current) return
@@ -34,14 +34,16 @@ function useSettingsEditor<T>({ key, read, write, label, onDirty }: { key: Query
     submitting.current = true; setPending(true); setError(null); setResult('')
     let accepted = false
     try {
-      await write(submitted); accepted = true
+      await settingsApi.updateStorageSettings(submitted); accepted = true
       if (!active.current || !ownsSession(owner)) return
-      const canonical = await read()
+      const canonical = (await settingsApi.getStorageSettings()).data
       if (!active.current || !ownsSession(owner)) return
-      client.setQueryData(key, canonical)
+      await client.cancelQueries({ queryKey: queryKeys.settings.storage })
+      if (!active.current || !ownsSession(owner)) return
+      client.setQueryData(queryKeys.settings.storage, canonical)
       if (revision.current !== current) return
       storeDraft(null); setBase(null)
-      setResult(`${label} saved; canonical values confirmed.`)
+      setResult('Storage settings saved; canonical values confirmed.')
     } catch (failure) {
       if (!active.current || !ownsSession(owner) || revision.current !== current) return
       setError(failure)
@@ -51,20 +53,15 @@ function useSettingsEditor<T>({ key, read, write, label, onDirty }: { key: Query
       if (active.current && ownsSession(owner)) setPending(false)
     }
   }
-  return { query, draft, base, dirty, pending, error, result, revision, active, change, begin, cancel, save }
-}
-
-export function StorageSettingsCard({ discardRevision, onDirty }: Props) {
-  const editor = useSettingsEditor({ key: queryKeys.settings.storage, read: () => settingsApi.getStorageSettings().then(r => r.data), write: value => settingsApi.updateStorageSettings(value), label: 'Storage settings', onDirty })
   const reset = useRef(discardRevision)
-  useEffect(() => { if (reset.current !== discardRevision) { reset.current = discardRevision; editor.cancel() } }, [discardRevision, editor])
-  const value = editor.draft ?? editor.query.data
-  const validation = useValidationFeedback(editor.error)
-  return <div className={card}><h2 className="text-lg font-semibold">Storage & Upload</h2><QueryFeedback name="Storage settings" query={editor.query} />
-    {validation.summary}<p role="status" aria-label="Storage save result">{editor.pending ? 'Saving storage settings; awaiting canonical confirmation…' : editor.result || (editor.dirty ? 'Unsaved storage draft' : 'No unsaved storage changes')}</p>
-    {value && <><div className="flex items-center justify-between gap-4"><label id="quota-label">Check quota before upload</label><button type="button" role="switch" aria-labelledby="quota-label" aria-describedby="quota-help" aria-checked={value.check_quota_before_upload} className="min-h-11 rounded-lg border border-dark-500 px-4" onClick={() => { if (!editor.draft) editor.begin(value); editor.change({ check_quota_before_upload: !value.check_quota_before_upload }) }}>{value.check_quota_before_upload ? 'On' : 'Off'}</button></div>
+  useEffect(() => { if (reset.current !== discardRevision) { reset.current = discardRevision; cancel() } }, [discardRevision])
+  const value = draft ?? query.data
+  const validation = useValidationFeedback(error)
+  return <div className={card}><h2 className="text-lg font-semibold">Storage & Upload</h2><QueryFeedback name="Storage settings" query={query} />
+    {validation.summary}<p role="status" aria-label="Storage save result">{pending ? 'Saving storage settings; awaiting canonical confirmation…' : result || (dirty ? 'Unsaved storage draft' : 'No unsaved storage changes')}</p>
+    {value && <><div className="flex items-center justify-between gap-4"><label id="quota-label">Check quota before upload</label><button type="button" role="switch" aria-labelledby="quota-label" aria-describedby="quota-help" aria-checked={value.check_quota_before_upload} className="min-h-11 rounded-lg border border-dark-500 px-4" onClick={() => { if (!draft) begin(value); change({ check_quota_before_upload: !value.check_quota_before_upload }) }}>{value.check_quota_before_upload ? 'On' : 'Off'}</button></div>
       <p id="quota-help">Verify remote capacity before uploading. Disable for servers without quota queries. This safeguard does not reserve capacity or guarantee an upload will succeed.</p>
-      {editor.draft && <div className="flex flex-wrap gap-2"><Button disabled={!editor.dirty || editor.pending} onClick={() => void editor.save()}>Save</Button><Button variant="outline" onClick={editor.cancel}>Cancel</Button></div>}
+      {draft && <div className="flex flex-wrap gap-2"><Button disabled={!dirty || pending} onClick={() => void save()}>Save</Button><Button variant="outline" onClick={cancel}>Cancel</Button></div>}
     </>}
   </div>
 }
@@ -76,10 +73,11 @@ export function KomodoSettingsCard({ discardRevision, onDirty }: Props) {
   const client = useQueryClient()
   // The editable model is private; readback/cache holds only the redacted server DTO.
   const query = useQuery({ queryKey: queryKeys.settings.komodo, queryFn: () => settingsApi.getKomodo().then(r => r.data) })
+  const readRevision = client.getQueryState(queryKeys.settings.komodo)?.dataUpdateCount
   const [draft, setDraft] = useState<KomodoDraft | null>(null), [base, setBase] = useState<KomodoSettings | null>(null)
   const [pending, setPending] = useState(false), [error, setError] = useState<unknown>(null), [result, setResult] = useState('')
   const [visible, setVisible] = useState({ key: false, secret: false })
-  const [testing, setTesting] = useState(false), [test, setTest] = useState<{ outcome: Outcome; at: number; snapshot: string } | null>(null)
+  const [testing, setTesting] = useState(false), [test, setTest] = useState<{ outcome: Outcome; at: number; snapshot: string; readRevision: number | undefined } | null>(null)
   const revision = useRef(0), active = useRef(true), submit = useRef(false), testSubmit = useRef(false)
   const dirty = draft !== null && base !== null && JSON.stringify(draft) !== JSON.stringify(draftFrom(base))
   useEffect(() => { active.current = true; return () => { active.current = false } }, [])
@@ -104,6 +102,8 @@ export function KomodoSettingsCard({ discardRevision, onDirty }: Props) {
       if (!active.current || !ownsSession(owner)) return
       const canonical = (await settingsApi.getKomodo()).data
       if (!active.current || !ownsSession(owner)) return
+      await client.cancelQueries({ queryKey: queryKeys.settings.komodo })
+      if (!active.current || !ownsSession(owner)) return
       client.setQueryData(queryKeys.settings.komodo, canonical)
       if (revision.current !== current) return
       setDraft(null); setBase(null); setVisible({ key: false, secret: false }); setResult('Komodo settings saved; canonical values confirmed.')
@@ -119,8 +119,8 @@ export function KomodoSettingsCard({ discardRevision, onDirty }: Props) {
     testSubmit.current = true; setTesting(true); setTest(null)
     try {
       const response = await settingsApi.testKomodo()
-      if (active.current && ownsSession(owner) && revision.current === current && JSON.stringify(client.getQueryData(queryKeys.settings.komodo)) === snapshot) setTest({ outcome: operationOutcome(response.data), at: Date.now(), snapshot })
-    } catch { if (active.current && ownsSession(owner) && revision.current === current) setTest({ outcome: 'unknown', at: Date.now(), snapshot }) }
+      if (active.current && ownsSession(owner) && revision.current === current && client.getQueryState(queryKeys.settings.komodo)?.dataUpdateCount === readRevision && JSON.stringify(client.getQueryData(queryKeys.settings.komodo)) === snapshot) setTest({ outcome: operationOutcome(response.data), at: Date.now(), snapshot, readRevision })
+    } catch { if (active.current && ownsSession(owner) && revision.current === current) setTest({ outcome: 'unknown', at: Date.now(), snapshot, readRevision }) }
     finally { testSubmit.current = false; if (active.current && ownsSession(owner)) setTesting(false) }
   }
   const validation = useValidationFeedback(error), saved = query.data
@@ -139,6 +139,6 @@ export function KomodoSettingsCard({ discardRevision, onDirty }: Props) {
     </div> : <Button variant="outline" onClick={begin} disabled={!saved || query.isError}>Edit Settings</Button>}
     <Button variant="outline" onClick={() => void testSaved()} disabled={!saved || !saved.enabled || dirty || pending || testing || query.isError}>Test saved connection</Button>
     <p>Test uses only the saved effective server configuration, never a draft. Save or Cancel unsaved changes before testing. It does not save credentials.</p>
-    {test && !query.isError && test.snapshot === JSON.stringify(saved) && <p role="status">Komodo test: {test.outcome}; measured {new Date(test.at).toLocaleString()} (UI session only).</p>}
+    {test && !query.isError && test.readRevision === readRevision && test.snapshot === JSON.stringify(saved) && <p role="status">Komodo test: {test.outcome}; measured {new Date(test.at).toLocaleString()} (UI session only).</p>}
   </div>
 }

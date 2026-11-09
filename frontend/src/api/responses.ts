@@ -47,7 +47,7 @@ const listFields: Record<string, Record<string, (value: unknown) => boolean>> = 
 const objectFields: Record<string, Record<string, (value: unknown) => boolean>> = {
   '/settings/storage': { check_quota_before_upload: boolean },
   '/encryption/status': { setup_completed: boolean, encryption_enabled: boolean },
-  '/settings/komodo': { enabled: boolean, has_api_key: boolean, has_api_secret: boolean, connected: boolean },
+  '/settings/komodo': { enabled: boolean, api_url: v => v === null || string(v), has_api_key: boolean, has_api_secret: boolean, connected: boolean },
   '/settings/system-info': { disk_total: number, disk_used: number, disk_free: number, backup_count: number, target_count: number, uptime_seconds: number, app_version: string },
   '/docker/health': { status: v => v === 'healthy' },
   '/schedules/compatibility/inventory': { items: value => Array.isArray(value) && value.every(item => fields(item, { kind: v => v === 'schedule' || v === 'target_legacy', id, name: string, expression: string, warnings: v => Array.isArray(v) && v.every(string) })), timezone: string, contract: string },
