@@ -194,6 +194,30 @@ def test_authenticated_nonobject_or_duplicate_payload_is_rejected():
             module.decode_bundle(encoded(fixture_envelope(plaintext)), PASSWORD)
 
 
+def test_concurrent_crypto_is_bounded_without_waiting_or_leaking():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    module = codec()
+    start = Barrier(8)
+
+    def export():
+        start.wait(timeout=5)
+        try:
+            return module.encode_bundle({"secret": CANARY}, PASSWORD)
+        except module.RecoveryBundleError as error:
+            assert CANARY not in str(error) and PASSWORD not in str(error)
+            return None
+
+    with ThreadPoolExecutor(max_workers=8) as workers:
+        outcomes = list(workers.map(lambda _: export(), range(8)))
+    assert sum(value is None for value in outcomes) >= 1
+    assert any(value is not None for value in outcomes)
+    for value in outcomes:
+        if value is not None:
+            assert module.decode_bundle(value, PASSWORD) == {"secret": CANARY}
+
+
 def test_size_and_password_bounds_precede_kdf(monkeypatch):
     module = codec()
     monkeypatch.setattr(module, "Argon2id", lambda **kwargs: pytest.fail("KDF invoked"))
