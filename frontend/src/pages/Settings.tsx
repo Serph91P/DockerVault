@@ -1,582 +1,109 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link2, Check, X, RefreshCw, Save, Eye, EyeOff, TestTube, HardDrive, Shield, Clock, Database, Archive, Upload } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { useContext, useEffect, useState, useSyncExternalStore } from 'react'
+import { Link, UNSAFE_DataRouterContext, useBlocker, useLocation } from 'react-router-dom'
 import { dockerApi, settingsApi } from '../api'
-import toast from 'react-hot-toast'
+import { queryKeys } from '../api/queryKeys'
+import { QueryFeedback } from '../components/QueryFeedback'
 import EncryptionSetup from '../components/EncryptionSetup'
-import { useState, useMemo, useEffect } from 'react'
-import { useLocation } from 'react-router-dom'
-import { operationOutcome, type Outcome } from '../api/outcomes'
-import { useNotificationStore } from '../store/notifications'
-import { useValidationFeedback } from '../components/ValidationFeedback'
+import SSHKeyManager from '../components/SSHKeyManager'
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from '../components/ui/dialog'
+import { Button } from '../components/ui/button'
+import { sessionGeneration, sessionSignal } from '../store/session'
+import { KomodoSettingsCard, StorageSettingsCard } from '../components/SettingsEditors'
 
-function StorageSettingsCard() {
-  const queryClient = useQueryClient()
-  const { data: storageSettings, ...storageQuery } = useQuery({
-    queryKey: queryKeys.settings.storage,
-    queryFn: () => settingsApi.getStorageSettings().then((r) => r.data),
-  })
+const sections = [
+  ['system', 'System'], ['connection', 'Connections'], ['encryption', 'Encryption & SSH keys'],
+  ['storage-safeguards', 'Storage safeguards'], ['system-recovery', 'System recovery'],
+] as const
+const card = 'space-y-4 rounded-xl border border-dark-700 bg-dark-800 p-4 sm:p-6 min-w-0'
+const subscribeSession = (listener: () => void) => { const signal = sessionSignal(); signal.addEventListener('abort', listener); return () => signal.removeEventListener('abort', listener) }
 
-  const updateMutation = useMutation({
-    mutationFn: (data: { check_quota_before_upload: boolean }) =>
-      settingsApi.updateStorageSettings(data),
-    onSuccess: () => {
-      toast.success('Storage settings saved')
-      queryClient.invalidateQueries({ queryKey: queryKeys.settings.storage })
-    },
-    onError: () => toast.error('Failed to save storage settings'),
-  })
-
-
-  return (
-    <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
-      <div className="flex items-center gap-3 mb-4">
-        <div className="w-10 h-10 bg-orange-500/10 rounded-lg flex items-center justify-center">
-          <Upload className="w-5 h-5 text-orange-400" />
-        </div>
-        <div>
-          <h2 className="text-lg font-semibold text-dark-100">Storage & Upload</h2>
-          <p className="text-sm text-dark-400">Upload behavior settings</p>
-        </div>
-      </div>
-
-      <QueryFeedback name="Storage settings" query={storageQuery} />
-      <div className="space-y-4" hidden={!storageSettings}>
-        <div className="flex items-center justify-between">
-          <div>
-            <label className="text-sm text-dark-300">Check quota before upload</label>
-            <p className="text-xs text-dark-500">
-              Verify available space on remote storage before uploading.
-              Disable if your storage server doesn't support quota queries.
-            </p>
-          </div>
-          <button
-            role="switch"
-            aria-label="Check quota before upload"
-            aria-checked={storageSettings?.check_quota_before_upload ?? false}
-            disabled={updateMutation.isPending}
-            onClick={() =>
-              updateMutation.mutate({
-                check_quota_before_upload: !(
-                  storageSettings?.check_quota_before_upload ?? false
-                ),
-              })
-            }
-            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-              storageSettings?.check_quota_before_upload ?? false
-                ? 'bg-primary-500'
-                : 'bg-dark-600'
-            }`}
-          >
-            <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                storageSettings?.check_quota_before_upload ?? false
-                  ? 'translate-x-6'
-                  : 'translate-x-1'
-              }`}
-            />
-          </button>
-        </div>
-      </div>
-    </div>
-  )
+function NavigationGuard({ dirty, discard }: { dirty: boolean; discard: () => void }) {
+  const blocker = useBlocker(dirty)
+  const [leaving, setLeaving] = useState(false)
+  return <Dialog open={blocker.state === 'blocked' && !leaving} onOpenChange={open => { if (!open && !leaving) blocker.reset?.() }} onOpenChangeComplete={open => {
+    if (!open && leaving && blocker.state === 'blocked') { discard(); blocker.proceed?.() }
+  }}>
+    <DialogContent className="w-full max-w-md rounded-xl border border-dark-600 bg-dark-800 p-6 space-y-4" finalFocus={!leaving}>
+      <DialogTitle className="text-lg font-semibold">Discard unsaved settings?</DialogTitle>
+      <DialogDescription>Unsaved settings and private credential inputs will be discarded. Cancel to keep editing. An already submitted write may still complete on the server; leaving does not roll it back.</DialogDescription>
+      <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => blocker.reset?.()}>Cancel</Button><Button variant="destructive" onClick={() => setLeaving(true)}>Discard and leave</Button></div>
+    </DialogContent>
+  </Dialog>
 }
 
-function KomodoSettingsCard() {
-  const queryClient = useQueryClient()
-  const [isEditing, setIsEditing] = useState(false)
-  const [showApiKey, setShowApiKey] = useState(false)
-  const [showApiSecret, setShowApiSecret] = useState(false)
-  const [testResult, setTestResult] = useState<{ outcome: Outcome; at: number } | null>(null)
-  const { data: komodoSettings, isLoading, refetch, ...komodoQuery } = useQuery({
-    queryKey: queryKeys.settings.komodo,
-    queryFn: () => settingsApi.getKomodo().then((r) => r.data),
-  })
-
-  // Initialize form data from query result
-  const initialFormData = useMemo(() => ({
-    enabled: komodoSettings?.enabled ?? false,
-    api_url: komodoSettings?.api_url || '',
-    api_key: '',
-    api_secret: '',
-  }), [komodoSettings])
-
-  const [formData, setFormData] = useState({
-    enabled: false,
-    api_url: '',
-    api_key: '',
-    api_secret: '',
-  })
-
-  // Reset form data when entering edit mode
-  const handleStartEdit = () => {
-    if (isLoading) return
-    setFormData(initialFormData)
-    setIsEditing(true)
-  }
-
-  const updateMutation = useMutation({
-    mutationFn: () => settingsApi.updateKomodo({ enabled: formData.enabled, api_url: formData.api_url || undefined, api_key: formData.api_key || undefined, api_secret: formData.api_secret || undefined }).then(r => r.data),
-    onSuccess: () => {
-      toast.success('Komodo settings saved')
-      setTestResult(null)
-      queryClient.invalidateQueries({ queryKey: queryKeys.settings.komodo })
-      setIsEditing(false)
-      setFormData((prev) => ({ ...prev, api_key: '', api_secret: '' }))
-    },
-    onError: () => toast.error('Failed to save settings'),
-  })
-
-  const testMutation = useMutation({
-    mutationFn: async () => ({ outcome: operationOutcome((await settingsApi.testKomodo()).data) }),
-    onSuccess: (response) => {
-      const outcome = response.outcome
-      setTestResult({ outcome, at: Date.now() })
-      useNotificationStore.getState().addNotification({ type: outcome === 'completed' ? 'success' : 'warning', title: 'Komodo test result', message: 'Connection test observed in this UI session only. Configuration changes invalidate this observation.', phase: outcome })
-      if (outcome === 'completed') toast.success('Komodo connection confirmed')
-      else toast.error(outcome === 'partial' ? 'Komodo test returned warnings' : 'Komodo connection not confirmed')
-      refetch()
-    },
-    onError: () => { setTestResult({ outcome: 'unknown', at: Date.now() }); toast.error('Connection test response unavailable') },
-  })
-  const validation = useValidationFeedback(updateMutation.error)
-
-  const handleSave = () => { if (!updateMutation.isPending) updateMutation.mutate() }
-
-  const handleCancel = () => {
-    setFormData(initialFormData)
-    setIsEditing(false)
-  }
-
-
-  return (
-    <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-purple-500/10 rounded-lg flex items-center justify-center">
-            <Link2 className="w-5 h-5 text-purple-400" />
-          </div>
-          <div>
-            <h2 className="text-lg font-semibold text-dark-100">Komodo Integration</h2>
-            <p className="text-sm text-dark-400">Container orchestration integration</p>
-          </div>
-        </div>
-        <div className="flex gap-2">
-          {!isEditing && (
-            <button
-              onClick={() => refetch()}
-              aria-label="Refresh connection status"
-              className="p-2 text-dark-400 hover:bg-dark-700 rounded-lg"
-            >
-              <RefreshCw className="w-4 h-4" />
-            </button>
-          )}
-        </div>
-      </div>
-
-      <QueryFeedback name="Komodo settings" query={{ ...komodoQuery, refetch }} />
-      {testResult && <p role="status">Komodo test: {testResult.outcome}; measured {new Date(testResult.at).toLocaleString()} (UI session only).</p>}
-      {validation.summary}
-      <div hidden={!komodoSettings && !isEditing}>
-      {isEditing ? (
-        <div className="space-y-4">
-          {/* Enable/Disable */}
-          <div className="flex items-center justify-between">
-            <label className="text-sm text-dark-300">Enable Integration</label>
-            <button
-              onClick={() => setFormData((prev) => ({ ...prev, enabled: !prev.enabled }))}
-              role="switch"
-              aria-label="Enable Komodo integration"
-              aria-checked={formData.enabled}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                formData.enabled ? 'bg-primary-500' : 'bg-dark-600'
-              }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                  formData.enabled ? 'translate-x-6' : 'translate-x-1'
-                }`}
-              />
-            </button>
-          </div>
-
-          {/* API URL */}
-          <div>
-            <label className="block text-sm text-dark-400 mb-1">API URL</label>
-            <input
-              type="text"
-              value={formData.api_url} aria-label="Komodo API URL" {...validation.field('api_url')}
-              onChange={(e) => setFormData((prev) => ({ ...prev, api_url: e.target.value }))}
-              placeholder="https://komodo.example.com"
-              className="w-full px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
-            />
-          </div>
-
-          {/* API Key */}
-          <div>
-            <label className="block text-sm text-dark-400 mb-1">
-              API Key {komodoSettings?.has_api_key && '(leave empty to keep current)'}
-            </label>
-            <div className="relative">
-              <input
-                type={showApiKey ? 'text' : 'password'}
-                value={formData.api_key} aria-label="Komodo API key" {...validation.field('api_key')}
-                onChange={(e) => setFormData((prev) => ({ ...prev, api_key: e.target.value }))}
-                placeholder={komodoSettings?.has_api_key ? '••••••••' : 'Enter API key'}
-                className="w-full px-3 py-2 pr-10 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
-              />
-              <button
-                type="button"
-                onClick={() => setShowApiKey(!showApiKey)}
-                aria-label={showApiKey ? 'Hide API key' : 'Show API key'}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-dark-400 hover:text-dark-200"
-              >
-                {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
-            </div>
-          </div>
-
-          {/* API Secret */}
-          <div>
-            <label className="block text-sm text-dark-400 mb-1">
-              API Secret {komodoSettings?.has_api_secret && '(leave empty to keep current)'}
-            </label>
-            <div className="relative">
-              <input
-                type={showApiSecret ? 'text' : 'password'}
-                value={formData.api_secret} aria-label="Komodo API secret" {...validation.field('api_secret')}
-                onChange={(e) => setFormData((prev) => ({ ...prev, api_secret: e.target.value }))}
-                placeholder={komodoSettings?.has_api_secret ? '••••••••' : 'Enter API secret'}
-                className="w-full px-3 py-2 pr-10 bg-dark-700 border border-dark-600 rounded-lg text-sm text-dark-100"
-              />
-              <button
-                type="button"
-                onClick={() => setShowApiSecret(!showApiSecret)}
-                aria-label={showApiSecret ? 'Hide API secret' : 'Show API secret'}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-dark-400 hover:text-dark-200"
-              >
-                {showApiSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
-            </div>
-          </div>
-
-          {/* Actions */}
-          <div className="flex gap-2 pt-2">
-            <button
-              onClick={handleSave}
-              disabled={updateMutation.isPending}
-              className="flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 transition-colors text-sm"
-            >
-              <Save className="w-4 h-4" />
-              Save
-            </button>
-            <button
-              onClick={handleCancel}
-              className="px-4 py-2 bg-dark-600 text-dark-300 rounded-lg hover:bg-dark-500 transition-colors text-sm"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {/* Status */}
-          <div className="flex items-center gap-2">
-            <span className="text-dark-400">Status:</span>
-            {komodoSettings?.enabled ? (
-              komodoSettings?.connected ? (
-                <>
-                  <Check className="w-4 h-4 text-green-500" />
-                  <span className="text-green-400">Connected</span>
-                </>
-              ) : (
-                <>
-                  <X className="w-4 h-4 text-yellow-500" />
-                  <span className="text-yellow-400">Enabled, not connected</span>
-                </>
-              )
-            ) : (
-              <>
-                <X className="w-4 h-4 text-dark-500" />
-                <span className="text-dark-400">Disabled</span>
-              </>
-            )}
-          </div>
-
-          {/* API URL */}
-          {komodoSettings?.api_url && (
-            <div className="text-sm">
-              <span className="text-dark-400">API URL: </span>
-              <span className="text-dark-200 font-mono">{komodoSettings.api_url}</span>
-            </div>
-          )}
-
-          {/* API Key Status */}
-          <div className="text-sm">
-            <span className="text-dark-400">API Key: </span>
-            {komodoSettings?.has_api_key ? (
-              <span className="text-green-400">Configured</span>
-            ) : (
-              <span className="text-dark-500">Not set</span>
-            )}
-          </div>
-
-          {/* API Secret Status */}
-          <div className="text-sm">
-            <span className="text-dark-400">API Secret: </span>
-            {komodoSettings?.has_api_secret ? (
-              <span className="text-green-400">Configured</span>
-            ) : (
-              <span className="text-dark-500">Not set</span>
-            )}
-          </div>
-
-          {/* Actions */}
-          <div className="flex gap-2 pt-2">
-            <button
-              onClick={handleStartEdit}
-              disabled={isLoading}
-              className="px-4 py-2 bg-dark-700 text-dark-200 rounded-lg hover:bg-dark-600 transition-colors text-sm disabled:opacity-50"
-            >
-              Edit Settings
-            </button>
-            {komodoSettings?.enabled && (
-              <button
-                onClick={() => testMutation.mutate()}
-                disabled={testMutation.isPending}
-                className="flex items-center gap-2 px-4 py-2 bg-purple-500/10 text-purple-400 rounded-lg hover:bg-purple-500/20 transition-colors text-sm"
-              >
-                <TestTube className="w-4 h-4" />
-                Test Connection
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-      </div>
-    </div>
-  )
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(1024))
-  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`
-}
-
-function formatUptime(seconds: number): string {
-  const days = Math.floor(seconds / 86400)
-  const hours = Math.floor((seconds % 86400) / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-  if (days > 0) return `${days}d ${hours}h ${minutes}m`
-  if (hours > 0) return `${hours}h ${minutes}m`
-  return `${minutes}m`
-}
-
+function bytes(value: number) { return `${(value / 1024 ** 3).toFixed(2)} GiB` }
 function SystemInfoCard() {
-  const { data: systemInfo, ...systemQuery } = useQuery({
-    queryKey: queryKeys.systemInfo,
-    queryFn: () => settingsApi.getSystemInfo().then((r) => r.data),
-    refetchInterval: 30000,
-  })
-
-  const diskPercent = systemInfo && systemInfo.disk_total > 0
-    ? Math.round((systemInfo.disk_used / systemInfo.disk_total) * 100)
-    : 0
-
-  return (
-    <div className="bg-dark-800 rounded-xl border border-dark-700 p-6">
-      <div className="flex items-center gap-3 mb-4">
-        <div className="w-10 h-10 bg-green-500/10 rounded-lg flex items-center justify-center">
-          <HardDrive className="w-5 h-5 text-green-400" />
-        </div>
-        <div className="flex-1">
-          <h2 className="text-lg font-semibold text-dark-100">System Information</h2>
-          <p className="text-sm text-dark-400">Runtime & storage details</p>
-        </div>
-        {systemInfo && (
-          <span className="text-xs text-dark-500 font-mono">v{systemInfo.app_version}</span>
-        )}
-      </div>
-
-      <QueryFeedback name="System information" query={systemQuery} />
-      {systemInfo ? (
-        <>
-          {/* Disk Usage Bar */}
-          <div className="mb-4 p-3 bg-dark-900 rounded-lg">
-            <div className="flex items-center justify-between text-sm mb-2">
-              <span className="text-dark-400">Disk Usage</span>
-              <span className="text-dark-200">
-                {formatBytes(systemInfo.disk_used)} / {formatBytes(systemInfo.disk_total)}
-              </span>
-            </div>
-            <div className="h-2 bg-dark-700 rounded-full overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all ${
-                  diskPercent > 90 ? 'bg-red-500' : diskPercent > 70 ? 'bg-yellow-500' : 'bg-green-500'
-                }`}
-                style={{ width: `${diskPercent}%` }}
-              />
-            </div>
-            <div className="flex justify-between text-xs text-dark-500 mt-1">
-              <span>{diskPercent}% used</span>
-              <span>{formatBytes(systemInfo.disk_free)} free</span>
-            </div>
-          </div>
-
-          {/* Stats Grid */}
-          <div className="grid grid-cols-3 gap-3 mb-4">
-            <div className="bg-dark-900 rounded-lg p-3 text-center">
-              <Archive className="w-4 h-4 text-primary-400 mx-auto mb-1" />
-              <p className="text-lg font-semibold text-dark-100">{systemInfo.backup_count}</p>
-              <p className="text-xs text-dark-500">Backups</p>
-            </div>
-            <div className="bg-dark-900 rounded-lg p-3 text-center">
-              <Database className="w-4 h-4 text-blue-400 mx-auto mb-1" />
-              <p className="text-lg font-semibold text-dark-100">{systemInfo.target_count}</p>
-              <p className="text-xs text-dark-500">Targets</p>
-            </div>
-            <div className="bg-dark-900 rounded-lg p-3 text-center">
-              <Clock className="w-4 h-4 text-green-400 mx-auto mb-1" />
-              <p className="text-lg font-semibold text-dark-100">{formatUptime(systemInfo.uptime_seconds)}</p>
-              <p className="text-xs text-dark-500">Uptime</p>
-            </div>
-          </div>
-
-          {/* Details */}
-          <div className="space-y-3 text-sm">
-            <div className="flex justify-between py-2 border-b border-dark-700">
-              <span className="text-dark-400">Backup Directory</span>
-              <span className="text-dark-200 font-mono">{systemInfo.backup_dir}</span>
-            </div>
-            <div className="flex justify-between py-2 border-b border-dark-700">
-              <span className="text-dark-400">Database</span>
-              <span className="text-dark-200">
-                <span className="font-mono">{systemInfo.database_path}</span>
-                <span className="text-dark-500 ml-2">({formatBytes(systemInfo.db_size)})</span>
-              </span>
-            </div>
-            <div className="flex justify-between py-2">
-              <span className="text-dark-400">Timezone</span>
-              <span className="text-dark-200">{systemInfo.timezone}</span>
-            </div>
-          </div>
-        </>
-      ) : (
-        <div className="space-y-3 animate-pulse">
-          <div className="h-16 bg-dark-700 rounded-lg" />
-          <div className="grid grid-cols-3 gap-3">
-            <div className="h-20 bg-dark-700 rounded-lg" />
-            <div className="h-20 bg-dark-700 rounded-lg" />
-            <div className="h-20 bg-dark-700 rounded-lg" />
-          </div>
-        </div>
-      )}
-
-      <div className="mt-4 p-4 bg-dark-700/50 rounded-lg flex items-start gap-3">
-        <Shield className="w-5 h-5 text-primary-400 flex-shrink-0 mt-0.5" />
-        <div className="text-sm text-dark-300">
-          <p className="font-medium text-dark-200 mb-1">Retention Policies</p>
-          <p>
-            Configure backup retention (how many backups to keep) on the{' '}
-            <a href="/protection/retention" className="text-primary-300 underline underline-offset-2">
-              Retention
-            </a>{' '}
-            page. You can create multiple policies and assign them to targets.
-          </p>
-        </div>
-      </div>
-    </div>
-  )
+  const query = useQuery({ queryKey: queryKeys.systemInfo, queryFn: () => settingsApi.getSystemInfo().then(r => r.data), refetchInterval: 30000 })
+  const info = query.data
+  return <div className={card}>
+    <h2 className="text-lg font-semibold">System Information</h2>
+    <QueryFeedback name="System information" query={query} />
+    <p>Runtime values are read-only and controlled by the deployment environment. Docker socket, backup paths, concurrency and timeouts cannot be edited here.</p>
+    {info && <>
+      <h3 className="font-semibold">Disk Usage</h3>
+      {info.disk_status === 'available' ? <><p>{bytes(info.disk_used)} used of {bytes(info.disk_total)} · {bytes(info.disk_free)} free</p><meter className="w-full" aria-label="Filesystem bytes used" min={0} max={Math.max(1, info.disk_total)} value={info.disk_used} /></> : <p>Disk capacity unavailable; fallback numbers are not measured usage.</p>}
+      <dl className="grid gap-2 sm:grid-cols-2">
+        <dt>Backups</dt><dd>{info.backup_count}</dd><dt>Targets</dt><dd>{info.target_count}</dd>
+        <dt>Uptime</dt><dd>{Math.floor(info.uptime_seconds / 60)} minutes</dd><dt>Version</dt><dd>{info.app_version}</dd>
+        <dt>Backup Directory</dt><dd>{info.backup_dir}</dd><dt>Database</dt><dd>{info.database_path} ({bytes(info.db_size)})</dd><dt>Timezone</dt><dd>{info.timezone}</dd>
+      </dl>
+    </>}
+    <p>CPU and RAM metrics are not supplied by this settings API. No guessed measurements are shown.</p>
+    <p>Configure reusable <Link className="underline text-primary-300" to="/protection/retention">Retention</Link> policies in Protection.</p>
+  </div>
 }
 
 export default function Settings() {
-  const { hash, search } = useLocation()
-  const candidate = new URLSearchParams(search).get('storageReturn')
+  const generation = useSyncExternalStore(subscribeSession, sessionGeneration)
+  return <SettingsWorkspace key={generation} />
+}
+function SettingsWorkspace() {
+  const location = useLocation()
+  const dataRouter = useContext(UNSAFE_DataRouterContext)
+  const hash = location.hash.slice(1)
+  const current = hash === 'ssh-keys' ? 'encryption' : sections.some(([id]) => id === hash) ? hash : 'system'
+  const [dirty, setDirty] = useState({ komodo: false, storage: false })
+  const [discardRevision, setDiscardRevision] = useState(0)
+  const hasDraft = dirty.komodo || dirty.storage
+  const discard = () => { setDiscardRevision(r => r + 1); setDirty({ komodo: false, storage: false }) }
+  const candidate = new URLSearchParams(location.search).get('storageReturn')
   let storageReturn: string | null = null
   if (candidate?.startsWith('/storage?')) {
-    const source = new URLSearchParams(candidate.slice('/storage?'.length))
-    const safe = new URLSearchParams()
-    for (const key of ['storage','tab','path','q','kind','sort','direction','operation','returnTo']) if (source.has(key)) safe.set(key,source.get(key)!)
+    const source = new URLSearchParams(candidate.slice('/storage?'.length)), safe = new URLSearchParams()
+    for (const key of ['storage', 'tab', 'path', 'q', 'kind', 'sort', 'direction', 'operation', 'returnTo']) if (source.has(key)) safe.set(key, source.get(key)!)
     storageReturn = `/storage?${safe}`
   }
+  useEffect(() => { document.getElementById(hash === 'ssh-keys' ? hash : current)?.focus() }, [current, hash])
   useEffect(() => {
-    if (hash === '#connection' || hash === '#encryption' || hash === '#ssh-keys') document.getElementById(hash.slice(1))?.focus()
-  }, [hash])
-  const { data: dockerHealth, refetch: refetchDocker, ...dockerQuery } = useQuery({
-    queryKey: ['docker-health'],
-    queryFn: () => dockerApi.getHealth().then(response => response.data.status === 'healthy'),
-    refetchInterval: 30000,
-  })
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-dark-100">Settings</h1>
-        <p className="text-dark-400 mt-1">Configuration and integrations</p>
+    if (!hasDraft) return
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [hasDraft])
+  const docker = useQuery({ queryKey: ['docker-health'], queryFn: () => dockerApi.getHealth().then(r => r.data.status === 'healthy'), refetchInterval: 30000 })
+  return <div className="space-y-6">
+    <header><h1 className="text-2xl font-bold">Settings</h1><p className="text-dark-300">Saved effective values, private drafts and separate test observations.</p></header>
+    <nav aria-label="Settings sections" className="flex flex-wrap gap-2">
+      {sections.map(([id, label]) => <Link key={id} to={{ pathname: location.pathname, search: location.search, hash: `#${id}` }} aria-current={current === id ? 'location' : undefined} className={`min-h-11 rounded-lg border px-3 py-2 ${current === id ? 'border-primary-400 text-primary-200' : 'border-dark-600 text-dark-200'}`}>{label}</Link>)}
+    </nav>
+    {dataRouter && <NavigationGuard key={location.key} dirty={hasDraft} discard={discard} />}
+    <section id="system" tabIndex={-1} aria-label="System settings" hidden={current !== 'system'}><SystemInfoCard /></section>
+    <section id="connection" tabIndex={-1} aria-label="Docker connection settings" hidden={current !== 'connection'} className="space-y-4">
+      <div className={card}><h2 className="text-lg font-semibold">Docker Connection</h2><QueryFeedback name="Docker" query={docker} />
+        <p>{docker.data === undefined ? 'Unknown' : docker.isError ? 'Previous Docker observation is stale; current connection unknown.' : docker.data ? 'Connected' : 'Not connected'}</p>
+        <p>Socket path is environment-controlled; this API does not expose its configured value. A health observation does not prove discovery results or lifecycle authority.</p>
       </div>
-
-      {/* Docker Status */}
-      <section id="connection" tabIndex={-1} aria-label="Docker connection settings" className="bg-dark-800 rounded-xl border border-dark-700 p-6">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-blue-500/10 rounded-lg flex items-center justify-center">
-              🐳
-            </div>
-            <div>
-              <h2 className="text-lg font-semibold text-dark-100">Docker Connection</h2>
-              <p className="text-sm text-dark-400">Docker socket connection status</p>
-            </div>
-          </div>
-          <button
-            onClick={() => refetchDocker()}
-            aria-label="Refresh Docker status"
-            className="p-2 text-dark-400 hover:bg-dark-700 rounded-lg"
-          >
-            <RefreshCw className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <QueryFeedback name="Docker" query={{ ...dockerQuery, refetch: refetchDocker }} />
-          {dockerHealth === undefined ? <span>Unknown</span> : dockerHealth ? (
-            <>
-              <Check className="w-5 h-5 text-green-500" />
-              <span className="text-green-400">Connected</span>
-            </>
-          ) : (
-            <>
-              <X className="w-5 h-5 text-red-500" />
-              <span className="text-red-400">Not connected</span>
-            </>
-          )}
-        </div>
-
-        <div className="mt-4 text-sm text-dark-400">
-          <p>Docker Socket: /var/run/docker.sock</p>
-        </div>
-      </section>
-
-      {/* Encryption Settings */}
+      <KomodoSettingsCard discardRevision={discardRevision} onDirty={value => setDirty(prev => prev.komodo === value ? prev : { ...prev, komodo: value })} />
+    </section>
+    <div hidden={current !== 'encryption'} className="space-y-4">
       <section id="encryption" tabIndex={-1} aria-label="Encryption settings"><EncryptionSetup /></section>
-      <section id="ssh-keys" tabIndex={-1} aria-label="SSH key security">
-        <h2 className="text-lg font-semibold">Security / SSH keys</h2>
-        {storageReturn && <Link className="underline" to={storageReturn}>Return to storage connection</Link>}
+      <section id="ssh-keys" tabIndex={-1} aria-label="SSH key security" className={card}><h2 className="text-lg font-semibold">Security / SSH keys</h2>
+        {storageReturn && <Link className="underline text-primary-300" to={storageReturn}>Return to storage connection</Link>}
         <SSHKeyManager />
       </section>
-
-      {/* Storage & Upload Settings */}
-      <StorageSettingsCard />
-
-      {/* Komodo Integration */}
-      <KomodoSettingsCard />
-
-      {/* System Info */}
-      <SystemInfoCard />
     </div>
-  )
+    <section id="storage-safeguards" tabIndex={-1} aria-label="Storage safeguards" hidden={current !== 'storage-safeguards'}><StorageSettingsCard discardRevision={discardRevision} onDirty={value => setDirty(prev => prev.storage === value ? prev : { ...prev, storage: value })} /></section>
+    <section id="system-recovery" tabIndex={-1} aria-label="System recovery" hidden={current !== 'system-recovery'} className={card}><h2 className="text-lg font-semibold">System recovery</h2><p>System export, import and bootstrap require backend dependency #143, which is not implemented in this version. No recovery-bundle actions are available.</p><p>Archive encryption keys are not login passwords or system-recovery bundle passwords. Existing archive restore remains available in <Link className="underline text-primary-300" to="/history">History & Restore</Link>.</p></section>
+  </div>
 }
-import { queryKeys } from '../api/queryKeys'
-import { QueryFeedback } from '../components/QueryFeedback'
-import SSHKeyManager from '../components/SSHKeyManager'
-import { Link } from 'react-router-dom'

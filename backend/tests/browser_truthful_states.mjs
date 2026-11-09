@@ -13,7 +13,7 @@ const username = 'truthful-states-operator', password = randomBytes(24).toString
 const routes = [
   ['/', '/targets', 'Plans'], ['/protection', '/targets', 'Plans'], ['/history', '/backups/history', 'History'],
   ['/protection/schedules', '/schedules', 'Schedules'], ['/protection/retention', '/retention', 'Retention policies'],
-  ['/storage', '/storage', 'Storage locations'], ['/settings', '/settings/storage', 'Storage settings'],
+  ['/storage', '/storage', 'Storage locations'], ['/settings#storage-safeguards', '/settings/storage', 'Storage settings'],
 ]
 async function api(path, method = 'GET', data) {
   const response = await context.request.fetch(base + '/api/v1' + path, { method, data })
@@ -69,7 +69,7 @@ try {
   // Review regressions: native populated SSH responses and scoped nested inventory faults.
   const pageErrors = []
   page.on('pageerror', error => pageErrors.push(error.message))
-  await ready('/settings#ssh-keys', 'Storage settings')
+  await ready('/settings#ssh-keys', 'SSH keys')
   await page.getByRole('button', { name: 'Generate', exact: true }).click()
   const keyDialog = page.getByRole('dialog', { name: 'Generate SSH key', exact: true })
   await keyDialog.getByRole('textbox', { name: 'Name', exact: true }).fill('truthful_key')
