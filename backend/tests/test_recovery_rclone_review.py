@@ -331,3 +331,193 @@ async def test_native_ssh_source_references_preview_and_restore_with_missing_key
     assert (
         ssh_peer["depot"] / "unchanged.archive"
     ).read_bytes() == b"synthetic-original-archive-bytes"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("collision", ["none", "dependency", "root"])
+async def test_mixed_managed_and_external_roots_restore_both_native_crypt_credentials(
+    collision, db_session, test_db, file_database, tmp_path, monkeypatch
+):
+    import subprocess
+    import shutil
+    from cryptography.fernet import Fernet
+    from pydantic import SecretStr
+    from app import database, credential_encryption
+    from app.config import settings
+    from app.remote_storage import RcloneStorage, StorageConfig, StorageType
+    from app.recovery_bundle import encode_bundle, decode_bundle
+    from app.recovery_service import export_state, validate_state
+    from app.recovery_activation import activate_state
+
+    monkeypatch.setattr(database, "async_session", test_db)
+    monkeypatch.setattr(
+        settings, "CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode()
+    )
+    monkeypatch.setattr(credential_encryption, "_fernet", None)
+    secrets = [
+        subprocess.check_output(
+            [recovery._binary(), "obscure", "-"],
+            input=f"synthetic-crypt-{index}".encode(),
+        )
+        .decode()
+        .strip()
+        for index in range(2)
+    ]
+    depots = [tmp_path / "managed-depot", tmp_path / "external-depot"]
+    for depot in depots:
+        depot.mkdir()
+    first = storage("restored", 1)
+    second = storage("restored" if collision == "root" else "added", 2)
+    dependency = "shared" if collision == "dependency" else "external_dependency"
+    managed = recovery.package_rclone(
+        {
+            "restored": {"type": "crypt", "remote": "shared:", "password": secrets[0]},
+            "shared": {"type": "alias", "remote": str(depots[0])},
+        },
+        [first],
+    )
+    state = await recovery.create_managed_config(managed, tmp_path / "old-generation")
+    external = tmp_path / "external.conf"
+    external.write_text(
+        f"[{second['rclone_remote']}]\ntype=crypt\nremote={dependency}:\npassword={secrets[1]}\n[{dependency}]\ntype=alias\nremote={depots[1]}\n"
+    )
+    monkeypatch.setenv("RCLONE_CONFIG", str(external))
+    monkeypatch.setattr(settings, "RCLONE_CONFIG", str(external))
+    monkeypatch.setattr(settings, "RCLONE_CONFIG_PASS", SecretStr(""))
+    db_session.add(database.AppSettings(key="recovery_rclone", value=json.dumps(state)))
+    db_session.add_all(
+        [
+            database.RemoteStorage(
+                id=item["id"],
+                name=f"source-{item['id']}",
+                storage_type="rclone",
+                rclone_remote=item["rclone_remote"],
+                base_path="/",
+            )
+            for item in [first, second]
+        ]
+    )
+    await db_session.commit()
+    expected = [b"retained-managed-archive-bytes", b"retained-external-archive-bytes"]
+    for item, data in zip([first, second], expected, strict=True):
+        source = tmp_path / "explicit-source"
+        source.write_bytes(data)
+        backend = RcloneStorage(
+            StorageConfig(
+                id=item["id"],
+                name="synthetic",
+                storage_type=StorageType.RCLONE,
+                rclone_remote=item["rclone_remote"],
+            )
+        )
+        code, _, _ = await backend._run_rclone(
+            ["copyto", str(source), item["rclone_remote"] + ":archive.bin"]
+        )
+        assert code == 0
+        code, output, _ = await backend._run_rclone(
+            ["cat", item["rclone_remote"] + ":archive.bin"]
+        )
+        assert code == 0 and output.encode() == data
+    before = {
+        str(path): path.read_bytes()
+        for depot in depots
+        for path in depot.rglob("*")
+        if path.is_file()
+    }
+    payload = await export_state(db_session)
+    assert len(payload["rclone"]["roots"]) == 2
+    assert all(root["state"] == "portable" for root in payload["rclone"]["roots"])
+    assert all(
+        any(
+            remote.get("password") == secret
+            for remote in payload["rclone"]["remotes"].values()
+        )
+        for secret in secrets
+    )
+    assert payload["rclone"]["remotes"]["restored"]["password"] == secrets[0]
+    payload = decode_bundle(
+        encode_bundle(payload, "synthetic-review-password"), "synthetic-review-password"
+    )
+    assert all(
+        row["state"] == "not_tested"
+        for row in (await validate_state(payload))["storages"]
+    )
+    external.unlink()
+    shutil.rmtree(tmp_path / "old-generation")
+    monkeypatch.setattr(
+        settings, "CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode()
+    )
+    monkeypatch.setattr(credential_encryption, "_fernet", None)
+    activated = await activate_state(
+        payload, "new-admin", "synthetic-account-password", file_database
+    )
+    assert activated["token"] and all(
+        row["state"] == "connected" for row in activated["result"]["storages"]
+    )
+    monkeypatch.setattr(database, "async_session", file_database)
+    async with file_database() as session:
+        for identifier, data in enumerate(expected, start=1):
+            row = await session.get(database.RemoteStorage, identifier)
+            backend = RcloneStorage(
+                StorageConfig(
+                    id=identifier,
+                    name="synthetic",
+                    storage_type=StorageType.RCLONE,
+                    rclone_remote=row.rclone_remote,
+                )
+            )
+            code, output, _ = await backend._run_rclone(
+                ["cat", row.rclone_remote + ":archive.bin"]
+            )
+            assert code == 0 and output.encode() == data
+        reexported = await export_state(session)
+        await validate_state(reexported)
+        assert all(
+            root["state"] == "portable" for root in reexported["rclone"]["roots"]
+        )
+    assert all(
+        path.read_bytes() == before[str(path)]
+        for depot in depots
+        for path in depot.rglob("*")
+        if path.is_file()
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["union", "combine", "ssh", "unavailable"])
+async def test_source_merge_rebinds_composite_dependencies_and_missing_credentials(
+    kind, tmp_path
+):
+    first, second = storage("shared", 1), storage("added", 2)
+    managed = recovery.package_rclone({"shared": {"type": "memory"}}, [first])
+    (tmp_path / "untouched.archive").write_bytes(b"composite-external-original")
+    config = {"shared": {"type": "alias", "remote": str(tmp_path)}}
+    if kind == "union":
+        (tmp_path / "empty").mkdir()
+        config["empty"] = {"type": "alias", "remote": str(tmp_path / "empty")}
+        config["added"] = {"type": kind, "upstreams": "shared::ro empty:"}
+    elif kind == "combine":
+        config["added"] = {"type": kind, "upstreams": "part=shared:"}
+    elif kind == "ssh":
+        config["shared"] = {"type": "sftp", "key_file": "/nonexistent/synthetic-key"}
+        config["added"] = {"type": "alias", "remote": "shared:"}
+    else:
+        second = storage("shared", 2)
+        config = {}
+    external = recovery.package_rclone(config, [second])
+    merged = recovery._merge_snapshots(managed, external, [first, second])
+    assert merged["remotes"]["shared"] == {"type": "memory"}
+    assert merged["roots"][0]["state"] == "portable"
+    if kind in {"ssh", "unavailable"}:
+        assert merged["roots"][1]["state"] == "credentials_required"
+        if kind == "ssh":
+            requirement = merged["roots"][1]["ssh_requirements"][0]
+            assert requirement["remote"] != "shared"
+            assert merged["remotes"][requirement["remote"]]["type"] == "sftp"
+    else:
+        state = await recovery.create_managed_config(merged, tmp_path / "generation")
+        path = "added:" + ("part/" if kind == "combine" else "") + "untouched.archive"
+        code, output, _ = await recovery.run_managed(
+            state, "added", ["cat", path], timeout=10
+        )
+        assert code == 0 and output == "composite-external-original"

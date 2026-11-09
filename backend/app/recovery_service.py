@@ -124,6 +124,10 @@ async def export_state(session) -> dict:
         from app.rclone_recovery import export_rclone
 
         rclone = await export_rclone(session, rclone_storages)
+        # Names are scoped per source at runtime; preserve colliding roots in the portable copy.
+        roots = {root["storage_id"]: root["remote_name"] for root in rclone["roots"]}
+        for row in rclone_storages:
+            row["rclone_remote"] = roots[row["id"]]
     payload = {
         "schema_version": 1,
         "application": "dockervault",

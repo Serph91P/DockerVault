@@ -874,13 +874,78 @@ def _external_snapshot(storages):
         return package_rclone({}, storages)
 
 
+def _merge_snapshots(managed, external, storages):
+    # Native runtime selects by storage ID; two sources can use the same remote name.
+    occupied = set(managed["remotes"]) | {
+        root["remote_name"] for root in managed["roots"]
+    }
+    external_names = set(external["remotes"]) | {
+        root["remote_name"] for root in external["roots"]
+    }
+    reserved = occupied | external_names
+    renamed = {}
+    for name in sorted(occupied & external_names):
+        replacement = "__dv_external_" + hashlib.sha256(name.encode()).hexdigest()
+        while replacement in reserved:
+            replacement += "_"
+        renamed[name] = replacement
+        reserved.add(replacement)
+
+    def reference(value):
+        name, overrides, path = _parse_reference(value)
+        if overrides or (name is not None and name.startswith(":")):
+            _invalid()  # Snapshots already normalized native connection strings.
+        return renamed.get(name, name) + ":" + path if name else value
+
+    for name, fields in external["remotes"].items():
+        fields = dict(fields)
+        if fields["type"] in _WRAPPERS:
+            fields["remote"] = reference(fields["remote"])
+        elif fields["type"] in {"union", "combine"}:
+            upstreams = []
+            for value in _space_list(fields["upstreams"]):
+                if fields["type"] == "combine":
+                    mount, _, value = value.partition("=")
+                    value = mount + "=" + reference(value)
+                else:
+                    value = reference(value)
+                upstreams.append(value)
+            output = io.StringIO()
+            csv.writer(output, delimiter=" ", lineterminator="\n").writerow(upstreams)
+            fields["upstreams"] = output.getvalue().rstrip("\n")
+        managed["remotes"][renamed.get(name, name)] = fields
+    for root in external["roots"]:
+        root["remote_name"] = renamed.get(root["remote_name"], root["remote_name"])
+        for key in ("ssh_requirements", "external_commands"):
+            for requirement in root.get(key, []):
+                requirement["remote"] = renamed.get(
+                    requirement["remote"], requirement["remote"]
+                )
+    managed["files"].update(external["files"])
+    roots = {root["storage_id"]: root for root in managed["roots"] + external["roots"]}
+    managed["roots"] = [roots[row["id"]] for row in storages]
+    validate_rclone(
+        managed,
+        [dict(row, rclone_remote=roots[row["id"]]["remote_name"]) for row in storages],
+    )
+    return managed
+
+
 async def export_rclone(session, storages):
     from app.remote_storage import _await_io_settled
 
     state = await managed_state(session)
-    if state is not None:
-        return await export_managed_config(state, storages)
-    return await _await_io_settled(asyncio.to_thread(_external_snapshot, storages))
+    if state is None:
+        return await _await_io_settled(asyncio.to_thread(_external_snapshot, storages))
+    owned = {root["storage_id"] for root in state["roots"]}
+    managed = await export_managed_config(
+        state, [row for row in storages if row["id"] in owned]
+    )
+    unowned = [row for row in storages if row["id"] not in owned]
+    if not unowned:
+        return managed
+    external = await _await_io_settled(asyncio.to_thread(_external_snapshot, unowned))
+    return _merge_snapshots(managed, external, storages)
 
 
 def _credential_fd():
