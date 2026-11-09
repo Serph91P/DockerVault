@@ -356,8 +356,10 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "fernet",
+ "openssl",
  "serde",
  "serde_json",
+ "zeroize",
 ]
 
 [[package]]

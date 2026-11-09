@@ -1,9 +1,18 @@
 //! Existing encryption formats only; cryptographic primitives stay in qualified libraries.
+#[cfg(unix)]
+mod archive;
+#[cfg(unix)]
+pub use archive::{decrypt_file, encrypt_file, key_sidecar_path};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CryptoError {
     InvalidKey,
     Authentication,
     Encoding,
+    Format,
+    Cancelled,
+    Io,
+    Crypto,
+    PublicationUncertain,
 }
 impl std::fmt::Display for CryptoError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -11,10 +20,27 @@ impl std::fmt::Display for CryptoError {
             Self::InvalidKey => "Invalid encryption key",
             Self::Authentication => "Encrypted data authentication failed",
             Self::Encoding => "Decrypted credential is not UTF-8",
+            Self::Format => "Invalid or unsupported archive/key format",
+            Self::Cancelled => "Cryptographic work cancelled",
+            Self::Io => "Cryptographic file I/O failed",
+            Self::Crypto => "Cryptographic operation failed",
+            Self::PublicationUncertain => {
+                "Valid output published but directory durability uncertain"
+            }
         })
     }
 }
 impl std::error::Error for CryptoError {}
+impl From<std::io::Error> for CryptoError {
+    fn from(_: std::io::Error) -> Self {
+        Self::Io
+    }
+}
+impl From<openssl::error::ErrorStack> for CryptoError {
+    fn from(_: openssl::error::ErrorStack) -> Self {
+        Self::Crypto
+    }
+}
 
 pub struct CredentialCipher(fernet::Fernet);
 impl std::fmt::Debug for CredentialCipher {

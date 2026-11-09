@@ -10,6 +10,7 @@ license = "MIT"
 repository = "https://github.com/Serph91P/DockerVault"
 
 [workspace.dependencies]
+zeroize = "=1.9.1"
 openssl = "=0.10.82"
 fernet = "=0.2.2"
 bollard = { version = "=0.21.1", default-features = false, features = ["pipe"] }
