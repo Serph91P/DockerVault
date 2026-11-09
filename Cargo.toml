@@ -10,6 +10,8 @@ license = "MIT"
 repository = "https://github.com/Serph91P/DockerVault"
 
 [workspace.dependencies]
+openssl = "=0.10.82"
+fernet = "=0.2.2"
 bollard = { version = "=0.21.1", default-features = false, features = ["pipe"] }
 indexmap = { version = "=2.14.2", features = ["serde"] }
 futures-util = { version = "=0.3.34", default-features = false, features = ["std", "sink", "async-await"] }
