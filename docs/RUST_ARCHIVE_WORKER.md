@@ -64,6 +64,24 @@ the child; its default remains bounded in-memory capture. The caller waits for
 settlement and rewinds its descriptor before reading. This does not yet replace
 the complete service/job result consumer.
 
+## Restore preparation in progress (not a live extractor)
+
+`core::archive::LayoutScan` classifies single/legacy/multi roots using one
+candidate root, then rewrites member/hardlink names. `service::restore` currently
+reads bounded metadata and prepares a disk-backed source index: a private
+O_TMPFILE tar snapshot, full gzip/CRC read before indexing, and SQLite temporary
+metadata with a 1MiB cache. Names and links remain raw filesystem bytes. PAX/GNU
+metadata extensions are capped at 1MiB each before allocation; Header and
+PaxExtensions parsing use tar0.4.46 primitives. The default library iterator was
+actually qualified and fails the independent global-PAX fixture (see service
+test fixture README), so it is not used as the safety boundary.
+
+The index can replay data into caller-owned staging only. It is **not** a
+validated destination plan: link-chain/duplicate simulation, full type and
+mode/owner policy, remaining GNU/sparse/negative-time cases, preexisting-target
+validation and FD-safe live mutation are still mandatory work. There is no live
+restore entrypoint wired to this preparatory API.
+
 Remaining mandatory work includes stalled source-filesystem I/O/process-loss
 cases, complete service/job integration and bounded skipped-report transport,
 restore prevalidation/spooling/FD-safe mutation, complete file metadata/type

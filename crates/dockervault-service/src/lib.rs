@@ -9,6 +9,7 @@ pub mod hooks;
 pub mod http;
 pub mod journal;
 pub mod ownership;
+pub mod restore;
 #[cfg(target_os = "linux")]
 pub mod process;
 #[cfg(target_os = "linux")]
