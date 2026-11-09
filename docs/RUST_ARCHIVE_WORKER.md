@@ -38,6 +38,8 @@ launcher as physical worker settlement.
 docker build -f docker/archive-worker-test.Dockerfile -t archive-worker-test .
 docker run --rm --network none --user 1000:1000 \
   --entrypoint /usr/local/bin/archive-worker-privileges archive-worker-test
+docker run --rm --network none --cpus 2 --memory 6g --user 1000:1000 \
+  --entrypoint /usr/local/bin/privileged-archive-supervision archive-worker-test
 ```
 
 The test image is deliberately not a release/application image. Its synthetic
@@ -47,8 +49,16 @@ extra args/arbitrary commands and holds a real stdin read before checking
 unprivileged SIGKILL plus physical reap. That is a **held-stdin** test, not an
 assertion that every stalled source-filesystem read has been exercised.
 
-Remaining mandatory work includes complete privileged timeout=0/nonzero and
-archive-I/O/process-loss cases, service stdin/result settlement, bounded skipped
-report transport, restore prevalidation/spooling/FD-safe mutation, complete file
-metadata/type policy, all source/layout roundtrips and the full P matrix.
+The second native probe runs the existing bounded `ProcessOwner` as UID1000
+against the real sudo/root helper: timeout0 succeeds, a nonzero timeout settles
+before returning, and cancellation after a kernel IN_ACCESS event on the
+UID999/0400 source joins the helper before releasing its permit. Process and
+private-staging absence are checked afterwards. The event is observed through a
+readable parent-directory watch; no privileged source read or test-only hook is
+granted to the unprivileged supervisor.
+
+Remaining mandatory work includes stalled source-filesystem I/O/process-loss
+cases, complete service/job integration and bounded skipped-report transport,
+restore prevalidation/spooling/FD-safe mutation, complete file metadata/type
+policy, all source/layout roundtrips and the full P matrix.
 No full R6, R13 or application cutover is established by this checkpoint.

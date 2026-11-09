@@ -31,12 +31,17 @@ dockervault-core = { path = "../dockervault-core" }
 workspace = true
 
 [dev-dependencies]
+nix = { workspace = true, features = ["inotify"] }
 futures-util.workspace = true
 tokio-tungstenite.workspace = true
 
 [[example]]
 name = "docker_lifecycle"
 path = "tests/bin/docker_lifecycle.rs"
+
+[[example]]
+name = "privileged_archive_supervision"
+path = "tests/bin/privileged_archive_supervision.rs"
 
 [[test]]
 name = "auth_process"
