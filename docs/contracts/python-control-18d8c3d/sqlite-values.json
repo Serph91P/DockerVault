@@ -1,0 +1,67 @@
+{
+  "scope": "synthetic ORM write -> exact SQLite values",
+  "rows": {
+    "backup_targets": [
+      {
+        "id": 101,
+        "name": "PUBLIC TEST SOURCE \u00e4",
+        "target_type": "path",
+        "container_id": null,
+        "container_name": null,
+        "volume_name": null,
+        "host_path": "/app/data/test-source",
+        "stack_name": null,
+        "schedule_id": null,
+        "schedule_cron": null,
+        "enabled": 0,
+        "removed_at": null,
+        "retention_policy_id": null,
+        "dependencies": "[]",
+        "selected_volumes": "[]",
+        "include_paths": "[]",
+        "exclude_paths": "[]",
+        "per_volume_rules": "{}",
+        "pre_backup_command": null,
+        "post_backup_command": null,
+        "stop_container": 0,
+        "compression_enabled": 0,
+        "sync_to_remote": 0,
+        "remote_storage_ids": "[]",
+        "delete_local_after_sync": 0,
+        "created_at": "2024-01-02 03:04:05.123456",
+        "updated_at": "2024-01-02 03:04:05.123456"
+      }
+    ],
+    "backups": [
+      {
+        "id": 201,
+        "target_id": 101,
+        "backup_type": "FULL",
+        "status": "COMPLETED",
+        "file_path": "/backups/public-test.tar",
+        "file_size": 0,
+        "checksum": "0000000000000000000000000000000000000000000000000000000000000000",
+        "encrypted": 0,
+        "encryption_key_path": null,
+        "started_at": "2024-01-02 03:04:05.123456",
+        "completed_at": "2024-01-02 03:04:05.123456",
+        "duration_seconds": 0,
+        "error_message": null,
+        "retry_count": 0,
+        "backup_metadata": "{\"empty\": [], \"none\": null, \"false\": false, \"zero\": 0, \"unicode\": \"\\u00e4\"}",
+        "created_at": "2024-01-02 03:04:05.123456"
+      }
+    ],
+    "backup_logs": [
+      {
+        "id": 301,
+        "backup_id": 201,
+        "level": "INFO",
+        "step": "PUBLIC TEST",
+        "message": "Synthetic encoding control",
+        "details": "{\"zero\": 0, \"false\": false}",
+        "created_at": "2024-01-02 03:04:05.123456"
+      }
+    ]
+  }
+}
