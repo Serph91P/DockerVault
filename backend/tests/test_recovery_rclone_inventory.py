@@ -37,6 +37,8 @@ def inventory():
             ):
                 continue  # Dependency references have native grammar/closure tests, not arbitrary scalar fixtures.
             value = "synthetic-inventory-" + name + "-" + field
+            if (name, field) == ("sftp", "pubkey"):
+                value = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqI4910CfGV/VLbLTy6XXLKZwm/HZQSG/N0iAG0D29c"
             if field == "token":
                 value = json.dumps(
                     {
@@ -109,6 +111,13 @@ async def test_every_typed_provider_file_survives_source_removal_and_encrypted_r
         content = b"[default]\naws_access_key_id=synthetic-access\naws_secret_access_key=synthetic-required-provider-file-canary\n"
     if provider == "oracleobjectstorage" and field == "config_file":
         content = b"[DEFAULT]\nuser=synthetic-required-provider-file-canary\ntenancy=synthetic-tenant\n"
+    if provider == "sftp":
+        public = b"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqI4910CfGV/VLbLTy6XXLKZwm/HZQSG/N0iAG0D29c"
+        content = (
+            b"example.invalid " + public + b"\n"
+            if field == "known_hosts_file"
+            else public
+        )
     source.write_bytes(content)
     remote = {"type": provider, field: str(source)}
     if provider == "s3":

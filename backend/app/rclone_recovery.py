@@ -282,12 +282,52 @@ def _load_record(key, source_files, files, active=None):
     files[key] = record
 
 
+def _public_ssh(data, field):
+    from cryptography.exceptions import UnsupportedAlgorithm
+    from cryptography.hazmat.primitives import serialization
+
+    def public(value):
+        identity = serialization.load_ssh_public_identity(value)
+        if isinstance(identity, serialization.SSHCertificate):
+            return identity.public_bytes()
+        return identity.public_bytes(
+            serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
+        )
+
+    try:
+        lines = [line.strip() for line in data.splitlines() if line.strip()]
+        if field in {"pubkey", "pubkey_file"}:
+            # Native rclone accepts cert+private-key files; only serialize the public identity.
+            return public(lines[0])
+        result = []
+        for line in lines:
+            if line.startswith(b"#"):
+                continue
+            parts = line.split()
+            marker = parts.pop(0) if parts[0].startswith(b"@") else None
+            if marker not in {None, b"@cert-authority", b"@revoked"} or len(parts) < 3:
+                _invalid()
+            result.append(
+                (marker + b" " if marker else b"")
+                + parts[0]
+                + b" "
+                + public(b" ".join(parts[1:3]))
+            )
+        if not result:
+            _invalid()
+        return b"\n".join(result) + b"\n"
+    except (ValueError, IndexError, UnsupportedAlgorithm):
+        _invalid()
+
+
 def _material(value, files, source_files, *, provider=None, field=None, profile=None):
     if source_files is None:
         if type(value) is not str:
             _invalid()
         path = Path(value).expanduser()
         data = _read_material(path)
+        if provider == "sftp":
+            data = _public_ssh(data, field)
         dependencies = []
         if (provider, field) in {
             ("s3", "shared_credentials_file"),
@@ -306,6 +346,10 @@ def _material(value, files, source_files, *, provider=None, field=None, profile=
             _invalid()
         key = value["file_ref"]
         _load_record(key, source_files, files)
+        if provider == "sftp":
+            data = base64.b64decode(files[key]["content_b64"], validate=True)
+            if files[key].get("dependencies") or _public_ssh(data, field) != data:
+                _invalid()
     return {"file_ref": key}
 
 
@@ -419,6 +463,10 @@ def package_rclone(
                     for key, value in remote.items()
                     if key not in _SSH_PRIVATE
                 }
+            if kind == "sftp" and remote.get("pubkey"):
+                remote["pubkey"] = _public_ssh(
+                    remote["pubkey"].encode(), "pubkey"
+                ).decode()
             if remote.get("env_auth", "false").lower() not in {"false", "0", ""}:
                 explicit_file = any(
                     remote.get(field) for field in _FILE_OPTIONS.get(kind, set())

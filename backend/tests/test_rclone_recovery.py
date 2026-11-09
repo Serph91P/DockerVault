@@ -111,7 +111,11 @@ def test_minimal_transitive_closure_keeps_all_credential_fields():
             "service_principal_file",
             b'{"clientSecret":"synthetic-principal-secret"}',
         ),
-        ("sftp", "known_hosts_file", b"example.invalid ssh-ed25519 AAAA\n"),
+        (
+            "sftp",
+            "known_hosts_file",
+            b"example.invalid ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqI4910CfGV/VLbLTy6XXLKZwm/HZQSG/N0iAG0D29c\n",
+        ),
     ],
 )
 def test_required_nonssh_files_are_included_not_blanket_excluded(
