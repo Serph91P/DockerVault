@@ -7,6 +7,7 @@ as one unit. A killed pre-commit attempt leaves only a fenced preparation marker
 
 import asyncio
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -96,6 +97,37 @@ async def _discard_incomplete(sessions):
         if directory.exists():
             # Only this journaled, generated directory; never source configs or archives.
             await asyncio.to_thread(shutil.rmtree, directory)
+        if value.get("instance_key_preparing"):
+            from app import credential_encryption as credentials
+
+            key = credentials._KEY_FILE_PATH
+            staging = key.with_name(".dv-recovery-key-" + value["generation"])
+            if staging.is_symlink():
+                raise SetupClaimError("Unsafe instance key preparation")
+            owned = False
+            if key.is_file() and not key.is_symlink():
+                if staging.exists():
+                    owned = os.path.samestat(key.stat(), staging.stat())
+                elif value.get("key_digest"):
+                    info = key.stat()
+                    with key.open("rb") as stream:
+                        digest = hashlib.sha256(stream.read(1024)).hexdigest()
+                    owned = (
+                        info.st_ino == value["key_inode"]
+                        and info.st_dev == value["key_device"]
+                        and digest == value["key_digest"]
+                    )
+            if owned:
+                key.unlink()
+            staging.unlink(missing_ok=True)
+            credentials._fernet = None
+            descriptor = os.open(
+                key.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            )
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
         await session.execute(
             delete(AppSettings).where(AppSettings.key == "recovery_activation")
         )
@@ -174,6 +206,68 @@ def _sync_generation(directory):
             os.close(descriptor)
 
 
+async def _prepare_instance_key(sessions, generation):
+    """Journal ownership before lazy credential encryption creates deployment state."""
+    from app import credential_encryption as credentials
+    from app.config import settings
+    from app.remote_storage import _await_io_settled
+    from cryptography.fernet import Fernet
+
+    key = credentials._KEY_FILE_PATH
+    if settings.CREDENTIAL_ENCRYPTION_KEY or key.exists():
+        return
+    staging = key.with_name(".dv-recovery-key-" + generation)
+
+    async def journal(fields):
+        async with sessions() as session:
+            record = (
+                await session.scalars(
+                    select(AppSettings).where(AppSettings.key == "recovery_activation")
+                )
+            ).one()
+            value = json.loads(record.value)
+            value.update(fields)
+            record.value = json.dumps(value)
+            await _await_io_settled(session.commit())
+
+    await journal({"instance_key_preparing": True})
+
+    def prepare():
+        key.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(
+            staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
+        )
+        with os.fdopen(descriptor, "wb") as stream:
+            value = Fernet.generate_key()
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(
+            staging, key
+        )  # Same directory/filesystem; never replace an existing key.
+        descriptor = os.open(key.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        info = key.stat()
+        return {
+            "key_digest": hashlib.sha256(value).hexdigest(),
+            "key_inode": info.st_ino,
+            "key_device": info.st_dev,
+        }
+
+    identity = await _await_io_settled(asyncio.to_thread(prepare))
+    await journal(identity)
+    staging.unlink()
+    descriptor = os.open(key.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    credentials._fernet = None
+
+
 async def activate_state(payload, username, password, sessions, *, projection=None):
     """Logically activate only after EVERY fallible internal preparation succeeds."""
     from app.auth import create_session, hash_password
@@ -200,6 +294,7 @@ async def activate_state(payload, username, password, sessions, *, projection=No
             await session.commit()
         directory = generation_directory(sessions, generation)
         try:
+            await _prepare_instance_key(sessions, generation)
             directory.parent.mkdir(mode=0o700, exist_ok=True)
             managed = None
             if payload["rclone"]["roots"]:

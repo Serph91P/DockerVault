@@ -23,6 +23,7 @@ async function restart() {
 try {
   await page.goto(base)
   const password = randomBytes(24).toString('hex')
+  await page.getByRole('button', { name: 'Create new installation', exact: true }).click()
   await page.getByLabel('Username', { exact: true }).fill('settings-operator')
   await page.getByLabel('Account password', { exact: true }).fill(password)
   await page.getByLabel('Confirm account password', { exact: true }).fill(password)
@@ -175,7 +176,9 @@ try {
     }
     await page.screenshot({ path: `/runner/settings-${width}.png`, fullPage: true })
   }
-  check(await page.getByRole('region', { name: 'System recovery', exact: true }).getByText(/#143/).isVisible(), 'AC6 distinct recovery dependency without fake controls')
+  check(await page.getByRole('region', { name: 'System recovery', exact: true }).getByRole('button', { name: 'Download encrypted system backup', exact: true }).isEnabled(), 'AC6 distinct authenticated recovery export')
+  check(await page.getByRole('region', { name: 'System recovery', exact: true }).getByText(/Archives and volume data are NOT included/).isVisible(), 'AC6 explicit archive exclusion')
+  check(await page.getByRole('button', { name: 'Restore system backup', exact: true }).count() === 0, 'AC6 first-run restore not offered after setup')
   for (const motion of ['reduce', 'no-preference']) {
     await page.emulateMedia({ reducedMotion: motion })
     await connections(); await edit(); await page.getByLabel('Komodo API URL', { exact: true }).fill('http://127.0.0.1:9100/discard')

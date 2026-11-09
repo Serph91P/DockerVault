@@ -194,4 +194,13 @@ async def recovery_status(user: User = Depends(get_current_user)):
         value = await session.scalar(
             select(AppSettings.value).where(AppSettings.key == "recovery_result")
         )
-    return json.loads(value) if value else None
+        references = await session.scalar(
+            select(AppSettings.value).where(
+                AppSettings.key == "recovery_ssh_public_keys"
+            )
+        )
+    return (
+        {**json.loads(value), "ssh_public_keys": json.loads(references or "[]")}
+        if value
+        else None
+    )

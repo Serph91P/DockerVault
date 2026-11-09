@@ -2,7 +2,6 @@
 
 import base64
 import json
-import re
 import subprocess
 
 import pytest
@@ -33,20 +32,20 @@ def inventory():
                 continue  # Executable credential sources are tested as external dependencies below.
             if type(option.get("Default")) is not str:
                 continue
-            if option.get("IsPassword") or re.search(
-                r"pass|token|secret|(^|_)(key|credentials?|private)(_|$)|client_id|^account$|^user(name)?$",
-                field,
+            if (name in recovery._WRAPPERS and field == "remote") or (
+                name in {"union", "combine"} and field == "upstreams"
             ):
-                value = "synthetic-inventory-" + name + "-" + field
-                if field == "token":
-                    value = json.dumps(
-                        {
-                            "access_token": value,
-                            "refresh_token": "synthetic-inventory-refresh",
-                            "expiry": "2100-01-01T00:00:00Z",
-                        }
-                    )
-                cases.append(pytest.param(name, field, value, id=name + "/" + field))
+                continue  # Dependency references have native grammar/closure tests, not arbitrary scalar fixtures.
+            value = "synthetic-inventory-" + name + "-" + field
+            if field == "token":
+                value = json.dumps(
+                    {
+                        "access_token": value,
+                        "refresh_token": "synthetic-inventory-refresh",
+                        "expiry": "2100-01-01T00:00:00Z",
+                    }
+                )
+            cases.append(pytest.param(name, field, value, id=name + "/" + field))
     return cases
 
 
@@ -83,6 +82,99 @@ async def test_every_native_scalar_credential_survives_encrypted_generation_and_
         for path in tmp_path.rglob("*")
         if path.is_file()
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,field",
+    [
+        (provider, field)
+        for provider, fields in recovery._FILE_OPTIONS.items()
+        for field in sorted(fields)
+    ],
+)
+async def test_every_typed_provider_file_survives_source_removal_and_encrypted_reexport(
+    provider, field, tmp_path, monkeypatch
+):
+    from app.config import settings
+    from app import credential_encryption
+
+    monkeypatch.setattr(
+        settings, "CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode()
+    )
+    monkeypatch.setattr(credential_encryption, "_fernet", None)
+    source = tmp_path / "typed-credential-file"
+    content = b"synthetic-required-provider-file-canary"
+    if provider == "s3":
+        content = b"[default]\naws_access_key_id=synthetic-access\naws_secret_access_key=synthetic-required-provider-file-canary\n"
+    if provider == "oracleobjectstorage" and field == "config_file":
+        content = b"[DEFAULT]\nuser=synthetic-required-provider-file-canary\ntenancy=synthetic-tenant\n"
+    source.write_bytes(content)
+    remote = {"type": provider, field: str(source)}
+    if provider == "s3":
+        remote["env_auth"] = "true"
+    storage = {"id": 1, "storage_type": "rclone", "rclone_remote": "vault"}
+    payload = recovery.package_rclone({"vault": remote}, [storage])
+    assert payload["remotes"]["vault"][field]["file_ref"] in payload["files"]
+    recovery.validate_rclone(payload, [storage])
+    source.unlink()
+    generation = tmp_path / "generation"
+    state = await recovery.create_managed_config(payload, generation)
+    assert await recovery.export_managed_config(state, [storage]) == payload
+    assert all(
+        b"synthetic-required-provider-file-canary" not in path.read_bytes()
+        for path in generation.rglob("*")
+        if path.is_file()
+    )
+
+
+@pytest.mark.asyncio
+async def test_cache_paths_and_pending_queue_are_not_adopted_or_mutated(
+    tmp_path, monkeypatch
+):
+    from app.config import settings
+    from app import credential_encryption
+
+    monkeypatch.setattr(
+        settings, "CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode()
+    )
+    monkeypatch.setattr(credential_encryption, "_fernet", None)
+    upstream = tmp_path / "actual-upstream"
+    upstream.mkdir()
+    config = {"vault": {"type": "cache", "remote": str(upstream)}}
+    sentinels = []
+    for field in ["db_path", "chunk_path", "tmp_upload_path"]:
+        folder = tmp_path / ("source-" + field)
+        folder.mkdir()
+        sentinel = folder / "not-adopted.archive"
+        sentinel.write_bytes(b"never-adopt-source-cache-or-pending-upload")
+        sentinels.append(sentinel)
+        config["vault"][field] = str(folder)
+    storage = {"id": 1, "storage_type": "rclone", "rclone_remote": "vault"}
+    payload = recovery.package_rclone(config, [storage])
+    assert payload["roots"][0]["state"] == "portable"
+    assert payload["remotes"] == config
+    recovery.validate_rclone(payload, [storage])
+    state = await recovery.create_managed_config(payload, tmp_path / "generation")
+    code, output, error = await recovery.run_managed(
+        state, "vault", ["lsjson", "vault:"], timeout=10
+    )
+    assert code == 0 and json.loads(output) == [] and error == ""
+    assert all(
+        path.read_bytes() == b"never-adopt-source-cache-or-pending-upload"
+        for path in sentinels
+    )
+    assert all(list(path.parent.iterdir()) == [path] for path in sentinels)
+    source = tmp_path / "explicit-new-transfer.bin"
+    source.write_bytes(b"new-transfer-must-reach-the-upstream-before-success")
+    code, _, error = await recovery.run_managed(
+        state, "vault", ["copyto", str(source), "vault:completed.bin"], timeout=10
+    )
+    assert code == 0 and error == ""
+    assert (upstream / "completed.bin").read_bytes() == source.read_bytes()
+    assert all(list(path.parent.iterdir()) == [path] for path in sentinels)
+    assert not list((tmp_path / "generation").glob("dvrc-cache-*"))
+    assert await recovery.export_managed_config(state, [storage]) == payload
 
 
 def test_default_oci_config_and_nested_key_are_materialized_as_typed_dependencies(

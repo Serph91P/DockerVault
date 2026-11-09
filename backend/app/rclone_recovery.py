@@ -429,7 +429,7 @@ def package_rclone(
                 } and remote.get("service_account_credentials")
                 if not explicit_file and not explicit_inline:
                     external_identity = True
-            # Commands, ambient agent auth and writable caches aren't portable credentials.
+            # Executable and ambient credential sources are not embedded programs/identities.
             for field, value in list(remote.items()):
                 if field != "type" and field not in options[kind]:
                     _invalid()
@@ -442,8 +442,7 @@ def package_rclone(
                 if value and _external_command(kind, field):
                     commands.append({"remote": name, "field": field})
                     del remote[field]
-                if value and field in {"db_path", "chunk_path", "tmp_upload_path"}:
-                    _invalid()
+
             active.add(name)
             for dependency in _dependencies(remote, config):
                 visit(dependency, depth + 1)
@@ -710,6 +709,11 @@ def _create_managed(payload, directory):
             "directory": str(directory),
             "unlock": encrypt_value(unlock),
             "file_refs": refs,
+            "cache_remotes": [
+                name
+                for name, fields in payload["remotes"].items()
+                if fields["type"] == "cache"
+            ],
             "files": encrypt_value(json.dumps(payload["files"])),
             "overrides": encrypt_value(json.dumps(overrides)),
             "roots": payload["roots"],
@@ -912,6 +916,15 @@ def _run_managed(state, remote, args, timeout):
                 }
             )
             files = json.loads(decrypt_value(state["files"]))
+            # Never adopt source caches/queued uploads; completion must mean upstream completion.
+            for name in state.get("cache_remotes", []):
+                private_cache = Path(cache) / hashlib.sha256(name.encode()).hexdigest()
+                for field, value in {
+                    "db_path": str(private_cache / "metadata"),
+                    "chunk_path": str(private_cache / "chunks"),
+                    "tmp_upload_path": "",
+                }.items():
+                    environment[environment_name(name, field)] = value
             for name, fields in json.loads(
                 decrypt_value(state.get("overrides")) or "{}"
             ).items():

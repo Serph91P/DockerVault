@@ -14,6 +14,56 @@ from tests.test_recovery_service import populated as populated
 
 
 @pytest.mark.asyncio
+async def test_failed_activation_does_not_leave_a_new_default_instance_unlock_key(
+    file_database, db_session, tmp_path, monkeypatch
+):
+    from app import credential_encryption
+    from app.config import settings
+    from app import recovery_service, recovery_activation
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setattr(
+        settings, "CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode()
+    )
+    monkeypatch.setattr(credential_encryption, "_fernet", None)
+    db_session.add(
+        database.RemoteStorage(
+            id=1,
+            name="portable provider",
+            storage_type="ftp",
+            host="synthetic.invalid",
+            username="synthetic",
+            password=credential_encryption.encrypt_value("synthetic-source-credential"),
+            base_path="/",
+        )
+    )
+    await db_session.commit()
+    payload = await recovery_service.export_state(db_session)
+    key = tmp_path / ".credential_key"
+    monkeypatch.setattr(settings, "CREDENTIAL_ENCRYPTION_KEY", "")
+    monkeypatch.setattr(credential_encryption, "_KEY_FILE_PATH", key)
+    monkeypatch.setattr(credential_encryption, "_fernet", None)
+
+    async def fail(*args):
+        assert key.is_file()
+        raise RuntimeError("synthetic internal persistence failure")
+
+    monkeypatch.setattr(recovery_service, "inspect_import", fail)
+    with pytest.raises(recovery_activation.RecoveryActivationError):
+        await recovery_activation.activate_state(
+            payload, "replacement", "synthetic-new-password", file_database
+        )
+    assert not key.exists(), (
+        "uncommitted default instance key survived activation rollback"
+    )
+    assert credential_encryption._fernet is None
+    assert not list(tmp_path.glob(".dv-recovery-key-*"))
+    async with file_database() as session:
+        assert await session.scalar(select(func.count(database.User.id))) == 0
+        assert await session.scalar(select(func.count(database.RemoteStorage.id))) == 0
+
+
+@pytest.mark.asyncio
 async def test_session_can_be_staged_without_committing_account(db_session):
     user = database.User(username="synthetic-admin", password_hash="synthetic-hash")
     db_session.add(user)

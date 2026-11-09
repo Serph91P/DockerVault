@@ -142,6 +142,9 @@ def _request_worker(pipe, database_path, backup_path, key, request, stage):
         settings.CREDENTIAL_ENCRYPTION_KEY = key
         settings.BACKUP_BASE_PATH = backup_path
         settings.KOMODO_ENABLED = False
+        credential_encryption._KEY_FILE_PATH = (
+            Path(database_path).parent / ".credential_key"
+        )
         credential_encryption._fernet = None
         engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -205,11 +208,12 @@ def _request_worker(pipe, database_path, backup_path, key, request, stage):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("credential_mode", ["environment", "default_file"])
 @pytest.mark.parametrize(
     "stage", ["prepared", "probe_running", "before_commit", "after_commit"]
 )
 async def test_real_restore_crash_and_competing_setup_have_one_durable_activation(
-    stage, file_database, db_session, tmp_path, monkeypatch
+    stage, credential_mode, file_database, db_session, tmp_path, monkeypatch
 ):
     import json
     from sqlalchemy import select, func
@@ -254,7 +258,9 @@ async def test_real_restore_crash_and_competing_setup_have_one_durable_activatio
     payload = await export_state(db_session)
     storages = payload["tables"]["remote_storages"]
     bundle = encode_bundle(payload, "synthetic-bundle-password").decode()
-    key = Fernet.generate_key().decode()
+    key = Fernet.generate_key().decode() if credential_mode == "environment" else ""
+    key_path = tmp_path / ".credential_key"
+    monkeypatch.setattr(credential_encryption, "_KEY_FILE_PATH", key_path)
     monkeypatch.setattr(settings, "CREDENTIAL_ENCRYPTION_KEY", key)
     monkeypatch.setattr(credential_encryption, "_fernet", None)
     async with file_database() as session:
@@ -291,6 +297,10 @@ async def test_real_restore_crash_and_competing_setup_have_one_durable_activatio
         )
         boundary = parent.recv()
         assert boundary["stage"] == stage
+        if credential_mode == "default_file":
+            assert key_path.is_file()
+            assert key_path.stat().st_mode & 0o777 == 0o600
+            assert not list(tmp_path.glob(".dv-recovery-key-*"))
         async with file_database() as session:
             assert await recovery_pending(session) is (stage != "after_commit")
             assert await session.scalar(select(func.count(database.User.id))) == (
@@ -354,6 +364,9 @@ async def test_real_restore_crash_and_competing_setup_have_one_durable_activatio
         assert await recover_incomplete_setup(file_database) is (
             stage != "after_commit"
         )
+        if credential_mode == "default_file":
+            assert key_path.exists() is (stage == "after_commit")
+            assert not list(tmp_path.glob(".dv-recovery-key-*"))
         async with file_database() as session:
             assert await recovery_pending(session) is False
             if stage == "after_commit":

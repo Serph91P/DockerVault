@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogTitle, DialogDescription } from '../compon
 import { Button } from '../components/ui/button'
 import { sessionGeneration, sessionSignal } from '../store/session'
 import { KomodoSettingsCard, StorageSettingsCard } from '../components/SettingsEditors'
+import { SystemRecovery } from '../components/SystemRecovery'
 
 const sections = [
   ['system', 'System'], ['connection', 'Connections'], ['encryption', 'Encryption & SSH keys'],
@@ -104,6 +105,6 @@ function SettingsWorkspace() {
       </section>
     </div>
     <section id="storage-safeguards" tabIndex={-1} aria-label="Storage safeguards" hidden={current !== 'storage-safeguards'}><StorageSettingsCard discardRevision={discardRevision} onDirty={value => setDirty(prev => prev.storage === value ? prev : { ...prev, storage: value })} /></section>
-    <section id="system-recovery" tabIndex={-1} aria-label="System recovery" hidden={current !== 'system-recovery'} className={card}><h2 className="text-lg font-semibold">System recovery</h2><p>System export, import and bootstrap require backend dependency #143, which is not implemented in this version. No recovery-bundle actions are available.</p><p>Archive encryption keys are not login passwords or system-recovery bundle passwords. Existing archive restore remains available in <Link className="underline text-primary-300" to="/history">History & Restore</Link>.</p></section>
+    <section id="system-recovery" tabIndex={-1} aria-label="System recovery" hidden={current !== 'system-recovery'} className={card}><h2 className="text-lg font-semibold">System recovery</h2>{current === 'system-recovery' && <SystemRecovery />}</section>
   </div>
 }

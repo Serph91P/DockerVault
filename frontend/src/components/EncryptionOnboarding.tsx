@@ -47,7 +47,7 @@ function OnboardingJourney({ status, refetch, children }: { status: Status; refe
     <div className="max-w-3xl mx-auto space-y-6">
       <h1 className="text-2xl font-bold">Account created — backup protection</h1>
       <p>Your account password signs in. The age public key encrypts archives; the private key restores them. They are not interchangeable.</p>
-      <p className="text-sm text-dark-400">System-recovery bundle import/export is not available in this version. There is no bundle password to enter here.</p>
+      <p className="text-sm text-dark-400">System-recovery bundles use their own password in Settings or first-run restore. A bundle does not contain archives or external archive private identities and does not replace private-key custody.</p>
       <EncryptionSetup />
       {error && <p role="alert">{error}</p>}
       {!ready && <section className="space-y-3">

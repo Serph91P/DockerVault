@@ -16,6 +16,7 @@ async function download(button, expected) { const received = page.waitForEvent('
 try {
   await goto('/')
   const password=randomBytes(24).toString('hex')
+  await page.getByRole('button',{name:'Create new installation',exact:true}).click()
   await page.getByLabel('Username',{exact:true}).fill('history-operator')
   await page.getByLabel('Account password',{exact:true}).fill(password)
   await page.getByLabel('Confirm account password',{exact:true}).fill(password)

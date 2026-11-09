@@ -131,18 +131,20 @@ async def export_state(session) -> dict:
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "backup_root": str(Path(settings.BACKUP_BASE_PATH).absolute()),
         "tables": tables,
-        "ssh_public_keys": await _public_keys(),
+        "ssh_public_keys": await _public_keys(
+            json.loads(raw_settings.get("recovery_ssh_public_keys", "[]"))
+        ),
         "rclone": rclone,
     }
     payload["manifest"] = state_manifest(payload)
     return payload
 
 
-async def _public_keys():
+async def _public_keys(restored=()):
     from app.api.storage import _SSH_KEYS_DIR, _SSH_NAME_RE
     from cryptography.hazmat.primitives.serialization import load_ssh_public_key
 
-    result = []
+    result = {key["name"]: key for key in restored}
     for path in sorted(_SSH_KEYS_DIR.glob("*.pub")):
         if not _SSH_NAME_RE.fullmatch(path.stem) or path.is_symlink():
             continue
@@ -156,8 +158,8 @@ async def _public_keys():
             public = raw.decode().strip()
         except (ValueError, UnicodeError):
             _invalid()
-        result.append({"name": path.stem, "public_key": public})
-    return result
+        result[path.stem] = {"name": path.stem, "public_key": public}
+    return [result[name] for name in sorted(result)]
 
 
 def _path(value, *, absolute=False, root=None):
@@ -549,6 +551,7 @@ async def inspect_import(session, payload, managed, directory):
                     komodo_state = "offline"
         return {
             "storages": connections,
+            "ssh_public_keys": payload["ssh_public_keys"],
             "komodo": {"state": komodo_state},
             "catalog": catalog,
             "counts": {name: len(rows) for name, rows in payload["tables"].items()},
