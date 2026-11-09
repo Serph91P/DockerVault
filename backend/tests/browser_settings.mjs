@@ -161,11 +161,11 @@ try {
   }
   check(await page.getByRole('region', { name: 'System recovery', exact: true }).getByText(/#143/).isVisible(), 'AC6 distinct recovery dependency without fake controls')
   await connections(); await edit(); await page.getByLabel('Komodo API URL', { exact: true }).fill('http://127.0.0.1:9100/discard')
-  await section('System'); await page.getByRole('button', { name: 'Discard and leave', exact: true }).click(); await page.goBack(); await expect(page.locator('#connection')).toBeFocused(); await expect(page.getByRole('button', { name: 'Edit Settings', exact: true })).toBeVisible(); await page.goForward(); await expect(page.locator('#system')).toBeFocused()
+  await section('System'); await page.getByRole('button', { name: 'Discard and leave', exact: true }).click(); await expect(page.locator('#system')).toBeFocused(); await expect(page.getByRole('dialog', { name: 'Discard unsaved settings?' })).toBeHidden(); await page.goBack(); await expect(page.locator('#connection')).toBeFocused(); await expect(page.getByRole('button', { name: 'Edit Settings', exact: true })).toBeVisible(); await page.goForward(); await expect(page.locator('#system')).toBeFocused()
   check(true, 'AC3/7 discard and Back/Forward preserve durable focused contexts')
   await connections(); await edit(); await page.getByLabel('Komodo API secret', { exact: true }).fill(secret)
   await page.route('**/api/v1/settings/komodo', route => route.request().method() === 'PUT' ? route.fulfill({ status: 401, json: {} }) : route.continue())
-  await page.getByRole('button', { name: 'Save', exact: true }).click(); await expect(page.getByRole('button', { name: /Sign in/ })).toBeVisible()
+  await page.getByRole('button', { name: 'Save', exact: true }).click(); await expect(page.getByRole('button', { name: /Sign in/i })).toBeVisible()
   check(await page.evaluate(values => values.every(v => !JSON.stringify(localStorage).includes(v) && !JSON.stringify(sessionStorage).includes(v) && !location.href.includes(v)), [key, secret, password]), 'AC3/5 401 revokes editor and private values never enter browser persistence or URLs')
   check((await api('/test-settings190/effects')).foreign_key_errors.length === 0, 'AC1 final real SQLite foreign-key integrity')
   await writeFile('/runner/settings190-result.json', JSON.stringify({ checks, count: checks.length, doubles: ['loopback synthetic Komodo HTTP', 'SSH remote transport with real local shell/file effects'], native_at_or_device: false }, null, 2))
