@@ -54,6 +54,18 @@ fn bounded_reader_keeps_effective_pax_path_time_and_data_offset() {
 }
 
 #[test]
+fn effective_data_modes_ignore_directory_and_symlink_modes() {
+    for (kind, expected) in [(b'0', Some(0o755)), (b'5', None), (b'2', None)] {
+        let member = ArchiveReader::new(Cursor::new(archive(None, kind)))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_eq!(member.data_mode(), expected);
+    }
+}
+
+#[test]
 fn global_pax_is_applied_instead_of_exposing_a_fake_member() {
     let bytes = include_bytes!("fixtures/global-pax.TEST_ONLY.tar");
     let members = ArchiveReader::new(Cursor::new(bytes))

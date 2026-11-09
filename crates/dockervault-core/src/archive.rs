@@ -102,3 +102,67 @@ fn matches_root(root: &[u8], name: &[u8], directory: bool) -> bool {
         && ((name == root && directory)
             || (name.starts_with(root) && name.get(root.len()) == Some(&b'/')))
 }
+
+/// Lexical data-filter normalization; filesystem/link-graph validation is still required.
+pub fn member_name(raw: &[u8]) -> Result<Vec<u8>, &'static str> {
+    let name = normalized(raw)?;
+    if escapes(&name) {
+        Err("Archive member escapes destination")
+    } else {
+        Ok(name)
+    }
+}
+
+pub fn link_target(name: &[u8], raw: &[u8], hardlink: bool) -> Result<Vec<u8>, &'static str> {
+    let name = member_name(name)?;
+    if name == b"." || raw.is_empty() {
+        return Err("Invalid archive link name or target");
+    }
+    let target = normalized(raw)?;
+    let reachable = if hardlink {
+        target.clone()
+    } else {
+        let end = name.iter().rposition(|&b| b == b'/').unwrap_or(0);
+        let mut path = name[..end].to_vec();
+        if !path.is_empty() {
+            path.push(b'/');
+        }
+        path.extend_from_slice(&target);
+        normalized(&path)?
+    };
+    if escapes(&reachable) {
+        Err("Archive link escapes destination")
+    } else {
+        Ok(target)
+    }
+}
+
+pub fn data_file_mode(mode: u32) -> u32 {
+    let mut mode = mode & 0o755;
+    if mode & 0o100 == 0 {
+        mode &= !0o111;
+    }
+    mode | 0o600
+}
+
+fn escapes(name: &[u8]) -> bool {
+    name == b".." || name.starts_with(b"../")
+}
+fn normalized(raw: &[u8]) -> Result<Vec<u8>, &'static str> {
+    validate(raw)?;
+    let mut parts: Vec<&[u8]> = Vec::new();
+    for part in raw.split(|&b| b == b'/') {
+        match part {
+            b"" | b"." => {}
+            b".." if parts.last().is_some_and(|p| *p != b"..") => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    Ok(if parts.is_empty() {
+        b".".to_vec()
+    } else {
+        parts.join(b"/".as_slice())
+    })
+}

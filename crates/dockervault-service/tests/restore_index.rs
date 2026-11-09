@@ -106,6 +106,40 @@ fn late_fifo_and_recorded_layout_mismatch_never_return_an_index() {
     assert_eq!(fs::read_dir(&root.0).unwrap().count(), 0);
 }
 #[test]
+fn indexed_pax_traversal_and_escaping_link_are_rejected_before_return() {
+    let root = Fixture::new();
+    let fd = fs::File::open(&root.0).unwrap();
+    for link in [false, true] {
+        let mut tar = tar::Builder::new(Vec::new());
+        if !link {
+            tar.append_pax_extensions([("path", b"../escape".as_slice())])
+                .unwrap();
+        }
+        let mut h = tar::Header::new_ustar();
+        h.set_mode(0o644);
+        h.set_size(0);
+        if link {
+            h.set_entry_type(tar::EntryType::Symlink);
+            h.set_link_name("../../escape").unwrap();
+        }
+        h.set_cksum();
+        tar.append_data(&mut h, "root/link", std::io::empty())
+            .unwrap();
+        assert!(
+            IndexedArchive::prepare(
+                Cursor::new(tar.into_inner().unwrap()),
+                false,
+                &fd,
+                None,
+                &|| false
+            )
+            .is_err()
+        );
+    }
+    assert_eq!(fs::read_dir(&root.0).unwrap().count(), 0);
+}
+
+#[test]
 fn cancellation_or_bad_gzip_footer_does_not_return_a_partial_index() {
     let root = Fixture::new();
     let fd = fs::File::open(&root.0).unwrap();

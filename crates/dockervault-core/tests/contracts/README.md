@@ -13,6 +13,10 @@
   surrogates and the U+FFFD collision boundary. Expected values stay independent
   of the native matcher.
 
+- `data-mode-control.json` records six unchanged Python3.14.10 `tarfile.data_filter`
+  input/output permission pairs (regular files), without application imports or
+  product data. Native assertions are in `../archive_layout.rs`.
+
 These JSON files are historical language-neutral expected values, not maintained
 Python implementations or evidence that a native test ran. Native assertions
 are in `../filters.rs`. Broader character-class qualification and retained

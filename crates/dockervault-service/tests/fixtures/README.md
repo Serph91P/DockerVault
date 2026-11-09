@@ -15,3 +15,13 @@ PaxExtensions primitives, with explicit bounded extension handling, rather than
 trusting that default iterator or using unpack() on a live destination.
 
 This fixture does not establish complete tar/GNU/PAX/data-filter parity.
+
+`restore-semantics.TEST_ONLY.json` records nine additional real executions of the
+unchanged original BackupEngine._extract_tar, compiled from its AST without app
+imports/startup. Only synthetic old/new/data strings and logical fixture names
+are included. It covers duplicate file/hardlink updates, contained aliases,
+lexical parent normalization, forward hardlink failure and type conflicts.
+Original error cases that leave partial target content are adverse controls:
+the native all-member prevalidation requirement must reject before any live
+write, not reproduce those partial effects. Complete native replay assertions
+for these controls remain part of the unfinished destination planner.

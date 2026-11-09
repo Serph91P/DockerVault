@@ -20,6 +20,16 @@ pub struct Member {
     pub mode: u32,
     pub mtime: f64,
 }
+impl Member {
+    pub fn data_mode(&self) -> Option<u32> {
+        match self.kind {
+            MemberKind::File | MemberKind::Hardlink => {
+                Some(dockervault_core::archive::data_file_mode(self.mode))
+            }
+            MemberKind::Directory | MemberKind::Symlink => None,
+        }
+    }
+}
 #[derive(Clone, Default)]
 struct Overrides {
     path: Option<Vec<u8>>,

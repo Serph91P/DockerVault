@@ -94,6 +94,24 @@ impl IndexedArchive {
                             .map_err(invalid)?,
                     );
                 }
+                member.name =
+                    dockervault_core::archive::member_name(&member.name).map_err(invalid)?;
+                if member.name == b"." && member.kind != MemberKind::Directory {
+                    return Err(invalid("Non-directory member replaces destination root"));
+                }
+                if matches!(member.kind, MemberKind::Symlink | MemberKind::Hardlink) {
+                    member.link_name = Some(
+                        dockervault_core::archive::link_target(
+                            &member.name,
+                            member
+                                .link_name
+                                .as_deref()
+                                .ok_or_else(|| invalid("Missing archive link target"))?,
+                            member.kind == MemberKind::Hardlink,
+                        )
+                        .map_err(invalid)?,
+                    );
+                }
                 let seq: i64 = row.get("seq").map_err(db_error)?;
                 transaction
                     .execute(

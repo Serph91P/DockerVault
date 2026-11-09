@@ -1,4 +1,46 @@
-use dockervault_core::archive::LayoutScan;
+use dockervault_core::archive::{LayoutScan, data_file_mode, link_target, member_name};
+
+#[test]
+fn python_data_filter_paths_are_lexically_normalized_and_root_scoped() {
+    for (raw, expected) in [
+        (b"a/../file".as_slice(), b"file".as_slice()),
+        (b"./dir//file".as_slice(), b"dir/file".as_slice()),
+        (b"dir/..".as_slice(), b".".as_slice()),
+        (b"dir/\xff".as_slice(), b"dir/\xff".as_slice()),
+    ] {
+        assert_eq!(member_name(raw).unwrap(), expected);
+    }
+    for raw in [
+        b"../outside".as_slice(),
+        b"dir/../../outside".as_slice(),
+        b"/absolute".as_slice(),
+        b"nul\0path".as_slice(),
+    ] {
+        assert!(member_name(raw).is_err());
+    }
+    assert_eq!(
+        link_target(b"dir/link", b"../target", false).unwrap(),
+        b"../target"
+    );
+    assert_eq!(
+        link_target(b"link", b"dir/../target", false).unwrap(),
+        b"target"
+    );
+    assert!(link_target(b"link", b"../outside", false).is_err());
+    assert!(link_target(b"dir/link", b"../../outside", false).is_err());
+    assert!(link_target(b"dir/link", b"../outside", true).is_err());
+    assert!(link_target(b".", b"target", false).is_err());
+    assert!(link_target(b"link", b"", false).is_err());
+}
+
+#[test]
+fn regular_file_modes_match_unchanged_python_data_filter_vectors() {
+    let vectors: Vec<(u32, u32)> =
+        serde_json::from_str(include_str!("contracts/data-mode-control.json")).unwrap();
+    for (mode, expected) in vectors {
+        assert_eq!(data_file_mode(mode), expected);
+    }
+}
 
 #[test]
 fn legacy_single_root_is_detected_without_collecting_members() {
