@@ -41,7 +41,7 @@ export function StorageSettingsCard({ discardRevision, onDirty }: Props) {
       await client.cancelQueries({ queryKey: queryKeys.settings.storage })
       if (!active.current || !ownsSession(owner)) return
       client.setQueryData(queryKeys.settings.storage, canonical)
-      if (revision.current !== current) return
+      if (revision.current !== current) { setBase(canonical); return }
       storeDraft(null); setBase(null)
       setResult('Storage settings saved; canonical values confirmed.')
     } catch (failure) {
@@ -105,7 +105,7 @@ export function KomodoSettingsCard({ discardRevision, onDirty }: Props) {
       await client.cancelQueries({ queryKey: queryKeys.settings.komodo })
       if (!active.current || !ownsSession(owner)) return
       client.setQueryData(queryKeys.settings.komodo, canonical)
-      if (revision.current !== current) return
+      if (revision.current !== current) { setBase(canonical); return }
       setDraft(null); setBase(null); setVisible({ key: false, secret: false }); setResult('Komodo settings saved; canonical values confirmed.')
     } catch (failure) {
       if (!active.current || !ownsSession(owner) || revision.current !== current) return

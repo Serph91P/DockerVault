@@ -232,6 +232,25 @@ it('malformed canonical endpoint cannot be reported as saved', async () => {
   expect(url).toHaveValue(config.api_url + '/draft')
 })
 
+it.each(['connection', 'storage-safeguards'])('reverting to the original %s value during Save remains an editable newer intent', async section => {
+  let release!: () => void, started!: () => void, saved = false
+  const held = new Promise<void>(r => { release = r }), admitted = new Promise<void>(r => { started = r })
+  const komodoMode = section === 'connection', endpoint = komodoMode ? 'komodo' : 'storage'
+  const before = komodoMode ? config : { check_quota_before_upload: false }
+  const after = komodoMode ? { ...config, api_url: 'https://submitted.example' } : { check_quota_before_upload: true }
+  server.use(http.get('/api/v1/settings/' + endpoint, () => HttpResponse.json(saved ? after : before)), http.put('/api/v1/settings/' + endpoint, async () => { saved = true; started(); await held; return HttpResponse.json(after) }))
+  mount(section)
+  if (komodoMode) { const url = await edit(); await userEvent.clear(url); await userEvent.type(url, 'https://submitted.example') }
+  else await userEvent.click(await screen.findByRole('switch', { name: 'Check quota before upload' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Save', exact: true })); await admitted
+  if (komodoMode) { const url = screen.getByLabelText('Komodo API URL', { exact: true }); await userEvent.clear(url); await userEvent.type(url, config.api_url) }
+  else await userEvent.click(screen.getByRole('switch', { name: 'Check quota before upload' }))
+  await act(async () => { release() })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Save', exact: true })).toBeEnabled())
+  expect(screen.getByText(`Unsaved ${komodoMode ? 'Komodo' : 'storage'} draft`)).toBeVisible()
+  expect(screen.queryByText(/settings saved; canonical values confirmed/)).not.toBeInTheDocument()
+})
+
 it('explicit clears send empty strings while blank masked inputs keep credentials', async () => {
   let payload: unknown
   komodo(); server.use(http.put('/api/v1/settings/komodo', async ({ request }) => { payload = await request.json(); return HttpResponse.json(config) }))
