@@ -103,6 +103,43 @@ are implied. Login's last-login update and session insert are likewise atomic.
 account after a failed setup/password change, or false settlement. HTTP/WS
 runtime, independent-process setup, restart and P gates remain required.
 
+## D6 — HTTP origin, CORS and proxy boundary
+
+**Decision:** retain D3 credential precedence: cookie-first, case-sensitive
+`Bearer ` in the global guard; bearer-first/case-insensitive scheme in me and
+password change; status/logout cookie-only. The current global exception handler
+omits WWW-Authenticate, so a native extractor must not invent it accidentally.
+
+Mutating requests with Origin require a syntactically valid HTTP(S) origin that
+is same-origin or explicitly listed in CORS_ORIGINS. `*` is not a credentialled
+cross-origin authorization. Browser-generated `Sec-Fetch-Site: same-origin` can
+confirm the same authority when a reverse proxy hides the external TLS scheme;
+it never authorizes a different authority. No-Origin programmatic requests stay
+supported, but explicit cross-site Fetch Metadata without an allowed Origin is
+rejected. Malicious/null origins are rejected before any mutation. Explicitly
+configured frontend origins may operate cross-origin, including credentialled
+preflight. This implements the required CSRF policy; the old HTTP middleware
+had no equivalent rejection. The current WS origin policy remains a separate
+existing contract and must not be silently weakened to match HTTP.
+
+Raw tokens are never included in validation errors. JSON bodies retain the
+executed control's FastAPI strict Content-Type default (introduced upstream in
+0.132): missing/empty/non-application JSON media types cannot bootstrap setup.
+Media types are case-insensitive and application/*+json remains supported.
+
+Only loopback peers (the existing same-container nginx-to-backend topology)
+may supply forwarded IP/protocol. Other peers cannot choose rate-limit identity
+through X-Real-IP/X-Forwarded-For. Only the three currently decorated auth
+endpoints have five-per-minute buckets; malformed DTOs fail validation before
+consuming those buckets. Per-IP/per-endpoint windows and admission state are
+bounded, and exhaustion fails closed. No new RBAC gate is inferred from is_admin.
+R13 must preserve the external Host authority including its port through nginx.
+
+**Cost of being wrong:** CSRF/session swapping, spoofable brute-force limits,
+or breaking a legitimate proxy/client. Real browser/proxy, malformed-header,
+open-socket revocation, native-platform and P receipts are still mandatory;
+the initial TCP auth journeys are not whole-product acceptance.
+
 ## Not decisions and not completed gates
 
 - No new cryptography, key rotation, archive encoding or database system.
