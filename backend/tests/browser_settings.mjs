@@ -145,14 +145,24 @@ try {
   await page.keyboard.press('Escape')
   check((await api('/storage/ssh-keys')).some(k => k.name === 'settings_key'), 'AC5 reference warning and cancelled delete preserve the actual key')
   await api('/storage/' + location.id, 'DELETE')
-  await page.getByRole('button', { name: 'Delete key', exact: true }).click(); await page.getByRole('dialog', { name: 'Delete SSH key', exact: true }).getByRole('button', { name: 'Delete', exact: true }).click(); await expect(page.getByText('settings_key', { exact: true })).toBeHidden()
-  check((await api('/storage/ssh-keys')).length === 0 && (await api('/test-settings190/effects')).ssh_files.length === 0, 'AC5 native key deletion removes both actual files')
   // No screenshot or axe snapshot is taken while a private key/password is visible.
   await page.route(base + '/__axe_settings.js', async route => route.fulfill({ status: 200, contentType: 'application/javascript', body: await readFile('/runner/axe.min.js', 'utf8') }))
   for (const width of [320, 390, 768, 1024, 1440]) {
     await page.setViewportSize({ width, height: 900 })
     for (const [name, id] of [['System', 'system'], ['Connections', 'connection'], ['Encryption & SSH keys', 'encryption'], ['Storage safeguards', 'storage-safeguards'], ['System recovery', 'system-recovery']]) {
       const link = page.getByRole('link', { name, exact: true }); await link.focus(); await page.keyboard.press('Enter'); await expect(page.locator('#' + id)).toBeFocused()
+      if (id === 'encryption') {
+        await expect(page.getByText('settings_key', { exact: true })).toBeVisible()
+        const actions = [['button', 'Copy public key'], ['link', 'Download .pub'], ['button', 'Install on remote'], ['button', 'Delete key']]
+        await page.getByRole('button', { name: 'Copy public key', exact: true }).focus()
+        for (const [index, [role, name]] of actions.entries()) {
+          if (index) await page.keyboard.press('Tab')
+          const action = page.getByRole(role, { name, exact: true })
+          await expect(action).toBeFocused(); await expect(action).toBeVisible()
+          const bounds = await action.boundingBox()
+          check(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width && bounds.y >= 0 && bounds.y + bounds.height <= 900, `AC7 populated SSH keyboard action ${name} inside ${width}px viewport`)
+        }
+      }
       await page.addScriptTag({ url: base + '/__axe_settings.js' })
       const violations = await page.evaluate(async () => (await axe.run(document.querySelector('main'))).violations)
       await writeFile(`/runner/axe-settings-${width}-${id}.json`, JSON.stringify(violations.map(v => ({ id: v.id, impact: v.impact, targets: v.nodes.map(n => n.target) }))))
@@ -162,6 +172,9 @@ try {
     await page.screenshot({ path: `/runner/settings-${width}.png`, fullPage: true })
   }
   check(await page.getByRole('region', { name: 'System recovery', exact: true }).getByText(/#143/).isVisible(), 'AC6 distinct recovery dependency without fake controls')
+  await section('Encryption & SSH keys')
+  await page.getByRole('button', { name: 'Delete key', exact: true }).click(); await page.getByRole('dialog', { name: 'Delete SSH key', exact: true }).getByRole('button', { name: 'Delete', exact: true }).click(); await expect(page.getByText('settings_key', { exact: true })).toBeHidden()
+  check((await api('/storage/ssh-keys')).length === 0 && (await api('/test-settings190/effects')).ssh_files.length === 0, 'AC5 native key deletion removes both actual files')
   for (const motion of ['reduce', 'no-preference']) {
     await page.emulateMedia({ reducedMotion: motion })
     await connections(); await edit(); await page.getByLabel('Komodo API URL', { exact: true }).fill('http://127.0.0.1:9100/discard')

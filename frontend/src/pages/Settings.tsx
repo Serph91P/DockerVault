@@ -15,7 +15,7 @@ const sections = [
   ['system', 'System'], ['connection', 'Connections'], ['encryption', 'Encryption & SSH keys'],
   ['storage-safeguards', 'Storage safeguards'], ['system-recovery', 'System recovery'],
 ] as const
-const card = 'space-y-4 rounded-xl border border-dark-700 bg-dark-800 p-4 sm:p-6 min-w-0 break-words'
+const card = 'space-y-4 rounded-xl border border-dark-700 bg-dark-800 p-4 sm:p-6 min-w-0'
 const subscribeSession = (listener: () => void) => { const signal = sessionSignal(); signal.addEventListener('abort', listener); return () => signal.removeEventListener('abort', listener) }
 
 function NavigationGuard({ dirty, discard }: { dirty: boolean; discard: () => void }) {
