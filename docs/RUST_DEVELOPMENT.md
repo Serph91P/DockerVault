@@ -56,6 +56,7 @@ Cargo.lock pins transitive versions.
 | nix | 0.31.3 | 1.69 | MIT |
 | tracing | 0.1.44 | 1.65.0 | MIT |
 | tracing-subscriber | 0.3.23 | 1.65.0 | MIT |
+| Chrono | 0.4.45 | 1.62.0 | MIT OR Apache-2.0 |
 
 Axum's matchit 0.8.4 dependency requires **both MIT and BSD-3-Clause**, not an
 MIT-only interpretation. The BSD attribution/non-endorsement conditions are
@@ -113,6 +114,34 @@ Primary references:
 [rusqlite backup](https://docs.rs/rusqlite/0.41.1/rusqlite/backup/struct.Backup.html),
 [SQLite patched release](https://sqlite.org/releaselog/3_54_1.html),
 [Zlib license](https://spdx.org/licenses/Zlib.html).
+
+## Persisted scalar compatibility
+
+The native core distinguishes uppercase SQLAlchemy enum names from lowercase
+wire values and rejects unknown names instead of silently inventing a status.
+Timestamp encoding retains six SQL fractional digits and Python's conditional
+six-digit ISO API fractions, including the existing aware/naive distinction.
+Chrono currently enables only `std`; no ambient local timezone is inferred.
+
+Persisted JSON uses the Python default separators, ASCII escaping and insertion
+order. Storage identity can sort its already-stringified fields explicitly; the
+native output is checked against every frozen identity byte. Serde JSON enables
+`preserve_order`, `arbitrary_precision` and `float_roundtrip`: actual negative
+controls found a large integer converted into a rounded float and a one-bit f64
+parsing difference without the latter features. The frozen current-Python
+controls include independently captured numeric literals/bits, Unicode controls,
+large integers, signed zero and SQLAlchemy datetime encodings. Special legacy
+SQLite floating extension values in quarantine retain Python's spelling; this
+is not a promise to accept nonstandard JSON request bodies.
+
+`docs/contracts/python-control-18d8c3d/scalar-values.json` was captured using the
+unchanged Python control image (Python 3.14.10 / SQLAlchemy 2.1.6) with standard
+library/dialect imports only, not the application lifespan. Native SQLite writes
+are also compared field-for-field to the earlier independent ORM value snapshot.
+These are encoding tests, not complete application/reverse-cutover acceptance.
+
+Primary references: [Serde JSON features](https://docs.rs/crate/serde_json/1.0.154/features),
+[Chrono](https://docs.rs/chrono/0.4.45/chrono/).
 
 ## Ownership invariants
 

@@ -59,6 +59,115 @@ fn versions(conn: &Connection) -> Vec<i64> {
 }
 
 #[tokio::test]
+async fn orphan_quarantine_keeps_python_encoding_of_nonfinite_legacy_extension_values() {
+    let fixture = Fixture::new();
+    let conn = fixture.legacy();
+    conn.execute_batch("ALTER TABLE backup_logs ADD COLUMN legacy_real REAL;
+        INSERT INTO backup_logs(id,backup_id,step,message) VALUES(72,999,'PUBLIC','legacy extension');").unwrap();
+    conn.execute(
+        "UPDATE backup_logs SET legacy_real=? WHERE id=72",
+        [f64::INFINITY],
+    )
+    .unwrap();
+    conn.close().unwrap();
+    let owner = Owner::new(1).unwrap();
+    let db = Database::open(fixture.db(), fixture.backups(), &owner)
+        .await
+        .unwrap();
+    let row: String = sqlx::query_scalar(
+        "SELECT row_json FROM catalog_quarantine WHERE table_name='backup_logs' AND row_id=72",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert!(
+        row.contains("\"legacy_real\": Infinity"),
+        "quarantine changed Python's legacy float representation"
+    );
+    db.close().await;
+    owner.shutdown(None).await;
+}
+
+#[tokio::test]
+async fn typed_native_writes_reproduce_every_frozen_orm_encoding_field() {
+    use dockervault_core::{
+        encoding::python_json,
+        model::{BackupStatus, BackupType, LogLevel},
+        timestamp::Timestamp,
+    };
+    use sqlx::Row;
+    let fixture = Fixture::new();
+    let owner = Owner::new(1).unwrap();
+    let db = Database::open(fixture.db(), fixture.backups(), &owner)
+        .await
+        .unwrap();
+    let date = Timestamp::parse("2024-01-02T03:04:05.123456+00:00")
+        .unwrap()
+        .sql();
+    let empty = python_json(&serde_json::json!([]));
+    let rules = python_json(&serde_json::json!({}));
+    sqlx::query("INSERT INTO backup_targets(id,name,target_type,host_path,enabled,dependencies,selected_volumes,include_paths,exclude_paths,per_volume_rules,stop_container,compression_enabled,sync_to_remote,remote_storage_ids,delete_local_after_sync,created_at,updated_at) VALUES(101,'PUBLIC TEST SOURCE ä','path','/app/data/test-source',?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        .bind(false).bind(&empty).bind(&empty).bind(&empty).bind(&empty).bind(&rules)
+        .bind(false).bind(false).bind(false).bind(&empty).bind(false).bind(&date).bind(&date)
+        .execute(db.pool()).await.unwrap();
+    let metadata = python_json(
+        &serde_json::json!({"empty":[],"none":null,"false":false,"zero":0,"unicode":"ä"}),
+    );
+    sqlx::query("INSERT INTO backups(id,target_id,backup_type,status,file_path,file_size,checksum,encrypted,started_at,completed_at,duration_seconds,retry_count,backup_metadata,created_at) VALUES(201,101,?,?,'/backups/public-test.tar',0,?,0,?,?,0,0,?,?)")
+        .bind(BackupType::Full.db_name()).bind(BackupStatus::Completed.db_name()).bind("0".repeat(64))
+        .bind(&date).bind(&date).bind(&metadata).bind(&date).execute(db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO backup_logs(id,backup_id,level,step,message,details,created_at) VALUES(301,201,?,'PUBLIC TEST','Synthetic encoding control',?,?)")
+        .bind(LogLevel::Info.db_name()).bind(python_json(&serde_json::json!({"zero":0,"false":false}))).bind(&date)
+        .execute(db.pool()).await.unwrap();
+    let gold: Value = serde_json::from_str(include_str!(
+        "../../../docs/contracts/python-control-18d8c3d/sqlite-values.json"
+    ))
+    .unwrap();
+    for (table, query) in [
+        (
+            "backup_targets",
+            "SELECT * FROM backup_targets WHERE id=101",
+        ),
+        ("backups", "SELECT * FROM backups WHERE id=201"),
+        ("backup_logs", "SELECT * FROM backup_logs WHERE id=301"),
+    ] {
+        let actual = sqlx::query(query).fetch_one(db.pool()).await.unwrap();
+        for (column, expected) in gold["rows"][table][0].as_object().unwrap() {
+            match expected {
+                Value::Null => assert!(
+                    actual
+                        .try_get::<Option<String>, _>(column.as_str())
+                        .unwrap()
+                        .is_none(),
+                    "{table}.{column}"
+                ),
+                Value::Number(value) => assert_eq!(
+                    actual.try_get::<i64, _>(column.as_str()).unwrap(),
+                    value.as_i64().unwrap(),
+                    "{table}.{column}"
+                ),
+                Value::String(value) => assert_eq!(
+                    &actual.try_get::<String, _>(column.as_str()).unwrap(),
+                    value,
+                    "{table}.{column}"
+                ),
+                _ => panic!("unexpected frozen SQL scalar type"),
+            }
+        }
+    }
+    let stored_status: String = sqlx::query_scalar("SELECT status FROM backups WHERE id=201")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        BackupStatus::from_db(&stored_status).unwrap(),
+        BackupStatus::Completed
+    );
+    db.close().await;
+    owner.shutdown(None).await;
+}
+
+#[tokio::test]
 async fn fresh_schema_and_published_ledger_match_the_independent_python_snapshot() {
     let fixture = Fixture::new();
     let owner = Owner::new(1).unwrap();

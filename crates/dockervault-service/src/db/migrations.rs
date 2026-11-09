@@ -1,11 +1,11 @@
 use super::{DbError, MigrationReport, schema::TABLES};
+use dockervault_core::encoding::{python_float, python_string as ascii_json};
 use rusqlite::{
     Connection, OptionalExtension, TransactionBehavior,
     backup::{Backup, StepResult},
     types::ValueRef,
 };
 use std::{
-    fmt::Write,
     fs::{self, File, OpenOptions},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
@@ -104,33 +104,11 @@ fn upgrade_legacy(conn: &Connection) -> Result<(), DbError> {
     conn.execute("UPDATE backup_targets SET sync_to_remote=1 WHERE remote_storage_ids IS NOT NULL AND remote_storage_ids!='[]' AND remote_storage_ids!='' AND sync_to_remote=0", [])?;
     Ok(())
 }
-fn ascii_json(value: &str) -> String {
-    let encoded = serde_json::to_string(value).expect("a string serializes as JSON");
-    let mut result = String::new();
-    for character in encoded.chars() {
-        if character > '~' {
-            for unit in character.encode_utf16(&mut [0; 2]) {
-                write!(result, "\\u{unit:04x}").expect("write to string");
-            }
-        } else {
-            result.push(character);
-        }
-    }
-    result
-}
 fn json_scalar(value: ValueRef<'_>) -> Result<String, DbError> {
     Ok(match value {
         ValueRef::Null => "null".into(),
         ValueRef::Integer(value) => value.to_string(),
-        ValueRef::Real(value) => {
-            let text = format!("{value:?}");
-            if let Some((mantissa, exponent)) = text.split_once('e') {
-                let exponent: i32 = exponent.parse().map_err(|_| DbError::InvalidSchema)?;
-                format!("{mantissa}e{exponent:+03}")
-            } else {
-                text
-            }
-        }
+        ValueRef::Real(value) => python_float(value),
         ValueRef::Text(bytes) => {
             ascii_json(std::str::from_utf8(bytes).map_err(|_| DbError::InvalidSchema)?)
         }
