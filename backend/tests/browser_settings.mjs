@@ -131,8 +131,11 @@ try {
     check(true, `AC5 native ${method} install API with named synthetic remote transport`)
   }
   const location = await api('/storage', 'POST', { name: 'SSH reference proof', storage_type: 'ssh', enabled: false, host: 'synthetic.example', username: 'synthetic', base_path: '/backups', ssh_key_path: ssh.private_path })
-  const refused = await context.request.delete(base + '/api/v1/storage/ssh-keys/settings_key')
-  check(!refused.ok() && (await api('/storage/ssh-keys')).some(k => k.name === 'settings_key'), 'AC5 referenced key delete rejected with file retained')
+  check((await api('/storage/' + location.id)).ssh_key_path === ssh.private_path, 'AC5 real storage references exact generated private-key file')
+  await page.getByRole('button', { name: 'Delete key', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: 'Delete SSH key', exact: true })).toContainText('SSH reference proof')
+  await page.keyboard.press('Escape')
+  check((await api('/storage/ssh-keys')).some(k => k.name === 'settings_key'), 'AC5 reference warning and cancelled delete preserve the actual key')
   await api('/storage/' + location.id, 'DELETE')
   await page.getByRole('button', { name: 'Delete key', exact: true }).click(); await page.getByRole('dialog', { name: 'Delete SSH key', exact: true }).getByRole('button', { name: 'Delete', exact: true }).click(); await expect(page.getByText('settings_key', { exact: true })).toBeHidden()
   check((await api('/storage/ssh-keys')).length === 0 && (await api('/test-settings190/effects')).ssh_files.length === 0, 'AC5 native key deletion removes both actual files')

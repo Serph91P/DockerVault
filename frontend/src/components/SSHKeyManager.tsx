@@ -30,6 +30,12 @@ export default function SSHKeyManager() {
     queryFn: async () => (await storageApi.listSSHKeys()).data,
   });
   const { data: keys } = keysQuery;
+  const references = useQuery({
+    queryKey: queryKeys.storages.list(),
+    queryFn: () => storageApi.list().then(response => response.data),
+    enabled: deleteKey !== null,
+  });
+  const privatePath = keys?.find(key => key.name === deleteKey)?.private_path;
 
   const createMut = useMutation({
     mutationFn: () =>
@@ -145,6 +151,7 @@ export default function SSHKeyManager() {
       </div>
 
       <ConfirmDialog isOpen={deleteKey !== null} onClose={() => setDeleteKey(null)} onConfirm={() => { if (deleteKey) deleteMut.mutate(deleteKey); }} title="Delete SSH key" message={`Delete SSH key "${deleteKey}"? This cannot be undone.`} confirmLabel="Delete" isLoading={deleteMut.isPending}>
+        {deleteKey && <><QueryFeedback name="SSH key references" query={references} /><p>Deleting this file can break storage connections that reference it. The server does not prevent referenced-key deletion; this snapshot is not a concurrency guarantee.</p>{privatePath && <ul>{references.data?.filter(storage => storage.ssh_key_path === privatePath).map(storage => <li key={storage.id}>{storage.name}</li>)}</ul>}</>}
         {deleteMut.isError && <p role="alert" className="text-red-300">Could not delete the key. Retry or cancel.</p>}
       </ConfirmDialog>
       {showCreate && (
