@@ -235,7 +235,7 @@ function CreateKeyModal(props: {
           />
         </div>
         {props.error && (
-          <div className="text-sm text-red-600 dark:text-red-400">{props.error}</div>
+          <div role="alert" className="text-sm text-red-600 dark:text-red-400">{props.error}</div>
         )}
         <div className="flex justify-end gap-2 pt-2">
           <button
@@ -365,7 +365,7 @@ function InstallKeyModal(props: { keyInfo: SSHKeyInfo; onClose: () => void }) {
         </fieldset>
         {outcome && <p role="status" aria-label="SSH installation result">SSH installation: {outcome}. {outcome === 'completed' ? 'Key installed successfully.' : 'Installation is not confirmed complete. Inspect the remote before retrying.'}</p>}
         {errorText && (
-          <pre className="text-xs text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-900/30 p-2 rounded whitespace-pre-wrap">
+          <pre role="alert" className="text-xs text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-900/30 p-2 rounded whitespace-pre-wrap">
             {errorText}
           </pre>
         )}
