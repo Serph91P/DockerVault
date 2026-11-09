@@ -10,6 +10,8 @@ license = "MIT"
 repository = "https://github.com/Serph91P/DockerVault"
 
 [workspace.dependencies]
+tar = { version = "=0.4.46", default-features = false }
+flate2 = "=1.1.11"
 signal-hook = { version = "=0.4.6", default-features = false }
 age = { git = "https://github.com/str4d/rage", rev = "b5b68c4f4f7ea5c368bc060f6fe0237549c3a13f", default-features = false, features = ["armor"] }
 zeroize = "=1.9.1"
@@ -26,7 +28,7 @@ sha2 = { version = "=0.11.1", default-features = false }
 chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
 dotenvy = "=0.15.7"
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "query", "tokio", "ws"] }
-nix = { version = "=0.31.3", default-features = false, features = ["process", "signal"] }
+nix = { version = "=0.31.3", default-features = false, features = ["process", "signal", "dir", "fs", "user"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["preserve_order", "arbitrary_precision", "float_roundtrip"] }
 sqlx = { version = "=0.9.0", git = "https://github.com/transact-rs/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c", default-features = false, features = ["runtime-tokio", "sqlite"] }

@@ -7,12 +7,18 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+tar.workspace = true
+flate2.workspace = true
+nix.workspace = true
+getrandom.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 signal-hook.workspace = true
 dockervault-core = { path = "../dockervault-core", default-features = false }
 
-[dev-dependencies]
-serde_json.workspace = true
-nix.workspace = true
-
 [lints]
 workspace = true
+
+[[example]]
+name = "archive_worker_privileges"
+path = "tests/bin/archive_worker_privileges.rs"

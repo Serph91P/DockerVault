@@ -14,18 +14,38 @@ impl Filters {
     }
 
     pub fn includes(&self, path: &str) -> bool {
-        let path = path.trim_start_matches('/');
+        self.includes_bytes(path.as_bytes())
+    }
+
+    pub fn includes_bytes(&self, path: &[u8]) -> bool {
+        let path = strip_slashes(path);
         !self.exclude.iter().any(|p| p.accepts(path))
             && (self.include.is_empty() || self.include.iter().any(|p| p.accepts(path)))
     }
 
+    pub fn traverses_bytes(&self, directory: &[u8]) -> bool {
+        let directory = strip_slashes(directory);
+        !self.exclude.iter().any(|p| p.accepts(directory))
+            && (self.include.is_empty()
+                || self.include.iter().any(|p| p.accepts(directory))
+                || self.parent_bytes(directory))
+    }
+
     pub fn is_parent_of_included(&self, directory: &str) -> bool {
-        let directory = format!(
-            "{}/",
-            directory.trim_start_matches('/').trim_end_matches('/')
-        );
+        self.parent_bytes(directory.as_bytes())
+    }
+
+    fn parent_bytes(&self, directory: &[u8]) -> bool {
+        let directory = strip_slashes(directory);
+        let end = directory
+            .iter()
+            .rposition(|&c| c != b'/')
+            .map_or(0, |i| i + 1);
+        let mut directory = directory[..end].to_vec();
+        directory.push(b'/');
         self.include.iter().any(|p| {
-            p.literal_prefix.starts_with(&directory) || directory.starts_with(&p.literal_prefix)
+            p.literal_prefix.as_bytes().starts_with(&directory)
+                || directory.starts_with(p.literal_prefix.as_bytes())
         })
     }
 }
@@ -90,11 +110,11 @@ impl Pattern {
         }
     }
 
-    fn accepts(&self, path: &str) -> bool {
-        if path.starts_with(&self.directory_prefix) {
+    fn accepts(&self, path: &[u8]) -> bool {
+        if path.starts_with(self.directory_prefix.as_bytes()) {
             return true;
         }
-        let chars: Vec<char> = path.chars().collect();
+        let chars = filesystem_characters(path);
         let mut matches = vec![false; chars.len() + 1];
         matches[0] = true;
         // One row of dynamic programming avoids recursive wildcard backtracking.
@@ -164,13 +184,47 @@ fn character_class(chars: &[char]) -> Token {
     Token::Class { negated, ranges }
 }
 
+fn strip_slashes(path: &[u8]) -> &[u8] {
+    &path[path.iter().position(|&c| c != b'/').unwrap_or(path.len())..]
+}
+
+// Match Linux Python filesystem decoding without U+FFFD collisions or unsafe UTF-8.
+fn filesystem_characters(mut bytes: &[u8]) -> Vec<u32> {
+    let mut result = Vec::new();
+    while !bytes.is_empty() {
+        match std::str::from_utf8(bytes) {
+            Ok(text) => {
+                result.extend(text.chars().map(u32::from));
+                break;
+            }
+            Err(error) => {
+                let valid = error.valid_up_to();
+                result.extend(
+                    std::str::from_utf8(&bytes[..valid])
+                        .expect("validated UTF-8 prefix")
+                        .chars()
+                        .map(u32::from),
+                );
+                bytes = &bytes[valid..];
+                let invalid = error.error_len().unwrap_or(bytes.len());
+                result.extend(bytes[..invalid].iter().map(|&c| 0xdc00 + u32::from(c)));
+                bytes = &bytes[invalid..];
+            }
+        }
+    }
+    result
+}
+
 impl Token {
-    fn accepts(&self, c: char) -> bool {
+    fn accepts(&self, c: u32) -> bool {
         match self {
             Self::Any | Self::Star => true,
-            Self::Literal(expected) => c == *expected,
+            Self::Literal(expected) => c == u32::from(*expected),
             Self::Class { negated, ranges } => {
-                ranges.iter().any(|&(start, end)| start <= c && c <= end) != *negated
+                ranges
+                    .iter()
+                    .any(|&(start, end)| u32::from(start) <= c && c <= u32::from(end))
+                    != *negated
             }
         }
     }

@@ -43,6 +43,11 @@ jobs:
             cargo deny check advisories licenses sources
             cargo audit --deny warnings
           '
+      - name: Native fixed-policy privileged worker and physical root-child settlement
+        run: |
+          docker build -f docker/archive-worker-test.Dockerfile -t dockervault-archive-worker-ci .
+          docker run --rm --network none --user 1000:1000 \
+            --entrypoint /usr/local/bin/archive-worker-privileges dockervault-archive-worker-ci
       - name: Build native standalone recovery image
         run: |
           docker build --build-arg VCS_REF="$(git rev-parse HEAD)" \

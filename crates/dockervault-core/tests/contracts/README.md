@@ -8,6 +8,11 @@
   stars and literal backslashes. It was captured in the unchanged Python control
   image before implementing the Rust matcher, with no application import/startup.
 
+- `fsdecode-control.json` captures original Python filesystem surrogateescape
+  matching for raw non-UTF8 names, including bytes resembling UTF-8-encoded
+  surrogates and the U+FFFD collision boundary. Expected values stay independent
+  of the native matcher.
+
 These JSON files are historical language-neutral expected values, not maintained
 Python implementations or evidence that a native test ran. Native assertions
 are in `../filters.rs`. Broader character-class qualification and retained
