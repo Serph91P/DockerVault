@@ -453,7 +453,11 @@ def package_rclone(
                 requirements.append(
                     {
                         "remote": name,
-                        "key_path": remote.get("key_file") or None,
+                        "key_path": os.path.abspath(
+                            os.path.expanduser(os.path.expandvars(remote["key_file"]))
+                        )
+                        if remote.get("key_file")
+                        else None,
                         "agent": remote.get("key_use_agent", "false").lower()
                         not in {"false", "0", ""},
                     }
