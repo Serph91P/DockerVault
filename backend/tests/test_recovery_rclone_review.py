@@ -1,7 +1,6 @@
 """Review regressions: public SSH custody and effective native source portability."""
 
 import base64
-import copy
 import hashlib
 import json
 
