@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useContext, useEffect, useState, useSyncExternalStore } from 'react'
 import { Link, UNSAFE_DataRouterContext, useBlocker, useLocation } from 'react-router-dom'
 import { dockerApi, settingsApi } from '../api'
 import { queryKeys } from '../api/queryKeys'
@@ -20,16 +20,14 @@ const subscribeSession = (listener: () => void) => { const signal = sessionSigna
 
 function NavigationGuard({ dirty, discard }: { dirty: boolean; discard: () => void }) {
   const blocker = useBlocker(dirty)
-  const leaving = useRef(false)
-  return <Dialog open={blocker.state === 'blocked'} onOpenChange={open => { if (!open) { leaving.current = false; blocker.reset?.() } }}>
-    <DialogContent className="w-full max-w-md rounded-xl border border-dark-600 bg-dark-800 p-6 space-y-4" finalFocus={() => {
-      if (!leaving.current) return true
-      const id = document.querySelector('[data-settings-context]')?.getAttribute('data-settings-context')
-      return (id && document.getElementById(id)) || document.getElementById('main-content')
-    }}>
+  const [leaving, setLeaving] = useState(false)
+  return <Dialog open={blocker.state === 'blocked' && !leaving} onOpenChange={open => { if (!open && !leaving) blocker.reset?.() }} onOpenChangeComplete={open => {
+    if (!open && leaving && blocker.state === 'blocked') { discard(); blocker.proceed?.() }
+  }}>
+    <DialogContent className="w-full max-w-md rounded-xl border border-dark-600 bg-dark-800 p-6 space-y-4" finalFocus={!leaving}>
       <DialogTitle className="text-lg font-semibold">Discard unsaved settings?</DialogTitle>
       <DialogDescription>Unsaved settings and private credential inputs will be discarded. Cancel to keep editing. An already submitted write may still complete on the server; leaving does not roll it back.</DialogDescription>
-      <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => { leaving.current = false; blocker.reset?.() }}>Cancel</Button><Button variant="destructive" onClick={() => { leaving.current = true; discard(); blocker.proceed?.() }}>Discard and leave</Button></div>
+      <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => blocker.reset?.()}>Cancel</Button><Button variant="destructive" onClick={() => setLeaving(true)}>Discard and leave</Button></div>
     </DialogContent>
   </Dialog>
 }
@@ -84,12 +82,12 @@ function SettingsWorkspace() {
     return () => window.removeEventListener('beforeunload', warn)
   }, [hasDraft])
   const docker = useQuery({ queryKey: ['docker-health'], queryFn: () => dockerApi.getHealth().then(r => r.data.status === 'healthy'), refetchInterval: 30000 })
-  return <div className="space-y-6" data-settings-context={hash === 'ssh-keys' ? hash : current}>
+  return <div className="space-y-6">
     <header><h1 className="text-2xl font-bold">Settings</h1><p className="text-dark-300">Saved effective values, private drafts and separate test observations.</p></header>
     <nav aria-label="Settings sections" className="flex flex-wrap gap-2">
       {sections.map(([id, label]) => <Link key={id} to={{ pathname: location.pathname, search: location.search, hash: `#${id}` }} aria-current={current === id ? 'location' : undefined} className={`min-h-11 rounded-lg border px-3 py-2 ${current === id ? 'border-primary-400 text-primary-200' : 'border-dark-600 text-dark-200'}`}>{label}</Link>)}
     </nav>
-    {dataRouter && <NavigationGuard dirty={hasDraft} discard={discard} />}
+    {dataRouter && <NavigationGuard key={location.key} dirty={hasDraft} discard={discard} />}
     <section id="system" tabIndex={-1} aria-label="System settings" hidden={current !== 'system'}><SystemInfoCard /></section>
     <section id="connection" tabIndex={-1} aria-label="Docker connection settings" hidden={current !== 'connection'} className="space-y-4">
       <div className={card}><h2 className="text-lg font-semibold">Docker Connection</h2><QueryFeedback name="Docker" query={docker} />

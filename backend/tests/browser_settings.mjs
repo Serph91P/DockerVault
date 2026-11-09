@@ -162,9 +162,12 @@ try {
     await page.screenshot({ path: `/runner/settings-${width}.png`, fullPage: true })
   }
   check(await page.getByRole('region', { name: 'System recovery', exact: true }).getByText(/#143/).isVisible(), 'AC6 distinct recovery dependency without fake controls')
-  await connections(); await edit(); await page.getByLabel('Komodo API URL', { exact: true }).fill('http://127.0.0.1:9100/discard')
-  await section('System'); await page.getByRole('button', { name: 'Discard and leave', exact: true }).click(); await expect(page.locator('#system')).toBeFocused(); await expect(page.getByRole('dialog', { name: 'Discard unsaved settings?' })).toBeHidden(); await page.goBack(); await expect(page.locator('#connection')).toBeFocused(); await expect(page.getByRole('button', { name: 'Edit Settings', exact: true })).toBeVisible(); await page.goForward(); await expect(page.locator('#system')).toBeFocused()
-  check(true, 'AC3/7 discard and Back/Forward preserve durable focused contexts')
+  for (const motion of ['reduce', 'no-preference']) {
+    await page.emulateMedia({ reducedMotion: motion })
+    await connections(); await edit(); await page.getByLabel('Komodo API URL', { exact: true }).fill('http://127.0.0.1:9100/discard')
+    await section('System'); await page.getByRole('button', { name: 'Discard and leave', exact: true }).click(); await expect(page.locator('#system')).toBeFocused(); await expect(page.getByRole('dialog', { name: 'Discard unsaved settings?' })).toBeHidden(); await page.goBack(); await expect(page.locator('#connection')).toBeFocused(); await expect(page.getByRole('button', { name: 'Edit Settings', exact: true })).toBeVisible(); await page.goForward(); await expect(page.locator('#system')).toBeFocused()
+    check(true, `AC3/7 discard and Back/Forward preserve durable focused contexts (${motion})`)
+  }
   await connections(); await edit(); await page.getByLabel('Komodo API secret', { exact: true }).fill(secret)
   await page.route('**/api/v1/settings/komodo', route => route.request().method() === 'PUT' ? route.fulfill({ status: 401, json: {} }) : route.continue())
   await page.getByRole('button', { name: 'Save', exact: true }).click(); await expect(page.getByRole('button', { name: /Sign in/i })).toBeVisible()
