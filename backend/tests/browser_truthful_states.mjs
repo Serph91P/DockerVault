@@ -69,7 +69,7 @@ try {
   // Review regressions: native populated SSH responses and scoped nested inventory faults.
   const pageErrors = []
   page.on('pageerror', error => pageErrors.push(error.message))
-  await ready('/storage', 'Storage locations')
+  await ready('/settings#ssh-keys', 'Storage settings')
   await page.getByRole('button', { name: 'Generate', exact: true }).click()
   const keyDialog = page.getByRole('dialog', { name: 'Generate SSH key', exact: true })
   await keyDialog.getByRole('textbox', { name: 'Name', exact: true }).fill('truthful_key')
@@ -86,6 +86,7 @@ try {
   await page.getByRole('dialog', { name: 'Install key on remote', exact: true }).waitFor()
   await page.keyboard.press('Escape')
   check(await page.getByRole('button', { name: 'Install on remote', exact: true }).evaluate(element => element === document.activeElement), 'B1: install dialog opens and returns keyboard focus without provider access')
+  await ready('/storage', 'Storage locations')
   await page.getByRole('button', { name: 'Add Storage', exact: true }).click()
   const storageDraft = page.getByRole('dialog', { name: 'Add New Storage', exact: true })
   await storageDraft.getByRole('textbox', { name: 'Name', exact: true }).fill('Unsaved SSH selection')

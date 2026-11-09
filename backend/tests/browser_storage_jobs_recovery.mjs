@@ -48,7 +48,7 @@ try {
   })
   await page.goto(base + '/storage')
   await page.getByTitle('Browse Files').first().click()
-  const panel = page.getByRole('dialog', { name: 'Browse Local Backups' })
+  const panel = page.getByRole('region', { name: 'Browse Local Backups' })
   if (scenario === 'discovery') {
     await gotRead
     assert.equal(await panel.getByText('Loading storage operations...', { exact: true }).isVisible(), true)

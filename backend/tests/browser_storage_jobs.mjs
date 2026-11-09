@@ -27,13 +27,13 @@ async function done(id) {
 async function open() {
   await page.goto(base + '/storage')
   await page.getByTitle('Browse Files').first().click()
-  return page.getByRole('dialog', { name: 'Browse Local Backups' })
+  return page.getByRole('region', { name: 'Browse Local Backups' })
 }
 async function runDelete(panel, names) {
   await panel.getByRole('button', { name: 'Select All', exact: true }).click()
   await panel.getByRole('button', { name: 'Clear Selection', exact: true }).click()
   for (const name of names) await panel.getByRole('row').filter({ has: page.getByText(name, { exact: true }) }).click()
-  await panel.locator('div.flex-1.overflow-y-auto').evaluate(e => { e.scrollTop = 100 })
+  await panel.locator('div.overflow-y-auto').evaluate(e => { e.scrollTop = 100 })
   await panel.getByRole('button', { name: 'Delete', exact: true }).click()
   const confirmation = page.getByRole('dialog', { name: 'Delete Files' })
   const accepted = page.waitForResponse(r => r.url().endsWith('/api/v1/operations') && r.request().method() === 'POST')
@@ -80,7 +80,7 @@ try {
     await panel.getByRole('button', { name: 'Refresh operations' }).click()
     const article = panel.getByRole('article', { name: `Operation ${id}` })
     await article.getByText('Permission denied', { exact: true }).waitFor()
-    check(await panel.locator('div.flex-1.overflow-y-auto').evaluate(e => e.scrollTop) === 100, 'listing scroll position retained after deletion and refresh')
+    check(await panel.locator('div.overflow-y-auto').evaluate(e => e.scrollTop) === 100, 'listing scroll position retained after deletion and refresh')
     await panel.getByRole('button', { name: 'Refresh operations' }).focus()
     const deniedStatus = '**/api/v1/operations?*'
     await page.route(deniedStatus, route => route.abort('failed'))
@@ -111,7 +111,7 @@ try {
     await page.reload()
     await page.getByRole('heading', { name: 'Configured synthetic', exact: true }).waitFor()
     await page.getByTitle('Browse Files').last().click()
-    panel = page.getByRole('dialog', { name: 'Browse Configured synthetic' })
+    panel = page.getByRole('region', { name: 'Browse Configured synthetic' })
     const configuredId = await runDelete(panel, ['configured-folder', 'configured-file'])
     const configuredJob = await done(configuredId)
     check(configuredJob.state === 'completed' && configuredJob.succeeded === 2 && configuredJob.storage_id === configured.id, 'configured root physical directory and file operation completed')

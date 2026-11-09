@@ -130,6 +130,7 @@ def list_local_files(root: Path, relative_path: str):
                         "name": entry.name,
                         "size": info.st_size if stat.S_ISREG(info.st_mode) else None,
                         "is_dir": is_dir,
+                        "is_symlink": stat.S_ISLNK(info.st_mode),
                         "modified": info.st_mtime,
                     }
                 )

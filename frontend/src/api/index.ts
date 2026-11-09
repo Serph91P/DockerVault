@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { validateRead, validateWrite } from './responses'
+import { protectStorageMetadata } from './storagePrivacy'
 
 const api = axios.create({
   baseURL: '/api/v1',
@@ -13,6 +14,7 @@ const api = axios.create({
 api.interceptors.response.use(response => {
   if (response.config.method === 'get') validateRead(response.config.url, response.data)
   if (response.config.method === 'post' || response.config.method === 'put') validateWrite(response.config.url, response.data)
+  if (/^\/storage(?:\/\d+)?$/.test(response.config.url ?? '')) response.data = protectStorageMetadata(response.data)
   return response
 })
 
@@ -397,6 +399,7 @@ export const retentionApi = {
 
 // Remote Storage Types
 export interface RemoteStorage {
+  validation_errors?: string[]
   id: number
   name: string
   storage_type: 'local' | 'ssh' | 'sftp' | 'webdav' | 's3' | 'ftp' | 'rclone'

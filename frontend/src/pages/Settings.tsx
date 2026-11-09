@@ -491,9 +491,17 @@ function SystemInfoCard() {
 }
 
 export default function Settings() {
-  const { hash } = useLocation()
+  const { hash, search } = useLocation()
+  const candidate = new URLSearchParams(search).get('storageReturn')
+  let storageReturn: string | null = null
+  if (candidate?.startsWith('/storage?')) {
+    const source = new URLSearchParams(candidate.slice('/storage?'.length))
+    const safe = new URLSearchParams()
+    for (const key of ['storage','tab','path','q','kind','sort','direction','operation','returnTo']) if (source.has(key)) safe.set(key,source.get(key)!)
+    storageReturn = `/storage?${safe}`
+  }
   useEffect(() => {
-    if (hash === '#connection' || hash === '#encryption') document.getElementById(hash.slice(1))?.focus()
+    if (hash === '#connection' || hash === '#encryption' || hash === '#ssh-keys') document.getElementById(hash.slice(1))?.focus()
   }, [hash])
   const { data: dockerHealth, refetch: refetchDocker, ...dockerQuery } = useQuery({
     queryKey: ['docker-health'],
@@ -551,6 +559,11 @@ export default function Settings() {
 
       {/* Encryption Settings */}
       <section id="encryption" tabIndex={-1} aria-label="Encryption settings"><EncryptionSetup /></section>
+      <section id="ssh-keys" tabIndex={-1} aria-label="SSH key security">
+        <h2 className="text-lg font-semibold">Security / SSH keys</h2>
+        {storageReturn && <Link className="underline" to={storageReturn}>Return to storage connection</Link>}
+        <SSHKeyManager />
+      </section>
 
       {/* Storage & Upload Settings */}
       <StorageSettingsCard />
@@ -565,3 +578,5 @@ export default function Settings() {
 }
 import { queryKeys } from '../api/queryKeys'
 import { QueryFeedback } from '../components/QueryFeedback'
+import SSHKeyManager from '../components/SSHKeyManager'
+import { Link } from 'react-router-dom'
