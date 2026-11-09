@@ -130,6 +130,12 @@ async def effects():
     key_files = (
         list((root / "ssh_keys").glob("*")) if (root / "ssh_keys").exists() else []
     )
+    public = root / "ssh_keys/settings_key.pub"
+    expected = public.read_bytes().strip() if public.exists() else None
+    installed = [
+        root / "synthetic_remote/.ssh/authorized_keys",
+        root / "synthetic_remote/hetzner.pub",
+    ]
     return {
         "settings": settings,
         "foreign_key_errors": foreign_keys,
@@ -139,6 +145,8 @@ async def effects():
         and komodo_client.api_secret == config.api_secret,
         "transport": observations,
         "ssh_files": [p.name for p in key_files],
+        "installed_public_bytes_equal": expected is not None
+        and all(p.exists() and p.read_bytes().strip() == expected for p in installed),
         "ssh_private_permissions_safe": all(
             p.stat().st_mode & 0o077 == 0
             for p in key_files

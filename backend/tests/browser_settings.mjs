@@ -136,6 +136,8 @@ try {
     await install.getByRole('button', { name: 'Install', exact: true }).click(); await expect(install.getByLabel('SSH installation result')).toContainText('completed'); await expect(install.getByLabel('Password', { exact: true })).toHaveValue(''); await install.getByRole('button', { name: 'Close', exact: true }).click()
     check(true, `AC5 native ${method} install API with named synthetic remote transport`)
   }
+  const sshEffects = await api('/test-settings190/effects')
+  check(sshEffects.installed_public_bytes_equal && sshEffects.ssh_private_permissions_safe && sshEffects.transport.install_methods.length === 3, 'AC5 independent real authorized_keys/Hetzner public bytes and private-file permissions (synthetic remote transport)')
   const location = await api('/storage', 'POST', { name: 'SSH reference proof', storage_type: 'ssh', enabled: false, host: 'synthetic.example', username: 'synthetic', base_path: '/backups', ssh_key_path: ssh.private_path })
   check((await api('/storage/' + location.id)).ssh_key_path === ssh.private_path, 'AC5 real storage references exact generated private-key file')
   await page.getByRole('button', { name: 'Delete key', exact: true }).click()

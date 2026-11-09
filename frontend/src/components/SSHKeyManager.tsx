@@ -300,7 +300,7 @@ function InstallKeyModal(props: { keyInfo: SSHKeyInfo; onClose: () => void }) {
             password is never stored.
           </p>
         </div>
-        <fieldset disabled={pending} className="space-y-4">
+        <fieldset disabled={pending} className="space-y-4" onChange={() => { setOutcome(null); setErrorText(null); }}>
         <legend className="sr-only">Remote installation credentials</legend>
         <div className="grid grid-cols-3 gap-2">
           <div className="col-span-2">

@@ -29,4 +29,6 @@ it.each(['completed', 'partial', 'accepted', 'failed', 'unknown'])('private SSH 
   expect(client.getMutationCache().getAll()).toHaveLength(0)
   expect(screen.getByRole('status', { name: 'SSH installation result' })).toHaveTextContent(outcome)
   if (outcome !== 'completed') expect(screen.queryByText('Key installed successfully.')).not.toBeInTheDocument()
+  await userEvent.type(screen.getByLabelText('Host', { exact: true }), '/changed')
+  expect(screen.queryByRole('status', { name: 'SSH installation result' })).not.toBeInTheDocument()
 })
