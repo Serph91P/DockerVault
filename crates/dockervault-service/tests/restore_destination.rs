@@ -288,6 +288,34 @@ fn fractional_pax_timestamps_match_python_utime_floor_semantics() {
 }
 
 #[test]
+fn archived_symlink_can_replace_an_existing_leaf_link_without_traversing_it() {
+    let root = Fixture::new();
+    let target = root.0.join("target");
+    fs::write(target.join("file"), b"mutated").unwrap();
+    symlink("file", target.join("link")).unwrap();
+    let entries = serde_json::json!([
+        ["file", "root/file", "restored"],
+        ["sym", "root/link", "file"]
+    ]);
+    let mut index = IndexedArchive::prepare(
+        Cursor::new(archive(&entries)),
+        false,
+        &fs::File::open(&root.0).unwrap(),
+        Some(b"root"),
+        &|| false,
+    )
+    .unwrap();
+    index
+        .restore_into(&fs::File::open(&target).unwrap(), &|| false)
+        .unwrap();
+    assert_eq!(fs::read(target.join("file")).unwrap(), b"restored");
+    assert_eq!(
+        fs::read_link(target.join("link")).unwrap(),
+        std::path::Path::new("file")
+    );
+}
+
+#[test]
 fn preexisting_directory_symlink_attack_rejects_all_writes() {
     let root = Fixture::new();
     let target = root.0.join("target");

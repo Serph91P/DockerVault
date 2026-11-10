@@ -247,7 +247,8 @@ impl Planner<'_> {
         let kind = match SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT {
             SFlag::S_IFDIR => MemberKind::Directory,
             SFlag::S_IFREG => MemberKind::File,
-            _ => return Err(invalid("Preexisting symlink or special destination member")),
+            SFlag::S_IFLNK => MemberKind::Symlink,
+            _ => return Err(invalid("Preexisting special destination member")),
         };
         self.put(path, kind, None)?;
         Ok(Some(Node { kind, link: None }))
@@ -288,6 +289,14 @@ impl Planner<'_> {
                         return Err(invalid("Expanded archive path exceeds bounded limit"));
                     }
                     return Ok(Some(member_name(&next).map_err(invalid)?));
+                }
+                Some(Node {
+                    kind: MemberKind::Symlink,
+                    link: None,
+                }) => {
+                    return Err(invalid(
+                        "Preexisting destination symlink cannot be traversed",
+                    ));
                 }
                 Some(Node {
                     kind: MemberKind::File,
