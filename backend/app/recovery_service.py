@@ -144,25 +144,45 @@ async def export_state(session) -> dict:
     return payload
 
 
+def _public_key(raw):
+    from cryptography.exceptions import UnsupportedAlgorithm
+    from cryptography.hazmat.primitives import serialization
+
+    if len(raw) > 16384:
+        _invalid()
+    try:
+        # Parsing accepts trailing comments/lines; never retain the input bytes.
+        try:
+            identity = serialization.load_ssh_public_identity(raw)
+        except UnsupportedAlgorithm:
+            # Keep the legacy parser's DSA key support, not just certificate types.
+            identity = serialization.load_ssh_public_key(raw)
+        if isinstance(identity, serialization.SSHCertificate):
+            return identity.public_bytes().decode()
+        return identity.public_bytes(
+            serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
+        ).decode()
+    except (ValueError, UnicodeError, UnsupportedAlgorithm):
+        _invalid()
+
+
 async def _public_keys(restored=()):
     from app.api.storage import _SSH_KEYS_DIR, _SSH_NAME_RE
-    from cryptography.hazmat.primitives.serialization import load_ssh_public_key
 
-    result = {key["name"]: key for key in restored}
+    result = {
+        key["name"]: {
+            "name": key["name"],
+            "public_key": _public_key(key["public_key"].encode()),
+        }
+        for key in restored
+    }
     for path in sorted(_SSH_KEYS_DIR.glob("*.pub")):
         if not _SSH_NAME_RE.fullmatch(path.stem) or path.is_symlink():
             continue
         # No private counterpart is opened or copied, including in metadata lookup.
         with path.open("rb") as stream:
             raw = stream.read(16385)
-        if len(raw) > 16384:
-            _invalid()
-        try:
-            load_ssh_public_key(raw)
-            public = raw.decode().strip()
-        except (ValueError, UnicodeError):
-            _invalid()
-        result[path.stem] = {"name": path.stem, "public_key": public}
+        result[path.stem] = {"name": path.stem, "public_key": _public_key(raw)}
     return [result[name] for name in sorted(result)]
 
 
@@ -325,18 +345,24 @@ def _validate_references_and_paths(payload):
     if type(payload["ssh_public_keys"]) is not list:
         _invalid()
     from app.api.storage import _SSH_NAME_RE
-    from cryptography.hazmat.primitives.serialization import load_ssh_public_key
 
     names = set()
+    public_keys = []
     for key in payload["ssh_public_keys"]:
         if type(key) is not dict or set(key) != {"name", "public_key"}:
             _invalid()
         if not _SSH_NAME_RE.fullmatch(key["name"]) or key["name"] in names:
             _invalid()
         names.add(key["name"])
-        if len(key["public_key"]) > 16384:
+        if type(key["public_key"]) is not str:
             _invalid()
-        load_ssh_public_key(key["public_key"].encode())
+        public_keys.append(
+            {"name": key["name"], "public_key": _public_key(key["public_key"].encode())}
+        )
+    # The original manifest was checked before normalization. All later activation,
+    # SQLite, status and reexport consumers must see only the public serialization.
+    payload["ssh_public_keys"] = public_keys
+    payload["manifest"] = state_manifest(payload)
 
 
 async def insert_state(session, payload: dict, *, protect_credentials=True):
