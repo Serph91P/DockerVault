@@ -19,6 +19,7 @@ signal-hook = { version = "=0.4.6", default-features = false }
 age = { git = "https://github.com/str4d/rage", rev = "b5b68c4f4f7ea5c368bc060f6fe0237549c3a13f", default-features = false, features = ["armor"] }
 zeroize = "=1.9.1"
 openssl = "=0.10.82"
+argon2 = { version = "=0.6.0", default-features = false, features = ["alloc", "zeroize"] }
 fernet = "=0.2.2"
 bollard = { version = "=0.21.1", default-features = false, features = ["pipe"] }
 indexmap = { version = "=2.14.2", features = ["serde"] }

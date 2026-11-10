@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 age.workspace = true
 openssl.workspace = true
+argon2.workspace = true
 zeroize.workspace = true
 fernet.workspace = true
 chrono.workspace = true

@@ -35,6 +35,12 @@ pub fn python_float(value: f64) -> String {
     }
 }
 pub fn python_json(value: &Value) -> String {
+    json_with_spacing(value, false)
+}
+pub fn python_json_compact(value: &Value) -> String {
+    json_with_spacing(value, true)
+}
+fn json_with_spacing(value: &Value, compact: bool) -> String {
     match value {
         Value::Null => "null".into(),
         Value::Bool(value) => value.to_string(),
@@ -53,17 +59,22 @@ pub fn python_json(value: &Value) -> String {
             "[{}]",
             values
                 .iter()
-                .map(python_json)
+                .map(|value| json_with_spacing(value, compact))
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(if compact { "," } else { ", " })
         ),
         Value::Object(values) => format!(
             "{{{}}}",
             values
                 .iter()
-                .map(|(key, value)| format!("{}: {}", python_string(key), python_json(value)))
+                .map(|(key, value)| format!(
+                    "{}{}{}",
+                    python_string(key),
+                    if compact { ":" } else { ": " },
+                    json_with_spacing(value, compact)
+                ))
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(if compact { "," } else { ", " })
         ),
     }
 }
