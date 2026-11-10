@@ -187,22 +187,8 @@ fn copy_complete(
 ) -> io::Result<Downloaded> {
     let metadata = source.metadata()?;
     let before = FileIdentity::read(&metadata)?;
-    let mut digest = Sha256::new();
-    let mut length = 0u64;
-    let mut buffer = [0u8; 65536];
-    loop {
-        check(cancel)?;
-        let count = source.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        output.write_all(&buffer[..count])?;
-        digest.update(&buffer[..count]);
-        length = length
-            .checked_add(count as u64)
-            .ok_or_else(|| invalid("Transfer length overflow"))?;
-    }
-    if length != before.length || FileIdentity::read(&source.metadata()?)? != before {
+    let receipt = copy_stream(&mut source, output, cancel)?;
+    if receipt.length != before.length || FileIdentity::read(&source.metadata()?)? != before {
         return Err(invalid("Transfer source changed while copying"));
     }
     output.set_permissions(std::fs::Permissions::from_mode(metadata.mode() & 0o7777))?;
@@ -213,11 +199,55 @@ fn copy_complete(
     )?;
     output.sync_all()?;
     check(cancel)?;
+    Ok(receipt)
+}
+
+fn copy_stream(
+    reader: &mut impl Read,
+    output: &mut File,
+    cancel: &dyn Fn() -> bool,
+) -> io::Result<Downloaded> {
+    let mut digest = Sha256::new();
+    let mut length = 0u64;
+    let mut buffer = [0u8; 65536];
+    loop {
+        check(cancel)?;
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        output.write_all(&buffer[..count])?;
+        digest.update(&buffer[..count]);
+        length = length
+            .checked_add(count as u64)
+            .ok_or_else(|| invalid("Transfer length overflow"))?;
+    }
+    check(cancel)?;
     Ok(Downloaded {
         length,
         digest: digest.finalize().into(),
     })
 }
+
+pub(super) fn receive_download(
+    root: File,
+    path: &Path,
+    reader: &mut impl Read,
+    expected: Option<u64>,
+    cancel: &dyn Fn() -> bool,
+) -> Result<Downloaded, TransferError> {
+    check(cancel)?;
+    let (parent, name) = parent(&root, path, true)?;
+    let mut staging = Staging::new(parent)?;
+    let receipt = copy_stream(reader, &mut staging.file, cancel)?;
+    if expected.is_some_and(|length| length != receipt.length) {
+        return Err(invalid("Remote download length mismatch").into());
+    }
+    staging.file.sync_all()?;
+    staging.publish(&name, cancel)?;
+    Ok(receipt)
+}
+
 struct Staging {
     parent: File,
     name: OsString,
