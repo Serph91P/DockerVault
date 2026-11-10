@@ -8,7 +8,7 @@ use std::{
 
 /// Disk-backed source metadata, NOT destination/link-graph validation or permission to extract.
 pub struct IndexedArchive {
-    db: Connection,
+    pub(super) db: Connection,
     snapshot: File,
     count: u64,
 }
@@ -177,7 +177,7 @@ impl IndexedArchive {
         check(cancel)
     }
 }
-fn read_member(row: &rusqlite::Row<'_>) -> rusqlite::Result<Member> {
+pub(super) fn read_member(row: &rusqlite::Row<'_>) -> rusqlite::Result<Member> {
     let value: u8 = row.get("kind")?;
     let kind = match value {
         0 => MemberKind::File,

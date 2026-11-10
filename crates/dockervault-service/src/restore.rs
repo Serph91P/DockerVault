@@ -1,4 +1,5 @@
 //! Bounded metadata reader. This is not an extraction API or a validated destination plan.
+mod destination;
 mod index;
 pub use index::IndexedArchive;
 use std::io::{self, Read, Seek, SeekFrom};
