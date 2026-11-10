@@ -1,4 +1,5 @@
-//! Native DAV PUT and mandatory independent readback, with bounded owned file producers.
+//! Native DAV streams and bounded metadata, with physically owned file producers.
+mod xml;
 use super::{VerifiedSource, check};
 use crate::ownership::{Owner, Work, WorkError};
 use reqwest::{Body, Client, Method, RequestBuilder, Response, Url};
@@ -9,6 +10,7 @@ use std::{
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+pub use xml::StorageEntry;
 
 pub struct DavConfig {
     pub url: String,
@@ -29,6 +31,7 @@ pub enum DavError {
     Io,
     PublicationUncertain,
     Verification,
+    Xml,
 }
 impl std::fmt::Display for DavError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -45,6 +48,7 @@ impl std::fmt::Display for DavError {
                     "WebDAV local download publication durability is uncertain"
                 }
                 Self::Verification => "WebDAV independent byte verification failed",
+                Self::Xml => "Invalid or oversized WebDAV multistatus response",
                 Self::Http(_) => unreachable!(),
             }),
         }
@@ -204,6 +208,106 @@ impl WebDav {
                 super::local::TransferError::Io(_) => DavError::Io,
             })
         })
+    }
+
+    pub fn delete(&self, remote: String) -> Result<Work<Result<(), DavError>>, WorkError> {
+        let backend = self.clone();
+        self.owner.submit_async(move |cancel| async move {
+            let response = backend
+                .send(
+                    backend.request(
+                        Method::DELETE,
+                        backend.url(&remote)?,
+                        Duration::from_secs(300),
+                    ),
+                    &cancel,
+                )
+                .await?;
+            match response.status().as_u16() {
+                200 | 204 | 404 => Ok(()),
+                code => Err(DavError::Http(code)),
+            }
+        })
+    }
+    pub fn test_connection(&self) -> Result<Work<Result<(), DavError>>, WorkError> {
+        let backend = self.clone();
+        self.owner.submit_async(move |cancel| async move {
+            let response = backend
+                .send(
+                    backend
+                        .request(
+                            Method::from_bytes(b"PROPFIND").unwrap(),
+                            backend.url("")?,
+                            Duration::from_secs(300),
+                        )
+                        .header("Depth", "0"),
+                    &cancel,
+                )
+                .await?;
+            match response.status().as_u16() {
+                200 | 207 => Ok(()),
+                code => Err(DavError::Http(code)),
+            }
+        })
+    }
+    pub fn list(
+        &self,
+        remote: String,
+    ) -> Result<Work<Result<Vec<StorageEntry>, DavError>>, WorkError> {
+        let backend = self.clone();
+        self.owner.submit_async(move|cancel|async move{
+            let mut url=backend.url(&remote)?;url.path_segments_mut().map_err(|_|DavError::Config)?.pop_if_empty().push("");
+            let body="<?xml version=\"1.0\" encoding=\"utf-8\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:getcontentlength/><d:resourcetype/><d:getlastmodified/></d:prop></d:propfind>";
+            let response=backend.send(backend.request(Method::from_bytes(b"PROPFIND").unwrap(),url.clone(),Duration::from_secs(300)).header("Depth","1").header("Content-Type","application/xml").body(body),&cancel).await?;
+            if response.status().as_u16()!=207{return Err(DavError::Http(response.status().as_u16()));}
+            Ok(backend.parse_multistatus(response,url,&cancel).await?.entries)
+        })
+    }
+    /// Optional quota observation, not byte verification or permission to publish a copy.
+    pub fn quota_available(&self) -> Result<Work<Result<Option<u64>, DavError>>, WorkError> {
+        let backend = self.clone();
+        self.owner.submit_async(move|cancel|async move{
+            let url=backend.url("")?;
+            let body="<?xml version=\"1.0\" encoding=\"utf-8\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:quota-available-bytes/></d:prop></d:propfind>";
+            let response=backend.send(backend.request(Method::from_bytes(b"PROPFIND").unwrap(),url.clone(),Duration::from_secs(300)).header("Depth","0").header("Content-Type","application/xml").body(body),&cancel).await?;
+            if response.status().as_u16()!=207{return Ok(None);}
+            Ok(backend.parse_multistatus(response,url,&cancel).await?.quota)
+        })
+    }
+    async fn parse_multistatus(
+        &self,
+        mut response: Response,
+        url: Url,
+        cancel: &CancellationToken,
+    ) -> Result<xml::Parsed, DavError> {
+        if response
+            .content_length()
+            .is_some_and(|length| length > xml::MAX_XML as u64)
+        {
+            return Err(DavError::Xml);
+        }
+        let mut bytes = Vec::new();
+        loop {
+            let chunk = tokio::select! {biased;_=cancel.cancelled()=>return Err(DavError::Cancelled),chunk=response.chunk()=>chunk.map_err(|_|DavError::Transport)?};
+            let Some(chunk) = chunk else { break };
+            if chunk.len() > xml::MAX_XML - bytes.len() {
+                return Err(DavError::Xml);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        drop(response);
+        let document = String::from_utf8(bytes).map_err(|_| DavError::Xml)?;
+        let job_cancel = cancel.clone();
+        self.io
+            .submit_blocking(move |cancel| {
+                xml::parse(&document, &url, &|| {
+                    cancel.is_cancelled() || job_cancel.is_cancelled()
+                })
+            })
+            .map_err(|_| DavError::Capacity)?
+            .wait()
+            .await
+            .map_err(|_| DavError::Xml)?
     }
 
     /// A failure/cancellation may follow an actual remote PUT. Callers must persist uncertainty.

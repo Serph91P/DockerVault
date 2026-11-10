@@ -39,6 +39,9 @@ struct Service {
     put_status: Mutex<VecDeque<u16>>,
     corrupt_get: bool,
     hold_put: bool,
+    propfind_status: u16,
+    listing: Option<String>,
+    oversized_listing: bool,
     received: Notify,
     release: Notify,
 }
@@ -67,6 +70,19 @@ async fn endpoint(State(state): State<Arc<Service>>, request: Request) -> Respon
         chunked,
     ));
     let mut builder = Response::builder();
+    if method == "PROPFIND" && state.oversized_listing {
+        let chunks = (0..19).map(|index| {
+            Ok::<_, std::convert::Infallible>(match index {
+                0 => b"<multistatus xmlns=\"DAV:\"><!--".to_vec(),
+                18 => b"--></multistatus>".to_vec(),
+                _ => vec![b'x'; 1024 * 1024],
+            })
+        });
+        return builder
+            .status(207)
+            .body(Body::from_stream(futures_util::stream::iter(chunks)))
+            .unwrap();
+    }
     let mut body = Vec::new();
     let status = match method.as_str() {
         "MKCOL" => 201,
@@ -96,6 +112,26 @@ async fn endpoint(State(state): State<Arc<Service>>, request: Request) -> Respon
                 200
             } else {
                 404
+            }
+        }
+        "DELETE" => {
+            if state.objects.lock().unwrap().remove(&path).is_some() {
+                204
+            } else {
+                404
+            }
+        }
+        "PROPFIND" => {
+            body = state
+                .listing
+                .as_deref()
+                .unwrap_or("<multistatus xmlns=\"DAV:\"/>")
+                .as_bytes()
+                .to_vec();
+            if state.propfind_status == 0 {
+                207
+            } else {
+                state.propfind_status
             }
         }
         _ => 405,
@@ -511,6 +547,199 @@ async fn cancelled_get_after_actual_file_writes_closes_socket_and_removes_only_p
         b"existing recovery point"
     );
     assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 2);
+}
+
+#[tokio::test]
+async fn propfind_lists_namespaced_metadata_quota_and_skips_collection_itself() {
+    let listing = r#"<s:multistatus xmlns:s="DAV:" xmlns:x="urn:not-dav">
+<s:response><s:href>/dav%2Froot/backups%20%23%3F%25/folder/</s:href><s:propstat><s:prop><s:resourcetype><s:collection/></s:resourcetype></s:prop></s:propstat></s:response>
+<s:response><s:href>/dav%2Froot/backups%20%23%3F%25/folder/first%23%3F%25.tar</s:href><s:propstat><s:prop><s:getcontentlength>35</s:getcontentlength><s:getlastmodified>Wed, 21 Oct 2015 07:28:00 GMT</s:getlastmodified><s:resourcetype><x:collection/></s:resourcetype><s:quota-available-bytes>96</s:quota-available-bytes></s:prop></s:propstat></s:response>
+<s:response><s:href>/dav%2Froot/backups%20%23%3F%25/folder/child/</s:href><s:propstat><s:prop><s:resourcetype><s:collection/></s:resourcetype></s:prop></s:propstat></s:response>
+<s:response><s:href>/dav%2Froot/backups%20%23%3F%25/folder/amp&amp;name</s:href><s:propstat><s:prop/></s:propstat></s:response>
+</s:multistatus>"#;
+    let server = Server::new(Service {
+        listing: Some(listing.into()),
+        ..Default::default()
+    })
+    .await;
+    let (backend, owner, io) = server.backend(1);
+    let entries = backend
+        .list("folder".into())
+        .unwrap()
+        .wait()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0].name, "first#?%.tar");
+    assert_eq!(entries[0].size, 35);
+    assert!(!entries[0].is_dir);
+    assert_eq!(entries[0].modified, 1_445_412_480.0);
+    assert_eq!(entries[1].name, "child");
+    assert!(entries[1].is_dir);
+    assert_eq!(entries[2].name, "amp&name");
+    assert_eq!(
+        backend
+            .quota_available()
+            .unwrap()
+            .wait()
+            .await
+            .unwrap()
+            .unwrap(),
+        Some(96)
+    );
+    backend
+        .test_connection()
+        .unwrap()
+        .wait()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(owner.active(), 0);
+    assert_eq!(io.active(), 0);
+}
+
+#[tokio::test]
+async fn invalid_or_failed_propfind_cannot_be_reported_as_an_empty_successful_collection() {
+    let deep = format!(
+        "<multistatus xmlns=\"DAV:\">{}{}</multistatus>",
+        "<nested>".repeat(70),
+        "</nested>".repeat(70)
+    );
+    for xml in ["<multistatus xmlns=\"not-dav\"/>".to_owned(),"<multistatus xmlns=\"DAV:\"><response>".to_owned(),"<!DOCTYPE x [<!ENTITY payload SYSTEM 'file:///etc/passwd'>]><multistatus xmlns=\"DAV:\"/>".to_owned(),"<multistatus xmlns=\"DAV:\"><response><href>&undefined;</href></response></multistatus>".to_owned(),"<multistatus xmlns=\"DAV:\"/><![CDATA[orphan]]>".to_owned(),"<multistatus xmlns=\"DAV:\"/><multistatus xmlns=\"DAV:\"/>".to_owned(),"<multistatus xmlns=\"DAV:\"><response><href>/denied</href><status>HTTP/1.1 403 Forbidden</status></response></multistatus>".to_owned(),deep] {
+        let server=Server::new(Service{listing:Some(xml.clone()),..Default::default()}).await;let(backend,_,_)=server.backend(1);
+        assert!(backend.list(String::new()).unwrap().wait().await.unwrap().is_err(),"invalid XML must fail: {xml}");
+    }
+    let server = Server::new(Service {
+        propfind_status: 503,
+        ..Default::default()
+    })
+    .await;
+    let (backend, _, _) = server.backend(1);
+    assert!(
+        backend
+            .list(String::new())
+            .unwrap()
+            .wait()
+            .await
+            .unwrap()
+            .is_err()
+    );
+    let server = Server::new(Service::default()).await;
+    let (backend, _, _) = server.backend(1);
+    assert!(
+        backend
+            .list(String::new())
+            .unwrap()
+            .wait()
+            .await
+            .unwrap()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn document_boundaries_preserve_valid_xml_declarations_but_reject_orphan_references() {
+    for xml in [
+        "<multistatus xmlns=\"DAV:\"/>&amp;",
+        "<multistatus xmlns=\"DAV:\"/><?xml version=\"1.0\"?>",
+        "<?xml version=\"1.0\"?><?xml version=\"1.0\"?><multistatus xmlns=\"DAV:\"/>",
+    ] {
+        let server = Server::new(Service {
+            listing: Some(xml.into()),
+            ..Default::default()
+        })
+        .await;
+        let (backend, _, _) = server.backend(1);
+        assert!(
+            backend
+                .list(String::new())
+                .unwrap()
+                .wait()
+                .await
+                .unwrap()
+                .is_err(),
+            "invalid document {xml}"
+        );
+    }
+    for xml in [
+        "\u{feff}<?xml version=\"1.0\"?><multistatus xmlns=\"DAV:\"/>",
+        "<?xml version=\"1.0\"?>\n<!-- comment --><multistatus xmlns=\"DAV:\"/>",
+    ] {
+        let server = Server::new(Service {
+            listing: Some(xml.into()),
+            ..Default::default()
+        })
+        .await;
+        let (backend, _, _) = server.backend(1);
+        assert!(
+            backend
+                .list(String::new())
+                .unwrap()
+                .wait()
+                .await
+                .unwrap()
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[tokio::test]
+async fn chunked_valid_xml_is_bounded_before_it_can_become_an_empty_collection() {
+    let server = Server::new(Service {
+        oversized_listing: true,
+        ..Default::default()
+    })
+    .await;
+    let (backend, owner, io) = server.backend(1);
+    assert!(
+        backend
+            .list(String::new())
+            .unwrap()
+            .wait()
+            .await
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(owner.active(), 0);
+    assert_eq!(io.active(), 0);
+}
+
+#[tokio::test]
+async fn delete_and_connection_use_real_protocol_status_without_inventing_objects() {
+    let server = Server::new(Service::default()).await;
+    let (backend, owner, io) = server.backend(1);
+    let fixture = Fixture::new();
+    backend
+        .upload(fixture.source(), "archive".into())
+        .unwrap()
+        .wait()
+        .await
+        .unwrap()
+        .unwrap();
+    backend
+        .test_connection()
+        .unwrap()
+        .wait()
+        .await
+        .unwrap()
+        .unwrap();
+    for _ in 0..2 {
+        backend
+            .delete("archive".into())
+            .unwrap()
+            .wait()
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    assert!(server.state.objects.lock().unwrap().is_empty());
+    let requests = server.state.requests.lock().unwrap();
+    assert_eq!(requests.iter().filter(|r| r.0 == "DELETE").count(), 2);
+    assert_eq!(owner.active(), 0);
+    assert_eq!(io.active(), 0);
 }
 
 #[tokio::test]
