@@ -13,4 +13,6 @@ pub mod ownership;
 pub mod process;
 pub mod restore;
 #[cfg(target_os = "linux")]
+pub mod storage;
+#[cfg(target_os = "linux")]
 pub mod workload_recovery;

@@ -33,6 +33,7 @@ dockervault-core = { path = "../dockervault-core" }
 workspace = true
 
 [dev-dependencies]
+dockervault-tools = { path = "../dockervault-tools" }
 nix = { workspace = true, features = ["inotify"] }
 futures-util.workspace = true
 tokio-tungstenite.workspace = true

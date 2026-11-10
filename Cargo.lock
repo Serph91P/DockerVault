@@ -592,6 +592,7 @@ dependencies = [
  "bollard",
  "chrono",
  "dockervault-core",
+ "dockervault-tools",
  "dotenvy",
  "flate2",
  "futures-util",
