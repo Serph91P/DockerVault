@@ -132,6 +132,83 @@ impl Server {
     }
 }
 #[tokio::test]
+async fn setup_http_honors_shared_claim_repairs_abandoned_generation_and_fences_invalid_journal() {
+    use dockervault_service::recovery_activation::{ClaimKind, PreparationClaims};
+    let server = Server::start("http://localhost").await;
+    let body = json!({"username":"public-admin","password":"PUBLIC-password!","confirm_password":"PUBLIC-password!"});
+    let claims = PreparationClaims::new(Some(server.path.join("db.sqlite")));
+    let guard = claims.try_claim(ClaimKind::Setup).unwrap();
+    let blocked = server
+        .request("POST", "/api/v1/auth/setup", &[], Some(body.clone()))
+        .await;
+    assert_eq!(blocked.0, 400);
+    assert_eq!(blocked.2, json!({"detail":"Setup is already in progress"}));
+    assert!(!blocked.1.contains("set-cookie:"));
+    drop(guard);
+    let marker = r#"{"state":"preparing","generation":"../escape"}"#;
+    sqlx::query("INSERT INTO app_settings(key,value) VALUES('recovery_activation',?)")
+        .bind(marker)
+        .execute(server.db.pool())
+        .await
+        .unwrap();
+    let invalid = server
+        .request("POST", "/api/v1/auth/setup", &[], Some(body.clone()))
+        .await;
+    assert_eq!(invalid.0, 400);
+    assert_eq!(
+        invalid.2,
+        json!({"detail":"Recovery preparation journal needs repair"})
+    );
+    assert!(!invalid.1.contains("set-cookie:"));
+    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(server.db.pool())
+        .await
+        .unwrap();
+    let sessions: i64 = sqlx::query_scalar("SELECT count(*) FROM sessions")
+        .fetch_one(server.db.pool())
+        .await
+        .unwrap();
+    assert_eq!((users, sessions), (0, 0));
+    let persisted: String =
+        sqlx::query_scalar("SELECT value FROM app_settings WHERE key='recovery_activation'")
+            .fetch_one(server.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(persisted, marker);
+    let generation = "0123456789abcdef0123456789abcdef";
+    let directory = server.path.join(".recovery").join(generation);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("rclone.conf"), b"PUBLIC abandoned config").unwrap();
+    sqlx::query("UPDATE app_settings SET value=? WHERE key='recovery_activation'")
+        .bind(json!({"state":"preparing","generation":generation}).to_string())
+        .execute(server.db.pool())
+        .await
+        .unwrap();
+    let success = server
+        .request("POST", "/api/v1/auth/setup", &[], Some(body))
+        .await;
+    assert_eq!(success.0, 200);
+    assert!(success.1.contains("set-cookie:"));
+    assert!(!directory.exists());
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM app_settings WHERE key='recovery_activation'")
+            .fetch_one(server.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(rows, 0);
+    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(server.db.pool())
+        .await
+        .unwrap();
+    let sessions: i64 = sqlx::query_scalar("SELECT count(*) FROM sessions")
+        .fetch_one(server.db.pool())
+        .await
+        .unwrap();
+    assert_eq!((users, sessions), (1, 1));
+    server.close().await;
+}
+
+#[tokio::test]
 async fn real_http_setup_status_cookie_attributes_and_protected_router_match_the_control() {
     let server = Server::start("http://localhost").await;
     let before = server.request("GET", "/api/v1/targets", &[], None).await;

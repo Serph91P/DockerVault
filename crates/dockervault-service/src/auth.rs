@@ -1,5 +1,6 @@
 //! Existing bcrypt/session persistence with owned mutations and revocation settlement.
 use crate::ownership::{Owner, WorkError};
+use crate::recovery_activation::{ClaimKind, PreparationClaims, PreparationError};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, TimeDelta, Utc};
 use dockervault_core::timestamp::Timestamp;
@@ -16,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthError {
+    Preparation(PreparationError),
     AlreadySetup,
     SetupNotComplete,
     PasswordsMismatch,
@@ -217,15 +219,23 @@ pub struct AuthService {
 }
 struct Inner {
     pool: SqlitePool,
+    preparation: PreparationClaims,
     operations: Owner,
     crypto: Owner,
     registry: SessionRegistry,
 }
 impl AuthService {
     pub fn new(pool: SqlitePool) -> Self {
+        let filename = pool.connect_options().get_filename().to_path_buf();
+        let preparation = PreparationClaims::new(if filename == std::path::Path::new(":memory:") {
+            None
+        } else {
+            Some(filename)
+        });
         Self {
             inner: Arc::new(Inner {
                 pool,
+                preparation,
                 operations: Owner::new(16).expect("constant nonzero capacity"),
                 crypto: Owner::new(2).expect("constant nonzero capacity"),
                 registry: SessionRegistry::default(),
@@ -357,6 +367,15 @@ impl AuthService {
         let password = password.to_owned();
         let confirmation = confirmation.to_owned();
         self.inner.operations.submit_async(move |cancel|async move {
+            if password!=confirmation {return Err(AuthError::PasswordsMismatch)}
+            if cancel.is_cancelled() {return Err(AuthError::Cancelled)}
+            let claims=service.inner.preparation.clone();
+            let _preparation=service.inner.crypto.submit_blocking(move |_| {
+                let guard=claims.try_claim(ClaimKind::Setup)?;
+                guard.discard_incomplete(std::path::Path::new("/app/data/.credential_key"))?;
+                Ok::<_,PreparationError>(guard)
+            })?.wait().await?.map_err(AuthError::Preparation)?;
+            if cancel.is_cancelled() {return Err(AuthError::Cancelled)}
             let mut connection=service.begin().await?;
             let result=async {
                 if sqlx::query_scalar::<_,i64>("SELECT count(*) FROM users").fetch_one(&mut *connection).await?>0 {return Err(AuthError::AlreadySetup)}

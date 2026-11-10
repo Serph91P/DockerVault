@@ -106,6 +106,16 @@ fn setup(address: SocketAddr, username: &str) -> u16 {
 }
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
+    #[cfg(target_os = "linux")]
+    if args.get(1).is_some_and(|argument| argument == "--claim") {
+        use dockervault_service::recovery_activation::{ClaimKind, PreparationClaims};
+        let claims = PreparationClaims::new(Some(PathBuf::from(&args[2])));
+        let _guard = claims.try_claim(ClaimKind::Setup).unwrap();
+        fs::write(&args[3], b"claimed").unwrap();
+        let mut byte = [0];
+        std::io::stdin().read_exact(&mut byte).unwrap();
+        return;
+    }
     if args.get(1).is_some_and(|argument| argument == "--child") {
         child(PathBuf::from(&args[2]), PathBuf::from(&args[3]));
         return;
@@ -174,6 +184,42 @@ fn main() {
             .is_none()
     );
     drop(connection);
+    #[cfg(target_os = "linux")]
+    {
+        use dockervault_service::recovery_activation::{
+            ClaimKind, PreparationClaims, PreparationError,
+        };
+        let ready = fixture.0.join("claim.ready");
+        let mut holder = OwnedChild(
+            Command::new(std::env::current_exe().unwrap())
+                .arg("--claim")
+                .arg(&database)
+                .arg(&ready)
+                .env_clear()
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(holder.0.try_wait().unwrap().is_none());
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let claims = PreparationClaims::new(Some(database.clone()));
+        assert!(matches!(
+            claims.try_claim(ClaimKind::Setup),
+            Err(PreparationError::Busy)
+        ));
+        holder.0.kill().unwrap();
+        holder.0.wait().unwrap();
+        let _guard = claims.try_claim(ClaimKind::Setup).unwrap();
+        println!(
+            "preparation-process: real child lock -> Busy -> SIGKILL/reap -> same marker reacquired: PASS"
+        );
+    }
     println!(
         "auth-process: two real HTTP servers -> one administrator/session -> physical process settlement/integrity: PASS"
     );

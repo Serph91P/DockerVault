@@ -12,6 +12,21 @@ use serde_json::{Value, json};
 
 pub(super) fn error(error: AuthError) -> Response {
     let (status, detail) = match error {
+        AuthError::Preparation(crate::recovery_activation::PreparationError::Busy) => {
+            (400, "Setup is already in progress")
+        }
+        AuthError::Preparation(crate::recovery_activation::PreparationError::InvalidJournal) => {
+            (400, "Recovery preparation journal needs repair")
+        }
+        AuthError::Preparation(crate::recovery_activation::PreparationError::UnsafeGeneration) => {
+            (400, "Unsafe recovery generation")
+        }
+        AuthError::Preparation(
+            crate::recovery_activation::PreparationError::UnsafeKeyPreparation,
+        ) => (400, "Unsafe instance key preparation"),
+        AuthError::Preparation(crate::recovery_activation::PreparationError::Io) => {
+            (500, "Internal server error")
+        }
         AuthError::AlreadySetup => (400, "Setup already completed. Use login instead."),
         AuthError::SetupNotComplete => (
             400,

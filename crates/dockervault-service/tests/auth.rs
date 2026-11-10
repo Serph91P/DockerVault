@@ -41,6 +41,41 @@ impl Drop for Fixture {
 }
 
 #[tokio::test]
+async fn setup_refuses_a_shared_live_preparation_claim_without_creating_an_admin_or_session() {
+    use dockervault_service::recovery_activation::{ClaimKind, PreparationClaims};
+    let fixture = Fixture::new();
+    let db = fixture.open().await;
+    let auth = AuthService::new(db.pool().clone());
+    let claims = PreparationClaims::new(Some(fixture.0.join("auth.sqlite")));
+    let guard = claims.try_claim(ClaimKind::Setup).unwrap();
+    let result = auth
+        .setup(
+            "public-admin",
+            "PUBLIC-test-password!",
+            "PUBLIC-test-password!",
+        )
+        .await;
+    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    let sessions: i64 = sqlx::query_scalar("SELECT count(*) FROM sessions")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    drop(guard);
+    auth.shutdown(None).await;
+    db.close().await;
+    assert_eq!(
+        result.err(),
+        Some(AuthError::Preparation(
+            dockervault_service::recovery_activation::PreparationError::Busy
+        ))
+    );
+    assert_eq!((users, sessions), (0, 0));
+}
+
+#[tokio::test]
 async fn setup_atomically_creates_one_admin_and_only_a_hashed_seven_day_session() {
     let fixture = Fixture::new();
     let db = fixture.open().await;
@@ -153,9 +188,15 @@ async fn concurrent_setup_claims_have_one_winner_and_no_extra_session() {
         auth.setup("public-admin-b", "PUBLIC-password-b!", "PUBLIC-password-b!")
     );
     assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+    // Accepted fc1b339 returns the busy-claim error before the first admin commits;
+    // an attempt after commit still returns AlreadySetup. Neither may create a session.
+    let loser = a.as_ref().err().or_else(|| b.as_ref().err()).unwrap();
     assert!(matches!(
-        (&a, &b),
-        (Ok(_), Err(AuthError::AlreadySetup)) | (Err(AuthError::AlreadySetup), Ok(_))
+        loser,
+        AuthError::AlreadySetup
+            | AuthError::Preparation(
+                dockervault_service::recovery_activation::PreparationError::Busy
+            )
     ));
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM users")
