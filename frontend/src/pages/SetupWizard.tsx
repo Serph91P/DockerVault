@@ -1,8 +1,28 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Shield } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
+import { Button } from '../components/ui/button'
+import SystemRestore from '../components/SystemRestore'
 
 export default function SetupWizard() {
+  const [choice, setChoice] = useState<'new' | 'restore' | null>(null)
+  const heading = useRef<HTMLHeadingElement>(null)
+  useEffect(() => { heading.current?.focus() }, [choice])
+  if (choice === 'new') return <CreateAdministrator back={() => setChoice(null)} />
+  return <main className="min-h-screen bg-dark-900 p-4 text-dark-100"><div className="mx-auto max-w-3xl space-y-6 py-6">
+    <Shield className="h-12 w-12 text-indigo-400" />
+    <h1 ref={heading} tabIndex={-1} className="text-3xl font-bold">Welcome to DockerVault</h1>
+    {choice === 'restore' ? <SystemRestore back={() => setChoice(null)} /> : <section className="space-y-4" aria-label="Initial setup choice">
+      <h2 className="text-xl font-semibold">Create new or restore your system configuration</h2>
+      <p>Choose before creating an administrator. A system backup restores configuration, catalog and included credentials, not archives or volume data.</p>
+      <div className="flex flex-wrap gap-3"><Button onClick={() => setChoice('new')}>Create new installation</Button><Button variant="outline" onClick={() => setChoice('restore')}>Restore system backup</Button></div>
+    </section>}
+  </div></main>
+}
+
+function CreateAdministrator({ back }: { back: () => void }) {
+  const heading = useRef<HTMLHeadingElement>(null)
+  useEffect(() => { heading.current?.focus() }, [])
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [confirmation, setConfirmation] = useState('')
@@ -34,7 +54,8 @@ export default function SetupWizard() {
   return <main className="min-h-screen bg-dark-900 flex items-center justify-center p-4">
     <div className="w-full max-w-lg space-y-6">
       <Shield className="w-12 h-12 text-indigo-400" />
-      <h1 className="text-3xl font-bold text-dark-100">Welcome to DockerVault</h1>
+      <Button variant="outline" onClick={back} disabled={pending}>Back to setup choice</Button>
+      <h1 ref={heading} tabIndex={-1} className="text-3xl font-bold text-dark-100">Welcome to DockerVault</h1>
       <p className="text-dark-300">Step 1: Create your administrator account. Next: backup encryption and private-key custody.</p>
       <form onSubmit={submit} className="bg-dark-800 rounded-xl border border-dark-700 p-6 space-y-4">
         {error && <p role="alert" className="text-red-400">{error} <button type="button" onClick={() => void useAuthStore.getState().checkAuthStatus()}>Check status</button></p>}

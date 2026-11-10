@@ -16,6 +16,7 @@ async function api(path, method = 'GET', data) {
 }
 try {
   await page.goto(base)
+  await page.getByRole('button', { name: 'Create new installation', exact: true }).click()
   await page.getByLabel('Username', { exact: true }).waitFor()
   const password = randomBytes(24).toString('hex')
   await page.getByLabel('Username', { exact: true }).fill('synthetic-operator')

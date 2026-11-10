@@ -42,6 +42,7 @@ async function fault(endpoint, mode) {
 }
 try {
   await page.goto(base)
+  await page.getByRole('button', { name: 'Create new installation', exact: true }).click()
   await page.getByLabel('Username', { exact: true }).fill(username)
   await page.getByLabel('Account password', { exact: true }).fill(password)
   await page.getByLabel('Confirm account password').fill(password)

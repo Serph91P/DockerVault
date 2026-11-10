@@ -118,6 +118,7 @@ class TestBackupEngine:
     async def test_create_backup(self, mock_session):
         """Test backup creation."""
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         target = BackupTarget(
@@ -143,6 +144,7 @@ class TestBackupEngine:
     async def test_run_backup_nonexistent(self, mock_session):
         """Test running backup for non-existent backup ID."""
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         # Mock query returning None
@@ -159,6 +161,7 @@ class TestBackupEngine:
     async def test_run_backup_no_target(self, mock_session):
         """Test running backup with missing target."""
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         # Mock backup exists
@@ -1191,6 +1194,7 @@ class TestBackupConcurrency:
     async def test_metrics_tracked_on_failure(self, mock_session):
         """Test that metrics are updated after backup failure."""
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         # Mock backup query returning None (failure case)

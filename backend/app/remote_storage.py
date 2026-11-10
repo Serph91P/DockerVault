@@ -1467,7 +1467,18 @@ class RcloneStorage(StorageBackend):
     """Rclone storage - supports 40+ cloud providers"""
 
     async def _run_rclone(self, args: List[str]) -> tuple[int, str, str]:
-        """Run rclone command"""
+        """Use committed managed generations without inherited config/ENV overrides."""
+        from app import database
+        from app.rclone_recovery import managed_state, run_managed
+
+        state = self.config.extra_options.get("recovery_state")
+        if state is None:
+            async with database.async_session() as session:
+                state = await managed_state(session)
+        if state is not None and any(
+            root["storage_id"] == self.config.id for root in state["roots"]
+        ):
+            return await run_managed(state, self.config.rclone_remote, args)
         cmd = ["rclone", "--timeout", "300s", "--contimeout", "30s"] + args
 
         process = await asyncio.create_subprocess_exec(

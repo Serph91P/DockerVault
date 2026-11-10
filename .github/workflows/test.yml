@@ -41,6 +41,16 @@ jobs:
     - name: Install native encryption tools for real archive regressions
       run: sudo apt-get update && sudo apt-get install -y age openssl
 
+    - name: Install pinned native rclone for real recovery regressions
+      run: |
+        test "$(uname -m)" = x86_64
+        archive="$RUNNER_TEMP/dockervault-rclone-1.72.1.zip"
+        curl -fsSLo "$archive" https://downloads.rclone.org/v1.72.1/rclone-v1.72.1-linux-amd64.zip
+        printf '%s  %s\n' b5c9b2fb6ada8a400c5fc5d48cd112dc1adea21a3b73b03857059374dd8a78d0 "$archive" | sha256sum --check -
+        python -m zipfile -e "$archive" "$RUNNER_TEMP/dockervault-rclone-1.72.1"
+        sudo install -m 0755 "$RUNNER_TEMP/dockervault-rclone-1.72.1/rclone-v1.72.1-linux-amd64/rclone" /usr/local/bin/rclone
+        rclone version
+
     - name: Check clean runtime import and SQLite startup
       working-directory: backend
       run: PYTHONPATH=. python tests/runtime_smoke.py

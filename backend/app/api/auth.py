@@ -22,6 +22,7 @@ from app.auth import (
 from app.config import settings
 from app.database import User, async_session
 from app.rate_limit import limiter
+from app.recovery_activation import SetupClaimError, setup_claim
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -108,9 +109,22 @@ async def get_auth_status(request: Request):
         )
 
 
+async def claim_initial_setup():
+    try:
+        async with setup_claim(async_session):
+            yield
+    except SetupClaimError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
 @router.post("/setup")
 @limiter.limit("5/minute")
-async def initial_setup(request: Request, data: SetupRequest, response: Response):
+async def initial_setup(
+    request: Request,
+    data: SetupRequest,
+    response: Response,
+    _claim=Depends(claim_initial_setup),
+):
     """
     Initial setup - create the first admin user.
 

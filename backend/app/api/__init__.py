@@ -16,6 +16,7 @@ from app.api.storage import router as storage_router
 from app.api.operations import router as operations_router
 from app.api.targets import router as targets_router
 from app.api.overview import router as overview_router
+from app.api.recovery import router as recovery_router
 
 router = APIRouter()
 
@@ -34,3 +35,4 @@ router.include_router(operations_router, prefix="/operations", tags=["Operations
 router.include_router(encryption_router, prefix="/encryption", tags=["Encryption"])
 router.include_router(settings_router, prefix="/settings", tags=["Settings"])
 router.include_router(overview_router, prefix="/overview", tags=["Overview"])
+router.include_router(recovery_router, prefix="/recovery", tags=["System Recovery"])

@@ -35,6 +35,7 @@ async function editPlan(id, schedule, retention) {
 }
 try {
   await goto('/')
+  await page.getByRole('button', { name: 'Create new installation', exact: true }).click()
   const password = randomBytes(24).toString('hex')
   await field('Username', 'policy-operator')
   await field('Account password', password)

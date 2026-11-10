@@ -50,6 +50,7 @@ async function losePost(kind) {
 try {
   const password = randomBytes(24).toString('hex')
   await page.goto(base)
+  await page.getByRole('button', { name: 'Create new installation', exact: true }).click()
   await page.getByLabel('Username', { exact: true }).fill('reconciliation-operator')
   await page.getByLabel('Account password', { exact: true }).fill(password)
   await page.getByLabel('Confirm account password').fill(password)

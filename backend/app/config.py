@@ -4,6 +4,7 @@ Configuration settings for the backup manager.
 
 import logging
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,10 @@ class Settings(BaseSettings):
     S3_MULTIPART_THRESHOLD_BYTES: int = 64 * 1024 * 1024  # 64 MiB
     # S3 multipart chunk size (bytes).
     S3_MULTIPART_CHUNK_SIZE: int = 16 * 1024 * 1024  # 16 MiB
+
+    # Explicit native rclone export source; never snapshot the process environment.
+    RCLONE_CONFIG: str = "/root/.config/rclone/rclone.conf"
+    RCLONE_CONFIG_PASS: SecretStr = SecretStr("")
 
     # Komodo Integration
     KOMODO_API_URL: str = ""
