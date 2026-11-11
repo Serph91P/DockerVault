@@ -32,7 +32,32 @@ impl From<openssl::error::ErrorStack> for PublicKeyError {
 }
 
 pub fn canonical_public_key(raw: &[u8]) -> Result<String, PublicKeyError> {
-    if raw.is_empty() || raw.len() > 16384 || raw[0].is_ascii_whitespace() {
+    if raw.len() > 16384 {
+        return Err(PublicKeyError);
+    }
+    canonical_inner(raw)
+}
+/// rclone's identity parser excludes legacy DSA fallback and permits its larger
+/// material budget; this still does not verify a certificate's authorization.
+pub fn canonical_public_identity(raw: &[u8]) -> Result<String, PublicKeyError> {
+    if raw.len() > 4 * 1024 * 1024 {
+        return Err(PublicKeyError);
+    }
+    let public = canonical_inner(raw)?;
+    let algorithm = raw
+        .split(|b| b.is_ascii_whitespace())
+        .next()
+        .ok_or(PublicKeyError)?;
+    if public.starts_with("ssh-dss ")
+        || (algorithm.ends_with(b"-cert-v01@openssh.com")
+            && !public.as_bytes().starts_with(algorithm))
+    {
+        return Err(PublicKeyError);
+    }
+    Ok(public)
+}
+fn canonical_inner(raw: &[u8]) -> Result<String, PublicKeyError> {
+    if raw.is_empty() || raw[0].is_ascii_whitespace() {
         return Err(PublicKeyError);
     }
     let end = raw

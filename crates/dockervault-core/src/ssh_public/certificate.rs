@@ -1,5 +1,5 @@
 //! Opaque OpenSSH certificate metadata framing, not certificate authorization.
-use super::{PublicKeyError, canonical_public_key, field};
+use super::{PublicKeyError, canonical_inner, field};
 use base64::{Engine, engine::general_purpose::STANDARD};
 
 pub(super) fn canonical(algorithm: &str, binary: &[u8]) -> Result<String, PublicKeyError> {
@@ -30,8 +30,19 @@ pub(super) fn canonical(algorithm: &str, binary: &[u8]) -> Result<String, Public
     subject.extend_from_slice(&(base.len() as u32).to_be_bytes());
     subject.extend_from_slice(base.as_bytes());
     subject.extend_from_slice(fields);
-    let public = canonical_public_key(format!("{base} {}", STANDARD.encode(subject)).as_bytes())?;
-    take(&mut input, 12)?; // serial and certificate type; neither is authorization here
+    let public = canonical_inner(format!("{base} {}", STANDARD.encode(subject)).as_bytes())?;
+    take(&mut input, 8)?; // serial is retained, not authorized here
+    let certificate_type = u32::from_be_bytes(
+        input
+            .get(..4)
+            .ok_or(PublicKeyError)?
+            .try_into()
+            .map_err(|_| PublicKeyError)?,
+    );
+    if !matches!(certificate_type, 1 | 2) {
+        return Err(PublicKeyError);
+    }
+    take(&mut input, 4)?;
     field(&mut input)?; // opaque key ID
     let mut principals = field(&mut input)?;
     while !principals.is_empty() {
