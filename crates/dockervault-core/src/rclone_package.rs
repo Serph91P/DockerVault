@@ -36,7 +36,7 @@ fn truth(value: &Value) -> bool {
         Value::Number(n) => n.as_f64() != Some(0.0),
     }
 }
-fn integer_eq(value: &Value, want: i64) -> bool {
+pub(crate) fn integer_eq(value: &Value, want: i64) -> bool {
     match value {
         Value::Bool(b) => i64::from(*b) == want,
         Value::Number(n) => {
@@ -55,7 +55,7 @@ fn integer_eq(value: &Value, want: i64) -> bool {
 }
 // Python's metadata dictionary comparison permits numeric 1/true equality;
 // published row IDs and the version field are independently strictly typed.
-fn same(expected: &Value, actual: &Value) -> bool {
+pub(crate) fn same(expected: &Value, actual: &Value) -> bool {
     if expected == actual {
         return true;
     }

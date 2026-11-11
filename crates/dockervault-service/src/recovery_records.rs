@@ -47,7 +47,7 @@ pub async fn check_record_constraints(
         .await
         .map_err(|_| RecordValidationError::Owner)?
 }
-fn check(
+pub(crate) fn check(
     records: &PortableTables,
     cancel: &CancellationToken,
 ) -> Result<(), RecordValidationError> {

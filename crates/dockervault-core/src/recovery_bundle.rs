@@ -96,7 +96,7 @@ fn b64(value: &str, length: Option<usize>) -> Result<Vec<u8>, BundleError> {
     }
     Ok(raw)
 }
-fn canonical(mut value: Value) -> Result<Vec<u8>, BundleError> {
+pub(crate) fn canonical(mut value: Value) -> Result<Vec<u8>, BundleError> {
     value.sort_all_objects();
     let bytes = crate::encoding::python_json_compact(&value).into_bytes();
     serde_json::from_slice::<de::IgnoredAny>(&bytes).map_err(|_| BundleError::Invalid)?;

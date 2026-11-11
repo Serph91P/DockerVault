@@ -66,6 +66,13 @@ Timestamp ISO framing in `dockervault-core/src/timestamp/iso.rs` adapts CPython
 3.14.10 `_datetimemodule.c` around Chrono's calendar validation. This preserves
 basic/week dates, Unicode separators, midnight rollover and microsecond offsets
 without loading Python or reducing timestamp precision to whole offset seconds.
+Provider configuration repair hints in `dockervault-core/src/storage_validation.rs`
+adapt CPython 3.14.10 `urllib.parse` authority/port framing around the standard
+IPv6 parser. The 19 Unicode 16 NFKC delimiter scalars come from an actual full-scalar
+source enumeration. This reproduces **metadata hints only**, not network URL
+validation, SSRF authorization or connection success; transports retain their
+separate strict parsers and safety gates. Existing Reqwest URL parsing was
+actually executed and rejects legacy metadata forms accepted by the source.
 Copyright Python Software Foundation and contributors. The complete upstream
 license, including its historical notices, is retained in
 [`licenses/PYTHON-LICENSE.txt`](licenses/PYTHON-LICENSE.txt).
