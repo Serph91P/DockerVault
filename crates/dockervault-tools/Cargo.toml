@@ -1,0 +1,24 @@
+[package]
+name = "dockervault-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tar.workspace = true
+flate2.workspace = true
+nix.workspace = true
+getrandom.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+signal-hook.workspace = true
+dockervault-core = { path = "../dockervault-core", default-features = false }
+
+[lints]
+workspace = true
+
+[[example]]
+name = "archive_worker_privileges"
+path = "tests/bin/archive_worker_privileges.rs"

@@ -1,0 +1,62 @@
+[package]
+name = "dockervault-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+quick-xml.workspace = true
+percent-encoding.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
+tar.workspace = true
+flate2.workspace = true
+bollard.workspace = true
+indexmap.workspace = true
+base64.workspace = true
+bcrypt.workspace = true
+getrandom.workspace = true
+sha2.workspace = true
+chrono = { workspace = true, features = ["now"] }
+dotenvy.workspace = true
+axum.workspace = true
+nix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+rusqlite.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dockervault-core = { path = "../dockervault-core" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+dockervault-tools = { path = "../dockervault-tools" }
+nix = { workspace = true, features = ["inotify"] }
+tokio-tungstenite.workspace = true
+
+[[example]]
+name = "docker_lifecycle"
+path = "tests/bin/docker_lifecycle.rs"
+
+[[example]]
+name = "privileged_archive_supervision"
+path = "tests/bin/privileged_archive_supervision.rs"
+
+[[test]]
+name = "auth_process"
+harness = false
+
+[[test]]
+name = "migration_crash"
+harness = false
+
+[[test]]
+name = "process_parent_death"
+harness = false

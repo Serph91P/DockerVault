@@ -1,0 +1,4827 @@
+{
+  "warning": "PUBLIC SYNTHETIC HOOK ARGUMENTS; parsed only, never executed",
+  "source": "unchanged Python control stdlib shlex.split(posix=True, comments=False)",
+  "count": 595,
+  "vectors": [
+    {
+      "command": "",
+      "argv": []
+    },
+    {
+      "command": " ",
+      "argv": []
+    },
+    {
+      "command": "\t\r\n",
+      "argv": []
+    },
+    {
+      "command": "pg_dump \"unterminated",
+      "invalid": true
+    },
+    {
+      "command": "pg_dump 'unterminated",
+      "invalid": true
+    },
+    {
+      "command": "pg_dump trailing\\",
+      "invalid": true
+    },
+    {
+      "command": "pg_dump \u000b\f arg",
+      "argv": [
+        "pg_dump",
+        "\u000b\f",
+        "arg"
+      ]
+    },
+    {
+      "command": "pg_dump plain plain",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump plain\tplain",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump plain\nplain",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump plain 'single word'",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump plain\t'single word'",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump plain\n'single word'",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump plain \"double word\"",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump plain\t\"double word\"",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump plain\n\"double word\"",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump plain \"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump plain\t\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump plain\n\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump plain \"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump plain\t\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump plain\n\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump plain \"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump plain\t\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump plain\n\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump plain back\\ slash",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump plain\tback\\ slash",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump plain\nback\\ slash",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump plain #literal",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump plain\t#literal",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump plain\n#literal",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump plain ''",
+      "argv": [
+        "pg_dump",
+        "plain",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump plain\t''",
+      "argv": [
+        "pg_dump",
+        "plain",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump plain\n''",
+      "argv": [
+        "pg_dump",
+        "plain",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump plain caf\u00e9",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump plain\tcaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump plain\ncaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump plain a\rb",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump plain\ta\rb",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump plain\na\rb",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump plain 'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump plain\t'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump plain\n'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump plain back\\\nline",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump plain\tback\\\nline",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump plain\nback\\\nline",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump plain $(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump plain\t$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump plain\n$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "plain",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word' plain",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\tplain",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\nplain",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word' 'single word'",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\t'single word'",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\n'single word'",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word' \"double word\"",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\t\"double word\"",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\n\"double word\"",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word' \"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\t\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\n\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word' \"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\t\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\n\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word' \"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\t\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\n\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word' back\\ slash",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\tback\\ slash",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\nback\\ slash",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word' #literal",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\t#literal",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\n#literal",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word' ''",
+      "argv": [
+        "pg_dump",
+        "single word",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\t''",
+      "argv": [
+        "pg_dump",
+        "single word",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\n''",
+      "argv": [
+        "pg_dump",
+        "single word",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump 'single word' caf\u00e9",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\tcaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\ncaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word' a\rb",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\ta\rb",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\na\rb",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word' 'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\t'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\n'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word' back\\\nline",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\tback\\\nline",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\nback\\\nline",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word' $(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\t$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump 'single word'\n$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "single word",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\" plain",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\tplain",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\nplain",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\" 'single word'",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\t'single word'",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\n'single word'",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\" \"double word\"",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\t\"double word\"",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\n\"double word\"",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\" \"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\t\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\n\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\" \"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\t\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\n\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\" \"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\t\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\n\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\" back\\ slash",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\tback\\ slash",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\nback\\ slash",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\" #literal",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\t#literal",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\n#literal",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\" ''",
+      "argv": [
+        "pg_dump",
+        "double word",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\t''",
+      "argv": [
+        "pg_dump",
+        "double word",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\n''",
+      "argv": [
+        "pg_dump",
+        "double word",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\" caf\u00e9",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\tcaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\ncaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\" a\rb",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\ta\rb",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\na\rb",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\" 'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\t'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\n'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\" back\\\nline",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\tback\\\nline",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\nback\\\nline",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\" $(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\t$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump \"double word\"\n$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "double word",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\" plain",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\tplain",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\nplain",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\" 'single word'",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\t'single word'",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\n'single word'",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\" \"double word\"",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\t\"double word\"",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\n\"double word\"",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\" \"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\t\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\n\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\" \"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\t\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\n\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\" \"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\t\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\n\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\" back\\ slash",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\tback\\ slash",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\nback\\ slash",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\" #literal",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\t#literal",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\n#literal",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\" ''",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\t''",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\n''",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\" caf\u00e9",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\tcaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\ncaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\" a\rb",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\ta\rb",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\na\rb",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\" 'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\t'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\n'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\" back\\\nline",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\tback\\\nline",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\nback\\\nline",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\" $(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\t$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\$literal\"\n$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "keep\\$literal",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\" plain",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\tplain",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\nplain",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\" 'single word'",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\t'single word'",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\n'single word'",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\" \"double word\"",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\t\"double word\"",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\n\"double word\"",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\" \"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\t\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\n\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\" \"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\t\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\n\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\" \"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\t\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\n\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\" back\\ slash",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\tback\\ slash",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\nback\\ slash",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\" #literal",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\t#literal",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\n#literal",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\" ''",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\t''",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\n''",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\" caf\u00e9",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\tcaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\ncaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\" a\rb",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\ta\rb",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\na\rb",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\" 'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\t'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\n'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\" back\\\nline",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\tback\\\nline",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\nback\\\nline",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\" $(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\t$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump \"keep\\`literal\"\n$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "keep\\`literal",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\" plain",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\tplain",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\nplain",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\" 'single word'",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\t'single word'",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\n'single word'",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\" \"double word\"",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\t\"double word\"",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\n\"double word\"",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\" \"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\t\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\n\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\" \"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\t\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\n\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\" \"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\t\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\n\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\" back\\ slash",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\tback\\ slash",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\nback\\ slash",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\" #literal",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\t#literal",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\n#literal",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\" ''",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\t''",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\n''",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\" caf\u00e9",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\tcaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\ncaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\" a\rb",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\ta\rb",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\na\rb",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\" 'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\t'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\n'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\" back\\\nline",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\tback\\\nline",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\nback\\\nline",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\" $(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\t$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump \"quote\\\"slash\\\\\"\n$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "quote\"slash\\",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash plain",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\tplain",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\nplain",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash 'single word'",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\t'single word'",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\n'single word'",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash \"double word\"",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\t\"double word\"",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\n\"double word\"",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash \"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\t\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\n\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash \"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\t\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\n\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash \"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\t\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\n\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash back\\ slash",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\tback\\ slash",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\nback\\ slash",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash #literal",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\t#literal",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\n#literal",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash ''",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\t''",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\n''",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash caf\u00e9",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\tcaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\ncaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash a\rb",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\ta\rb",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\na\rb",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash 'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\t'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\n'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash back\\\nline",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\tback\\\nline",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\nback\\\nline",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash $(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\t$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump back\\ slash\n$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "back slash",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump #literal plain",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\tplain",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\nplain",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump #literal 'single word'",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\t'single word'",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\n'single word'",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump #literal \"double word\"",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\t\"double word\"",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\n\"double word\"",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump #literal \"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\t\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\n\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump #literal \"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\t\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\n\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump #literal \"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\t\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\n\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump #literal back\\ slash",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\tback\\ slash",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\nback\\ slash",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump #literal #literal",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\t#literal",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\n#literal",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump #literal ''",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump #literal\t''",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump #literal\n''",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump #literal caf\u00e9",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\tcaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\ncaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump #literal a\rb",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\ta\rb",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\na\rb",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump #literal 'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\t'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\n'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump #literal back\\\nline",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\tback\\\nline",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\nback\\\nline",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump #literal $(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\t$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump #literal\n$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "#literal",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump '' plain",
+      "argv": [
+        "pg_dump",
+        "",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump ''\tplain",
+      "argv": [
+        "pg_dump",
+        "",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump ''\nplain",
+      "argv": [
+        "pg_dump",
+        "",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump '' 'single word'",
+      "argv": [
+        "pg_dump",
+        "",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump ''\t'single word'",
+      "argv": [
+        "pg_dump",
+        "",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump ''\n'single word'",
+      "argv": [
+        "pg_dump",
+        "",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump '' \"double word\"",
+      "argv": [
+        "pg_dump",
+        "",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump ''\t\"double word\"",
+      "argv": [
+        "pg_dump",
+        "",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump ''\n\"double word\"",
+      "argv": [
+        "pg_dump",
+        "",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump '' \"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump ''\t\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump ''\n\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump '' \"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump ''\t\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump ''\n\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump '' \"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump ''\t\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump ''\n\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump '' back\\ slash",
+      "argv": [
+        "pg_dump",
+        "",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump ''\tback\\ slash",
+      "argv": [
+        "pg_dump",
+        "",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump ''\nback\\ slash",
+      "argv": [
+        "pg_dump",
+        "",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump '' #literal",
+      "argv": [
+        "pg_dump",
+        "",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump ''\t#literal",
+      "argv": [
+        "pg_dump",
+        "",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump ''\n#literal",
+      "argv": [
+        "pg_dump",
+        "",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump '' ''",
+      "argv": [
+        "pg_dump",
+        "",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump ''\t''",
+      "argv": [
+        "pg_dump",
+        "",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump ''\n''",
+      "argv": [
+        "pg_dump",
+        "",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump '' caf\u00e9",
+      "argv": [
+        "pg_dump",
+        "",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump ''\tcaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump ''\ncaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump '' a\rb",
+      "argv": [
+        "pg_dump",
+        "",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump ''\ta\rb",
+      "argv": [
+        "pg_dump",
+        "",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump ''\na\rb",
+      "argv": [
+        "pg_dump",
+        "",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump '' 'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump ''\t'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump ''\n'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump '' back\\\nline",
+      "argv": [
+        "pg_dump",
+        "",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump ''\tback\\\nline",
+      "argv": [
+        "pg_dump",
+        "",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump ''\nback\\\nline",
+      "argv": [
+        "pg_dump",
+        "",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump '' $(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump ''\t$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump ''\n$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9 plain",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\tplain",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\nplain",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9 'single word'",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\t'single word'",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\n'single word'",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9 \"double word\"",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\t\"double word\"",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\n\"double word\"",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9 \"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\t\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\n\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9 \"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\t\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\n\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9 \"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\t\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\n\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9 back\\ slash",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\tback\\ slash",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\nback\\ slash",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9 #literal",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\t#literal",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\n#literal",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9 ''",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\t''",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\n''",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9 caf\u00e9",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\tcaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\ncaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9 a\rb",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\ta\rb",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\na\rb",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9 'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\t'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\n'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9 back\\\nline",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\tback\\\nline",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\nback\\\nline",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9 $(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\t$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump caf\u00e9\n$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "caf\u00e9",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb plain",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\tplain",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\nplain",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb 'single word'",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\t'single word'",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\n'single word'",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb \"double word\"",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\t\"double word\"",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\n\"double word\"",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb \"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\t\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\n\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb \"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\t\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\n\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb \"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\t\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\n\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb back\\ slash",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\tback\\ slash",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\nback\\ slash",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb #literal",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\t#literal",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\n#literal",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb ''",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\t''",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\n''",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump a\rb caf\u00e9",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\tcaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\ncaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb a\rb",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\ta\rb",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\na\rb",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb 'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\t'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\n'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb back\\\nline",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\tback\\\nline",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\nback\\\nline",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb $(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\t$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump a\rb\n$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "a",
+        "b",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak' plain",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\tplain",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\nplain",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak' 'single word'",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\t'single word'",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\n'single word'",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak' \"double word\"",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\t\"double word\"",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\n\"double word\"",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak' \"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\t\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\n\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak' \"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\t\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\n\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak' \"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\t\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\n\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak' back\\ slash",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\tback\\ slash",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\nback\\ slash",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak' #literal",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\t#literal",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\n#literal",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak' ''",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\t''",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\n''",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak' caf\u00e9",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\tcaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\ncaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak' a\rb",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\ta\rb",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\na\rb",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak' 'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\t'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\n'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak' back\\\nline",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\tback\\\nline",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\nback\\\nline",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak' $(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\t$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump 'line\nbreak'\n$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "line\nbreak",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline plain",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\tplain",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\nplain",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline 'single word'",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\t'single word'",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\n'single word'",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline \"double word\"",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\t\"double word\"",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\n\"double word\"",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline \"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\t\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\n\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline \"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\t\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\n\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline \"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\t\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\n\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline back\\ slash",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\tback\\ slash",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\nback\\ slash",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline #literal",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\t#literal",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\n#literal",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline ''",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\t''",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\n''",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline caf\u00e9",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\tcaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\ncaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline a\rb",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\ta\rb",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\na\rb",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline 'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\t'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\n'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline back\\\nline",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\tback\\\nline",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\nback\\\nline",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline $(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\t$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump back\\\nline\n$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "back\nline",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z plain",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\tplain",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\nplain",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "plain"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z 'single word'",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\t'single word'",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\n'single word'",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "single word"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z \"double word\"",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\t\"double word\"",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\n\"double word\"",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "double word"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z \"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\t\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\n\"keep\\$literal\"",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "keep\\$literal"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z \"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\t\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\n\"keep\\`literal\"",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "keep\\`literal"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z \"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\t\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\n\"quote\\\"slash\\\\\"",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "quote\"slash\\"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z back\\ slash",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\tback\\ slash",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\nback\\ slash",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "back slash"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z #literal",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\t#literal",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\n#literal",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "#literal"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z ''",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\t''",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\n''",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        ""
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z caf\u00e9",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\tcaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\ncaf\u00e9",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "caf\u00e9"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z a\rb",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\ta\rb",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\na\rb",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "a",
+        "b"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z 'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\t'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\n'line\nbreak'",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "line\nbreak"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z back\\\nline",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\tback\\\nline",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\nback\\\nline",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "back\nline"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z $(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\t$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "$(not-executed);x>y|z"
+      ]
+    },
+    {
+      "command": "pg_dump $(not-executed);x>y|z\n$(not-executed);x>y|z",
+      "argv": [
+        "pg_dump",
+        "$(not-executed);x>y|z",
+        "$(not-executed);x>y|z"
+      ]
+    }
+  ]
+}

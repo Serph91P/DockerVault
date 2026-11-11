@@ -1,0 +1,7217 @@
+[
+  {
+    "pattern": "",
+    "path": "",
+    "expected": true
+  },
+  {
+    "pattern": "",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "*",
+    "path": "",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "b",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "c",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "z",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "-",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "]",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "[",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "!",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "^",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "?",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "*",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "\\",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "&",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "|",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "~",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "\u00e4",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "\u00fc",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "\u00f6",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "\ud83d\ude00",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "\n",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "a/b",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "a/x/c",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "a/long/c",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "a/x/y/c",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "foo[",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "abc",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "a\\b",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "a.txt",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": ".txt",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "[a",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "[?",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "[]",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "[!]",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "a!b",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "a[b",
+    "expected": true
+  },
+  {
+    "pattern": "*",
+    "path": "a]b",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "b",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "c",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "z",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "-",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "]",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "[",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "!",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "^",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "?",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "*",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "\\",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "&",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "|",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "~",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "\u00e4",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "\u00fc",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "\u00f6",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "\ud83d\ude00",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "\n",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "a/b",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "a/x/c",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "a/long/c",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "a/x/y/c",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "foo[",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "abc",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "a\\b",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "a.txt",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": ".txt",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "[a",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "[?",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "[]",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "[!]",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "a!b",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "a[b",
+    "expected": true
+  },
+  {
+    "pattern": "**",
+    "path": "a]b",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "b",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "c",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "z",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "-",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "]",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "[",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "!",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "^",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "?",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "*",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "\\",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "&",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "|",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "~",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "\u00e4",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "\u00fc",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "\u00f6",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "\ud83d\ude00",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "\n",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "a/b",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "a/x/c",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "a/long/c",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "a/x/y/c",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "foo[",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "abc",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "a\\b",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "a.txt",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": ".txt",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "[a",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "[?",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "[]",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "[!]",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "a!b",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "a[b",
+    "expected": true
+  },
+  {
+    "pattern": "***",
+    "path": "a]b",
+    "expected": true
+  },
+  {
+    "pattern": "a**b",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "a/b",
+    "expected": true
+  },
+  {
+    "pattern": "a**b",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "a\\b",
+    "expected": true
+  },
+  {
+    "pattern": "a**b",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "a**b",
+    "path": "a!b",
+    "expected": true
+  },
+  {
+    "pattern": "a**b",
+    "path": "a[b",
+    "expected": true
+  },
+  {
+    "pattern": "a**b",
+    "path": "a]b",
+    "expected": true
+  },
+  {
+    "pattern": "**/*",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "a/b",
+    "expected": true
+  },
+  {
+    "pattern": "**/*",
+    "path": "a/x/c",
+    "expected": true
+  },
+  {
+    "pattern": "**/*",
+    "path": "a/long/c",
+    "expected": true
+  },
+  {
+    "pattern": "**/*",
+    "path": "a/x/y/c",
+    "expected": true
+  },
+  {
+    "pattern": "**/*",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "**/*",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "b",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "c",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "z",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "-",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "]",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "[",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "!",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "^",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "?",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "*",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "\\",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "&",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "|",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "~",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "\u00e4",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "\u00fc",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "\u00f6",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "\ud83d\ude00",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "\n",
+    "expected": true
+  },
+  {
+    "pattern": "?",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "?",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "[",
+    "expected": true
+  },
+  {
+    "pattern": "[",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "[]",
+    "expected": true
+  },
+  {
+    "pattern": "[]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "[!]",
+    "expected": true
+  },
+  {
+    "pattern": "[!]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[!]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[!]]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[!]]",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "[!]]",
+    "path": "b",
+    "expected": true
+  },
+  {
+    "pattern": "[!]]",
+    "path": "c",
+    "expected": true
+  },
+  {
+    "pattern": "[!]]",
+    "path": "z",
+    "expected": true
+  },
+  {
+    "pattern": "[!]]",
+    "path": "-",
+    "expected": true
+  },
+  {
+    "pattern": "[!]]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[!]]",
+    "path": "[",
+    "expected": true
+  },
+  {
+    "pattern": "[!]]",
+    "path": "!",
+    "expected": true
+  },
+  {
+    "pattern": "[!]]",
+    "path": "^",
+    "expected": true
+  },
+  {
+    "pattern": "[!]]",
+    "path": "?",
+    "expected": true
+  },
+  {
+    "pattern": "[!]]",
+    "path": "*",
+    "expected": true
+  },
+  {
+    "pattern": "[!]]",
+    "path": "\\",
+    "expected": true
+  },
+  {
+    "pattern": "[!]]",
+    "path": "&",
+    "expected": true
+  },
+  {
+    "pattern": "[!]]",
+    "path": "|",
+    "expected": true
+  },
+  {
+    "pattern": "[!]]",
+    "path": "~",
+    "expected": true
+  },
+  {
+    "pattern": "[!]]",
+    "path": "\u00e4",
+    "expected": true
+  },
+  {
+    "pattern": "[!]]",
+    "path": "\u00fc",
+    "expected": true
+  },
+  {
+    "pattern": "[!]]",
+    "path": "\u00f6",
+    "expected": true
+  },
+  {
+    "pattern": "[!]]",
+    "path": "\ud83d\ude00",
+    "expected": true
+  },
+  {
+    "pattern": "[!]]",
+    "path": "\n",
+    "expected": true
+  },
+  {
+    "pattern": "[!]]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[!]]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[!]]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[!]]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[!]]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[!]]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[!]]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[!]]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[!]]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[!]]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[!]]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[!]]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[!]]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[!]]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[!]]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[!]]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "]",
+    "expected": true
+  },
+  {
+    "pattern": "[]]",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[]]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "[",
+    "expected": true
+  },
+  {
+    "pattern": "[[]",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[[]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[z-a]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "b",
+    "expected": true
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[a--b]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "[^a]",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "^",
+    "expected": true
+  },
+  {
+    "pattern": "[^a]",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[^a]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "b",
+    "expected": true
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "c",
+    "expected": true
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "z",
+    "expected": true
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-z]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "\u00e4",
+    "expected": true
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "\u00fc",
+    "expected": true
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "\u00f6",
+    "expected": true
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[\u00e4-\u00fc]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "[",
+    "expected": true
+  },
+  {
+    "pattern": "[*",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "[a",
+    "expected": true
+  },
+  {
+    "pattern": "[*",
+    "path": "[?",
+    "expected": true
+  },
+  {
+    "pattern": "[*",
+    "path": "[]",
+    "expected": true
+  },
+  {
+    "pattern": "[*",
+    "path": "[!]",
+    "expected": true
+  },
+  {
+    "pattern": "[*",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[*",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "[a",
+    "expected": true
+  },
+  {
+    "pattern": "[?",
+    "path": "[?",
+    "expected": true
+  },
+  {
+    "pattern": "[?",
+    "path": "[]",
+    "expected": true
+  },
+  {
+    "pattern": "[?",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[?",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "foo[",
+    "expected": true
+  },
+  {
+    "pattern": "foo[",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "foo[",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "[a-]",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "-",
+    "expected": true
+  },
+  {
+    "pattern": "[a-]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "[-a]",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "-",
+    "expected": true
+  },
+  {
+    "pattern": "[-a]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[-a]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "-",
+    "expected": true
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "]",
+    "expected": true
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "[",
+    "expected": true
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "!",
+    "expected": true
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "^",
+    "expected": true
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "?",
+    "expected": true
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "*",
+    "expected": true
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "\\",
+    "expected": true
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "&",
+    "expected": true
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "|",
+    "expected": true
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "~",
+    "expected": true
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "\u00e4",
+    "expected": true
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "\u00fc",
+    "expected": true
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "\u00f6",
+    "expected": true
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "\ud83d\ude00",
+    "expected": true
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "\n",
+    "expected": true
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[!a-z]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "b",
+    "expected": true
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "c",
+    "expected": true
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "-",
+    "expected": true
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-b-c]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "z",
+    "expected": true
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "-",
+    "expected": true
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[b-a-z]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[a-&]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "b",
+    "expected": true
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "&",
+    "expected": true
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[a&&b]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "b",
+    "expected": true
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "|",
+    "expected": true
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[a||b]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "b",
+    "expected": true
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "~",
+    "expected": true
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[a~~b]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "a\\b",
+    "expected": true
+  },
+  {
+    "pattern": "a\\*",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "a\\*",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "a.txt",
+    "expected": true
+  },
+  {
+    "pattern": "*.txt",
+    "path": ".txt",
+    "expected": true
+  },
+  {
+    "pattern": "*.txt",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "*.txt",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "a/x/c",
+    "expected": true
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "a/?/c",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "\\",
+    "expected": true
+  },
+  {
+    "pattern": "[\\]",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[\\]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "b",
+    "expected": true
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "c",
+    "expected": true
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "z",
+    "expected": true
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "-",
+    "expected": true
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "]",
+    "expected": true
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "[",
+    "expected": true
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "!",
+    "expected": true
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "^",
+    "expected": true
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "?",
+    "expected": true
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "*",
+    "expected": true
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "&",
+    "expected": true
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "|",
+    "expected": true
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "~",
+    "expected": true
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "\u00e4",
+    "expected": true
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "\u00fc",
+    "expected": true
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "\u00f6",
+    "expected": true
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "\ud83d\ude00",
+    "expected": true
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "\n",
+    "expected": true
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[!\\]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[!\\]",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "[a]**",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "a/b",
+    "expected": true
+  },
+  {
+    "pattern": "[a]**",
+    "path": "a/x/c",
+    "expected": true
+  },
+  {
+    "pattern": "[a]**",
+    "path": "a/long/c",
+    "expected": true
+  },
+  {
+    "pattern": "[a]**",
+    "path": "a/x/y/c",
+    "expected": true
+  },
+  {
+    "pattern": "[a]**",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "abc",
+    "expected": true
+  },
+  {
+    "pattern": "[a]**",
+    "path": "a\\b",
+    "expected": true
+  },
+  {
+    "pattern": "[a]**",
+    "path": "a.txt",
+    "expected": true
+  },
+  {
+    "pattern": "[a]**",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[a]**",
+    "path": "a!b",
+    "expected": true
+  },
+  {
+    "pattern": "[a]**",
+    "path": "a[b",
+    "expected": true
+  },
+  {
+    "pattern": "[a]**",
+    "path": "a]b",
+    "expected": true
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "a",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "b",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "\n",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "a[!]b",
+    "path": "a]b",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "a",
+    "expected": true
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "b",
+    "expected": true
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "c",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "z",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "-",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "]",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "[",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "!",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "^",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "?",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "*",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "\\",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "&",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "|",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "~",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "\u00e4",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "\u00fc",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "\u00f6",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "\ud83d\ude00",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "\n",
+    "expected": true
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "a/b",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "a/x/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "a/long/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "a/x/y/c",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "foo[",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "abc",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "a\\b",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "a.txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": ".txt",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "[a",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "[?",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "[]",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "[!]",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "a!b",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "a[b",
+    "expected": false
+  },
+  {
+    "pattern": "[a\nb]",
+    "path": "a]b",
+    "expected": false
+  }
+]
