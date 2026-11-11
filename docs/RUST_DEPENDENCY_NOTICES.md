@@ -21,6 +21,15 @@ DockerVault's own license. Final image/offline packaging must include the full
 MPL license and this source-availability notice. Packaging verification remains
 part of the Rust image/recovery deliverable, not established by this notice alone.
 
+## Unicode classification for rclone references
+
+`unicode-general-category` 1.1.0 (Apache-2.0, no dependencies or declared MSRV;
+compiled with the pinned Rust1.99.1 toolchain) supplies the accepted provider's
+Unicode16.0.0 letter/number categories. Rust's Unicode17 `is_alphanumeric` also
+includes combining alphabetic marks, so it is not Python's `\\w` name contract.
+The native test checks every Unicode scalar against the actual provider oracle.
+Source: <https://github.com/yeslogic/unicode-general-category>.
+
 ## CPython compatibility algorithms
 
 Character-class range normalization in `dockervault-core/src/filters.rs` adapts
