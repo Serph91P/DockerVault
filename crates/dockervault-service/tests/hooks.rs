@@ -36,7 +36,11 @@ fn argv_matches_every_independent_python_shlex_control_without_posix_reinterpret
 }
 #[tokio::test]
 async fn hooks_preserve_exact_allowlisting_without_implicit_shell_or_argument_logging() {
-    let hooks = Hooks::new(&config("printf", "5")).unwrap();
+    let hooks = Hooks::new(
+        &config("printf", "5"),
+        env!("CARGO_BIN_EXE_dockervault-process-guard"),
+    )
+    .unwrap();
     assert!(matches!(
         hooks.run(" ", CancellationToken::new()).await,
         Err(HookError::Empty)
@@ -68,7 +72,11 @@ async fn hooks_preserve_exact_allowlisting_without_implicit_shell_or_argument_lo
 }
 #[tokio::test]
 async fn ignored_hook_output_is_drained_not_captured_or_mistaken_for_a_failed_hook() {
-    let hooks = Hooks::new(&config("head", "5")).unwrap();
+    let hooks = Hooks::new(
+        &config("head", "5"),
+        env!("CARGO_BIN_EXE_dockervault-process-guard"),
+    )
+    .unwrap();
     hooks
         .run("head -c 262144 /dev/zero", CancellationToken::new())
         .await
@@ -78,7 +86,11 @@ async fn ignored_hook_output_is_drained_not_captured_or_mistaken_for_a_failed_ho
 }
 #[tokio::test]
 async fn timeout_zero_retains_python_immediate_timeout_and_physically_settles_the_child() {
-    let hooks = Hooks::new(&config("sleep", "0")).unwrap();
+    let hooks = Hooks::new(
+        &config("sleep", "0"),
+        env!("CARGO_BIN_EXE_dockervault-process-guard"),
+    )
+    .unwrap();
     assert!(
         hooks
             .run("sleep 30", CancellationToken::new())
@@ -90,7 +102,11 @@ async fn timeout_zero_retains_python_immediate_timeout_and_physically_settles_th
 }
 #[tokio::test]
 async fn cancellation_waits_for_process_settlement_instead_of_dropping_the_wait_future() {
-    let hooks = Hooks::new(&config("sleep", "30")).unwrap();
+    let hooks = Hooks::new(
+        &config("sleep", "30"),
+        env!("CARGO_BIN_EXE_dockervault-process-guard"),
+    )
+    .unwrap();
     let cancel = CancellationToken::new();
     let stopping = cancel.clone();
     let cancelled = async {

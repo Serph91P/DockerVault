@@ -6,6 +6,79 @@ use std::sync::{
 use std::time::Duration;
 use tokio::sync::oneshot;
 
+#[tokio::test]
+async fn completion_wakeup_is_never_advertised_before_the_physical_admission_slot_is_released() {
+    use futures_util::task::{ArcWake, waker};
+    use std::{
+        future::Future,
+        sync::atomic::AtomicUsize,
+        task::{Context, Poll},
+    };
+    struct Completed {
+        owner: Owner,
+        active: AtomicUsize,
+        notified: tokio::sync::Notify,
+    }
+    impl ArcWake for Completed {
+        fn wake_by_ref(this: &Arc<Self>) {
+            this.active.store(this.owner.active(), Ordering::SeqCst);
+            this.notified.notify_one();
+        }
+    }
+    for blocking in [false, true] {
+        for panics in [false, true] {
+            let owner = Owner::new(1).unwrap();
+            let (release, gate) = oneshot::channel();
+            let work = if blocking {
+                owner
+                    .submit_blocking(move |_| {
+                        gate.blocking_recv().unwrap();
+                        if panics {
+                            panic!("PUBLIC synthetic panic");
+                        }
+                        42usize
+                    })
+                    .unwrap()
+            } else {
+                owner
+                    .submit_async(move |_| async move {
+                        gate.await.unwrap();
+                        if panics {
+                            panic!("PUBLIC synthetic panic");
+                        }
+                        42usize
+                    })
+                    .unwrap()
+            };
+            let observed = Arc::new(Completed {
+                owner: owner.clone(),
+                active: AtomicUsize::new(usize::MAX),
+                notified: tokio::sync::Notify::new(),
+            });
+            let notification = waker(observed.clone());
+            let mut context = Context::from_waker(&notification);
+            let waiting = work.wait();
+            tokio::pin!(waiting);
+            assert!(matches!(waiting.as_mut().poll(&mut context), Poll::Pending));
+            release.send(()).unwrap();
+            tokio::time::timeout(Duration::from_secs(2), observed.notified.notified())
+                .await
+                .unwrap();
+            assert_eq!(
+                observed.active.load(Ordering::SeqCst),
+                0,
+                "completion exposed a still-owned slot: blocking={blocking},panic={panics}"
+            );
+            if panics {
+                assert_eq!(waiting.await, Err(WorkError::WorkerFailed));
+            } else {
+                assert_eq!(waiting.await, Ok(42));
+            }
+            owner.shutdown(None).await;
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dropping_or_repeatedly_cancelling_a_started_blocking_call_keeps_its_permit_until_joined() {
     let owner = Owner::new(1).unwrap();

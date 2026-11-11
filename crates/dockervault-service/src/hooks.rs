@@ -100,9 +100,12 @@ pub struct Hooks {
     timeout: Duration,
 }
 impl Hooks {
-    pub fn new(config: &Config) -> Result<Self, HookError> {
+    pub fn new(
+        config: &Config,
+        parent_guard: impl Into<std::path::PathBuf>,
+    ) -> Result<Self, HookError> {
         Ok(Self {
-            processes: ProcessOwner::new(2).map_err(HookError::Process)?,
+            processes: ProcessOwner::new(2, parent_guard).map_err(HookError::Process)?,
             allowed: config.allowed_hook_commands.clone(),
             timeout: Duration::from_secs(config.hook_command_timeout.max(0) as u64),
         })

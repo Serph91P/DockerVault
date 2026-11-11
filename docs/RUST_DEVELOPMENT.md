@@ -39,6 +39,30 @@ docker run --rm dockervault-rust-dev cargo deny check advisories licenses source
 Use `cargo tree -p dockervault-core --edges normal` and the corresponding tools
 command to verify those dependency boundaries; module naming alone is not proof.
 
+## Owned process execution
+
+Native process owners require the **unprivileged** `dockervault-process-guard`
+binary alongside their runtime. Pass its explicit absolute path to `ProcessOwner::new(capacity, guard)`
+and `Hooks::new(config, guard)`; do not search an ambient PATH or fall back to an
+unbound process. The isolated archive test image installs it in
+`/usr/local/libexec` next to the archive worker, but grants sudo ONLY to the fixed
+archive worker. Never mark the exec guard setuid or add it to sudoers.
+
+The guard applies the kernel parent-death signal and verifies the expected parent
+before safe `CommandExt::exec`. It preserves literal arguments, descriptors and the
+explicitly provided environment. This avoids unsafe `pre_exec` in a threaded service;
+workspace `unsafe_code = "forbid"` remains unchanged. Explicit working directories
+are absolute. Regular process cancellation still drains pipes, terminates/escalates
+the process group and reaps it before completion. Kernel owner-loss evidence is for
+the directly executed unprivileged child, not a blanket claim for escaped descendants
+or privilege-changing execs; complete workload/privileged crash gates remain required.
+
+Both async and blocking owners physically join before releasing their admission
+permit, then notify completion. A caller's wakeup can immediately reenter admission
+on another thread; announcing completion before releasing the slot is a race, even
+when a later shutdown would eventually drain it. Panic replies follow the same join
+and release boundary.
+
 ## Initial selected dependencies
 
 Registry metadata and primary documentation were checked for the actual selected

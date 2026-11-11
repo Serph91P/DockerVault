@@ -108,19 +108,27 @@ impl Owner {
         if *closed {
             return Err(WorkError::Closed);
         }
-        let permit = self
-            .inner
-            .slots
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| WorkError::Busy)?;
+        let permit = Arc::new(
+            self.inner
+                .slots
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| WorkError::Busy)?,
+        );
+        let physical_permit = permit.clone();
         let cancel = self.inner.cancel.child_token();
         let worker_cancel = cancel.clone();
         let (sender, reply) = oneshot::channel();
+        let worker = self.inner.tracker.spawn(async move {
+            let _permit = physical_permit;
+            operation(worker_cancel).await
+        });
         self.inner.tracker.spawn(async move {
-            let _permit = permit;
-            let result = operation(worker_cancel).await;
-            let _ = sender.send(Ok(result));
+            let result = worker.await.map_err(|_| WorkError::WorkerFailed);
+            // Completion can wake and immediately reenter admission on another
+            // thread. Release only AFTER physical join, but BEFORE notifying it.
+            drop(permit);
+            let _ = sender.send(result);
         });
         drop(closed);
         Ok(Work {
@@ -155,8 +163,8 @@ impl Owner {
             operation(worker_cancel)
         });
         self.inner.tracker.spawn(async move {
-            let _permit = permit;
             let result = worker.await.map_err(|_| WorkError::WorkerFailed);
+            drop(permit);
             let _ = sender.send(result);
         });
         drop(closed);

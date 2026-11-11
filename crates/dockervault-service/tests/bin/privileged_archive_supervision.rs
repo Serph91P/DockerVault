@@ -35,7 +35,7 @@ fn assert_no_helper() {
 #[tokio::main]
 async fn main() {
     assert_eq!(nix::unistd::getuid().as_raw(), 1000);
-    let owner = ProcessOwner::new(1).unwrap();
+    let owner = ProcessOwner::new(1, "/usr/local/libexec/dockervault-process-guard").unwrap();
     // None is the published timeout=0 contract, not an arbitrary long deadline.
     use std::os::unix::fs::OpenOptionsExt;
     let mut report = fs::OpenOptions::new()

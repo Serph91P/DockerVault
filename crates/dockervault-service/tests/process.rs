@@ -32,7 +32,7 @@ impl Drop for Fixture {
 
 #[tokio::test]
 async fn fixed_argv_is_not_expanded_by_a_shell_and_inherited_secrets_are_absent() {
-    let owner = ProcessOwner::new(1).unwrap();
+    let owner = ProcessOwner::new(1, env!("CARGO_BIN_EXE_dockervault-process-guard")).unwrap();
     let output = owner
         .start(ProcessSpec::new(
             "/usr/bin/printf",
@@ -68,7 +68,7 @@ async fn fixed_argv_is_not_expanded_by_a_shell_and_inherited_secrets_are_absent(
 #[tokio::test]
 async fn full_stdout_and_stderr_pipes_fail_boundedly_instead_of_deadlocking_or_truncating_success()
 {
-    let owner = ProcessOwner::new(1).unwrap();
+    let owner = ProcessOwner::new(1, env!("CARGO_BIN_EXE_dockervault-process-guard")).unwrap();
     let spec = ProcessSpec::new(
         "/bin/sh",
         [
@@ -89,7 +89,7 @@ async fn full_stdout_and_stderr_pipes_fail_boundedly_instead_of_deadlocking_or_t
 async fn cancellation_escalates_and_reaps_the_term_resistant_grandchild_before_release() {
     let fixture = Fixture::new();
     let child_file = fixture.path("grandchild");
-    let owner = ProcessOwner::new(1).unwrap();
+    let owner = ProcessOwner::new(1, env!("CARGO_BIN_EXE_dockervault-process-guard")).unwrap();
     let mut spec = ProcessSpec::new(
         "/bin/sh",
         [
@@ -127,7 +127,7 @@ async fn cancellation_escalates_and_reaps_the_term_resistant_grandchild_before_r
 
 #[tokio::test]
 async fn timeout_joins_a_blocked_stdin_writer_and_all_output_readers() {
-    let owner = ProcessOwner::new(1).unwrap();
+    let owner = ProcessOwner::new(1, env!("CARGO_BIN_EXE_dockervault-process-guard")).unwrap();
     let mut spec = ProcessSpec::new("/bin/sleep", ["30"]);
     spec.input = vec![42; 1024 * 1024];
     spec.timeout = Some(Duration::from_millis(30));
@@ -144,7 +144,7 @@ async fn timeout_joins_a_blocked_stdin_writer_and_all_output_readers() {
 async fn cancellation_before_the_owned_spawn_poll_prevents_delayed_side_effects() {
     let fixture = Fixture::new();
     let marker = fixture.path("must-not-appear");
-    let owner = ProcessOwner::new(1).unwrap();
+    let owner = ProcessOwner::new(1, env!("CARGO_BIN_EXE_dockervault-process-guard")).unwrap();
     for _ in 0..16 {
         let mut spec = ProcessSpec::new(
             "/bin/sh",
@@ -166,7 +166,7 @@ async fn cancellation_before_the_owned_spawn_poll_prevents_delayed_side_effects(
 
 #[tokio::test]
 async fn command_and_output_debug_do_not_disclose_arguments_environment_or_bytes() {
-    let owner = ProcessOwner::new(1).unwrap();
+    let owner = ProcessOwner::new(1, env!("CARGO_BIN_EXE_dockervault-process-guard")).unwrap();
     let mut spec = ProcessSpec::new("/usr/bin/printf", ["%s", "private-test-output"]);
     spec.env
         .push(("PRIVATE".into(), "private-test-environment".into()));
@@ -179,7 +179,11 @@ async fn command_and_output_debug_do_not_disclose_arguments_environment_or_bytes
 
 #[tokio::test]
 async fn rejects_relative_executables_and_oversized_stdin_before_spawn() {
-    let owner = ProcessOwner::new(1).unwrap();
+    assert!(matches!(
+        ProcessOwner::new(1, "relative-guard"),
+        Err(ProcessError::InvalidSpec)
+    ));
+    let owner = ProcessOwner::new(1, env!("CARGO_BIN_EXE_dockervault-process-guard")).unwrap();
     assert!(matches!(
         owner.start(ProcessSpec::new("sh", ["-c", "exit 0"])),
         Err(ProcessError::InvalidSpec)

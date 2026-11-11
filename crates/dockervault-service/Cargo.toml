@@ -56,3 +56,7 @@ harness = false
 [[test]]
 name = "migration_crash"
 harness = false
+
+[[test]]
+name = "process_parent_death"
+harness = false

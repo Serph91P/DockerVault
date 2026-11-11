@@ -31,6 +31,7 @@ pub struct ProcessSpec {
     pub program: PathBuf,
     pub args: Vec<OsString>,
     pub env: Vec<(OsString, OsString)>,
+    pub working_directory: Option<PathBuf>,
     pub input: Vec<u8>,
     /// Explicit owned spool descriptor; no in-memory stdout capture when set.
     pub stdout_file: Option<std::fs::File>,
@@ -49,6 +50,7 @@ impl ProcessSpec {
             program: program.into(),
             args: args.into_iter().map(Into::into).collect(),
             env: Vec::new(),
+            working_directory: None,
             input: Vec::new(),
             stdout_file: None,
             timeout: None,
@@ -101,28 +103,39 @@ impl std::error::Error for ProcessError {}
 #[derive(Clone)]
 pub struct ProcessOwner {
     owner: Owner,
+    parent_guard: PathBuf,
 }
 
 type ProcessWork = Work<Result<ProcessOutput, ProcessError>>;
 
 impl ProcessOwner {
-    pub fn new(capacity: usize) -> Result<Self, ProcessError> {
+    pub fn new(capacity: usize, parent_guard: impl Into<PathBuf>) -> Result<Self, ProcessError> {
+        let parent_guard = parent_guard.into();
+        if !parent_guard.is_absolute() {
+            return Err(ProcessError::InvalidSpec);
+        }
         // Adopt and reap grandchildren rather than relying on a container PID 1.
         nix::sys::prctl::set_child_subreaper(true)
             .map_err(|error| ProcessError::Io(io::Error::from_raw_os_error(error as i32).kind()))?;
         Ok(Self {
             owner: Owner::new(capacity).map_err(ProcessError::Admission)?,
+            parent_guard,
         })
     }
 
     pub fn start(&self, spec: ProcessSpec) -> Result<ProcessWork, ProcessError> {
         if (!spec.program.is_absolute() && !spec.allow_relative_program)
             || spec.input.len() > INPUT_LIMIT
+            || spec
+                .working_directory
+                .as_ref()
+                .is_some_and(|path| !path.is_absolute())
         {
             return Err(ProcessError::InvalidSpec);
         }
+        let parent_guard = self.parent_guard.clone();
         self.owner
-            .submit_async(move |cancel| run(spec, cancel))
+            .submit_async(move |cancel| run(spec, cancel, parent_guard))
             .map_err(ProcessError::Admission)
     }
 
@@ -213,7 +226,11 @@ enum Event {
     Failed(ProcessError),
 }
 
-async fn run(spec: ProcessSpec, cancel: CancellationToken) -> Result<ProcessOutput, ProcessError> {
+async fn run(
+    spec: ProcessSpec,
+    cancel: CancellationToken,
+    parent_guard: PathBuf,
+) -> Result<ProcessOutput, ProcessError> {
     if cancel.is_cancelled() {
         return Err(ProcessError::Cancelled);
     }
@@ -225,7 +242,10 @@ async fn run(spec: ProcessSpec, cancel: CancellationToken) -> Result<ProcessOutp
                 .ok_or(ProcessError::InvalidSpec)
         })
         .transpose()?;
-    let mut child = Command::new(&spec.program)
+    let mut command = Command::new(parent_guard);
+    command
+        .arg(std::process::id().to_string())
+        .arg(&spec.program)
         .args(&spec.args)
         .env_clear()
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
@@ -235,7 +255,11 @@ async fn run(spec: ProcessSpec, cancel: CancellationToken) -> Result<ProcessOutp
         .stdout(spec.stdout_file.map_or_else(Stdio::piped, Stdio::from))
         .stderr(Stdio::piped())
         .process_group(0)
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    if let Some(directory) = &spec.working_directory {
+        command.current_dir(directory);
+    }
+    let mut child = command
         .spawn()
         .map_err(|error| ProcessError::Io(error.kind()))?;
     let Some(pid) = child.id() else {

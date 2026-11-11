@@ -4,7 +4,7 @@ WORKDIR /source
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
 RUN cargo build --locked --release --jobs 2 -p dockervault-tools --bin dockervault-archive-worker --example archive_worker_privileges \
-    && cargo build --locked --release --jobs 2 -p dockervault-service --example privileged_archive_supervision
+    && cargo build --locked --release --jobs 2 -p dockervault-service --bin dockervault-process-guard --example privileged_archive_supervision
 
 FROM debian@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 RUN apt-get update && apt-get install --yes --no-install-recommends sudo libssl3 \
@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install --yes --no-install-recommends sudo libssl3
     && chmod 0440 /etc/sudoers.d/dockervault-archive-worker \
     && visudo -cf /etc/sudoers.d/dockervault-archive-worker
 COPY --from=build /source/target/release/dockervault-archive-worker /usr/local/libexec/dockervault-archive-worker
+COPY --from=build /source/target/release/dockervault-process-guard /usr/local/libexec/dockervault-process-guard
 COPY --from=build /source/target/release/examples/archive_worker_privileges /usr/local/bin/archive-worker-privileges
 COPY --from=build /source/target/release/examples/privileged_archive_supervision /usr/local/bin/privileged-archive-supervision
 USER 1000:1000
