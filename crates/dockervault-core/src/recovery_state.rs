@@ -2,6 +2,7 @@
 //! observations and relational staging are still required by the service owner.
 use crate::{
     cron::{CronError, Schedule, TimeZone},
+    lossless_json::{JsonError, PythonJson},
     portable_records::PortableTables,
     rclone_package::{self, RcloneError},
     recovery_bundle,
@@ -9,7 +10,8 @@ use crate::{
     storage_validation::{required_fields, storage_errors},
     timestamp::Timestamp,
 };
-use serde_json::{Value, json};
+use indexmap::IndexMap;
+use serde_json::{Value, json, value::RawValue};
 use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateError {
@@ -27,7 +29,7 @@ use StateError::Invalid;
 // No Debug: plaintext portable credentials are present in these records.
 pub struct ParsedState {
     pub tables: PortableTables,
-    pub payload: Value,
+    pub payload: PythonJson,
     pub backup_paths: Vec<Vec<String>>,
     pub preview: Value,
 }
@@ -85,17 +87,46 @@ fn digest(value: Value) -> Result<String> {
         .map(|b| format!("{b:02x}"))
         .collect())
 }
-pub fn state_manifest(payload: &Value) -> Result<Value> {
+fn json_error(error: JsonError) -> StateError {
+    if error == JsonError::Cancelled {
+        StateError::Cancelled
+    } else {
+        Invalid
+    }
+}
+fn sha(bytes: &[u8]) -> String {
+    openssl::sha::sha256(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+// Every subtree of our own canonical document is already canonical, including
+// opaque strings. Hash those spans without round-tripping through Value.
+fn manifest_canonical(canonical: &[u8]) -> Result<Value> {
+    let root: IndexMap<&str, &RawValue> = serde_json::from_slice(canonical).map_err(|_| Invalid)?;
+    let raw_tables: IndexMap<&str, &RawValue> =
+        serde_json::from_str(root.get("tables").ok_or(Invalid)?.get()).map_err(|_| Invalid)?;
     let mut tables = serde_json::Map::new();
-    for (name, rows) in payload["tables"].as_object().ok_or(Invalid)? {
+    for (name, rows) in raw_tables {
+        let count = serde_json::from_str::<Vec<&RawValue>>(rows.get())
+            .map_err(|_| Invalid)?
+            .len();
         tables.insert(
-            name.clone(),
-            json!({"count":rows.as_array().ok_or(Invalid)?.len(),"sha256":digest(rows.clone())?}),
+            name.to_owned(),
+            json!({"count":count,"sha256":sha(rows.get().as_bytes())}),
         );
     }
     Ok(
-        json!({"tables":tables,"ssh_public_keys":digest(payload.get("ssh_public_keys").ok_or(Invalid)?.clone())?,"rclone":digest(payload.get("rclone").ok_or(Invalid)?.clone())?}),
+        json!({"tables":tables,"ssh_public_keys":sha(root.get("ssh_public_keys").ok_or(Invalid)?.get().as_bytes()),"rclone":sha(root.get("rclone").ok_or(Invalid)?.get().as_bytes())}),
     )
+}
+pub fn state_manifest(payload: &Value) -> Result<Value> {
+    let raw = serde_json::to_vec(payload).map_err(|_| Invalid)?;
+    let canonical = PythonJson::parse(&raw)
+        .map_err(json_error)?
+        .canonical(&|| false)
+        .map_err(json_error)?;
+    manifest_canonical(&canonical)
 }
 fn check_cancel(cancel: &dyn Fn() -> bool) -> Result<()> {
     if cancel() {
@@ -117,14 +148,34 @@ fn cron(text: &str, now: Timestamp, timezone: &TimeZone, cancel: &dyn Fn() -> bo
         })
 }
 pub fn parse_state(
-    mut payload: Value,
+    payload: Value,
     now: Timestamp,
     timezone: &TimeZone,
     options: &BTreeMap<String, BTreeSet<String>>,
     cancel: &dyn Fn() -> bool,
 ) -> Result<ParsedState> {
     check_cancel(cancel)?;
-    let header = payload.as_object().ok_or(Invalid)?;
+    let raw = serde_json::to_vec(&payload).map_err(|_| Invalid)?;
+    parse_state_json(
+        PythonJson::parse(&raw).map_err(json_error)?,
+        now,
+        timezone,
+        options,
+        cancel,
+    )
+}
+pub fn parse_state_json(
+    document: PythonJson,
+    now: Timestamp,
+    timezone: &TimeZone,
+    options: &BTreeMap<String, BTreeSet<String>>,
+    cancel: &dyn Fn() -> bool,
+) -> Result<ParsedState> {
+    check_cancel(cancel)?;
+    let canonical = document.canonical(cancel).map_err(json_error)?;
+    let mut expected_manifest = manifest_canonical(&canonical)?;
+    let mut raw: IndexMap<String, Box<RawValue>> =
+        serde_json::from_str(document.as_str()).map_err(|_| Invalid)?;
     let names = [
         "schema_version",
         "application",
@@ -136,9 +187,22 @@ pub fn parse_state(
         "rclone",
         "manifest",
     ];
-    if header.len() != names.len()
-        || names.iter().any(|name| !header.contains_key(*name))
-        || payload["schema_version"].as_i64() != Some(1)
+    if raw.len() != names.len() || names.iter().any(|name| !raw.contains_key(*name)) {
+        return Err(Invalid);
+    }
+    // Tables remain raw/typed; only the non-opaque header is decoded as Value.
+    // No null/sentinel projection replaces user metadata.
+    let mut payload = Value::Object(
+        raw.iter()
+            .filter(|(name, _)| name.as_str() != "tables")
+            .map(|(name, value)| {
+                serde_json::from_str(value.get())
+                    .map(|value| (name.clone(), value))
+                    .map_err(|_| Invalid)
+            })
+            .collect::<Result<serde_json::Map<String, Value>>>()?,
+    );
+    if payload["schema_version"].as_i64() != Some(1)
         || payload["compatibility_version"].as_i64() != Some(1)
         || payload["application"] != "dockervault"
     {
@@ -146,10 +210,10 @@ pub fn parse_state(
     }
     Timestamp::parse(payload["exported_at"].as_str().ok_or(Invalid)?).map_err(|_| Invalid)?;
     let root = PosixPath::parse(payload["backup_root"].as_str().ok_or(Invalid)?, true)?;
-    if !rclone_package::same(&state_manifest(&payload)?, &payload["manifest"]) {
+    if !rclone_package::same(&expected_manifest, &payload["manifest"]) {
         return Err(Invalid);
     }
-    let tables = PortableTables::parse(payload["tables"].clone()).map_err(|_| Invalid)?;
+    let tables = PortableTables::parse_json(raw["tables"].get().as_bytes()).map_err(|_| Invalid)?;
     check_cancel(cancel)?;
     let storage_ids: BTreeSet<i64> = tables.remote_storages.iter().map(|s| s.id).collect();
     for row in &tables.app_settings {
@@ -280,7 +344,17 @@ pub fn parse_state(
         public.push(json!({"name":name,"public_key":canonical}));
     }
     payload["ssh_public_keys"] = json!(public);
-    payload["manifest"] = state_manifest(&payload)?;
+    // Only the SSH inventory changed; reuse our computed (not caller-provided)
+    // table/rclone digests while rebinding the normalized public inventory.
+    expected_manifest["ssh_public_keys"] = json!(digest(payload["ssh_public_keys"].clone())?);
+    payload["manifest"] = expected_manifest;
+    for name in ["ssh_public_keys", "manifest"] {
+        raw.insert(
+            name.to_owned(),
+            RawValue::from_string(serde_json::to_string(&payload[name]).map_err(|_| Invalid)?)
+                .map_err(|_| Invalid)?,
+        );
+    }
     let mut storages = Vec::new();
     for row in &tables.remote_storages {
         check_cancel(cancel)?;
@@ -302,17 +376,18 @@ pub fn parse_state(
         };
         storages.push(json!({"id":row.id,"type":row.storage_type,"state":if !storage_errors(&values).is_empty() || ssh_private || rclone_incomplete{"credentials_required"}else{"not_tested"}}));
     }
-    let counts: serde_json::Map<String, Value> = payload["tables"]
+    let counts: serde_json::Map<String, Value> = payload["manifest"]["tables"]
         .as_object()
         .ok_or(Invalid)?
         .iter()
-        .map(|(name, rows)| (name.clone(), json!(rows.as_array().unwrap().len())))
+        .map(|(name, inventory)| (name.clone(), inventory["count"].clone()))
         .collect();
     let preview = json!({"counts":counts,"exported_at":payload["exported_at"],"storages":storages,"archives_included":false,"archive_private_keys_included":false});
     check_cancel(cancel)?;
+    let normalized = serde_json::to_vec(&raw).map_err(|_| Invalid)?;
     Ok(ParsedState {
         tables,
-        payload,
+        payload: PythonJson::parse(&normalized).map_err(json_error)?,
         backup_paths,
         preview,
     })

@@ -48,6 +48,42 @@ async fn state_validation_refuses_a_closed_physical_owner_without_touching_files
     );
 }
 #[tokio::test]
+async fn raw_packet_validation_stages_all_actual_source_opaque_json_without_loss() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use dockervault_service::recovery_state::validate_state_json;
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../dockervault-core/tests/fixtures/recovery-raw-state.TEST_ONLY.json"
+    ))
+    .unwrap();
+    let owner = Owner::new(1).unwrap();
+    for (index, case) in fixture["cases"].as_array().unwrap().iter().enumerate() {
+        let work = Fixture::new(1000 + index);
+        let context = ValidationContext {
+            backup_root: work.path().join("nonexistent"),
+            now: Timestamp::parse(fixture["now"].as_str().unwrap()).unwrap(),
+            timezone: TimeZone::utc(),
+            rclone_options: BTreeMap::new(),
+        };
+        let raw = STANDARD
+            .decode(case["payload_json_base64"].as_str().unwrap())
+            .unwrap();
+        let state = validate_state_json(raw, context, &owner)
+            .await
+            .unwrap_or_else(|_| panic!("{}", case["name"]));
+        assert_eq!(state.preview(), &case["preview"], "{}", case["name"]);
+        assert_eq!(
+            state.payload_json().canonical(&|| false).unwrap(),
+            STANDARD
+                .decode(case["canonical_payload_base64"].as_str().unwrap())
+                .unwrap(),
+            "{}",
+            case["name"]
+        );
+        assert!(std::fs::read_dir(work.path()).unwrap().next().is_none());
+    }
+    owner.shutdown(None).await;
+}
+#[tokio::test]
 async fn full_offline_state_validation_matches_actual_provider_and_normalizes_public_custody() {
     let fixture: Value = serde_json::from_str(include_str!(
         "../../dockervault-core/tests/fixtures/recovery-state.TEST_ONLY.json"
@@ -109,13 +145,13 @@ async fn full_offline_state_validation_matches_actual_provider_and_normalizes_pu
         if let Ok(state) = result {
             assert_eq!(state.preview(), &case["preview"], "{}", case["name"]);
             assert_eq!(
-                state.payload()["ssh_public_keys"],
+                state.payload().unwrap()["ssh_public_keys"],
                 case["normalized_ssh"],
                 "{}",
                 case["name"]
             );
             assert_eq!(
-                state.payload()["manifest"],
+                state.payload().unwrap()["manifest"],
                 case["normalized_manifest"],
                 "{}",
                 case["name"]

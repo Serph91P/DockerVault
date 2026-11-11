@@ -1,17 +1,14 @@
 //! The accepted fc1b339 portable recovery envelope, without application state or filesystem effects.
+use crate::lossless_json::PythonJson;
 use argon2::{Algorithm, Argon2, Params, Version};
 use openssl::{
     base64::{decode_block, encode_block},
     rand::rand_bytes,
     symm::{Cipher, decrypt_aead, encrypt_aead},
 };
-use serde::{
-    Deserialize, Serialize,
-    de::{self, MapAccess, SeqAccess, Visitor},
-};
+use serde::{Deserialize, Serialize, de};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeSet,
     fmt,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -110,11 +107,25 @@ fn aad(envelope: &Envelope) -> Result<Vec<u8>, BundleError> {
 
 /// CPU-bound native work: the service must keep its physical blocking/crypto owner through return.
 pub fn encode_bundle(payload: Value, secret: &str) -> Result<Vec<u8>, BundleError> {
-    password(secret)?;
     if !payload.is_object() {
         return Err(BundleError::Invalid);
     }
-    let plaintext = Zeroizing::new(canonical(payload)?);
+    let bytes = serde_json::to_vec(&payload).map_err(|_| BundleError::Invalid)?;
+    encode_json_bundle(
+        PythonJson::parse(&bytes).map_err(|_| BundleError::Invalid)?,
+        secret,
+    )
+}
+pub fn encode_json_bundle(payload: PythonJson, secret: &str) -> Result<Vec<u8>, BundleError> {
+    password(secret)?;
+    if !payload.as_str().starts_with('{') {
+        return Err(BundleError::Invalid);
+    }
+    let plaintext = Zeroizing::new(
+        payload
+            .canonical(&|| false)
+            .map_err(|_| BundleError::Invalid)?,
+    );
     if plaintext.len() > MAX_PAYLOAD {
         return Err(BundleError::Invalid);
     }
@@ -160,6 +171,11 @@ pub fn encode_bundle(payload: Value, secret: &str) -> Result<Vec<u8>, BundleErro
 }
 
 pub fn decode_bundle(data: &[u8], secret: &str) -> Result<Value, BundleError> {
+    let payload = decode_json_bundle(data, secret)?;
+    serde_json::from_str(payload.as_str()).map_err(|_| BundleError::Invalid)
+}
+/// Lossless payload API for portable state; Value cannot represent lone surrogates.
+pub fn decode_json_bundle(data: &[u8], secret: &str) -> Result<PythonJson, BundleError> {
     password(secret)?;
     if data.is_empty() || data.len() > MAX_BUNDLE {
         return Err(BundleError::Invalid);
@@ -194,63 +210,14 @@ pub fn decode_bundle(data: &[u8], secret: &str) -> Result<Value, BundleError> {
         )
         .map_err(|_| BundleError::Invalid)?,
     );
-    let mut parser = serde_json::Deserializer::from_slice(&plaintext);
-    Shape::deserialize(&mut parser).map_err(|_| BundleError::Invalid)?;
-    parser.end().map_err(|_| BundleError::Invalid)?;
-    let value: Value = serde_json::from_slice(&plaintext).map_err(|_| BundleError::Invalid)?;
-    if !value.is_object() {
+    let payload = PythonJson::parse(&plaintext).map_err(|_| BundleError::Invalid)?;
+    if !payload.as_str().starts_with('{') {
         return Err(BundleError::Invalid);
     }
-    Ok(value)
-}
-
-// Validate duplicates recursively before Value's map parser can discard earlier fields.
-struct Shape;
-impl<'de> Deserialize<'de> for Shape {
-    fn deserialize<D: de::Deserializer<'de>>(parser: D) -> Result<Self, D::Error> {
-        parser.deserialize_any(ShapeVisitor).map(|()| Self)
-    }
-}
-struct ShapeVisitor;
-impl<'de> Visitor<'de> for ShapeVisitor {
-    type Value = ();
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("finite JSON without duplicate properties")
-    }
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
-        let mut keys = BTreeSet::new();
-        while let Some(key) = map.next_key::<String>()? {
-            if !keys.insert(key) {
-                return Err(de::Error::custom("duplicate JSON property"));
-            }
-            map.next_value::<Shape>()?;
-        }
-        Ok(())
-    }
-    fn visit_seq<A: SeqAccess<'de>>(self, mut values: A) -> Result<(), A::Error> {
-        while values.next_element::<Shape>()?.is_some() {}
-        Ok(())
-    }
-    fn visit_bool<E: de::Error>(self, _: bool) -> Result<(), E> {
-        Ok(())
-    }
-    fn visit_i64<E: de::Error>(self, _: i64) -> Result<(), E> {
-        Ok(())
-    }
-    fn visit_u64<E: de::Error>(self, _: u64) -> Result<(), E> {
-        Ok(())
-    }
-    fn visit_f64<E: de::Error>(self, value: f64) -> Result<(), E> {
-        if value.is_finite() {
-            Ok(())
-        } else {
-            Err(de::Error::custom("nonfinite JSON"))
-        }
-    }
-    fn visit_str<E: de::Error>(self, _: &str) -> Result<(), E> {
-        Ok(())
-    }
-    fn visit_unit<E: de::Error>(self) -> Result<(), E> {
-        Ok(())
-    }
+    // Enforce decoded-key uniqueness and finite/canonicalizable JSON without a
+    // recursive Value/str conversion that rejects valid opaque source metadata.
+    payload
+        .canonical(&|| false)
+        .map_err(|_| BundleError::Invalid)?;
+    Ok(payload)
 }

@@ -2,13 +2,14 @@
 //! filesystem setup. Semantic recovery/manifest/path/cron checks are separate.
 use crate::{db::schema, ownership::Owner};
 use dockervault_core::{
-    encoding::python_json,
+    lossless_json::PythonJson,
     model::{BackupStatus, BackupType},
     portable_records::{PortableTables, TABLE_ORDER},
     timestamp::Timestamp,
 };
 use rusqlite::{Connection, params_from_iter, types::Value as SqlValue};
-use serde_json::Value;
+use serde_json::{Value, value::RawValue};
+use std::collections::BTreeMap;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,7 +77,9 @@ pub(crate) fn check(
                 .map_err(|_| RecordValidationError::Invalid)?;
         }
     }
-    let tables = serde_json::to_value(records).map_err(|_| RecordValidationError::Invalid)?;
+    let serialized = serde_json::to_string(records).map_err(|_| RecordValidationError::Invalid)?;
+    let tables: BTreeMap<String, Vec<BTreeMap<String, &RawValue>>> =
+        serde_json::from_str(&serialized).map_err(|_| RecordValidationError::Invalid)?;
     let transaction = connection
         .transaction()
         .map_err(|_| RecordValidationError::Invalid)?;
@@ -104,14 +107,11 @@ pub(crate) fn check(
                 quote(table)
             ))
             .map_err(|_| RecordValidationError::Invalid)?;
-        for row in tables[table]
-            .as_array()
-            .ok_or(RecordValidationError::Invalid)?
-        {
+        for row in &tables[table] {
             if cancel.is_cancelled() {
                 return Err(RecordValidationError::Cancelled);
             }
-            if row.as_object().ok_or(RecordValidationError::Invalid)?.len() != columns.len() {
+            if row.len() != columns.len() {
                 return Err(RecordValidationError::Invalid);
             }
             let values = columns
@@ -122,6 +122,7 @@ pub(crate) fn check(
                         name,
                         kind,
                         row.get(name).ok_or(RecordValidationError::Invalid)?,
+                        cancel,
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -155,12 +156,24 @@ fn sql_value(
     table: &str,
     column: &str,
     kind: &str,
-    value: &Value,
+    value: &RawValue,
+    cancel: &CancellationToken,
 ) -> Result<SqlValue, RecordValidationError> {
     let invalid = RecordValidationError::Invalid;
     if kind == "JSON" {
-        return Ok(SqlValue::Text(python_json(value)));
+        let json = PythonJson::parse(value.get().as_bytes()).map_err(|_| invalid)?;
+        return json
+            .python(&|| cancel.is_cancelled())
+            .map(SqlValue::Text)
+            .map_err(|_| {
+                if cancel.is_cancelled() {
+                    RecordValidationError::Cancelled
+                } else {
+                    invalid
+                }
+            });
     }
+    let value: Value = serde_json::from_str(value.get()).map_err(|_| invalid)?;
     if value.is_null() {
         return Ok(SqlValue::Null);
     }
@@ -182,4 +195,67 @@ fn sql_value(
         ),
         _ => SqlValue::Text(value.as_str().ok_or(invalid)?.to_owned()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    #[test]
+    fn actual_sqlite_json_binding_preserves_all_source_opaque_values_including_null_and_surrogates()
+    {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../dockervault-core/tests/fixtures/recovery-raw-state.TEST_ONLY.json"
+        ))
+        .unwrap();
+        let cancel = CancellationToken::new();
+        for case in fixture["cases"].as_array().unwrap() {
+            let bytes = STANDARD
+                .decode(case["payload_json_base64"].as_str().unwrap())
+                .unwrap();
+            let root: BTreeMap<String, &RawValue> = serde_json::from_slice(&bytes).unwrap();
+            let tables: BTreeMap<String, Vec<BTreeMap<String, &RawValue>>> =
+                serde_json::from_str(root["tables"].get()).unwrap();
+            let table = case["table"].as_str().unwrap();
+            let column = case["column"].as_str().unwrap();
+            let bound =
+                sql_value(table, column, "JSON", tables[table][0][column], &cancel).unwrap();
+            let expected = String::from_utf8(
+                STANDARD
+                    .decode(case["sql_json_base64"].as_str().unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(bound, SqlValue::Text(expected.clone()), "{}", case["name"]);
+            let connection = Connection::open_in_memory().unwrap();
+            connection
+                .execute_batch("CREATE TABLE opaque(value JSON NOT NULL)")
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO opaque(value) VALUES(?)",
+                    rusqlite::params![bound],
+                )
+                .unwrap();
+            // JSON has NUMERIC affinity: SQLite may store scalar 0 as INTEGER.
+            // Compare the independent Source storage effect, not a TEXT assumption.
+            let (actual_type, actual_quote): (String, String) = connection
+                .query_row("SELECT typeof(value),quote(value) FROM opaque", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
+                .unwrap();
+            assert_eq!(
+                actual_type,
+                case["sqlite_type"].as_str().unwrap(),
+                "{}",
+                case["name"]
+            );
+            assert_eq!(
+                actual_quote,
+                case["sqlite_quote"].as_str().unwrap(),
+                "{}",
+                case["name"]
+            );
+        }
+    }
 }

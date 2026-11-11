@@ -55,6 +55,22 @@ implementation. Copyright (c) Alex Grönholm. Retain the full MIT license in
 - Exact reference: <https://github.com/agronholm/apscheduler/tree/3.11.3/src/apscheduler/triggers/cron>
 - License: <https://github.com/agronholm/apscheduler/blob/3.11.3/LICENSE.txt>
 
+## Lossless portable JSON
+
+`dockervault-core/src/lossless_json.rs` uses the already-pinned serde_json
+`raw_value` feature for syntax/ownership and its byte-string deserializer for
+escaped non-scalar Unicode. Ordinary `Value` rejects lone surrogate escapes and
+must not be used to decode opaque portable JSON columns. An iterative span walk
+preserves decoded-key uniqueness, Python code-point ordering, canonical ASCII
+escapes and SQLAlchemy JSON separator/number behavior without a recursive DOM or
+repeatedly parsing each enclosing subtree. Strings are never decoded lossily.
+Independent accepted-provider controls include every surrogate, compound escape
+sequences, depth 10,000, exact canonical/SQL bytes and actual SQLite JSON affinity.
+No dependency version, crypto format or database schema is changed by this feature.
+
+- Raw ownership: <https://docs.rs/serde_json/1.0.154/serde_json/value/struct.RawValue.html>
+- Byte deserializer: <https://docs.rs/serde_json/1.0.154/serde_json/struct.Deserializer.html>
+
 ## CPython compatibility algorithms
 
 Character-class range normalization in `dockervault-core/src/filters.rs` adapts

@@ -1,6 +1,7 @@
 //! Strict portable column DTOs. These are not a validated recovery state: the
 //! service must still check manifests, references, paths, cron and credential custody.
 use crate::{
+    lossless_json::PythonJson,
     model::{BackupStatus, BackupType},
     timestamp::Timestamp,
 };
@@ -86,7 +87,10 @@ pub struct PortableTables {
 }
 impl PortableTables {
     pub fn parse(value: Value) -> Result<Self, RecordError> {
-        serde_json::from_value(value).map_err(|_| RecordError)
+        Self::parse_json(&serde_json::to_vec(&value).map_err(|_| RecordError)?)
+    }
+    pub fn parse_json(value: &[u8]) -> Result<Self, RecordError> {
+        serde_json::from_slice(value).map_err(|_| RecordError)
     }
 }
 #[derive(Serialize, Deserialize)]
@@ -233,11 +237,11 @@ pub struct BackupTarget {
     pub removed_at: Option<Timestamp>,
     #[serde(deserialize_with = "nullable")]
     pub retention_policy_id: Option<i64>,
-    pub dependencies: Value,
-    pub selected_volumes: Value,
-    pub include_paths: Value,
-    pub exclude_paths: Value,
-    pub per_volume_rules: Value,
+    pub dependencies: PythonJson,
+    pub selected_volumes: PythonJson,
+    pub include_paths: PythonJson,
+    pub exclude_paths: PythonJson,
+    pub per_volume_rules: PythonJson,
     #[serde(deserialize_with = "nullable")]
     pub pre_backup_command: Option<String>,
     #[serde(deserialize_with = "nullable")]
@@ -286,7 +290,7 @@ pub struct Backup {
     pub error_message: Option<String>,
     #[serde(deserialize_with = "nullable")]
     pub retry_count: Option<i64>,
-    pub backup_metadata: Value,
+    pub backup_metadata: PythonJson,
     #[serde(deserialize_with = "nullable")]
     pub created_at: Option<Timestamp>,
 }

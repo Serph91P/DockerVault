@@ -6,7 +6,8 @@ use crate::{
 };
 use dockervault_core::{
     cron::TimeZone,
-    recovery_state::{StateError, parse_state},
+    lossless_json::PythonJson,
+    recovery_state::{StateError, parse_state, parse_state_json},
     timestamp::Timestamp,
 };
 use nix::{
@@ -29,11 +30,15 @@ pub struct ValidationContext {
     pub rclone_options: BTreeMap<String, BTreeSet<String>>,
 }
 pub struct ValidatedState {
-    payload: Value,
+    payload: PythonJson,
     preview: Value,
 }
 impl ValidatedState {
-    pub fn payload(&self) -> &Value {
+    pub fn payload(&self) -> Result<Value, RecordValidationError> {
+        // Scalar-only callers get an explicit error, never replacement data.
+        serde_json::from_str(self.payload.as_str()).map_err(|_| RecordValidationError::Invalid)
+    }
+    pub fn payload_json(&self) -> &PythonJson {
         &self.payload
     }
     pub fn preview(&self) -> &Value {
@@ -99,15 +104,46 @@ pub async fn validate_state(
     context: ValidationContext,
     owner: &Owner,
 ) -> Result<ValidatedState, RecordValidationError> {
+    validate_input(Input::Value(payload), context, owner).await
+}
+pub async fn validate_state_json(
+    payload: Vec<u8>,
+    context: ValidationContext,
+    owner: &Owner,
+) -> Result<ValidatedState, RecordValidationError> {
+    validate_input(Input::Bytes(payload), context, owner).await
+}
+enum Input {
+    Value(Value),
+    Bytes(Vec<u8>),
+}
+async fn validate_input(
+    payload: Input,
+    context: ValidationContext,
+    owner: &Owner,
+) -> Result<ValidatedState, RecordValidationError> {
     owner
         .submit_blocking(move |cancel| {
-            let parsed = parse_state(
-                payload,
-                context.now,
-                &context.timezone,
-                &context.rclone_options,
-                &|| cancel.is_cancelled(),
-            )
+            let parsed = match payload {
+                Input::Value(payload) => parse_state(
+                    payload,
+                    context.now,
+                    &context.timezone,
+                    &context.rclone_options,
+                    &|| cancel.is_cancelled(),
+                ),
+                Input::Bytes(payload) => PythonJson::parse(&payload)
+                    .map_err(|_| StateError::Invalid)
+                    .and_then(|document| {
+                        parse_state_json(
+                            document,
+                            context.now,
+                            &context.timezone,
+                            &context.rclone_options,
+                            &|| cancel.is_cancelled(),
+                        )
+                    }),
+            }
             .map_err(|e| {
                 if e == StateError::Cancelled {
                     RecordValidationError::Cancelled

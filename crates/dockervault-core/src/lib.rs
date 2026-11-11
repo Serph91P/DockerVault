@@ -4,6 +4,7 @@ pub mod cron;
 pub mod crypto;
 pub mod encoding;
 pub mod filters;
+pub mod lossless_json;
 pub mod model;
 pub mod portable_records;
 pub mod rclone_package;
