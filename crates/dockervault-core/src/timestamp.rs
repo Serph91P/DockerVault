@@ -1,5 +1,6 @@
 //! Preserve SQLAlchemy's six-digit wall-time storage and Python ISO API strings.
-use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, NaiveDateTime, Timelike};
+mod iso;
+use chrono::{NaiveDateTime, Timelike};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidTimestamp;
@@ -13,7 +14,7 @@ impl std::error::Error for InvalidTimestamp {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timestamp {
     naive: NaiveDateTime,
-    offset: Option<FixedOffset>,
+    offset: Option<i64>,
 }
 impl serde::Serialize for Timestamp {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -28,23 +29,7 @@ impl<'de> serde::Deserialize<'de> for Timestamp {
 }
 impl Timestamp {
     pub fn parse(value: &str) -> Result<Self, InvalidTimestamp> {
-        let value = value.replacen(' ', "T", 1);
-        let (naive, offset) = if let Ok(value) = DateTime::parse_from_rfc3339(&value) {
-            (value.naive_local(), Some(*value.offset()))
-        } else if let Ok(value) = NaiveDateTime::parse_from_str(&value, "%Y-%m-%dT%H:%M:%S%.f") {
-            (value, None)
-        } else if let Ok(value) = NaiveDate::parse_from_str(&value, "%Y-%m-%d") {
-            (value.and_hms_opt(0, 0, 0).ok_or(InvalidTimestamp)?, None)
-        } else {
-            return Err(InvalidTimestamp);
-        };
-        if !(1..=9999).contains(&naive.year()) || naive.nanosecond() >= 1_000_000_000 {
-            return Err(InvalidTimestamp);
-        }
-        // Python datetime truncates sub-microsecond input instead of rounding it.
-        let naive = naive
-            .with_nanosecond(naive.nanosecond() / 1000 * 1000)
-            .ok_or(InvalidTimestamp)?;
+        let (naive, offset) = iso::parse(value)?;
         Ok(Self { naive, offset })
     }
     pub fn sql(self) -> String {
@@ -60,7 +45,20 @@ impl Timestamp {
             })
             .to_string();
         if let Some(offset) = self.offset {
-            text.push_str(&offset.to_string());
+            let sign = if offset < 0 { '-' } else { '+' };
+            let micros = offset.unsigned_abs();
+            let seconds = micros / 1_000_000;
+            text.push_str(&format!(
+                "{sign}{:02}:{:02}",
+                seconds / 3600,
+                seconds / 60 % 60
+            ));
+            if seconds % 60 != 0 || micros % 1_000_000 != 0 {
+                text.push_str(&format!(":{:02}", seconds % 60));
+                if micros % 1_000_000 != 0 {
+                    text.push_str(&format!(".{:06}", micros % 1_000_000));
+                }
+            }
         }
         text
     }

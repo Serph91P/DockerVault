@@ -28,12 +28,17 @@ CPython's `fnmatch.py` behavior to native Rust tokens (no Python interpreter).
 Public SSH metadata decoding in `dockervault-core/src/ssh_public.rs` also adapts
 CPython 3.14.10 `binascii.a2b_base64` filtering/padding acceptance around the existing
 native Base64 decoder; it never retains comments or following input lines.
+Timestamp ISO framing in `dockervault-core/src/timestamp/iso.rs` adapts CPython
+3.14.10 `_datetimemodule.c` around Chrono's calendar validation. This preserves
+basic/week dates, Unicode separators, midnight rollover and microsecond offsets
+without loading Python or reducing timestamp precision to whole offset seconds.
 Copyright Python Software Foundation and contributors. The complete upstream
 license, including its historical notices, is retained in
 [`licenses/PYTHON-LICENSE.txt`](licenses/PYTHON-LICENSE.txt).
 
 - Exact reference source: <https://github.com/python/cpython/blob/v3.14.10/Lib/fnmatch.py>
 - Exact Base64 reference: <https://github.com/python/cpython/blob/v3.14.10/Modules/binascii.c>
+- Exact datetime reference: <https://github.com/python/cpython/blob/v3.14.10/Modules/_datetimemodule.c>
 - License source: <https://github.com/python/cpython/blob/v3.14.10/LICENSE>
 
 Distributions containing the native compatibility implementation retain this
