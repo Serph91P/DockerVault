@@ -21,15 +21,19 @@ DockerVault's own license. Final image/offline packaging must include the full
 MPL license and this source-availability notice. Packaging verification remains
 part of the Rust image/recovery deliverable, not established by this notice alone.
 
-## CPython fnmatch compatibility algorithm
+## CPython compatibility algorithms
 
 Character-class range normalization in `dockervault-core/src/filters.rs` adapts
 CPython's `fnmatch.py` behavior to native Rust tokens (no Python interpreter).
+Public SSH metadata decoding in `dockervault-core/src/ssh_public.rs` also adapts
+CPython 3.14.10 `binascii.a2b_base64` filtering/padding acceptance around the existing
+native Base64 decoder; it never retains comments or following input lines.
 Copyright Python Software Foundation and contributors. The complete upstream
 license, including its historical notices, is retained in
 [`licenses/PYTHON-LICENSE.txt`](licenses/PYTHON-LICENSE.txt).
 
 - Exact reference source: <https://github.com/python/cpython/blob/v3.14.10/Lib/fnmatch.py>
+- Exact Base64 reference: <https://github.com/python/cpython/blob/v3.14.10/Modules/binascii.c>
 - License source: <https://github.com/python/cpython/blob/v3.14.10/LICENSE>
 
 Distributions containing the native compatibility implementation retain this

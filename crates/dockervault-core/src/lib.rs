@@ -5,4 +5,5 @@ pub mod encoding;
 pub mod filters;
 pub mod model;
 pub mod recovery_bundle;
+pub mod ssh_public;
 pub mod timestamp;
