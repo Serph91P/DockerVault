@@ -15,6 +15,17 @@ pub struct Timestamp {
     naive: NaiveDateTime,
     offset: Option<FixedOffset>,
 }
+impl serde::Serialize for Timestamp {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.api())
+    }
+}
+impl<'de> serde::Deserialize<'de> for Timestamp {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::parse(&value).map_err(|_| serde::de::Error::custom("Invalid persisted timestamp"))
+    }
+}
 impl Timestamp {
     pub fn parse(value: &str) -> Result<Self, InvalidTimestamp> {
         let value = value.replacen(' ', "T", 1);

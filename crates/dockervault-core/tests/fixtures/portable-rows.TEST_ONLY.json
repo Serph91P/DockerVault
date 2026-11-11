@@ -1,0 +1,168 @@
+{
+  "source": "fc1b3392fec6ecf9562ef88875ab143858d637bf",
+  "tables": {
+    "retention_policies": [
+      {
+        "id": 1,
+        "name": "PUBLIC-name",
+        "description": "PUBLIC-description",
+        "keep_last": 0,
+        "keep_daily": 0,
+        "keep_weekly": 0,
+        "keep_monthly": 0,
+        "keep_yearly": 0,
+        "max_age_days": 0,
+        "created_at": "2024-03-10T01:02:03.123456+05:30",
+        "updated_at": "2024-03-10T01:02:03.123456+05:30"
+      }
+    ],
+    "schedules": [
+      {
+        "id": 1,
+        "name": "PUBLIC-name",
+        "cron_expression": "0 3 * * *",
+        "description": "PUBLIC-description",
+        "enabled": false,
+        "created_at": "2024-03-10T01:02:03.123456+05:30",
+        "updated_at": "2024-03-10T01:02:03.123456+05:30"
+      }
+    ],
+    "remote_storages": [
+      {
+        "id": 1,
+        "name": "PUBLIC-name",
+        "storage_type": "local",
+        "enabled": false,
+        "host": "PUBLIC-host",
+        "port": 0,
+        "username": "PUBLIC-username",
+        "password": "PUBLIC-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "base_path": "/tmp/PUBLIC-local",
+        "ssh_key_path": null,
+        "s3_bucket": "PUBLIC-s3_bucket",
+        "s3_region": "PUBLIC-s3_region",
+        "s3_access_key": null,
+        "s3_secret_key": null,
+        "s3_endpoint_url": "PUBLIC-s3_endpoint_url",
+        "webdav_url": "PUBLIC-webdav_url",
+        "rclone_remote": "PUBLIC-rclone_remote",
+        "created_at": "2024-03-10T01:02:03.123456+05:30",
+        "updated_at": "2024-03-10T01:02:03.123456+05:30"
+      }
+    ],
+    "encryption_config": [
+      {
+        "id": 1,
+        "public_key": "PUBLIC-public_key",
+        "key_created_at": "2024-03-10T01:02:03.123456+05:30",
+        "encryption_enabled": false,
+        "setup_completed": false,
+        "created_at": "2024-03-10T01:02:03.123456+05:30",
+        "updated_at": "2024-03-10T01:02:03.123456+05:30"
+      }
+    ],
+    "app_settings": [
+      {
+        "id": 1,
+        "key": "storage_check_quota_before_upload",
+        "value": "false",
+        "updated_at": "2024-03-10T01:02:03.123456+05:30"
+      }
+    ],
+    "backup_targets": [
+      {
+        "id": 1,
+        "name": "PUBLIC-name",
+        "target_type": "path",
+        "container_id": "PUBLIC-container_id",
+        "container_name": "PUBLIC-container_name",
+        "volume_name": "PUBLIC-volume_name",
+        "host_path": "/tmp/PUBLIC-source",
+        "stack_name": "PUBLIC-stack_name",
+        "schedule_id": 1,
+        "schedule_cron": null,
+        "enabled": false,
+        "removed_at": "2024-03-10T01:02:03.123456+05:30",
+        "retention_policy_id": 1,
+        "dependencies": {
+          "PUBLIC": false,
+          "integer": 9007199254740993
+        },
+        "selected_volumes": {
+          "PUBLIC": false,
+          "integer": 9007199254740993
+        },
+        "include_paths": {
+          "PUBLIC": false,
+          "integer": 9007199254740993
+        },
+        "exclude_paths": {
+          "PUBLIC": false,
+          "integer": 9007199254740993
+        },
+        "per_volume_rules": {
+          "PUBLIC": false,
+          "integer": 9007199254740993
+        },
+        "pre_backup_command": "PUBLIC-pre_backup_command",
+        "post_backup_command": "PUBLIC-post_backup_command",
+        "stop_container": false,
+        "compression_enabled": false,
+        "sync_to_remote": false,
+        "remote_storage_ids": [
+          1
+        ],
+        "delete_local_after_sync": false,
+        "created_at": "2024-03-10T01:02:03.123456+05:30",
+        "updated_at": "2024-03-10T01:02:03.123456+05:30"
+      }
+    ],
+    "backups": [
+      {
+        "id": 1,
+        "target_id": 1,
+        "backup_type": "full",
+        "status": "pending",
+        "file_path": null,
+        "file_size": 0,
+        "checksum": "PUBLIC-checksum",
+        "encrypted": false,
+        "encryption_key_path": null,
+        "started_at": "2024-03-10T01:02:03.123456+05:30",
+        "completed_at": "2024-03-10T01:02:03.123456+05:30",
+        "duration_seconds": 0,
+        "error_message": "PUBLIC-error_message",
+        "retry_count": 0,
+        "backup_metadata": {
+          "PUBLIC": false,
+          "integer": 9007199254740993
+        },
+        "created_at": "2024-03-10T01:02:03.123456+05:30"
+      }
+    ],
+    "backup_schedules": [
+      {
+        "id": 1,
+        "target_id": 1,
+        "cron_expression": "0 4 * * *",
+        "next_run": "2024-03-10T01:02:03.123456+05:30",
+        "last_run": "2024-03-10T01:02:03.123456+05:30",
+        "enabled": false,
+        "created_at": "2024-03-10T01:02:03.123456+05:30",
+        "updated_at": "2024-03-10T01:02:03.123456+05:30"
+      }
+    ],
+    "backup_storage_syncs": [
+      {
+        "id": 1,
+        "backup_id": 1,
+        "storage_id": 1,
+        "remote_path": "PUBLIC/archive.tar",
+        "synced_at": "2024-03-10T01:02:03.123456+05:30",
+        "sync_status": "PUBLIC-sync_status",
+        "error_message": "PUBLIC-error_message"
+      }
+    ]
+  },
+  "accepted_by_actual_typed_rows": true
+}

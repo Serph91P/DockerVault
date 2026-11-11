@@ -1,6 +1,6 @@
 //! SQLite persistence; opening a reader never runs migrations or recovery.
 mod migrations;
-mod schema;
+pub(crate) mod schema;
 
 use crate::ownership::{Owner, WorkError};
 use sqlx::{

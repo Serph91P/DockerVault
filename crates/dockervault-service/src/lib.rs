@@ -14,6 +14,7 @@ pub mod ownership;
 pub mod process;
 #[cfg(target_os = "linux")]
 pub mod recovery_activation;
+pub mod recovery_records;
 pub mod restore;
 #[cfg(target_os = "linux")]
 pub mod storage;
