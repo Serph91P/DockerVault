@@ -306,3 +306,192 @@ fn explicit_memory_database_context_clones_share_claims_and_independent_database
     drop(held);
     let _again = b.try_claim(ClaimKind::Setup).unwrap();
 }
+
+#[tokio::test]
+async fn pending_fence_matches_actual_source_sql_null_duplicates_and_opaque_unused_fields() {
+    use dockervault_service::{
+        db::Database,
+        ownership::Owner,
+        recovery_activation::{JournalError, recovery_pending, require_recovery_ready},
+    };
+    let root = Fixture::new();
+    let owner = Owner::new(1).unwrap();
+    let db = Database::open(root.0.join("backup.db"), root.0.join("snapshots"), &owner)
+        .await
+        .unwrap();
+    owner.shutdown(None).await;
+    let source: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/activation-pending.TEST_ONLY.json")).unwrap();
+    for case in source["cases"].as_array().unwrap() {
+        sqlx::query("DELETE FROM app_settings WHERE key='recovery_activation'")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        if !case["missing"].as_bool().unwrap() {
+            sqlx::query("INSERT INTO app_settings(key,value) VALUES('recovery_activation',?)")
+                .bind(case["value"].as_str())
+                .execute(db.pool())
+                .await
+                .unwrap();
+        }
+        let pending = case["pending"].as_bool().unwrap();
+        assert_eq!(
+            recovery_pending(db.pool()).await.unwrap(),
+            pending,
+            "{}",
+            case["name"]
+        );
+        let ready = require_recovery_ready(db.pool()).await;
+        if pending {
+            assert!(matches!(ready, Err(JournalError::Pending)));
+            assert_eq!(
+                ready.err().unwrap().to_string(),
+                case["error"].as_str().unwrap()
+            );
+        } else {
+            assert!(ready.is_ok());
+        }
+    }
+    let pool = db.pool().clone();
+    db.close().await;
+    assert!(matches!(
+        recovery_pending(&pool).await,
+        Err(JournalError::Io)
+    ));
+}
+
+#[tokio::test]
+async fn begin_journals_before_files_and_restart_remains_fenced_until_owned_discard() {
+    use dockervault_service::{
+        db::Database,
+        ownership::Owner,
+        recovery_activation::{JournalError, recovery_pending},
+    };
+    let root = Fixture::new();
+    let path = root.0.join("backup.db");
+    let owner = Owner::new(1).unwrap();
+    let db = Database::open(&path, root.0.join("snapshots"), &owner)
+        .await
+        .unwrap();
+    owner.shutdown(None).await;
+    let claims = PreparationClaims::new(Some(path.clone()));
+    let guard = claims.try_claim(ClaimKind::Setup).unwrap();
+    let generation = guard.begin_recovery().unwrap();
+    let name = generation.identifier().to_owned();
+    assert_eq!(name.len(), 32);
+    assert!(
+        name.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    );
+    assert_eq!(name.as_bytes()[12], b'4');
+    assert!(b"89ab".contains(&name.as_bytes()[16]));
+    assert_eq!(
+        generation.directory().unwrap(),
+        root.0.join(".recovery").join(&name)
+    );
+    assert!(!root.0.join(".recovery").exists());
+    let value: String =
+        sqlx::query_scalar("SELECT value FROM app_settings WHERE key='recovery_activation'")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&value).unwrap(),
+        serde_json::json!({"state":"preparing","generation":name})
+    );
+    assert!(recovery_pending(db.pool()).await.unwrap());
+    assert!(matches!(
+        guard.begin_recovery(),
+        Err(JournalError::InvalidJournal)
+    ));
+    drop(generation);
+    drop(guard);
+    db.close().await;
+    let owner = Owner::new(1).unwrap();
+    let db = Database::open(&path, root.0.join("snapshots"), &owner)
+        .await
+        .unwrap();
+    owner.shutdown(None).await;
+    assert!(recovery_pending(db.pool()).await.unwrap());
+    let guard = claims.try_claim(ClaimKind::Setup).unwrap();
+    assert!(guard.discard_incomplete(&root.0.join("key")).unwrap());
+    assert!(!recovery_pending(db.pool()).await.unwrap());
+    let next = guard.begin_recovery().unwrap();
+    assert_ne!(name, next.identifier());
+    drop(next);
+    assert!(guard.discard_incomplete(&root.0.join("key")).unwrap());
+    drop(guard);
+    db.close().await;
+}
+
+#[tokio::test]
+async fn journal_begin_refuses_existing_users_wrong_claim_memory_and_missing_database() {
+    use dockervault_service::{db::Database, ownership::Owner, recovery_activation::JournalError};
+    let root = Fixture::new();
+    let path = root.0.join("backup.db");
+    let owner = Owner::new(1).unwrap();
+    let db = Database::open(&path, root.0.join("snapshots"), &owner)
+        .await
+        .unwrap();
+    owner.shutdown(None).await;
+    sqlx::query("INSERT INTO users(username,password_hash,is_admin) VALUES('PUBLIC-existing','PUBLIC-not-a-login-hash',1)").execute(db.pool()).await.unwrap();
+    let claims = PreparationClaims::new(Some(path));
+    let guard = claims.try_claim(ClaimKind::Setup).unwrap();
+    assert!(matches!(
+        guard.begin_recovery(),
+        Err(JournalError::AlreadySetup)
+    ));
+    drop(guard);
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM app_settings WHERE key='recovery_activation'")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(count, 0);
+    let crypto = claims.try_claim(ClaimKind::Crypto).unwrap();
+    assert!(matches!(
+        crypto.begin_recovery(),
+        Err(JournalError::WrongClaim)
+    ));
+    drop(crypto);
+    let memory = PreparationClaims::new(None);
+    let guard = memory.try_claim(ClaimKind::Setup).unwrap();
+    assert!(matches!(
+        guard.begin_recovery(),
+        Err(JournalError::NotDurable)
+    ));
+    drop(guard);
+    let absent = root.0.join("absent.db");
+    let missing = PreparationClaims::new(Some(absent.clone()));
+    let guard = missing.try_claim(ClaimKind::Setup).unwrap();
+    assert!(matches!(guard.begin_recovery(), Err(JournalError::Io)));
+    assert!(!absent.exists());
+    drop(guard);
+    db.close().await;
+}
+
+#[tokio::test]
+async fn journal_generation_path_refuses_symlink_root_without_creating_foreign_material() {
+    use dockervault_service::{db::Database, ownership::Owner, recovery_activation::JournalError};
+    let root = Fixture::new();
+    let path = root.0.join("backup.db");
+    let owner = Owner::new(1).unwrap();
+    let db = Database::open(&path, root.0.join("snapshots"), &owner)
+        .await
+        .unwrap();
+    owner.shutdown(None).await;
+    let foreign = root.0.join("foreign");
+    std::fs::create_dir(&foreign).unwrap();
+    std::os::unix::fs::symlink(&foreign, root.0.join(".recovery")).unwrap();
+    let claims = PreparationClaims::new(Some(path));
+    let guard = claims.try_claim(ClaimKind::Setup).unwrap();
+    let generation = guard.begin_recovery().unwrap();
+    assert!(matches!(
+        generation.directory(),
+        Err(JournalError::UnsafeGeneration)
+    ));
+    assert_eq!(std::fs::read_dir(&foreign).unwrap().count(), 0);
+    drop(generation);
+    drop(guard);
+    db.close().await;
+}
