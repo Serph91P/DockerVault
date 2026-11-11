@@ -52,6 +52,9 @@ impl std::fmt::Debug for CredentialCipher {
     }
 }
 impl CredentialCipher {
+    pub fn generate_key() -> zeroize::Zeroizing<String> {
+        zeroize::Zeroizing::new(fernet::Fernet::generate_key())
+    }
     pub fn new(key: &str) -> Result<Self, CryptoError> {
         fernet::Fernet::new(key)
             .map(Self)

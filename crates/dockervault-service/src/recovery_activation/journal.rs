@@ -1,5 +1,7 @@
 //! Durable first-run admission. All synchronous calls belong in the physical owner.
+mod key;
 use super::{ClaimKind, PreparationGuard};
+pub use key::KeyPreparation;
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 use serde::{
     Deserialize, Deserializer,
@@ -17,6 +19,8 @@ pub enum JournalError {
     NotDurable,
     InvalidJournal,
     UnsafeGeneration,
+    UnsafeKeyPreparation,
+    Cancelled,
     Pending,
 }
 impl fmt::Display for JournalError {
@@ -28,6 +32,8 @@ impl fmt::Display for JournalError {
             Self::NotDurable => "Durable recovery requires a file-backed database",
             Self::InvalidJournal => "Recovery preparation journal needs repair",
             Self::UnsafeGeneration => "Unsafe recovery generation",
+            Self::UnsafeKeyPreparation => "Unsafe instance key preparation",
+            Self::Cancelled => "Recovery preparation cancelled",
             Self::Pending => "System recovery setup is in progress",
         })
     }

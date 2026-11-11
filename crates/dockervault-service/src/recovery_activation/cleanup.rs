@@ -142,6 +142,23 @@ fn remove_owned_key(
     if staged.as_ref().is_some_and(|info| !info.is_file()) {
         return Err(PreparationError::UnsafeKeyPreparation);
     }
+    // Once durable identity exists, the old staging NAME is not ownership proof:
+    // a reused occupant must stay untouched and keep the preparation fenced.
+    if let Some(staged) = &staged
+        && record.get("key_digest").is_some()
+    {
+        let inode = record
+            .get("key_inode")
+            .and_then(Value::as_u64)
+            .ok_or(PreparationError::InvalidJournal)?;
+        let device = record
+            .get("key_device")
+            .and_then(Value::as_u64)
+            .ok_or(PreparationError::InvalidJournal)?;
+        if staged.ino() != inode || staged.dev() != device {
+            return Err(PreparationError::UnsafeKeyPreparation);
+        }
+    }
     let active = optional_metadata(&key)?;
     let owned = match active.as_ref().filter(|info| info.is_file()) {
         None => false,

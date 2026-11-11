@@ -495,3 +495,226 @@ async fn journal_generation_path_refuses_symlink_root_without_creating_foreign_m
     drop(guard);
     db.close().await;
 }
+
+#[tokio::test]
+async fn prepared_instance_key_is_private_valid_journal_bound_and_removed_only_while_owned() {
+    use dockervault_core::crypto::CredentialCipher;
+    use dockervault_service::{
+        db::Database, ownership::Owner, recovery_activation::KeyPreparation,
+    };
+    use sha2::{Digest, Sha256};
+    let root = Fixture::new();
+    let path = root.0.join("backup.db");
+    let owner = Owner::new(1).unwrap();
+    let db = Database::open(&path, root.0.join("snapshots"), &owner)
+        .await
+        .unwrap();
+    owner.shutdown(None).await;
+    let claims = PreparationClaims::new(Some(path));
+    let guard = claims.try_claim(ClaimKind::Setup).unwrap();
+    let generation = guard.begin_recovery().unwrap();
+    let key = root.0.join("private/nested/credential_key");
+    let cancel = tokio_util::sync::CancellationToken::new();
+    assert_eq!(
+        generation
+            .prepare_instance_key(&key, false, &cancel)
+            .unwrap(),
+        KeyPreparation::Created
+    );
+    let metadata = std::fs::symlink_metadata(&key).unwrap();
+    assert!(metadata.is_file());
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+    let bytes = std::fs::read(&key).unwrap();
+    assert!(CredentialCipher::new(std::str::from_utf8(&bytes).unwrap()).is_ok());
+    assert!(
+        !key.parent()
+            .unwrap()
+            .join(format!(".dv-recovery-key-{}", generation.identifier()))
+            .exists()
+    );
+    let record: String =
+        sqlx::query_scalar("SELECT value FROM app_settings WHERE key='recovery_activation'")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    let record: serde_json::Value = serde_json::from_str(&record).unwrap();
+    assert_eq!(record["instance_key_preparing"], true);
+    assert_eq!(record["key_device"], metadata.dev());
+    assert_eq!(record["key_inode"], metadata.ino());
+    let digest: String = Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert!(record["key_digest"].as_str() == Some(&digest));
+    assert!(!root.0.join(".recovery").exists());
+    drop(generation);
+    let reused = key.parent().unwrap().join(format!(
+        ".dv-recovery-key-{}",
+        record["generation"].as_str().unwrap()
+    ));
+    std::fs::write(&reused, b"PUBLIC unrelated reused stage name").unwrap();
+    assert!(matches!(
+        guard.discard_incomplete(&key),
+        Err(PreparationError::UnsafeKeyPreparation)
+    ));
+    assert_eq!(
+        std::fs::read(&reused).unwrap(),
+        b"PUBLIC unrelated reused stage name"
+    );
+    assert!(key.exists());
+    std::fs::remove_file(&reused).unwrap();
+    assert!(guard.discard_incomplete(&key).unwrap());
+    assert!(!key.exists());
+    drop(guard);
+    db.close().await;
+}
+
+#[tokio::test]
+async fn configured_or_existing_keys_are_not_read_replaced_or_claimed_for_rollback() {
+    use dockervault_service::{
+        db::Database, ownership::Owner, recovery_activation::KeyPreparation,
+    };
+    let root = Fixture::new();
+    let path = root.0.join("backup.db");
+    let owner = Owner::new(1).unwrap();
+    let db = Database::open(&path, root.0.join("snapshots"), &owner)
+        .await
+        .unwrap();
+    owner.shutdown(None).await;
+    let claims = PreparationClaims::new(Some(path));
+    let guard = claims.try_claim(ClaimKind::Setup).unwrap();
+    let generation = guard.begin_recovery().unwrap();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let key = root.0.join("missing/key");
+    assert_eq!(
+        generation
+            .prepare_instance_key(&key, true, &cancel)
+            .unwrap(),
+        KeyPreparation::Configured
+    );
+    assert!(!root.0.join("missing").exists());
+    let existing = root.0.join("existing");
+    std::fs::write(
+        &existing,
+        b"PUBLIC foreign existing key, deliberately not parsed",
+    )
+    .unwrap();
+    let before = std::fs::metadata(&existing).unwrap();
+    assert_eq!(
+        generation
+            .prepare_instance_key(&existing, false, &cancel)
+            .unwrap(),
+        KeyPreparation::Existing
+    );
+    let value: String =
+        sqlx::query_scalar("SELECT value FROM app_settings WHERE key='recovery_activation'")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&value)
+            .unwrap()
+            .get("instance_key_preparing")
+            .is_none()
+    );
+    drop(generation);
+    assert!(guard.discard_incomplete(&existing).unwrap());
+    assert_eq!(std::fs::metadata(&existing).unwrap().ino(), before.ino());
+    assert_eq!(
+        std::fs::read(&existing).unwrap(),
+        b"PUBLIC foreign existing key, deliberately not parsed"
+    );
+    drop(guard);
+    db.close().await;
+}
+
+#[tokio::test]
+async fn instance_key_prepare_rejects_symlinks_foreign_stage_cancel_and_stale_generation_without_effects()
+ {
+    use dockervault_service::{db::Database, ownership::Owner, recovery_activation::JournalError};
+    let root = Fixture::new();
+    let path = root.0.join("backup.db");
+    let owner = Owner::new(1).unwrap();
+    let db = Database::open(&path, root.0.join("snapshots"), &owner)
+        .await
+        .unwrap();
+    owner.shutdown(None).await;
+    let claims = PreparationClaims::new(Some(path));
+    let guard = claims.try_claim(ClaimKind::Setup).unwrap();
+    let generation = guard.begin_recovery().unwrap();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let foreign = root.0.join("foreign");
+    std::fs::create_dir(&foreign).unwrap();
+    std::fs::write(foreign.join("key"), b"PUBLIC untouched").unwrap();
+    std::os::unix::fs::symlink(&foreign, root.0.join("alias")).unwrap();
+    assert!(matches!(
+        generation.prepare_instance_key(&root.0.join("alias/key"), false, &cancel),
+        Err(JournalError::UnsafeKeyPreparation)
+    ));
+    std::os::unix::fs::symlink(foreign.join("key"), root.0.join("key-link")).unwrap();
+    assert!(matches!(
+        generation.prepare_instance_key(&root.0.join("key-link"), false, &cancel),
+        Err(JournalError::UnsafeKeyPreparation)
+    ));
+    let stage = root
+        .0
+        .join(format!(".dv-recovery-key-{}", generation.identifier()));
+    std::fs::write(&stage, b"PUBLIC unrelated stage occupant").unwrap();
+    let key = root.0.join("key");
+    assert!(matches!(
+        generation.prepare_instance_key(&key, false, &cancel),
+        Err(JournalError::UnsafeKeyPreparation)
+    ));
+    assert!(!key.exists());
+    assert_eq!(
+        std::fs::read(&stage).unwrap(),
+        b"PUBLIC unrelated stage occupant"
+    );
+    cancel.cancel();
+    assert!(matches!(
+        generation.prepare_instance_key(&root.0.join("cancelled/new/key"), false, &cancel),
+        Err(JournalError::Cancelled)
+    ));
+    assert!(!root.0.join("cancelled").exists());
+    let value: String =
+        sqlx::query_scalar("SELECT value FROM app_settings WHERE key='recovery_activation'")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&value)
+            .unwrap()
+            .get("instance_key_preparing")
+            .is_none()
+    );
+    let stale =
+        serde_json::json!({"state":"preparing","generation":"ffffffffffffffffffffffffffffffff"})
+            .to_string();
+    sqlx::query("UPDATE app_settings SET value=? WHERE key='recovery_activation'")
+        .bind(&stale)
+        .execute(db.pool())
+        .await
+        .unwrap();
+    assert!(matches!(
+        generation.prepare_instance_key(
+            &root.0.join("stale/new/key"),
+            false,
+            &tokio_util::sync::CancellationToken::new()
+        ),
+        Err(JournalError::InvalidJournal)
+    ));
+    assert!(!root.0.join("stale").exists());
+    let actual: String =
+        sqlx::query_scalar("SELECT value FROM app_settings WHERE key='recovery_activation'")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(actual, stale);
+    assert_eq!(
+        std::fs::read(foreign.join("key")).unwrap(),
+        b"PUBLIC untouched"
+    );
+    drop(generation);
+    drop(guard);
+    db.close().await;
+}

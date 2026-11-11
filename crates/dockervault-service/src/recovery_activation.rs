@@ -1,7 +1,9 @@
 //! Shared accepted-provider claims and owned abandoned preparation cleanup.
 mod cleanup;
 mod journal;
-pub use journal::{JournalError, RecoveryGeneration, recovery_pending, require_recovery_ready};
+pub use journal::{
+    JournalError, KeyPreparation, RecoveryGeneration, recovery_pending, require_recovery_ready,
+};
 use nix::{
     errno::Errno,
     fcntl::{Flock, FlockArg},

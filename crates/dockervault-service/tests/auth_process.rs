@@ -112,6 +112,15 @@ fn main() {
         let claims = PreparationClaims::new(Some(PathBuf::from(&args[2])));
         let guard = claims.try_claim(ClaimKind::Setup).unwrap();
         let generation = guard.begin_recovery().unwrap();
+        if let Some(key) = args.get(4) {
+            generation
+                .prepare_instance_key(
+                    std::path::Path::new(key),
+                    false,
+                    &tokio_util::sync::CancellationToken::new(),
+                )
+                .unwrap();
+        }
         fs::write(&args[3], generation.identifier()).unwrap();
         let mut byte = [0];
         std::io::stdin().read_exact(&mut byte).unwrap();
@@ -237,97 +246,141 @@ fn main() {
             ClaimKind, PreparationClaims, PreparationError,
         };
         use std::os::unix::process::ExitStatusExt;
-        let journal_database = fixture.0.join("journal.sqlite");
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async {
-                let owner = Owner::new(1).unwrap();
-                let db = Database::open(
-                    &journal_database,
-                    fixture.0.join("journal-snapshots"),
-                    &owner,
+        for prepare_key in [false, true] {
+            let stem = if prepare_key {
+                "journal-key"
+            } else {
+                "journal"
+            };
+            let key_file = fixture.0.join(format!("{stem}.key"));
+            let journal_database = fixture.0.join(format!("{stem}.sqlite"));
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let owner = Owner::new(1).unwrap();
+                    let db = Database::open(
+                        &journal_database,
+                        fixture.0.join("journal-snapshots"),
+                        &owner,
+                    )
+                    .await
+                    .unwrap();
+                    owner.shutdown(None).await;
+                    db.close().await;
+                });
+            let ready = fixture.0.join(format!("{stem}.ready"));
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command.arg("--journal").arg(&journal_database).arg(&ready);
+            if prepare_key {
+                command.arg(&key_file);
+            }
+            let mut holder = OwnedChild(
+                command
+                    .env_clear()
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::inherit())
+                    .spawn()
+                    .unwrap(),
+            );
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !ready.exists() {
+                assert!(holder.0.try_wait().unwrap().is_none());
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let claims = PreparationClaims::new(Some(journal_database.clone()));
+            assert!(matches!(
+                claims.try_claim(ClaimKind::Setup),
+                Err(PreparationError::Busy)
+            ));
+            let connection = rusqlite::Connection::open(&journal_database).unwrap();
+            let before: String = connection
+                .query_row(
+                    "SELECT value FROM app_settings WHERE key='recovery_activation'",
+                    [],
+                    |row| row.get(0),
                 )
-                .await
                 .unwrap();
-                owner.shutdown(None).await;
-                db.close().await;
-            });
-        let ready = fixture.0.join("journal.ready");
-        let mut holder = OwnedChild(
-            Command::new(std::env::current_exe().unwrap())
-                .arg("--journal")
-                .arg(&journal_database)
-                .arg(&ready)
-                .env_clear()
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::inherit())
-                .spawn()
-                .unwrap(),
-        );
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !ready.exists() {
-            assert!(holder.0.try_wait().unwrap().is_none());
-            assert!(Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(10));
+            let record: serde_json::Value = serde_json::from_str(&before).unwrap();
+            assert_eq!(record["state"], "preparing");
+            assert_eq!(record["generation"], fs::read_to_string(&ready).unwrap());
+            if prepare_key {
+                use sha2::{Digest, Sha256};
+                use std::os::unix::fs::{MetadataExt, PermissionsExt};
+                let info = fs::symlink_metadata(&key_file).unwrap();
+                assert!(info.is_file());
+                assert_eq!(info.permissions().mode() & 0o777, 0o600);
+                assert_eq!(record["key_device"], info.dev());
+                assert_eq!(record["key_inode"], info.ino());
+                let digest: String = Sha256::digest(fs::read(&key_file).unwrap())
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
+                assert!(record["key_digest"].as_str() == Some(digest.as_str()));
+                assert!(
+                    !fixture
+                        .0
+                        .join(format!(
+                            ".dv-recovery-key-{}",
+                            record["generation"].as_str().unwrap()
+                        ))
+                        .exists()
+                );
+            }
+            holder.0.kill().unwrap();
+            assert_eq!(holder.0.wait().unwrap().signal(), Some(9));
+            let after: String = connection
+                .query_row(
+                    "SELECT value FROM app_settings WHERE key='recovery_activation'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(after, before);
+            assert!(!fixture.0.join(".recovery").exists());
+            let guard = claims.try_claim(ClaimKind::Setup).unwrap();
+            if prepare_key {
+                assert!(key_file.exists());
+                assert!(guard.discard_incomplete(&key_file).unwrap());
+                assert!(!key_file.exists());
+            }
+            drop(guard);
+            let restarted_ready = fixture.0.join(format!("{stem}-restarted.ready"));
+            let mut restarted = spawn(&journal_database, &restarted_ready);
+            let restarted_address = address(&mut restarted, &restarted_ready);
+            assert_eq!(setup(restarted_address, "public-journal-admin"), 200);
+            drop(restarted);
+            let (users,sessions,journals):(i64,i64,i64)=connection.query_row("SELECT (SELECT count(*) FROM users),(SELECT count(*) FROM sessions),(SELECT count(*) FROM app_settings WHERE key='recovery_activation')",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
+            assert_eq!((users, sessions, journals), (1, 1, 0));
+            assert_eq!(
+                connection
+                    .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+                    .unwrap(),
+                "ok"
+            );
+            assert!(
+                connection
+                    .prepare("PRAGMA foreign_key_check")
+                    .unwrap()
+                    .query([])
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .is_none()
+            );
+            if prepare_key {
+                println!(
+                    "recovery-key-process: durable owned private key -> SIGKILL/reap -> proven owned cleanup -> new HTTP admin/session/integrity: PASS"
+                );
+            } else {
+                println!(
+                    "recovery-journal-process: durable preparing -> SIGKILL/reap -> retained journal -> new HTTP setup repairs before one admin/session: PASS"
+                );
+            }
         }
-        let claims = PreparationClaims::new(Some(journal_database.clone()));
-        assert!(matches!(
-            claims.try_claim(ClaimKind::Setup),
-            Err(PreparationError::Busy)
-        ));
-        let connection = rusqlite::Connection::open(&journal_database).unwrap();
-        let before: String = connection
-            .query_row(
-                "SELECT value FROM app_settings WHERE key='recovery_activation'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        let record: serde_json::Value = serde_json::from_str(&before).unwrap();
-        assert_eq!(record["state"], "preparing");
-        assert_eq!(record["generation"], fs::read_to_string(&ready).unwrap());
-        holder.0.kill().unwrap();
-        assert_eq!(holder.0.wait().unwrap().signal(), Some(9));
-        let after: String = connection
-            .query_row(
-                "SELECT value FROM app_settings WHERE key='recovery_activation'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(after, before);
-        assert!(!fixture.0.join(".recovery").exists());
-        let guard = claims.try_claim(ClaimKind::Setup).unwrap();
-        drop(guard);
-        let restarted_ready = fixture.0.join("journal-restarted.ready");
-        let mut restarted = spawn(&journal_database, &restarted_ready);
-        let restarted_address = address(&mut restarted, &restarted_ready);
-        assert_eq!(setup(restarted_address, "public-journal-admin"), 200);
-        drop(restarted);
-        let (users,sessions,journals):(i64,i64,i64)=connection.query_row("SELECT (SELECT count(*) FROM users),(SELECT count(*) FROM sessions),(SELECT count(*) FROM app_settings WHERE key='recovery_activation')",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
-        assert_eq!((users, sessions, journals), (1, 1, 0));
-        assert_eq!(
-            connection
-                .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
-                .unwrap(),
-            "ok"
-        );
-        assert!(
-            connection
-                .prepare("PRAGMA foreign_key_check")
-                .unwrap()
-                .query([])
-                .unwrap()
-                .next()
-                .unwrap()
-                .is_none()
-        );
-        println!(
-            "recovery-journal-process: durable preparing -> SIGKILL/reap -> retained journal -> new HTTP setup repairs before one admin/session: PASS"
-        );
     }
     println!(
         "auth-process: two real HTTP servers -> one administrator/session -> physical process settlement/integrity: PASS"

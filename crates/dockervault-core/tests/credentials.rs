@@ -53,3 +53,14 @@ fn prefixed_malformed_wrong_key_and_tampered_tokens_never_fall_back_to_plaintext
     let wrong = CredentialCipher::new(&fernet::Fernet::generate_key()).unwrap();
     assert!(wrong.decrypt_value(&token).is_err());
 }
+#[test]
+fn generated_instance_keys_have_the_existing_fernet_wire_shape_and_fresh_entropy() {
+    use base64::{Engine, engine::general_purpose::URL_SAFE};
+    let first = CredentialCipher::generate_key();
+    let second = CredentialCipher::generate_key();
+    assert_eq!(first.len(), 44);
+    assert_eq!(URL_SAFE.decode(first.as_bytes()).unwrap().len(), 32);
+    assert!(first.as_bytes() != second.as_bytes());
+    assert!(CredentialCipher::new(&first).is_ok());
+    assert!(CredentialCipher::new(&second).is_ok());
+}
