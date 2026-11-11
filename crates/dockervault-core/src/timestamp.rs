@@ -13,8 +13,8 @@ impl std::error::Error for InvalidTimestamp {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timestamp {
-    naive: NaiveDateTime,
-    offset: Option<i64>,
+    pub(crate) naive: NaiveDateTime,
+    pub(crate) offset: Option<i64>,
 }
 impl serde::Serialize for Timestamp {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

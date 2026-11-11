@@ -30,6 +30,31 @@ includes combining alphabetic marks, so it is not Python's `\\w` name contract.
 The native test checks every Unicode scalar against the actual provider oracle.
 Source: <https://github.com/yeslogic/unicode-general-category>.
 
+## Native cron and TZif compatibility
+
+`tz-rs` 0.7.3 (MIT OR Apache-2.0, Rust1.85+, dependency-free) is pinned with
+only its `alloc` feature: it parses caller-owned TZif bytes and resolves UTC,
+ambiguous and skipped wall times without filesystem, clock or ambient-TZ APIs.
+It does not embed a different timezone database. Seven public TZif fixtures are
+captured from the actual accepted provider image; IANA timezone data is public
+domain. One explicitly labelled synthetic TZif additionally tests Python's
+ignore-leap-record behavior against that image's actual ZoneInfo/CronTrigger.
+Source: <https://docs.rs/crate/tz-rs/0.7.3>.
+
+`dockervault-core/src/cron.rs` adapts APScheduler3.11.3's five-field expression
+and field-stepping algorithms to Chrono and tz-rs. The executed stock Croner4.0.3
+five-field/AND-mode comparison did not preserve the accepted provider's skipped
+DST time or named/prefix expression grammar, so Croner is **not** a dependency.
+The adapter preserves Monday-zero weekdays, day-of-month **and** weekday,
+Unicode16 decimal digits, last-day and named-prefix behavior, fold/inter-zone
+comparison semantics, UTC arithmetic and Python's 1..9999 intermediate range.
+Its explicit-base preview is not a running scheduler, job admission or misfire
+implementation. Copyright (c) Alex Grönholm. Retain the full MIT license in
+[`licenses/APSCHEDULER-LICENSE.txt`](licenses/APSCHEDULER-LICENSE.txt).
+
+- Exact reference: <https://github.com/agronholm/apscheduler/tree/3.11.3/src/apscheduler/triggers/cron>
+- License: <https://github.com/agronholm/apscheduler/blob/3.11.3/LICENSE.txt>
+
 ## CPython compatibility algorithms
 
 Character-class range normalization in `dockervault-core/src/filters.rs` adapts

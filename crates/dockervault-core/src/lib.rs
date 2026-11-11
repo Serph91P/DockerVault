@@ -1,5 +1,6 @@
 //! DockerVault domain and offline algorithms; no HTTP, database or runtime dependency.
 pub mod archive;
+pub mod cron;
 pub mod crypto;
 pub mod encoding;
 pub mod filters;
