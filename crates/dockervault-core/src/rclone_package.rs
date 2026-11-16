@@ -421,6 +421,36 @@ impl Checker<'_> {
         Ok(())
     }
 }
+/// Validate and collect only referenced credential records using the shared
+/// digest/Base64/dependency checker, without reading any host credential paths.
+pub fn collect_materials(
+    files: &Value,
+    references: &[String],
+    cancel: &dyn Fn() -> bool,
+) -> Result<Value> {
+    if cancel() {
+        return Err(RcloneError::Cancelled);
+    }
+    let remotes = Map::new();
+    let options = BTreeMap::new();
+    let checker = Checker {
+        remotes: &remotes,
+        files: files.as_object().ok_or(Invalid)?,
+        options: &options,
+        cancel,
+    };
+    let mut out = Map::new();
+    for reference in references {
+        if cancel() {
+            return Err(RcloneError::Cancelled);
+        }
+        if !out.contains_key(reference) {
+            checker.load(reference, &mut out, &mut BTreeSet::new())?;
+        }
+    }
+    Ok(Value::Object(out))
+}
+
 /// Assemble an export from canonical managed remotes, pruning unreferenced nodes.
 /// Does not normalize raw external config, discover credentials or read host files.
 /// Reuses the import checker's graph, material and explicit-requirement rules.

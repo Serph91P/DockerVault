@@ -1,4 +1,5 @@
 //! Preparation and serialized reads; journal/claim owner activates descriptors.
+mod material;
 mod read;
 use super::{OUTPUT_LIMIT, RcloneError};
 use crate::{
@@ -9,6 +10,7 @@ use crate::{
 use RcloneError::{Cancelled, Invalid};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use dockervault_core::crypto::CredentialCipher;
+pub use read::ManagedCommandOutput;
 use serde_json::{Value, json};
 use std::{
     fs::{File, OpenOptions},
@@ -127,6 +129,18 @@ impl ManagedConfigBuilder {
         spec: ProcessSpec,
         cancel: &CancellationToken,
     ) -> Result<crate::process::ProcessOutput> {
+        let out = self.capture_raw(spec, cancel).await?;
+        if out.status.success() {
+            Ok(out)
+        } else {
+            Err(Invalid)
+        }
+    }
+    async fn capture_raw(
+        &self,
+        spec: ProcessSpec,
+        cancel: &CancellationToken,
+    ) -> Result<crate::process::ProcessOutput> {
         if cancel.is_cancelled() {
             return Err(Cancelled);
         }
@@ -135,11 +149,7 @@ impl ManagedConfigBuilder {
         let waiting = work.wait();
         tokio::pin!(waiting);
         let out = tokio::select! {biased;_=cancel.cancelled()=>{stop.cancel();let _=waiting.await;return Err(Cancelled);},out=&mut waiting=>out.map_err(|_|Invalid)?.map_err(|_|Invalid)?};
-        if out.status.success() {
-            Ok(out)
-        } else {
-            Err(Invalid)
-        }
+        Ok(out)
     }
     async fn populate(
         &self,

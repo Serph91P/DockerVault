@@ -1,7 +1,7 @@
 //! Owned offline rclone CLI capabilities; never inherit ambient credentials.
 mod managed;
 use dockervault_core::rclone_package::RcloneError;
-pub use managed::ManagedConfigBuilder;
+pub use managed::{ManagedCommandOutput, ManagedConfigBuilder};
 use std::collections::{BTreeMap, BTreeSet};
 type Options = BTreeMap<String, BTreeSet<String>>;
 const OUTPUT_LIMIT: usize = 8 * 1024 * 1024;

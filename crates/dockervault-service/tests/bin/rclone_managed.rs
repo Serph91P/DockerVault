@@ -257,6 +257,131 @@ async fn main() {
             );
         }
         if name == "local" {
+            let source_dir = root.join("PUBLIC-runtime-local");
+            std::fs::create_dir(&source_dir).unwrap();
+            std::fs::write(
+                source_dir.join("PUBLIC-data"),
+                b"PUBLIC actual rclone runtime bytes",
+            )
+            .unwrap();
+            let remote = case["payload"]["roots"][0]["remote_name"].as_str().unwrap();
+            let output = builder
+                .start_run_managed(
+                    result.clone(),
+                    cipher.clone(),
+                    remote.to_owned(),
+                    vec![
+                        "lsjson".into(),
+                        format!("{remote}:{}", source_dir.display()).into(),
+                        "--stat".into(),
+                    ],
+                    Some(std::time::Duration::from_secs(10)),
+                    Vec::new(),
+                )
+                .unwrap()
+                .wait()
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(output.code, 0);
+            let stat: Value = serde_json::from_str(&output.stdout).unwrap();
+            assert_eq!(stat["IsDir"], true);
+            let copy = root.join("PUBLIC-runtime-copy");
+            let copied = builder
+                .start_run_managed(
+                    result.clone(),
+                    cipher.clone(),
+                    remote.to_owned(),
+                    vec![
+                        "copyto".into(),
+                        source_dir.join("PUBLIC-data").into_os_string(),
+                        format!("{remote}:{}", copy.display()).into(),
+                    ],
+                    Some(std::time::Duration::from_secs(10)),
+                    Vec::new(),
+                )
+                .unwrap()
+                .wait()
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(copied.code, 0);
+            assert_eq!(
+                std::fs::read(&copy).unwrap(),
+                b"PUBLIC actual rclone runtime bytes"
+            );
+            let missing = builder
+                .start_run_managed(
+                    result.clone(),
+                    cipher.clone(),
+                    "PUBLIC missing root".to_owned(),
+                    Vec::new(),
+                    None,
+                    Vec::new(),
+                )
+                .unwrap()
+                .wait()
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(missing.code, 1);
+            assert_eq!(missing.stderr, "Storage credentials required");
+            let large = source_dir.join("PUBLIC-large");
+            std::fs::File::create(&large)
+                .unwrap()
+                .set_len(32 * 1024 * 1024)
+                .unwrap();
+            let destination = root.join("PUBLIC-cancel-target");
+            std::fs::create_dir(&destination).unwrap();
+            let watch = nix::sys::inotify::Inotify::init(nix::sys::inotify::InitFlags::IN_NONBLOCK)
+                .unwrap();
+            watch
+                .add_watch(&destination, nix::sys::inotify::AddWatchFlags::IN_MODIFY)
+                .unwrap();
+            let work = builder
+                .start_run_managed(
+                    result.clone(),
+                    cipher.clone(),
+                    remote.to_owned(),
+                    vec![
+                        "copyto".into(),
+                        large.into_os_string(),
+                        format!("{remote}:{}/PUBLIC-object", destination.display()).into(),
+                        "--bwlimit".into(),
+                        "1M".into(),
+                    ],
+                    Some(std::time::Duration::from_secs(20)),
+                    Vec::new(),
+                )
+                .unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                loop {
+                    match watch.read_events() {
+                        Ok(events) if !events.is_empty() => break,
+                        Ok(_) | Err(nix::errno::Errno::EAGAIN) => tokio::task::yield_now().await,
+                        Err(error) => panic!("{error}"),
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            work.cancel();
+            assert!(matches!(
+                tokio::time::timeout(std::time::Duration::from_secs(3), work.wait())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                Err(dockervault_core::rclone_package::RcloneError::Cancelled)
+            ));
+            assert_eq!(processes.active(), 0);
+            assert_eq!(blocking.active(), 0);
+            assert_eq!(tasks.active(), 0);
+            assert!(std::fs::read_dir(&dir).unwrap().all(|e| {
+                !e.unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("dvrc-cache-")
+            }));
             let lock = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)

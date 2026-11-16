@@ -50,6 +50,39 @@ pub fn valid_name(value: &str) -> bool {
         && !tail.ends_with(' ')
         && tail.chars().all(|c| base(c) || matches!(c, ' ' | '-'))
 }
+pub fn environment_name(section: &str, field: &str) -> String {
+    let mut result = String::from("RCLONE_CONFIG_");
+    for c in section
+        .chars()
+        .chain(std::iter::once('_'))
+        .chain(field.chars().map(|c| if c == '-' { '_' } else { c }))
+    {
+        let mut upper = c.to_uppercase();
+        let first = upper.next().unwrap_or(c);
+        // Accepted Python uses one-scalar titlecase when full uppercase expands;
+        // these Greek pairs are the Unicode16 titlecase-only fallback.
+        let fallback = match c as u32 {
+            0x1f80..=0x1f87 | 0x1f90..=0x1f97 | 0x1fa0..=0x1fa7 => {
+                char::from_u32(c as u32 + 8).unwrap_or(c)
+            }
+            0x1fb3 => '\u{1fbc}',
+            0x1fc3 => '\u{1fcc}',
+            0x1ff3 => '\u{1ffc}',
+            _ => c,
+        };
+        // Rust Unicode17 adds capitals for these already-assigned Unicode16
+        // names; the accepted provider intentionally leaves them unchanged.
+        result.push(if matches!(c, '\u{a7d3}' | '\u{a7d5}') {
+            c
+        } else if upper.next().is_none() {
+            first
+        } else {
+            fallback
+        });
+    }
+    result
+}
+
 fn local(value: &str) -> Reference {
     Reference {
         name: None,

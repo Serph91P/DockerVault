@@ -54,6 +54,20 @@ fn canonical_live_package_matches_actual_source_bytes_for_every_accepted_import_
             control["name"]
         );
         rclone_package::validate(&actual, &storages, &options, &|| false).unwrap();
+        let references: Vec<String> = actual["files"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        assert_eq!(
+            rclone_package::collect_materials(&actual["files"], &references, &|| false).unwrap(),
+            actual["files"]
+        );
+        assert!(matches!(
+            rclone_package::collect_materials(&actual["files"], &references, &|| true),
+            Err(rclone_package::RcloneError::Cancelled)
+        ));
         assert!(matches!(
             rclone_package::assemble_canonical(
                 &payload["remotes"],

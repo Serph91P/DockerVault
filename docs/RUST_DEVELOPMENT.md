@@ -174,7 +174,7 @@ explicit bounded async/blocking/process owners, a trusted rclone binary path and
 an existing deployment `CredentialCipher`. Its caller must hold the durable
 setup claim and preparation journal throughout settlement. The returned encrypted
 state descriptor is **not activation**; atomic DB/admin/session activation,
-managed execution, external-config export/merge and the four recovery HTTP routes
+provider adapters/verification, external-config export/merge and the four recovery HTTP routes
 remain separate work.
 
 `start_read_config` reads the live native config under the accepted cross-process
@@ -189,6 +189,25 @@ This API does not normalize raw external configs, read default/private SSH keys,
 materialize runtime credentials or transfer provider bytes. The real CLI probe
 also changes a persisted S3 region and confirms export reads the changed config
 while it remains encrypted, rather than replaying the original imported payload.
+
+`start_run_managed` executes trusted internal fixed-argv operations under that
+same lock. It validates referenced credential records with the existing digest/
+Base64/dependency checker, materializes deduplicated dependencies only in 0600
+CLOEXEC memfds and supplies explicit parent-procfd paths without changing global
+FD inheritance. Descriptors remain owned through actual child settlement. SSH
+private keys are never embedded/exported or discovered from defaults: only an
+explicit recorded key beneath caller-supplied allowed directories is opened by
+held no-follow directory authority, retained as an FD and passed to the child.
+Each invocation has its own 0700 cache/HOME/TMPDIR, disables ambient AWS metadata/
+config and source queued cache uploads, and removes its owned cache after reaping.
+Nonzero exits/timeouts use generic errors; dropped/cancelled work still settles.
+The caller still owns durable operation/claims, remote readback/abort settlement
+and restart-artifact reconciliation: this helper alone is **not R4/R7 acceptance**.
+Actual local CLI listing/copy and IN_MODIFY during a 32 MiB copy -> cancel ->
+reap/free slots/cache removal run in the native probe. Environment names match
+142,943 accepted-source Unicode16 name scalars, including one-scalar Greek
+titlecase and two Rust-Unicode17 case-map differences; explicit sharp-S/Greek/
+new-capital cases were also exercised against the actual pinned CLI.
 
 Preparation creates a new private generation without replacing an existing one,
 anchors its files and local RC socket to held directory descriptors, encrypts the

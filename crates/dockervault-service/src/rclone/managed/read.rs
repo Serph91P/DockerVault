@@ -1,6 +1,8 @@
 //! Read the actual refreshable config under the same cross-process lock as Python.
+mod run;
 use super::*;
 use nix::fcntl::{Flock, FlockArg};
+pub use run::ManagedCommandOutput;
 
 struct LockedConfig {
     generation: Generation,

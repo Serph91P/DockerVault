@@ -39,3 +39,10 @@ native-generated expectations. Explicit source file records and provider options
 prevent ambient/default credential or filesystem discovery in the control.
 These are canonical managed-package controls, not proof of raw external config
 normalization, provider transfers or service activation.
+
+`rclone-environment.TEST_ONLY.json` records the actual accepted provider's
+simple-uppercase/titlecase fallback: five explicit names and a SHA256 stream for
+all 142,943 valid single-scalar names (big-endian u32 code point, UTF-8 environment
+name for `known-hosts-file`, NUL delimiter). It preserves Unicode16 semantics
+instead of adopting Rust's newer uppercase pairs, with no dependency/version
+change. These metadata names contain no credentials.
