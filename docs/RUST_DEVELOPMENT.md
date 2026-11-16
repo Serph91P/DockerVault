@@ -167,6 +167,55 @@ These are encoding tests, not complete application/reverse-cutover acceptance.
 Primary references: [Serde JSON features](https://docs.rs/crate/serde_json/1.0.154/features),
 [Chrono](https://docs.rs/chrono/0.4.45/chrono/).
 
+## Managed rclone preparation (partial accepted-143 port)
+
+`ManagedConfigBuilder` accepts only the offline validator's `ValidatedState`,
+explicit bounded async/blocking/process owners, a trusted rclone binary path and
+an existing deployment `CredentialCipher`. Its caller must hold the durable
+setup claim and preparation journal throughout settlement. The returned encrypted
+state descriptor is **not activation**; atomic DB/admin/session activation,
+managed export/execution and the four recovery HTTP routes remain separate work.
+
+Preparation creates a new private generation without replacing an existing one,
+anchors its files and local RC socket to held directory descriptors, encrypts the
+empty native rclone config **before** supplying any imported credentials, then
+imports through a private Unix RC endpoint using the accepted memory-bootstrap
+protocol. `config_*` fields survive separately as encrypted overrides; file
+references remain placeholders and no imported provider credential file is
+materialized. No provider onboarding or remote connection is performed here.
+A deployment Fernet cipher wraps the generated unlock secret, portable files and
+overrides; this introduces no new archive/key format or crypto implementation.
+
+The existing reqwest 0.13.5 Unix-socket client disables proxies/redirects, limits
+RC responses to 8 MiB and reports only generic errors. Commands retain the source
+30-second bound, RPC five seconds and RC readiness ten seconds. Cancellation and
+early daemon exit physically reap the child before cleanup and permit release.
+Cleanup refuses a substituted generation name. Existing process stdout stays
+64 KiB by default; explicitly requested machine-readable stdout may be at most
+8 MiB, without enlarging stderr. The already-locked zeroize dependency is reused
+by the service; no dependency version or license policy changes.
+
+Run both actual offline CLI probes with the same accepted rclone 1.72.1 binaries
+and architecture-specific checksums used by the current product:
+
+```sh
+docker build -f docker/rust-dev.Dockerfile -t dockervault-rust-ci .
+docker build -f docker/rclone-test.Dockerfile -t dockervault-rclone-ci .
+docker run --rm --network none --cpus 2 --memory 6g --user 1000:1000 dockervault-rclone-ci
+```
+
+The native CI matrix runs these probes on its actual amd64/arm64 runners, not
+cross-compilation. The capabilities probe compares all 65 actual provider option
+catalogs to independent accepted-source controls. The generation probe checks
+seven configurations through actual native `config dump`, file modes, encryption,
+Fernet material recovery, file references and retained OCI overrides. These are
+component proofs, not service restart/activation, provider transfer, rollback or
+complete R0–R14 acceptance.
+
+Primary references:
+[reqwest Unix sockets](https://docs.rs/reqwest/0.13.5/reqwest/struct.ClientBuilder.html#method.unix_socket),
+[rclone RC security and config/create](https://rclone.org/rc/#config-create-create-a-config-remote).
+
 ## Ownership invariants
 
 Dropping an HTTP wait future requests cooperative cancellation; it does not

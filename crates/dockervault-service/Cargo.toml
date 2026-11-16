@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+zeroize.workspace = true
 quick-xml.workspace = true
 percent-encoding.workspace = true
 reqwest.workspace = true
@@ -48,6 +49,10 @@ path = "tests/bin/docker_lifecycle.rs"
 [[example]]
 name = "privileged_archive_supervision"
 path = "tests/bin/privileged_archive_supervision.rs"
+
+[[example]]
+name = "rclone_managed"
+path = "tests/bin/rclone_managed.rs"
 
 [[example]]
 name = "rclone_capabilities"

@@ -37,6 +37,10 @@ jobs:
               cargo test --workspace --locked --offline
               cargo clippy --workspace --all-targets --locked --offline -- -D warnings
             '
+      - name: Native pinned rclone capabilities and encrypted preparation without network
+        run: |
+          docker build -f docker/rclone-test.Dockerfile -t dockervault-rclone-ci .
+          docker run --rm --network none --cpus 2 --memory 6g --user 1000:1000 dockervault-rclone-ci
       - name: Dependency advisories, licenses and sources
         run: |
           docker run --rm --user 1000:1000 --entrypoint /bin/sh dockervault-rust-ci -ec '
