@@ -161,36 +161,94 @@ impl ManagedConfigBuilder {
     ) -> std::result::Result<Work<Result<Value>>, WorkError> {
         let this = self.clone();
         self.tasks.submit_async(move |cancel| async move {
-            let check = cancel.clone();
-            let key = cipher.clone();
-            let locked = this
-                .blocking
+            this.read_config(state, cipher, cancel).await
+        })
+    }
+    /// Complete managed portable package from live config and authenticated metadata.
+    /// External/unmanaged config merging remains a separate caller operation.
+    pub fn start_export_managed(
+        &self,
+        state: Value,
+        cipher: Arc<CredentialCipher>,
+        storages: Vec<dockervault_core::portable_records::RemoteStorage>,
+        options: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    ) -> std::result::Result<Work<Result<Value>>, WorkError> {
+        let this = self.clone();
+        self.tasks.submit_async(move |cancel| async move {
+            let remotes = this
+                .read_config(state.clone(), cipher.clone(), cancel.clone())
+                .await?;
+            this.blocking
                 .submit_blocking(move |physical| {
-                    if physical.is_cancelled() {
+                    if cancel.is_cancelled() || physical.is_cancelled() {
                         return Err(Cancelled);
                     }
-                    LockedConfig::acquire(state, &key, &check)
-                })
-                .map_err(|_| Invalid)?
-                .wait()
-                .await
-                .map_err(|_| Invalid)??;
-            let result = this
-                .capture(
-                    this.spec(&locked.generation, &locked.unlock, ["config", "dump"]),
-                    &cancel,
-                )
-                .await;
-            this.blocking
-                .submit_blocking(move |_| {
-                    let out = result?;
-                    let remotes = serde_json::from_slice(&out.stdout).map_err(|_| Invalid)?;
-                    locked.restore(&cipher, remotes, &cancel)
+                    let text = zeroize::Zeroizing::new(
+                        cipher
+                            .decrypt_value(
+                                state.get("files").and_then(Value::as_str).ok_or(Invalid)?,
+                            )
+                            .map_err(|_| Invalid)?,
+                    );
+                    let files: Value = serde_json::from_str(&text).map_err(|_| Invalid)?;
+                    let package = dockervault_core::rclone_package::assemble_canonical(
+                        &remotes,
+                        &files,
+                        &storages,
+                        state.get("roots").ok_or(Invalid)?,
+                        &options,
+                        &|| cancel.is_cancelled() || physical.is_cancelled(),
+                    )?;
+                    dockervault_core::rclone_package::validate(
+                        &package,
+                        &storages,
+                        &options,
+                        &|| cancel.is_cancelled() || physical.is_cancelled(),
+                    )?;
+                    Ok(package)
                 })
                 .map_err(|_| Invalid)?
                 .wait()
                 .await
                 .map_err(|_| Invalid)?
         })
+    }
+    async fn read_config(
+        &self,
+        state: Value,
+        cipher: Arc<CredentialCipher>,
+        cancel: CancellationToken,
+    ) -> Result<Value> {
+        let this = self;
+        let check = cancel.clone();
+        let key = cipher.clone();
+        let locked = this
+            .blocking
+            .submit_blocking(move |physical| {
+                if physical.is_cancelled() {
+                    return Err(Cancelled);
+                }
+                LockedConfig::acquire(state, &key, &check)
+            })
+            .map_err(|_| Invalid)?
+            .wait()
+            .await
+            .map_err(|_| Invalid)??;
+        let result = this
+            .capture(
+                this.spec(&locked.generation, &locked.unlock, ["config", "dump"]),
+                &cancel,
+            )
+            .await;
+        this.blocking
+            .submit_blocking(move |_| {
+                let out = result?;
+                let remotes = serde_json::from_slice(&out.stdout).map_err(|_| Invalid)?;
+                locked.restore(&cipher, remotes, &cancel)
+            })
+            .map_err(|_| Invalid)?
+            .wait()
+            .await
+            .map_err(|_| Invalid)?
     }
 }

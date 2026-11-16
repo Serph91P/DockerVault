@@ -28,3 +28,14 @@ requires sufficient trailing padding; use current CPython 3.14 behavior rather
 than an older decoder's stop-at-padding rule. Native code only canonicalizes this
 framing before the unchanged Fernet primitive; it never weakens authentication,
 introduces key rotation, changes formats or changes strict bundle JSON/Base64.
+
+`canonical-packages.TEST_ONLY.json` records SHA256 of actual unchanged accepted
+`fc1b339` `package_rclone` output for all 87 accepted canonical import controls,
+plus three focused empty/subset selections of the shared-file graph (90 total).
+Inputs remain in the unchanged `rclone-packages.TEST_ONLY.json`; `indices` selects
+storage rows in order. Hash bytes are Python `json.dumps(sort_keys=True,
+separators=(',', ':'), ensure_ascii=True).encode()` of the complete output, not
+native-generated expectations. Explicit source file records and provider options
+prevent ambient/default credential or filesystem discovery in the control.
+These are canonical managed-package controls, not proof of raw external config
+normalization, provider transfers or service activation.

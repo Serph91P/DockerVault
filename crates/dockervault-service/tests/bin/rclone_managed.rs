@@ -176,6 +176,86 @@ async fn main() {
             .unwrap()
             .unwrap();
         assert_eq!(restored, case["payload"]["remotes"], "{name}");
+        let exported = builder
+            .start_export_managed(
+                result.clone(),
+                cipher.clone(),
+                serde_json::from_value(case["storages"].clone()).unwrap(),
+                serde_json::from_value(packages["options"].clone()).unwrap(),
+            )
+            .unwrap()
+            .wait()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(exported, case["payload"], "{name}");
+        if name == "s3-environment" {
+            let remote = case["payload"]["remotes"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .next()
+                .unwrap();
+            let mut update = ProcessSpec::new(
+                &args[1],
+                vec![
+                    "--config".to_owned(),
+                    dir.join("rclone.conf").to_str().unwrap().to_owned(),
+                    "--ask-password=false".to_owned(),
+                    "--password-command".to_owned(),
+                    "/usr/bin/printenv DV_RECOVERY_RCLONE_UNLOCK".to_owned(),
+                    "config".to_owned(),
+                    "update".to_owned(),
+                    remote.to_owned(),
+                    "region".to_owned(),
+                    "PUBLIC-updated-region".to_owned(),
+                    "--non-interactive".to_owned(),
+                    "--no-obscure".to_owned(),
+                ],
+            );
+            update.env = vec![
+                ("PATH".into(), "/bin:/usr/bin:/usr/local/bin".into()),
+                ("HOME".into(), "/nonexistent".into()),
+                (
+                    "DV_RECOVERY_RCLONE_UNLOCK".into(),
+                    cipher
+                        .decrypt_value(result["unlock"].as_str().unwrap())
+                        .unwrap()
+                        .into(),
+                ),
+            ];
+            assert!(
+                processes
+                    .start(update)
+                    .unwrap()
+                    .wait()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+            let refreshed = builder
+                .start_export_managed(
+                    result.clone(),
+                    cipher.clone(),
+                    serde_json::from_value(case["storages"].clone()).unwrap(),
+                    serde_json::from_value(packages["options"].clone()).unwrap(),
+                )
+                .unwrap()
+                .wait()
+                .await
+                .unwrap()
+                .unwrap();
+            let mut expected = case["payload"].clone();
+            expected["remotes"][remote]["region"] = json!("PUBLIC-updated-region");
+            assert_eq!(refreshed, expected);
+            assert!(
+                std::fs::read(dir.join("rclone.conf"))
+                    .unwrap()
+                    .starts_with(b"# Encrypted rclone configuration File\n")
+            );
+        }
         if name == "local" {
             let lock = std::fs::OpenOptions::new()
                 .read(true)

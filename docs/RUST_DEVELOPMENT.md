@@ -167,14 +167,28 @@ These are encoding tests, not complete application/reverse-cutover acceptance.
 Primary references: [Serde JSON features](https://docs.rs/crate/serde_json/1.0.154/features),
 [Chrono](https://docs.rs/chrono/0.4.45/chrono/).
 
-## Managed rclone preparation (partial accepted-143 port)
+## Managed rclone preparation and export (partial accepted-143 port)
 
-`ManagedConfigBuilder` accepts only the offline validator's `ValidatedState`,
+Preparation in `ManagedConfigBuilder` accepts only the offline validator's `ValidatedState`,
 explicit bounded async/blocking/process owners, a trusted rclone binary path and
 an existing deployment `CredentialCipher`. Its caller must hold the durable
 setup claim and preparation journal throughout settlement. The returned encrypted
 state descriptor is **not activation**; atomic DB/admin/session activation,
-managed export/execution and the four recovery HTTP routes remain separate work.
+managed execution, external-config export/merge and the four recovery HTTP routes
+remain separate work.
+
+`start_read_config` reads the live native config under the accepted cross-process
+`.lock`; `start_export_managed` additionally decrypts portable file metadata,
+assembles the reachable canonical graph and runs the unchanged import contract.
+Both retain bounded owners through actual child settlement; a cancelled flock
+wait exits before spawning a CLI. The caller retains its setup/crypto claim.
+The shared core graph checker now supplies both canonical assembly and validation:
+all previous import assertions remain, while 90 actual-source canonical byte
+controls cover all 87 accepted import cases and focused empty/subset exports.
+This API does not normalize raw external configs, read default/private SSH keys,
+materialize runtime credentials or transfer provider bytes. The real CLI probe
+also changes a persisted S3 region and confirms export reads the changed config
+while it remains encrypted, rather than replaying the original imported payload.
 
 Preparation creates a new private generation without replacing an existing one,
 anchors its files and local RC socket to held directory descriptors, encrypts the

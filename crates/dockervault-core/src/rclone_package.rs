@@ -1,4 +1,4 @@
-//! Offline validation of the canonical portable import format. Never reads host
+//! Offline canonical import validation and managed export assembly. Never reads host
 //! files, discovers ambient credentials, executes commands or creates a filesystem.
 use crate::{
     portable_records::RemoteStorage,
@@ -421,28 +421,28 @@ impl Checker<'_> {
         Ok(())
     }
 }
-pub fn validate(
-    payload: &Value,
+/// Assemble an export from canonical managed remotes, pruning unreferenced nodes.
+/// Does not normalize raw external config, discover credentials or read host files.
+/// Reuses the import checker's graph, material and explicit-requirement rules.
+pub fn assemble_canonical(
+    remotes: &Value,
+    files: &Value,
     storages: &[RemoteStorage],
+    roots: &Value,
     options: &BTreeMap<String, BTreeSet<String>>,
     cancel: &dyn Fn() -> bool,
-) -> Result<()> {
+) -> Result<Value> {
     if cancel() {
         return Err(RcloneError::Cancelled);
     }
-    if !keys(payload, &["schema_version", "roots", "remotes", "files"])
-        || payload["schema_version"].as_i64() != Some(1)
-    {
-        return Err(Invalid);
-    }
-    let roots = payload["roots"].as_array().ok_or(Invalid)?;
-    let remotes = payload["remotes"].as_object().ok_or(Invalid)?;
-    let files = payload["files"].as_object().ok_or(Invalid)?;
+    let roots = roots.as_array().ok_or(Invalid)?;
+    let remotes = remotes.as_object().ok_or(Invalid)?;
+    let files = files.as_object().ok_or(Invalid)?;
     let storages = storages
         .iter()
         .filter(|s| s.storage_type == "rclone")
         .collect::<Vec<_>>();
-    if roots.len() != storages.len() || files.len() > 256 || remotes.len() > 256 {
+    if remotes.len() > 256 {
         return Err(Invalid);
     }
     let checker = Checker {
@@ -453,7 +453,9 @@ pub fn validate(
     };
     let mut all_remotes = BTreeSet::new();
     let mut all_files = Map::new();
-    for (storage, actual) in storages.iter().zip(roots) {
+    let mut output_roots = Vec::new();
+    let empty_source = Value::Null;
+    for storage in storages {
         if cancel() {
             return Err(RcloneError::Cancelled);
         }
@@ -464,7 +466,7 @@ pub fn validate(
                 r.get("storage_id")
                     .is_some_and(|v| integer_eq(v, storage.id))
             })
-            .ok_or(Invalid)?;
+            .unwrap_or(&empty_source);
         let empty = Vec::new();
         let mut requirements = source
             .get("ssh_requirements")
@@ -537,18 +539,56 @@ pub fn validate(
             all_remotes.extend(collected.remotes);
             all_files.extend(collected.files);
         }
-        if !same(&expected, actual) {
-            return Err(Invalid);
-        }
+        output_roots.push(expected);
     }
     if cancel() {
         return Err(RcloneError::Cancelled);
     }
-    if all_remotes.len() != remotes.len()
-        || !remotes.keys().all(|k| all_remotes.contains(k))
-        || !same(&Value::Object(all_files), &payload["files"])
+    let selected: Map<String, Value> = all_remotes
+        .into_iter()
+        .map(|name| {
+            let value = remotes[&name].clone();
+            (name, value)
+        })
+        .collect();
+    Ok(json!({"schema_version":1,"roots":output_roots,"remotes":selected,"files":all_files}))
+}
+
+pub fn validate(
+    payload: &Value,
+    storages: &[RemoteStorage],
+    options: &BTreeMap<String, BTreeSet<String>>,
+    cancel: &dyn Fn() -> bool,
+) -> Result<()> {
+    if cancel() {
+        return Err(RcloneError::Cancelled);
+    }
+    if !keys(payload, &["schema_version", "roots", "remotes", "files"])
+        || payload["schema_version"].as_i64() != Some(1)
+        || payload["roots"].as_array().is_none_or(|roots| {
+            roots.len()
+                != storages
+                    .iter()
+                    .filter(|s| s.storage_type == "rclone")
+                    .count()
+        })
+        || payload["files"]
+            .as_object()
+            .is_none_or(|files| files.len() > 256)
     {
         return Err(Invalid);
     }
-    Ok(())
+    let expected = assemble_canonical(
+        &payload["remotes"],
+        &payload["files"],
+        storages,
+        &payload["roots"],
+        options,
+        cancel,
+    )?;
+    if same(&expected, payload) {
+        Ok(())
+    } else {
+        Err(Invalid)
+    }
 }
