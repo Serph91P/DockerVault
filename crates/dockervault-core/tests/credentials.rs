@@ -71,6 +71,55 @@ fn prefixed_malformed_wrong_key_and_tampered_tokens_never_fall_back_to_plaintext
     assert!(wrong.decrypt_value(&token).is_err());
 }
 #[test]
+fn actual_python_credential_key_and_token_framing_preserves_authenticated_bytes() {
+    let fixture: Value = serde_json::from_str(PUBLIC).unwrap();
+    let cases: Value =
+        serde_json::from_str(include_str!("fixtures/credential-framing.TEST_ONLY.json")).unwrap();
+    let canonical = public_fixture_key();
+    let token = fixture["fernet_ciphertext"].as_str().unwrap();
+    let plain = fixture["fernet_plaintext"].as_str().unwrap();
+    let cipher = CredentialCipher::new(&canonical).unwrap();
+    assert_eq!(cases["cases"].as_array().unwrap().len(), 2478);
+    for (index, case) in cases["cases"].as_array().unwrap().iter().enumerate() {
+        let original = match case["target"].as_str().unwrap() {
+            "key" => canonical.as_str(),
+            "token" => token.strip_prefix("fernet:").unwrap(),
+            _ => panic!("unknown target"),
+        };
+        let position = case["position"].as_u64().unwrap() as usize;
+        let mut changed = original.to_owned();
+        let text = case["text"].as_str().unwrap();
+        match case["op"].as_str().unwrap() {
+            "insert" => changed.insert_str(position, text),
+            "delete" => {
+                changed.remove(position);
+            }
+            "replace" => changed.replace_range(position..position + 1, text),
+            _ => panic!("unknown recipe"),
+        }
+        let result = if case["target"] == "key" {
+            let key = CredentialCipher::new(&changed);
+            assert_eq!(
+                key.is_ok(),
+                case["accepted"].as_bool().unwrap(),
+                "key framing case{index}: {case}"
+            );
+            key.and_then(|cipher| cipher.decrypt_value(token))
+        } else {
+            cipher.decrypt_value(&format!("fernet:{changed}"))
+        };
+        assert_eq!(
+            result.is_ok(),
+            case["recovers"].as_bool().unwrap(),
+            "authenticated recovery case{index}: {case}"
+        );
+        if let Ok(actual) = result {
+            assert_eq!(actual, plain, "case{index}");
+        }
+    }
+}
+
+#[test]
 fn generated_instance_keys_have_the_existing_fernet_wire_shape_and_fresh_entropy() {
     use base64::{Engine, engine::general_purpose::URL_SAFE};
     let first = CredentialCipher::generate_key();

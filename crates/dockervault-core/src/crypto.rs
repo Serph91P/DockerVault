@@ -1,4 +1,5 @@
 //! Existing encryption formats only; cryptographic primitives stay in qualified libraries.
+mod credential_encoding;
 mod envelope;
 pub use envelope::{decrypt_dek, decrypt_dek_file, encrypt_dek};
 const KEY_MAGIC: &[u8; 8] = b"DVKEY\0\x01\n";
@@ -56,7 +57,9 @@ impl CredentialCipher {
         zeroize::Zeroizing::new(fernet::Fernet::generate_key())
     }
     pub fn new(key: &str) -> Result<Self, CryptoError> {
-        fernet::Fernet::new(key)
+        let canonical =
+            credential_encoding::canonical(key.as_bytes()).map_err(|_| CryptoError::InvalidKey)?;
+        fernet::Fernet::new(&canonical)
             .map(Self)
             .ok_or(CryptoError::InvalidKey)
     }
@@ -71,9 +74,11 @@ impl CredentialCipher {
         let Some(token) = ciphertext.strip_prefix("fernet:") else {
             return Ok(ciphertext.to_owned());
         };
+        let canonical = credential_encoding::canonical(token.as_bytes())
+            .map_err(|_| CryptoError::Authentication)?;
         let bytes = self
             .0
-            .decrypt(token)
+            .decrypt(&canonical)
             .map_err(|_| CryptoError::Authentication)?;
         String::from_utf8(bytes).map_err(|_| CryptoError::Encoding)
     }

@@ -226,6 +226,30 @@ Primary references:
 [reqwest Unix sockets](https://docs.rs/reqwest/0.13.5/reqwest/struct.ClientBuilder.html#method.unix_socket),
 [rclone RC security and config/create](https://rclone.org/rc/#config-create-create-a-config-remote).
 
+## Credential encoding compatibility
+
+The existing Fernet primitive alone is stricter about Base64 framing than the
+accepted Python 3.14.10 credential loader/decryptor. Actual unchanged-provider
+controls reproduce accepted `!`/whitespace/Unicode noise, interior padding and
+nonzero unused bits; source framing still requires sufficient terminal padding.
+A private adapter canonicalizes only those encoded bytes before calling the
+same Fernet implementation. It does not change the encryption/MAC, 32-byte key
+requirement, UTF-8 plaintext, prefix/legacy behavior or output format, and cannot
+bypass authentication. Strict bundle/key-sidecar/SSH formats are untouched.
+
+The native regression consumes 2,478 actual-source transformation recipes for
+both key construction and authenticated recovery, including accepted but wrong
+keys that must fail authentication. Keys are derived from public bytes0..31 at
+test time, never embedded as credential-shaped literals. Buffers containing key
+encoding are zeroized. No dependency, key rotation or custom cryptography is added.
+Use the current source's non-validating framing, not an older Base64 decoder's
+stop-at-padding assumption.
+
+Primary references:
+[CPython 3.14 Base64](https://docs.python.org/3.14/library/base64.html),
+[exact 3.14.10 binascii framing](https://github.com/python/cpython/blob/v3.14.10/Modules/binascii.c),
+[Fernet authenticated encryption](https://cryptography.io/en/latest/fernet/).
+
 ## Ownership invariants
 
 Dropping an HTTP wait future requests cooperative cancellation; it does not
