@@ -1,10 +1,29 @@
 use dockervault_core::crypto::CredentialCipher;
 use serde_json::Value;
 const PUBLIC: &str = include_str!("fixtures/credential-vectors.TEST_ONLY.json");
+fn public_fixture_key() -> String {
+    use base64::{Engine, engine::general_purpose::URL_SAFE};
+    // The frozen Python oracle uses the public byte sequence 0..32, not a credential.
+    URL_SAFE.encode((0_u8..32).collect::<Vec<_>>())
+}
+
+#[test]
+fn public_fixture_does_not_embed_a_credential_shaped_key() {
+    let fixture: Value = serde_json::from_str(PUBLIC).unwrap();
+    let cipher = CredentialCipher::new(&public_fixture_key()).unwrap();
+    assert_eq!(
+        cipher
+            .decrypt_value(fixture["fernet_ciphertext"].as_str().unwrap())
+            .unwrap(),
+        fixture["fernet_plaintext"].as_str().unwrap()
+    );
+    assert!(fixture.get("fernet_key").is_none());
+}
+
 #[test]
 fn frozen_python_fernet_and_legacy_empty_plaintext_semantics_are_preserved() {
     let fixture: Value = serde_json::from_str(PUBLIC).unwrap();
-    let cipher = CredentialCipher::new(fixture["fernet_key"].as_str().unwrap()).unwrap();
+    let cipher = CredentialCipher::new(&public_fixture_key()).unwrap();
     let token = fixture["fernet_ciphertext"].as_str().unwrap();
     assert_eq!(
         cipher.decrypt_value(token).unwrap(),
@@ -23,8 +42,7 @@ fn frozen_python_fernet_and_legacy_empty_plaintext_semantics_are_preserved() {
 }
 #[test]
 fn native_fernet_tokens_roundtrip_utf8_and_export_only_public_synthetic_oracle_data() {
-    let fixture: Value = serde_json::from_str(PUBLIC).unwrap();
-    let cipher = CredentialCipher::new(fixture["fernet_key"].as_str().unwrap()).unwrap();
+    let cipher = CredentialCipher::new(&public_fixture_key()).unwrap();
     let plain = "PUBLIC TEST ONLY: \0\n雪😀";
     let token = cipher.encrypt_value(plain);
     assert!(token.starts_with("fernet:"));
@@ -35,8 +53,7 @@ fn native_fernet_tokens_roundtrip_utf8_and_export_only_public_synthetic_oracle_d
 #[test]
 fn prefixed_malformed_wrong_key_and_tampered_tokens_never_fall_back_to_plaintext() {
     assert!(CredentialCipher::new("invalid").is_err());
-    let fixture: Value = serde_json::from_str(PUBLIC).unwrap();
-    let cipher = CredentialCipher::new(fixture["fernet_key"].as_str().unwrap()).unwrap();
+    let cipher = CredentialCipher::new(&public_fixture_key()).unwrap();
     for token in ["fernet:", "fernet:invalid", "fernet:雪"] {
         assert!(cipher.decrypt_value(token).is_err());
     }
