@@ -168,6 +168,87 @@ async fn main() {
                 .retain(|k, _| !k.starts_with("config_"));
         }
         assert_eq!(dump, expected, "{name}");
+        let restored = builder
+            .start_read_config(result.clone(), cipher.clone())
+            .unwrap()
+            .wait()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored, case["payload"]["remotes"], "{name}");
+        if name == "local" {
+            let lock = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(dir.join(".lock"))
+                .unwrap();
+            let lock =
+                nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusiveNonblock).unwrap();
+            let watch = nix::sys::inotify::Inotify::init(nix::sys::inotify::InitFlags::IN_NONBLOCK)
+                .unwrap();
+            watch
+                .add_watch(
+                    dir.join(".lock").as_path(),
+                    nix::sys::inotify::AddWatchFlags::IN_OPEN,
+                )
+                .unwrap();
+            let work = builder
+                .start_read_config(result.clone(), cipher.clone())
+                .unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    match watch.read_events() {
+                        Ok(events) if !events.is_empty() => break,
+                        Ok(_) | Err(nix::errno::Errno::EAGAIN) => tokio::task::yield_now().await,
+                        Err(error) => panic!("{error}"),
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(processes.active(), 0);
+            work.cancel();
+            assert!(matches!(
+                tokio::time::timeout(std::time::Duration::from_secs(2), work.wait())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                Err(dockervault_core::rclone_package::RcloneError::Cancelled)
+            ));
+            assert_eq!(blocking.active(), 0);
+            assert_eq!(tasks.active(), 0);
+            drop(lock);
+            let mut bad = result.clone();
+            let remote = case["payload"]["remotes"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .next()
+                .unwrap();
+            bad["overrides"] = json!(
+                cipher.encrypt_value(&json!({(remote):{"type":"PUBLIC wrong type"}}).to_string())
+            );
+            assert!(
+                builder
+                    .start_read_config(bad, cipher.clone())
+                    .unwrap()
+                    .wait()
+                    .await
+                    .unwrap()
+                    .is_err()
+            );
+            assert_eq!(std::fs::read(dir.join("rclone.conf")).unwrap(), raw);
+            assert_eq!(
+                builder
+                    .start_read_config(result.clone(), cipher.clone())
+                    .unwrap()
+                    .wait()
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                restored
+            );
+        }
         assert_eq!(result["file_refs"], refs);
         assert_eq!(result["cache_remotes"], json!(caches));
         let got: Value = serde_json::from_str(

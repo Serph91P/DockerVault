@@ -1,4 +1,5 @@
-//! Preparation only: journal/claim owner activates the returned descriptor later.
+//! Preparation and serialized reads; journal/claim owner activates descriptors.
+mod read;
 use super::{OUTPUT_LIMIT, RcloneError};
 use crate::{
     ownership::{Owner, Work, WorkError},
@@ -119,6 +120,13 @@ impl ManagedConfigBuilder {
         spec
     }
     async fn command(&self, spec: ProcessSpec, cancel: &CancellationToken) -> Result<()> {
+        self.capture(spec, cancel).await.map(|_| ())
+    }
+    async fn capture(
+        &self,
+        spec: ProcessSpec,
+        cancel: &CancellationToken,
+    ) -> Result<crate::process::ProcessOutput> {
         if cancel.is_cancelled() {
             return Err(Cancelled);
         }
@@ -128,7 +136,7 @@ impl ManagedConfigBuilder {
         tokio::pin!(waiting);
         let out = tokio::select! {biased;_=cancel.cancelled()=>{stop.cancel();let _=waiting.await;return Err(Cancelled);},out=&mut waiting=>out.map_err(|_|Invalid)?.map_err(|_|Invalid)?};
         if out.status.success() {
-            Ok(())
+            Ok(out)
         } else {
             Err(Invalid)
         }
