@@ -49,6 +49,10 @@ path = "tests/bin/docker_lifecycle.rs"
 name = "privileged_archive_supervision"
 path = "tests/bin/privileged_archive_supervision.rs"
 
+[[example]]
+name = "rclone_capabilities"
+path = "tests/bin/rclone_capabilities.rs"
+
 [[test]]
 name = "auth_process"
 harness = false

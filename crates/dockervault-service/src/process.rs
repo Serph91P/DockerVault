@@ -24,6 +24,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 const OUTPUT_LIMIT: usize = 64 * 1024;
+const MAX_STDOUT_LIMIT: usize = 8 * 1024 * 1024;
 const INPUT_LIMIT: usize = 1024 * 1024;
 const TERM_GRACE: Duration = Duration::from_millis(200);
 
@@ -32,6 +33,8 @@ pub struct ProcessSpec {
     pub args: Vec<OsString>,
     pub env: Vec<(OsString, OsString)>,
     pub working_directory: Option<PathBuf>,
+    /// Explicit machine-readable CLI response bound; stderr retains its default.
+    pub stdout_limit: usize,
     pub input: Vec<u8>,
     /// Explicit owned spool descriptor; no in-memory stdout capture when set.
     pub stdout_file: Option<std::fs::File>,
@@ -51,6 +54,7 @@ impl ProcessSpec {
             args: args.into_iter().map(Into::into).collect(),
             env: Vec::new(),
             working_directory: None,
+            stdout_limit: OUTPUT_LIMIT,
             input: Vec::new(),
             stdout_file: None,
             timeout: None,
@@ -126,6 +130,8 @@ impl ProcessOwner {
     pub fn start(&self, spec: ProcessSpec) -> Result<ProcessWork, ProcessError> {
         if (!spec.program.is_absolute() && !spec.allow_relative_program)
             || spec.input.len() > INPUT_LIMIT
+            || spec.stdout_limit == 0
+            || spec.stdout_limit > MAX_STDOUT_LIMIT
             || spec
                 .working_directory
                 .as_ref()
@@ -152,6 +158,7 @@ async fn read_bounded(
     mut pipe: impl AsyncRead + Unpin,
     overflow: CancellationToken,
     discard: bool,
+    limit: usize,
 ) -> io::Result<Vec<u8>> {
     let mut result = Vec::new();
     let mut buffer = [0; 8192];
@@ -163,7 +170,7 @@ async fn read_bounded(
         if discard {
             continue;
         }
-        let remaining = OUTPUT_LIMIT - result.len();
+        let remaining = limit - result.len();
         result.extend_from_slice(&buffer[..count.min(remaining)]);
         if count > remaining {
             overflow.cancel();
@@ -272,9 +279,20 @@ async fn run(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take().expect("configured stderr pipe");
     let mut stdin = child.stdin.take().expect("configured stdin pipe");
-    let stdout =
-        stdout.map(|pipe| tokio::spawn(read_bounded(pipe, overflow.clone(), spec.discard_output)));
-    let stderr = tokio::spawn(read_bounded(stderr, overflow.clone(), spec.discard_output));
+    let stdout = stdout.map(|pipe| {
+        tokio::spawn(read_bounded(
+            pipe,
+            overflow.clone(),
+            spec.discard_output,
+            spec.stdout_limit,
+        ))
+    });
+    let stderr = tokio::spawn(read_bounded(
+        stderr,
+        overflow.clone(),
+        spec.discard_output,
+        OUTPUT_LIMIT,
+    ));
     let input = tokio::spawn(async move {
         stdin.write_all(&spec.input).await?;
         stdin.shutdown().await

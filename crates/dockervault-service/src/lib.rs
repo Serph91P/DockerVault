@@ -13,6 +13,8 @@ pub mod ownership;
 #[cfg(target_os = "linux")]
 pub mod process;
 #[cfg(target_os = "linux")]
+pub mod rclone;
+#[cfg(target_os = "linux")]
 pub mod recovery_activation;
 pub mod recovery_records;
 #[cfg(target_os = "linux")]
