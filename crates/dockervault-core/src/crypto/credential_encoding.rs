@@ -6,6 +6,59 @@ use base64::{
 };
 use zeroize::Zeroizing;
 
+pub(super) fn read_key(
+    mut reader: impl std::io::Read,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Zeroizing<String>, super::CryptoError> {
+    use super::CryptoError::{Cancelled, InvalidKey};
+    let mut buffer = Zeroizing::new([0u8; 8192]);
+    let mut tail = Zeroizing::new(Vec::new());
+    let mut encoded = Zeroizing::new(String::with_capacity(44));
+    let mut padded = false;
+    loop {
+        if cancelled() {
+            return Err(Cancelled);
+        }
+        let count = match reader.read(buffer.as_mut_slice()) {
+            Ok(n) => n,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if count == 0 {
+            break;
+        }
+        let mut text = Zeroizing::new(Vec::with_capacity(tail.len() + count));
+        text.extend_from_slice(&tail);
+        text.extend_from_slice(&buffer[..count]);
+        match std::str::from_utf8(&text) {
+            Ok(_) => tail.clear(),
+            Err(error) if error.error_len().is_none() => {
+                tail.clear();
+                tail.extend_from_slice(&text[error.valid_up_to()..]);
+            }
+            Err(_) => return Err(InvalidKey),
+        }
+        for &byte in &buffer[..count] {
+            if byte == b'=' {
+                padded = true;
+            } else if byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'-' | b'_') {
+                // Exactly 43 alphabet bytes encode a 32-byte Fernet key. In the
+                // accepted decoder, interior padding never erases alphabet data.
+                if encoded.len() == 43 {
+                    return Err(InvalidKey);
+                }
+                encoded.push(char::from(byte));
+                padded = false;
+            }
+        }
+    }
+    if !tail.is_empty() || encoded.len() != 43 || !padded {
+        return Err(InvalidKey);
+    }
+    encoded.push('=');
+    Ok(encoded)
+}
+
 pub(super) fn canonical(input: &[u8]) -> Result<Zeroizing<String>, ()> {
     let mut encoded = Zeroizing::new(Vec::new());
     let mut padding = 0;

@@ -245,6 +245,20 @@ encoding are zeroized. No dependency, key rotation or custom cryptography is add
 Use the current source's non-validating framing, not an older Base64 decoder's
 stop-at-padding assumption.
 
+`CredentialCipher::read_key` parses existing UTF-8 key text incrementally with
+8 KiB reads, a single partial UTF-8 character and at most one encoded 32-byte
+key. Large ignored text does not become an unbounded allocation. Invalid UTF-8,
+incomplete padding and cancellation fail closed; no key is generated or rewritten.
+`RecoveryGeneration::load_instance_cipher` adds the borrowed setup claim and
+matching zero-user/preparing-journal fence, explicit configuration precedence
+(with no invalid-key fallback), no-follow descriptor-bound regular-file access,
+full raw-file SHA256 against journaled ownership when applicable, and durable
+0600 permissions. It never replaces a missing/invalid key; its caller must first
+use the existing journaled `prepare_instance_key` path. This is prepared-custody
+loading, not full application startup, final activation or a key-rotation API.
+Actual tests include sparse 64 MiB file read -> IN_ACCESS -> cancellation ->
+physical owner settlement without changing key identity/mode or the journal.
+
 Primary references:
 [CPython 3.14 Base64](https://docs.python.org/3.14/library/base64.html),
 [exact 3.14.10 binascii framing](https://github.com/python/cpython/blob/v3.14.10/Modules/binascii.c),

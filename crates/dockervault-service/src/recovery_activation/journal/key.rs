@@ -81,7 +81,146 @@ fn parent(
     }
     Ok(Some(current))
 }
+struct HashedKey {
+    file: File,
+    digest: Sha256,
+}
+impl Read for HashedKey {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.file.read(buffer)?;
+        self.digest.update(&buffer[..count]);
+        Ok(count)
+    }
+}
 impl RecoveryGeneration<'_> {
+    /// Load prepared custody under this setup claim. Never lazily generate or
+    /// rotate keys; configuration wins over the key file, including invalid config.
+    pub fn load_instance_cipher(
+        &self,
+        key_file: &Path,
+        configured_key: &str,
+        cancel: &CancellationToken,
+    ) -> Result<CredentialCipher, JournalError> {
+        check(cancel)?;
+        let connection = Connection::open_with_flags(
+            self.guard
+                .database
+                .as_ref()
+                .ok_or(JournalError::NotDurable)?,
+            OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .map_err(|_| JournalError::Io)?;
+        connection
+            .pragma_update(None, "foreign_keys", true)
+            .map_err(|_| JournalError::Io)?;
+        let (users,text):(i64,String)=connection.query_row("SELECT (SELECT count(*) FROM users),value FROM app_settings WHERE key='recovery_activation'",[],|row|Ok((row.get(0)?,row.get(1)?))).map_err(|_|JournalError::InvalidJournal)?;
+        if users != 0 {
+            return Err(JournalError::AlreadySetup);
+        }
+        let record: Value =
+            serde_json::from_str(&text).map_err(|_| JournalError::InvalidJournal)?;
+        if record.get("state").and_then(Value::as_str) != Some("preparing")
+            || record.get("generation").and_then(Value::as_str) != Some(self.generation.as_str())
+        {
+            return Err(JournalError::InvalidJournal);
+        }
+        drop(connection);
+        if !configured_key.is_empty() {
+            return CredentialCipher::new(configured_key)
+                .map_err(|_| JournalError::UnsafeKeyPreparation);
+        }
+        let path = std::path::absolute(key_file).map_err(|_| JournalError::Io)?;
+        let name = path.file_name().ok_or(JournalError::UnsafeKeyPreparation)?;
+        let parent = parent(
+            path.parent().ok_or(JournalError::UnsafeKeyPreparation)?,
+            false,
+            cancel,
+        )?
+        .ok_or(JournalError::UnsafeKeyPreparation)?;
+        let expected = leaf(&parent, name)?.ok_or(JournalError::UnsafeKeyPreparation)?;
+        if expected.st_mode & nix::libc::S_IFMT != nix::libc::S_IFREG {
+            return Err(JournalError::UnsafeKeyPreparation);
+        }
+        let file = File::from(
+            openat(
+                &parent,
+                name,
+                OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|_| JournalError::UnsafeKeyPreparation)?,
+        );
+        let before = file.metadata().map_err(|_| JournalError::Io)?;
+        if !before.is_file() || before.dev() != expected.st_dev || before.ino() != expected.st_ino {
+            return Err(JournalError::UnsafeKeyPreparation);
+        }
+        let mut reader = HashedKey {
+            file,
+            digest: Sha256::new(),
+        };
+        let cipher =
+            CredentialCipher::read_key(&mut reader, || cancel.is_cancelled()).map_err(|error| {
+                match error {
+                    dockervault_core::crypto::CryptoError::Cancelled => JournalError::Cancelled,
+                    _ => JournalError::UnsafeKeyPreparation,
+                }
+            })?;
+        let after = reader.file.metadata().map_err(|_| JournalError::Io)?;
+        if (
+            before.dev(),
+            before.ino(),
+            before.len(),
+            before.mtime(),
+            before.mtime_nsec(),
+            before.ctime(),
+            before.ctime_nsec(),
+        ) != (
+            after.dev(),
+            after.ino(),
+            after.len(),
+            after.mtime(),
+            after.mtime_nsec(),
+            after.ctime(),
+            after.ctime_nsec(),
+        ) {
+            return Err(JournalError::UnsafeKeyPreparation);
+        }
+        let owned = match record.get("instance_key_preparing") {
+            None => false,
+            Some(value) => value.as_bool().ok_or(JournalError::InvalidJournal)?,
+        };
+        if owned {
+            let digest: String = reader
+                .digest
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            if record.get("key_device").and_then(Value::as_u64) != Some(before.dev())
+                || record.get("key_inode").and_then(Value::as_u64) != Some(before.ino())
+                || record.get("key_digest").and_then(Value::as_str) != Some(digest.as_str())
+            {
+                return Err(JournalError::UnsafeKeyPreparation);
+            }
+        }
+        check(cancel)?;
+        let current = leaf(&parent, name)?.ok_or(JournalError::UnsafeKeyPreparation)?;
+        if current.st_dev != before.dev() || current.st_ino != before.ino() {
+            return Err(JournalError::UnsafeKeyPreparation);
+        }
+        reader
+            .file
+            .set_permissions(Permissions::from_mode(0o600))
+            .map_err(|_| JournalError::Io)?;
+        reader.file.sync_all().map_err(|_| JournalError::Io)?;
+        parent.sync_all().map_err(|_| JournalError::Io)?;
+        let current = leaf(&parent, name)?.ok_or(JournalError::UnsafeKeyPreparation)?;
+        if current.st_dev != before.dev() || current.st_ino != before.ino() {
+            return Err(JournalError::UnsafeKeyPreparation);
+        }
+        check(cancel)?;
+        Ok(cipher)
+    }
     fn key_journal(&self, fields: Value) -> Result<(), JournalError> {
         let path = self
             .guard

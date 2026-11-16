@@ -100,6 +100,11 @@ fn actual_python_credential_key_and_token_framing_preserves_authenticated_bytes(
         let result = if case["target"] == "key" {
             let key = CredentialCipher::new(&changed);
             assert_eq!(
+                CredentialCipher::read_key(changed.as_bytes(), || false).is_ok(),
+                case["accepted"].as_bool().unwrap(),
+                "key text reader case{index}: {case}"
+            );
+            assert_eq!(
                 key.is_ok(),
                 case["accepted"].as_bool().unwrap(),
                 "key framing case{index}: {case}"
@@ -117,6 +122,63 @@ fn actual_python_credential_key_and_token_framing_preserves_authenticated_bytes(
             assert_eq!(actual, plain, "case{index}");
         }
     }
+}
+
+#[test]
+fn key_text_reader_is_bounded_utf8_checked_and_cooperatively_cancelled() {
+    let fixture: Value = serde_json::from_str(PUBLIC).unwrap();
+    let mut bytes = vec![b' '; 8191];
+    bytes.extend_from_slice("😀".as_bytes());
+    bytes.extend_from_slice(public_fixture_key().as_bytes());
+    bytes.extend_from_slice(b"\n");
+    let cipher = CredentialCipher::read_key(bytes.as_slice(), || false).unwrap();
+    assert_eq!(
+        cipher
+            .decrypt_value(fixture["fernet_ciphertext"].as_str().unwrap())
+            .unwrap(),
+        fixture["fernet_plaintext"].as_str().unwrap()
+    );
+    for tail in [b"\xff".as_slice(), b"\xf0\x90", b"A"] {
+        let mut bad = public_fixture_key().into_bytes();
+        bad.extend_from_slice(tail);
+        assert!(CredentialCipher::read_key(bad.as_slice(), || false).is_err());
+    }
+    assert!(matches!(
+        CredentialCipher::read_key(public_fixture_key().as_bytes(), || true),
+        Err(dockervault_core::crypto::CryptoError::Cancelled)
+    ));
+    struct Observed<R> {
+        inner: R,
+        calls: usize,
+    }
+    impl<R: std::io::Read> std::io::Read for Observed<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            assert!(buffer.len() <= 8192);
+            self.calls += 1;
+            self.inner.read(buffer)
+        }
+    }
+    let mut large = vec![b' '; 1024 * 1024];
+    large.extend_from_slice(public_fixture_key().as_bytes());
+    let mut reader = Observed {
+        inner: large.as_slice(),
+        calls: 0,
+    };
+    assert!(CredentialCipher::read_key(&mut reader, || false).is_ok());
+    assert!(reader.calls > 128);
+    let checks = std::cell::Cell::new(0);
+    let mut interrupted = Observed {
+        inner: large.as_slice(),
+        calls: 0,
+    };
+    assert!(matches!(
+        CredentialCipher::read_key(&mut interrupted, || {
+            checks.set(checks.get() + 1);
+            checks.get() > 2
+        }),
+        Err(dockervault_core::crypto::CryptoError::Cancelled)
+    ));
+    assert_eq!(interrupted.calls, 2);
 }
 
 #[test]

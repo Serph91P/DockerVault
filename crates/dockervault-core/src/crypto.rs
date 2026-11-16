@@ -63,6 +63,18 @@ impl CredentialCipher {
             .map(Self)
             .ok_or(CryptoError::InvalidKey)
     }
+    /// Read existing UTF-8 key text with fixed scratch space; never generate or
+    /// publish a replacement key. The caller owns I/O and custody/permissions.
+    pub fn read_key(
+        reader: impl std::io::Read,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Self, CryptoError> {
+        let key = credential_encoding::read_key(reader, &cancelled)?;
+        if cancelled() {
+            return Err(CryptoError::Cancelled);
+        }
+        Self::new(&key)
+    }
     pub fn encrypt_value(&self, plaintext: &str) -> String {
         if plaintext.is_empty() {
             String::new()
