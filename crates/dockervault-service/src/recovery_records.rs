@@ -77,22 +77,52 @@ pub(crate) fn check(
                 .map_err(|_| RecordValidationError::Invalid)?;
         }
     }
-    let serialized = serde_json::to_string(records).map_err(|_| RecordValidationError::Invalid)?;
-    let tables: BTreeMap<String, Vec<BTreeMap<String, &RawValue>>> =
-        serde_json::from_str(&serialized).map_err(|_| RecordValidationError::Invalid)?;
     let transaction = connection
         .transaction()
         .map_err(|_| RecordValidationError::Invalid)?;
+    insert_records(&transaction, records, cancel)?;
+    let mut foreign = transaction
+        .prepare("PRAGMA foreign_key_check")
+        .map_err(|_| RecordValidationError::Invalid)?;
+    if foreign
+        .query([])
+        .map_err(|_| RecordValidationError::Invalid)?
+        .next()
+        .map_err(|_| RecordValidationError::Invalid)?
+        .is_some()
+    {
+        return Err(RecordValidationError::Invalid);
+    }
+    drop(foreign);
+    transaction
+        .rollback()
+        .map_err(|_| RecordValidationError::Invalid)?;
+    Ok(())
+}
+pub(crate) fn insert_records(
+    transaction: &rusqlite::Transaction<'_>,
+    records: &PortableTables,
+    cancel: &CancellationToken,
+) -> Result<(), RecordValidationError> {
+    let serialized = serde_json::to_string(records).map_err(|_| RecordValidationError::Invalid)?;
+    let tables: BTreeMap<String, Vec<BTreeMap<String, &RawValue>>> =
+        serde_json::from_str(&serialized).map_err(|_| RecordValidationError::Invalid)?;
     for table in TABLE_ORDER {
+        let Some(first) = tables[table].first() else {
+            continue;
+        };
         let mut info = transaction
             .prepare(&format!("PRAGMA table_info({})", quote(table)))
             .map_err(|_| RecordValidationError::Invalid)?;
-        let columns: Vec<(String, String)> = info
+        let mut columns: Vec<(String, String)> = info
             .query_map([], |row| Ok((row.get(1)?, row.get(2)?)))
             .map_err(|_| RecordValidationError::Invalid)?
             .collect::<Result<_, _>>()
             .map_err(|_| RecordValidationError::Invalid)?;
         drop(info);
+        // Like source Table.insert(values): imported columns only, so retained
+        // deployment extension columns keep their own published defaults.
+        columns.retain(|(name, _)| first.contains_key(name));
         let names = columns
             .iter()
             .map(|(name, _)| quote(name))
@@ -131,22 +161,6 @@ pub(crate) fn check(
                 .map_err(|_| RecordValidationError::Invalid)?;
         }
     }
-    let mut foreign = transaction
-        .prepare("PRAGMA foreign_key_check")
-        .map_err(|_| RecordValidationError::Invalid)?;
-    if foreign
-        .query([])
-        .map_err(|_| RecordValidationError::Invalid)?
-        .next()
-        .map_err(|_| RecordValidationError::Invalid)?
-        .is_some()
-    {
-        return Err(RecordValidationError::Invalid);
-    }
-    drop(foreign);
-    transaction
-        .rollback()
-        .map_err(|_| RecordValidationError::Invalid)?;
     Ok(())
 }
 fn quote(name: &str) -> String {

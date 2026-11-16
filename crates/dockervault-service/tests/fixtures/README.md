@@ -1,4 +1,18 @@
-# Public synthetic restore fixture
+# Public synthetic service fixtures
+
+`insert-state-source.TEST_ONLY.json` was captured from the unchanged accepted
+#143 provider `fc1b3392fec6ecf9562ef88875ab143858d637bf` by actually invoking
+`recovery_service.insert_state` on isolated in-memory SQLite. It contains the
+synthetic input and raw SQL values for all nine portable tables, after decrypting
+only synthetic storage/Komodo fields for comparison. Keys are generated only in
+container RAM; no key or encrypted token is included. No app lifespan, live DB,
+provider connection, archive/key file or production credential was accessed.
+It checks SQL datetime/enum/boolean/opaque JSON binding, Python path relocation,
+null/empty/plaintext credential handling, and non-secret settings. Native tests
+add separate ciphertext-at-rest, caller-only commit/rollback, late SQL-fault,
+physical SQLite update-hook cancellation, and extension-column preservation
+assertions. This is logical row insertion evidence, not activation/cutover.
+
 
 `global-pax.TEST_ONLY.tar` contains only four public bytes (`data`). It was
 produced by unchanged Python 3.14.10 `tarfile`, PAX_FORMAT with global

@@ -212,6 +212,16 @@ Fernet material recovery, file references and retained OCI overrides. These are
 component proofs, not service restart/activation, provider transfer, rollback or
 complete R0–R14 acceptance.
 
+Logical `recovery_import::insert_state` likewise accepts only `ValidatedState`
+and a caller-owned, FK-enabled SQLite transaction. It reuses the offline stage's
+exact enum/datetime/lossless-JSON binder, protects only the three storage and two
+Komodo secret fields with the deployment Fernet cipher, and relocates archive
+and sidecar paths lexically to the configured root. It neither commits nor deletes
+rows or creates files; late SQL failure/cancellation remains the caller's rollback
+obligation. Retained deployment extension columns keep their defaults. Actual
+accepted-provider SQL snapshots and all 78 independent opaque-JSON/SQL-affinity
+cases are native assertions; full activation and pre/postwrite rollback remain open.
+
 Primary references:
 [reqwest Unix sockets](https://docs.rs/reqwest/0.13.5/reqwest/struct.ClientBuilder.html#method.unix_socket),
 [rclone RC security and config/create](https://rclone.org/rc/#config-create-create-a-config-remote).

@@ -16,6 +16,8 @@ pub mod process;
 pub mod rclone;
 #[cfg(target_os = "linux")]
 pub mod recovery_activation;
+#[cfg(target_os = "linux")]
+pub mod recovery_import;
 pub mod recovery_records;
 #[cfg(target_os = "linux")]
 pub mod recovery_state;
