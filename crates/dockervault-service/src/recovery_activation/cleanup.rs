@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod tests;
+
 use super::PreparationError;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde_json::Value;
@@ -57,9 +60,16 @@ pub(super) fn discard(database: &Path, key_file: &Path) -> Result<bool, Preparat
         None => false,
         Some(value) => value.as_bool().ok_or(PreparationError::InvalidJournal)?,
     };
+    // Validate all key custody before removing the generation: a rejected cleanup
+    // must retain its files as well as its durable obligation.
+    let key_cleanup = if key_preparing {
+        Some(plan_owned_key(key_file, generation, &value)?)
+    } else {
+        None
+    };
     remove_generation(database, generation)?;
-    if key_preparing {
-        remove_owned_key(key_file, generation, &value)?;
+    if let Some(plan) = key_cleanup {
+        plan.remove()?;
     }
     transaction
         .execute(
@@ -124,11 +134,11 @@ fn remove_if_identity(path: &Path, expected: &Metadata) -> Result<(), Preparatio
     }
     fs::remove_file(path).map_err(|_| PreparationError::Io)
 }
-fn remove_owned_key(
+fn plan_owned_key(
     key_file: &Path,
     generation: &str,
     record: &Value,
-) -> Result<(), PreparationError> {
+) -> Result<KeyCleanup, PreparationError> {
     let parent = directory(key_file.parent().ok_or(PreparationError::InvalidJournal)?)
         .map_err(|_| PreparationError::Io)?;
     let root = descriptor_path(&parent)?;
@@ -198,12 +208,71 @@ fn remove_owned_key(
             },
         },
     };
-    if owned {
-        remove_if_identity(&key, active.as_ref().expect("owned active file"))?;
+    let mut held = Vec::new();
+    // Retain descriptor identities across potentially long generation removal;
+    // stat snapshots alone do not prevent inode recycling.
+    for (path, expected) in [(&key, &active), (&stage, &staged)] {
+        if let Some(expected) = expected {
+            let file = OpenOptions::new()
+                .read(true)
+                .custom_flags(nix::libc::O_PATH | nix::libc::O_NOFOLLOW)
+                .open(path)
+                .map_err(|_| PreparationError::Io)?;
+            if !same_identity(
+                expected,
+                &file.metadata().map_err(|_| PreparationError::Io)?,
+            ) {
+                return Err(PreparationError::UnsafeKeyPreparation);
+            }
+            held.push(file);
+        }
     }
-    if let Some(staged) = staged {
-        remove_if_identity(&stage, &staged)?;
+    Ok(KeyCleanup {
+        _held: held,
+        parent,
+        key,
+        stage,
+        active,
+        staged,
+        owned,
+    })
+}
+struct KeyCleanup {
+    _held: Vec<File>,
+    parent: File,
+    key: PathBuf,
+    stage: PathBuf,
+    active: Option<Metadata>,
+    staged: Option<Metadata>,
+    owned: bool,
+}
+impl KeyCleanup {
+    fn remove(self) -> Result<(), PreparationError> {
+        // Validate both names before the first unlink, including same-inode writes.
+        for (path, expected) in [(&self.key, &self.active), (&self.stage, &self.staged)] {
+            let current = optional_metadata(path)?;
+            if !match (expected, current.as_ref()) {
+                (None, None) => true,
+                (Some(expected), Some(current)) => {
+                    same_identity(expected, current)
+                        && expected.len() == current.len()
+                        && expected.mtime() == current.mtime()
+                        && expected.mtime_nsec() == current.mtime_nsec()
+                        && expected.ctime() == current.ctime()
+                        && expected.ctime_nsec() == current.ctime_nsec()
+                }
+                _ => false,
+            } {
+                return Err(PreparationError::UnsafeKeyPreparation);
+            }
+        }
+        if self.owned {
+            remove_if_identity(&self.key, self.active.as_ref().expect("owned active file"))?;
+        }
+        if let Some(staged) = self.staged {
+            remove_if_identity(&self.stage, &staged)?;
+        }
+        self.parent.sync_all().map_err(|_| PreparationError::Io)?;
+        Ok(())
     }
-    parent.sync_all().map_err(|_| PreparationError::Io)?;
-    Ok(())
 }

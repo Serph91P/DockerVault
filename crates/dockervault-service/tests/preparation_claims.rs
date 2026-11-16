@@ -547,6 +547,19 @@ async fn prepared_instance_key_is_private_valid_journal_bound_and_removed_only_w
         .collect();
     assert!(record["key_digest"].as_str() == Some(&digest));
     assert!(!root.0.join(".recovery").exists());
+    let directory = generation.directory().unwrap();
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("obligation"),
+        b"PUBLIC generation must remain fenced",
+    )
+    .unwrap();
+    let directory_inode = std::fs::metadata(&directory).unwrap().ino();
+    let journal_before: String =
+        sqlx::query_scalar("SELECT value FROM app_settings WHERE key='recovery_activation'")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
     drop(generation);
     let reused = key.parent().unwrap().join(format!(
         ".dv-recovery-key-{}",
@@ -562,6 +575,21 @@ async fn prepared_instance_key_is_private_valid_journal_bound_and_removed_only_w
         b"PUBLIC unrelated reused stage name"
     );
     assert!(key.exists());
+    assert!(std::fs::read(&key).unwrap().as_slice() == bytes.as_slice());
+    assert_eq!(
+        std::fs::metadata(&directory).unwrap().ino(),
+        directory_inode
+    );
+    assert_eq!(
+        std::fs::read(directory.join("obligation")).unwrap(),
+        b"PUBLIC generation must remain fenced"
+    );
+    let journal_after: String =
+        sqlx::query_scalar("SELECT value FROM app_settings WHERE key='recovery_activation'")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(journal_after, journal_before);
     std::fs::remove_file(&reused).unwrap();
     assert!(guard.discard_incomplete(&key).unwrap());
     assert!(!key.exists());
