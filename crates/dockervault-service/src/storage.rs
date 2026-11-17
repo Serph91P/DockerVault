@@ -1,5 +1,6 @@
 //! Invocation-local source identity and provider byte-verification primitives.
 pub mod local;
+pub mod s3;
 pub mod webdav;
 use sha2::{Digest, Sha256};
 use std::{

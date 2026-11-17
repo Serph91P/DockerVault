@@ -4,6 +4,30 @@ The pinned Rust dependencies and licenses are recorded in `Cargo.lock` and check
 by `cargo deny`. Runtime distribution must retain the corresponding license texts,
 notices and source-availability information alongside its SBOM.
 
+## Native S3 SDK and modern TLS
+
+`aws-sdk-s3` 1.159.0 (Apache-2.0, Rust1.94.1+) supplies native SigV4,
+replayable bodies and the multipart protocol. The pinned Rust1.99.1 toolchain
+compiled its standard client. Only `default-https-client`, `http-1x` and
+`rt-tokio` are selected: the similarly named `rustls` feature additionally enables
+legacy Rustls0.21/WebPKI0.101 with unresolved advisories and is not enabled.
+No advisory ignore or TLS-validation bypass is allowed.
+
+The modern client uses AWS-LC1.19.0/sys0.47.0, Rustls0.23.46,
+WebPKI0.103.17 and untrusted0.9.0. Four exact package/version ISC allowances
+recognize their permissive copy/modify/distribute terms, not a general license
+exception or advisory waiver. Preserve all four unmodified source license texts
+in `docs/licenses/S3-*.txt`, including AWS-LC's inherited third-party notices,
+in service distributions. Offline core-only recovery does not link this client.
+Complete image/SBOM distribution verification remains an R13 gate.
+
+- SDK/features: <https://docs.rs/crate/aws-sdk-s3/1.159.0/features>
+- Modern versus legacy transports: <https://docs.rs/crate/aws-smithy-http-client/1.5.2/features>
+- Exact license sources: <https://docs.rs/crate/aws-lc-rs/1.19.0/source/LICENSE>,
+  <https://docs.rs/crate/aws-lc-sys/0.47.0/source/LICENSE>,
+  <https://docs.rs/crate/rustls-webpki/0.103.17/source/LICENSE>,
+  <https://docs.rs/crate/untrusted/0.9.0/source/LICENSE.txt>.
+
 ## Mozilla Fernet 0.2.2
 
 The unmodified `fernet` crate is licensed under **MPL-2.0**. DockerVault links the
