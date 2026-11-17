@@ -69,7 +69,7 @@ impl S3 {
     }
 }
 
-fn body_reader(
+pub(super) fn body_reader(
     body: aws_sdk_s3::primitives::ByteStream,
     cancel: CancellationToken,
     io_cancel: CancellationToken,

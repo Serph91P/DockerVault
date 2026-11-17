@@ -1,10 +1,12 @@
 mod download;
+mod upload;
 use crate::ownership::{Owner, Work, WorkError};
 use aws_sdk_s3::{
     Client,
     config::{BehaviorVersion, Credentials, Region, retry::RetryConfig, timeout::TimeoutConfig},
 };
 use std::time::Duration;
+pub use upload::S3UploadPolicy;
 
 pub struct S3Config {
     pub endpoint_url: Option<String>,
@@ -15,7 +17,6 @@ pub struct S3Config {
     pub secret_key: String,
 }
 
-#[derive(Debug)]
 pub enum S3Error {
     Config,
     Request,
@@ -26,6 +27,12 @@ pub enum S3Error {
     Io,
     Verification,
     PublicationUncertain,
+    MultipartUnsettled { upload_id: String },
+}
+impl std::fmt::Debug for S3Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
 }
 impl std::fmt::Display for S3Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -35,6 +42,9 @@ impl std::fmt::Display for S3Error {
             Self::Http(code) => write!(f, "S3 HTTP status {code}"),
             Self::Cancelled => f.write_str("S3 operation cancelled; remote effect may exist"),
             Self::Listing => f.write_str("S3 listing is incomplete or invalid"),
+            Self::MultipartUnsettled { .. } => {
+                f.write_str("S3 multipart cleanup is unconfirmed; retain its journal obligation")
+            }
             Self::Capacity => f.write_str("S3 I/O capacity exhausted"),
             Self::Io => f.write_str("S3 local I/O failed"),
             Self::Verification => f.write_str("S3 independent byte verification failed"),
