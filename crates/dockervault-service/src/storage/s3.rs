@@ -21,13 +21,44 @@ pub enum S3Error {
     Config,
     Request,
     Http(u16),
+    Provider {
+        status: Option<u16>,
+        code: String,
+    },
     Cancelled,
     Listing,
     Capacity,
     Io,
     Verification,
     PublicationUncertain,
-    MultipartUnsettled { upload_id: String },
+    MultipartUnsettled {
+        upload_id: String,
+        primary: Box<S3Error>,
+    },
+    CreationUnsettled {
+        primary: Box<S3Error>,
+    },
+}
+impl S3Error {
+    pub fn http_status(&self) -> Option<u16> {
+        match self {
+            Self::Http(status) => Some(*status),
+            Self::Provider { status, .. } => *status,
+            Self::MultipartUnsettled { primary, .. } | Self::CreationUnsettled { primary } => {
+                primary.http_status()
+            }
+            _ => None,
+        }
+    }
+    pub fn provider_code(&self) -> Option<&str> {
+        match self {
+            Self::Provider { code, .. } => Some(code),
+            Self::MultipartUnsettled { primary, .. } | Self::CreationUnsettled { primary } => {
+                primary.provider_code()
+            }
+            _ => None,
+        }
+    }
 }
 impl std::fmt::Debug for S3Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -40,10 +71,18 @@ impl std::fmt::Display for S3Error {
             Self::Config => f.write_str("invalid S3 configuration"),
             Self::Request => f.write_str("S3 request failed"),
             Self::Http(code) => write!(f, "S3 HTTP status {code}"),
+            Self::Provider {
+                status: Some(status),
+                ..
+            } => write!(f, "S3 HTTP status {status}"),
+            Self::Provider { status: None, .. } => f.write_str("S3 request failed"),
             Self::Cancelled => f.write_str("S3 operation cancelled; remote effect may exist"),
             Self::Listing => f.write_str("S3 listing is incomplete or invalid"),
             Self::MultipartUnsettled { .. } => {
                 f.write_str("S3 multipart cleanup is unconfirmed; retain its journal obligation")
+            }
+            Self::CreationUnsettled { .. } => {
+                f.write_str("S3 multipart creation is unconfirmed; retain its journal obligation")
             }
             Self::Capacity => f.write_str("S3 I/O capacity exhausted"),
             Self::Io => f.write_str("S3 local I/O failed"),
@@ -54,7 +93,31 @@ impl std::fmt::Display for S3Error {
         }
     }
 }
-impl std::error::Error for S3Error {}
+impl std::error::Error for S3Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::MultipartUnsettled { primary, .. } | Self::CreationUnsettled { primary } => {
+                Some(primary.as_ref())
+            }
+            _ => None,
+        }
+    }
+}
+
+fn request_error<E: aws_sdk_s3::error::ProvideErrorMetadata>(
+    error: aws_sdk_s3::error::SdkError<E>,
+) -> S3Error {
+    let status = error
+        .raw_response()
+        .map(|response| response.status().as_u16());
+    match error.as_service_error().and_then(|error| error.code()) {
+        Some(code) => S3Error::Provider {
+            status,
+            code: code.chars().take(500).collect(),
+        },
+        None => status.map_or(S3Error::Request, S3Error::Http),
+    }
+}
 
 #[derive(Clone)]
 pub struct S3 {
@@ -137,11 +200,7 @@ impl S3 {
             if cancel.is_cancelled() {
                 return Err(S3Error::Cancelled);
             }
-            result.map(|_| ()).map_err(|error| {
-                error.raw_response().map_or(S3Error::Request, |response| {
-                    S3Error::Http(response.status().as_u16())
-                })
-            })
+            result.map(|_| ()).map_err(request_error)
         })
     }
 
@@ -173,11 +232,7 @@ impl S3 {
                 if cancel.is_cancelled() {
                     return Err(S3Error::Cancelled);
                 }
-                let page = page.map_err(|error| {
-                    error.raw_response().map_or(S3Error::Request, |response| {
-                        S3Error::Http(response.status().as_u16())
-                    })
-                })?;
+                let page = page.map_err(request_error)?;
                 for object in page.contents() {
                     let key = object.key().ok_or(S3Error::Listing)?;
                     files.push(super::webdav::StorageEntry {
@@ -220,11 +275,7 @@ impl S3 {
             if cancel.is_cancelled() {
                 return Err(S3Error::Cancelled);
             }
-            result.map(|_| ()).map_err(|error| {
-                error.raw_response().map_or(S3Error::Request, |response| {
-                    S3Error::Http(response.status().as_u16())
-                })
-            })
+            result.map(|_| ()).map_err(request_error)
         })
     }
 }

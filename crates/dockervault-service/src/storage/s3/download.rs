@@ -35,11 +35,7 @@ impl S3 {
             if cancel.is_cancelled() {
                 return Err(S3Error::Cancelled);
             }
-            let response = response.map_err(|error| {
-                error.raw_response().map_or(S3Error::Request, |response| {
-                    S3Error::Http(response.status().as_u16())
-                })
-            })?;
+            let response = response.map_err(super::request_error)?;
             let expected = response
                 .content_length()
                 .and_then(|length| u64::try_from(length).ok())

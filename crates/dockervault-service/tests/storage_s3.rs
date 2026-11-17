@@ -166,7 +166,9 @@ async fn s3_delete_denial_preserves_status_without_disclosing_response_secrets()
         .await
         .unwrap()
         .unwrap_err();
-    assert!(matches!(error, S3Error::Http(403)));
+    assert!(
+        matches!(&error, S3Error::Provider { status: Some(403), code } if code == "AccessDenied")
+    );
     assert_eq!(error.to_string(), "S3 HTTP status 403");
     assert!(!format!("{error:?}").contains("PUBLIC-response"));
     server.await.unwrap();

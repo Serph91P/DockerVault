@@ -307,7 +307,10 @@ async fn s3_failed_abort_returns_the_exact_obligation_but_never_logs_provider_to
     let error = work.wait().await.unwrap().unwrap_err();
     assert!(!format!("{error:?} {error}").contains("PUBLIC-"));
     match error {
-        S3Error::MultipartUnsettled { upload_id } => assert_eq!(upload_id, "PUBLIC-unsettled-id"),
+        S3Error::MultipartUnsettled { upload_id, primary } => {
+            assert_eq!(upload_id, "PUBLIC-unsettled-id");
+            assert!(matches!(*primary, S3Error::Cancelled));
+        }
         _ => panic!("lost provider cleanup obligation"),
     }
     server.await.unwrap();
@@ -638,6 +641,150 @@ async fn s3_upload_retry_budget_is_four_physical_requests_not_multiplied_by_sdk_
     .unwrap()
     .unwrap_err();
     assert_eq!(error.to_string(), "S3 HTTP status 503");
+    server.await.unwrap();
+    assert_eq!(owner.active(), 0);
+    assert_eq!(io.active(), 0);
+    owner.shutdown(None).await;
+    io.shutdown(None).await;
+}
+
+#[tokio::test]
+async fn s3_abort_failure_keeps_primary_upload_code_and_status_in_the_retained_obligation() {
+    use dockervault_service::storage::s3::S3Error;
+    let fixture = Fixture::new();
+    let source = fixture.source(&vec![0; 5 * 1024 * 1024]);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let owner = Owner::new(1).unwrap();
+    let io = Owner::new(1).unwrap();
+    let backend = configured(listener.local_addr().unwrap(), owner.clone(), io.clone());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        request(&mut socket).await;
+        respond(&mut socket, b"<InitiateMultipartUploadResult><UploadId>PUBLIC-primary-error-id</UploadId></InitiateMultipartUploadResult>", "Content-Type: application/xml\r\n").await;
+        drop(socket);
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let (headers, _) = request(&mut socket).await;
+        assert!(headers.starts_with("PUT "));
+        let body = b"<Error><Code>SourceRejected</Code><Message>PUBLIC-message-must-not-escape</Message></Error>";
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 409 Conflict\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        socket.write_all(body).await.unwrap();
+        drop(socket);
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let (headers, _) = request(&mut socket).await;
+        assert!(headers.starts_with("DELETE "));
+        let body = b"<Error><Code>AccessDenied</Code></Error>";
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 403 Forbidden\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        socket.write_all(body).await.unwrap();
+    });
+    let error = backend
+        .upload(
+            source,
+            "archive".to_owned(),
+            S3UploadPolicy {
+                multipart_threshold_bytes: 5 * 1024 * 1024,
+                multipart_chunk_size: 5 * 1024 * 1024,
+            },
+        )
+        .unwrap()
+        .wait()
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.http_status(), Some(409));
+    assert_eq!(error.provider_code(), Some("SourceRejected"));
+    assert!(!format!("{error:?} {error}").contains("PUBLIC-"));
+    match error {
+        S3Error::MultipartUnsettled { upload_id, .. } => {
+            assert_eq!(upload_id, "PUBLIC-primary-error-id")
+        }
+        _ => panic!("lost uncertain multipart obligation"),
+    }
+    server.await.unwrap();
+    assert_eq!(owner.active(), 0);
+    assert_eq!(io.active(), 0);
+    owner.shutdown(None).await;
+    io.shutdown(None).await;
+}
+
+#[tokio::test]
+async fn s3_unreturned_creation_id_is_bounded_but_not_falsely_reported_as_settled_cancel() {
+    let fixture = Fixture::new();
+    let source = fixture.source(&vec![0; 5 * 1024 * 1024]);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let owner = Owner::new(1).unwrap();
+    let io = Owner::new(1).unwrap();
+    let backend = configured(listener.local_addr().unwrap(), owner.clone(), io.clone());
+    let (created, creation_seen) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let pending_uploads = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let provider_uploads = pending_uploads.clone();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let (headers, _) = request(&mut socket).await;
+        assert!(headers.contains("?uploads"));
+        provider_uploads.lock().unwrap().push("PUBLIC-late-id");
+        created.send(()).unwrap();
+        released.await.unwrap();
+        // Effect exists at the provider, but its ID reaches the client too late.
+        let body = b"<InitiateMultipartUploadResult><UploadId>PUBLIC-late-id</UploadId></InitiateMultipartUploadResult>";
+        let _ = socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await;
+        let _ = socket.write_all(body).await;
+    });
+    let work = backend
+        .upload(
+            source,
+            "archive".to_owned(),
+            S3UploadPolicy {
+                multipart_threshold_bytes: 5 * 1024 * 1024,
+                multipart_chunk_size: 5 * 1024 * 1024,
+            },
+        )
+        .unwrap();
+    creation_seen.await.unwrap();
+    // Only the clock is virtual: the request above used the real SDK and TCP endpoint.
+    tokio::time::pause();
+    work.cancel();
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_secs(11)).await;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), work.wait()).await.expect("unreturned creation must retain uncertainty after the 10s cleanup budget, not wait for the 300s read timeout").unwrap();
+    let error = result.unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "S3 multipart creation is unconfirmed; retain its journal obligation"
+    );
+    assert!(matches!(
+        error,
+        dockervault_service::storage::s3::S3Error::CreationUnsettled { .. }
+    ));
+    assert_eq!(*pending_uploads.lock().unwrap(), ["PUBLIC-late-id"]);
+    tokio::time::resume();
+    release.send(()).unwrap();
     server.await.unwrap();
     assert_eq!(owner.active(), 0);
     assert_eq!(io.active(), 0);

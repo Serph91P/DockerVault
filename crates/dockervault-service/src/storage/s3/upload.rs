@@ -1,4 +1,4 @@
-use super::{S3, S3Error, download::body_reader};
+use super::{S3, S3Error, download::body_reader, request_error};
 use crate::{
     ownership::{Work, WorkError},
     storage::VerifiedSource,
@@ -9,6 +9,7 @@ use aws_sdk_s3::{
 };
 use std::{future::Future, sync::Arc, time::Duration};
 use tokio_util::{io::SyncIoBridge, sync::CancellationToken};
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct S3UploadPolicy {
     pub multipart_threshold_bytes: i64,
@@ -74,11 +75,7 @@ impl S3 {
                                 .config_override(single_attempt())
                                 .send()
                                 .await
-                                .map_err(|error| {
-                                    error.raw_response().map_or(S3Error::Request, |response| {
-                                        S3Error::Http(response.status().as_u16())
-                                    })
-                                })
+                                .map_err(request_error)
                         },
                     )
                     .await?;
@@ -86,30 +83,32 @@ impl S3 {
                 if chunk > 5 * 1024 * 1024 * 1024 || source.len().div_ceil(chunk) > 10000 {
                     return Err(S3Error::Config);
                 }
-                let created = backend
+                let creation = backend
                     .client
                     .create_multipart_upload()
                     .bucket(&backend.bucket)
                     .key(&key)
-                    .send()
-                    .await
-                    .map_err(|error| {
-                        error.raw_response().map_or(S3Error::Request, |response| {
-                            S3Error::Http(response.status().as_u16())
-                        })
-                    })?;
+                    .send();
+                tokio::pin!(creation);
+                let created = tokio::select! {
+                    result = &mut creation => result,
+                    _ = cancel.cancelled() => {
+                        // Obtain the in-flight creation's ID before cleanup; never detach it.
+                        tokio::time::timeout(CLEANUP_TIMEOUT, &mut creation).await.map_err(|_| S3Error::CreationUnsettled { primary: Box::new(S3Error::Cancelled) })?
+                    }
+                }.map_err(|error| S3Error::CreationUnsettled { primary: Box::new(request_error(error)) })?;
                 let upload_id = created
                     .upload_id()
                     .filter(|id| !id.is_empty())
-                    .ok_or(S3Error::Request)?;
+                    .ok_or_else(|| S3Error::CreationUnsettled { primary: Box::new(S3Error::Request) })?;
                 let uploaded = backend
                     .upload_parts(source.clone(), chunk, &key, upload_id, &cancel)
                     .await;
-                if uploaded.is_err() {
+                if let Err(primary) = uploaded {
                     // Retain the ID for the durable caller if provider cleanup is not confirmed.
                     if !matches!(
                         tokio::time::timeout(
-                            Duration::from_secs(10),
+                            CLEANUP_TIMEOUT,
                             backend
                                 .client
                                 .abort_multipart_upload()
@@ -123,9 +122,10 @@ impl S3 {
                     ) {
                         return Err(S3Error::MultipartUnsettled {
                             upload_id: upload_id.to_owned(),
+                            primary: Box::new(primary),
                         });
                     }
-                    return uploaded;
+                    return Err(primary);
                 }
             }
             backend.verify_uploaded(source, &key, &cancel).await
@@ -162,11 +162,7 @@ impl S3 {
                         .config_override(single_attempt())
                         .send()
                         .await
-                        .map_err(|error| {
-                            error.raw_response().map_or(S3Error::Request, |response| {
-                                S3Error::Http(response.status().as_u16())
-                            })
-                        })
+                        .map_err(request_error)
                 })
                 .await?;
             parts.push(
@@ -206,11 +202,7 @@ impl S3 {
             _ = cancel.cancelled() => return Err(S3Error::Cancelled),
             result = completion => result,
         };
-        result.map_err(|error| {
-            error.raw_response().map_or(S3Error::Request, |response| {
-                S3Error::Http(response.status().as_u16())
-            })
-        })?;
+        result.map_err(request_error)?;
         Ok(())
     }
     async fn send_file<T, F, Fut>(
@@ -269,10 +261,8 @@ impl S3 {
                 }
                 Err(error) => {
                     if attempt == 3
-                        || !matches!(
-                            error,
-                            S3Error::Request | S3Error::Http(408 | 429 | 500..=599)
-                        )
+                        || !(matches!(&error, S3Error::Request)
+                            || matches!(error.http_status(), Some(408 | 429 | 500..=599)))
                     {
                         return Err(error);
                     }
@@ -308,11 +298,7 @@ impl S3 {
             _ = cancel.cancelled() => return Err(S3Error::Cancelled),
             response = response => response,
         };
-        let response = response.map_err(|error| {
-            error.raw_response().map_or(S3Error::Request, |response| {
-                S3Error::Http(response.status().as_u16())
-            })
-        })?;
+        let response = response.map_err(request_error)?;
         if cancel.is_cancelled() {
             return Err(S3Error::Cancelled);
         }
