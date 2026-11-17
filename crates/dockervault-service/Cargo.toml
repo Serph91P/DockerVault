@@ -39,6 +39,7 @@ dockervault-core = { path = "../dockervault-core" }
 workspace = true
 
 [dev-dependencies]
+bech32.workspace = true
 dockervault-tools = { path = "../dockervault-tools" }
 nix = { workspace = true, features = ["inotify"] }
 tokio-tungstenite.workspace = true

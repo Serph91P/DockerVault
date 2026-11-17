@@ -7,6 +7,8 @@ use dockervault_service::{
     storage::{VerifiedSource, local::LocalStorage},
 };
 use dockervault_tools::archive_worker::{Request, create_archive};
+#[path = "../../dockervault-core/tests/common/mod.rs"]
+mod common;
 use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt, symlink},
@@ -67,10 +69,8 @@ async fn plain_and_encrypted_compressed_and_uncompressed_restore_real_mutated_fi
             let key_path = backups.join("archive.key");
             let sidecar =
                 include_bytes!("../../dockervault-core/tests/fixtures/pax-links.tar.key.TEST_ONLY");
-            let identity = include_str!(
-                "../../dockervault-core/tests/fixtures/pax-links.tar.identity.TEST_ONLY"
-            );
-            let material = decrypt_dek(sidecar.as_slice(), identity).unwrap();
+            let identity = common::public_identity(false);
+            let material = decrypt_dek(sidecar.as_slice(), &identity).unwrap();
             let upload = if encrypted {
                 encrypt_file(&archive, &cipher, &material, &|| false).unwrap();
                 fs::write(&key_path, sidecar).unwrap();
@@ -140,7 +140,7 @@ async fn plain_and_encrypted_compressed_and_uncompressed_restore_real_mutated_fi
                     .unwrap();
                 let recovered = decrypt_dek(
                     &fs::read(download.join("archive.key")).unwrap()[..],
-                    identity,
+                    &identity,
                 )
                 .unwrap();
                 decrypt_file(

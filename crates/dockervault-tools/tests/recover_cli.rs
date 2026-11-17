@@ -4,6 +4,19 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 static NEXT: AtomicU64 = AtomicU64::new(0);
+#[path = "../../dockervault-core/tests/common/mod.rs"]
+mod common;
+fn write_identity(path: &std::path::Path, compressed: bool) {
+    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .unwrap();
+    file.write_all(common::public_identity(compressed).as_bytes())
+        .unwrap();
+}
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
@@ -32,6 +45,9 @@ fn fixtures() -> PathBuf {
 #[test]
 fn documented_four_flag_invocation_recovers_v1_and_legacy_without_external_executables() {
     let root = Fixture::new();
+    let key_root = Fixture::new();
+    let identity = key_root.0.join("identity");
+    write_identity(&identity, true);
     let output = root.0.join("recovered");
     let fixtures = fixtures();
     for suffix in ["", ".legacy"] {
@@ -41,7 +57,7 @@ fn documented_four_flag_invocation_recovers_v1_and_legacy_without_external_execu
             .arg("--output")
             .arg(&output)
             .arg("--identity")
-            .arg(fixtures.join("pax-links.tar.gz.identity.TEST_ONLY"))
+            .arg(&identity)
             .arg("--key")
             .arg(fixtures.join(format!("pax-links.tar.gz{suffix}.key.TEST_ONLY")))
             .output()
@@ -60,6 +76,9 @@ fn documented_four_flag_invocation_recovers_v1_and_legacy_without_external_execu
 #[test]
 fn offline_errors_preserve_destination_and_never_include_private_identity() {
     let root = Fixture::new();
+    let key_root = Fixture::new();
+    let identity = key_root.0.join("identity");
+    write_identity(&identity, false);
     let output = root.0.join("recovered");
     std::fs::write(&output, b"PUBLIC sentinel").unwrap();
     let fixtures = fixtures();
@@ -69,7 +88,7 @@ fn offline_errors_preserve_destination_and_never_include_private_identity() {
         .arg("--output")
         .arg(&output)
         .arg("--identity")
-        .arg(fixtures.join("pax-links.tar.identity.TEST_ONLY"))
+        .arg(&identity)
         .arg("--key")
         .arg(fixtures.join("pax-links.tar.key.TEST_ONLY"))
         .output()
@@ -90,6 +109,9 @@ fn sigterm_during_actual_plaintext_staging_joins_before_exit_and_preserves_desti
     }
     let root = Fixture::new();
     let source = root.0.join("source");
+    let key_root = Fixture::new();
+    let identity = key_root.0.join("identity");
+    write_identity(&identity, false);
     let cipher = root.0.join("input.enc");
     let output = root.0.join("recovered");
     std::fs::File::create(&source)
@@ -120,7 +142,7 @@ fn sigterm_during_actual_plaintext_staging_joins_before_exit_and_preserves_desti
             .arg("--output")
             .arg(&output)
             .arg("--identity")
-            .arg(fixtures().join("pax-links.tar.identity.TEST_ONLY"))
+            .arg(&identity)
             .arg("--key")
             .arg(fixtures().join("pax-links.tar.key.TEST_ONLY"))
             .stdout(std::process::Stdio::null())

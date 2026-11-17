@@ -19,6 +19,9 @@ dockervault-core = { path = "../dockervault-core", default-features = false }
 [lints]
 workspace = true
 
+[dev-dependencies]
+bech32.workspace = true
+
 [[example]]
 name = "archive_worker_privileges"
 path = "tests/bin/archive_worker_privileges.rs"

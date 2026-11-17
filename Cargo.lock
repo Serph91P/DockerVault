@@ -1023,6 +1023,7 @@ dependencies = [
  "age",
  "argon2",
  "base64 0.22.1",
+ "bech32",
  "chrono",
  "fernet",
  "indexmap",
@@ -1043,6 +1044,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bcrypt",
+ "bech32",
  "bollard",
  "chrono",
  "dockervault-core",
@@ -1074,6 +1076,7 @@ dependencies = [
 name = "dockervault-tools"
 version = "0.1.0"
 dependencies = [
+ "bech32",
  "dockervault-core",
  "flate2",
  "getrandom 0.3.4",

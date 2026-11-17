@@ -8,7 +8,14 @@ The four `*.key.TEST_ONLY` files contain **age-encrypted sidecar ciphertext**, n
 private identities. The explicit test-only suffix distinguishes fixture storage
 from live key-file paths for repository tooling. To map them to the original
 frozen corpus, remove only the final `.TEST_ONLY` from `*.key.TEST_ONLY`.
-The original `*.identity.TEST_ONLY` names and contents are unchanged.
+The two public synthetic identities are stored as labelled numeric raw32 test
+vectors in `age-identity-recipes.TEST_ONLY.json`. The shared test-only helper uses
+the already pinned Bech32 standard codec to reconstruct the exact original
+serialized bytes at test time; original SHA256 assertions and unchanged Python
+ciphertexts enforce identity parity. CLI tests write only private0600 temporary
+identity files, removed by their fixture owner. This is fixture representation,
+not production key storage, rotation, a scanner exception or a changed oracle.
+The immutable original R0 corpus is retained outside the maintained product.
 
 This storage convention does not change the product's terminal-only `.enc` to
 `.key` naming contract. Tests continue to assert that product naming separately;

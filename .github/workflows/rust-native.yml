@@ -70,6 +70,12 @@ jobs:
           docker exec "$container" mkdir /work/fixtures
           tar -C crates/dockervault-core/tests/fixtures -cf - . | \
             docker exec --interactive "$container" tar -xf - -C /work/fixtures
+          # Reconstruct PUBLIC synthetic fixture bytes in the build image only.
+          # The isolated recovery image still contains no compiler/Python/server.
+          docker run --rm --network none --user 1000:1000 dockervault-rust-ci \
+            cargo run --quiet --example public_fixture_identity -p dockervault-tools --locked --offline -- gzip | \
+            docker exec --interactive "$container" /bin/sh -ec \
+              'umask 077; cat > /work/fixtures/pax-links.tar.gz.identity.TEST_ONLY'
           docker exec "$container" /bin/sh -ec '
             for program in python python3 age openssl sqlite3 dockervault-service; do
               if command -v "$program" >/dev/null 2>&1; then exit 1; fi
