@@ -1,6 +1,6 @@
 //! Native DAV streams and bounded metadata, with physically owned file producers.
 mod xml;
-use super::{VerifiedSource, check};
+use super::VerifiedSource;
 use crate::ownership::{Owner, Work, WorkError};
 use reqwest::{Body, Client, Method, RequestBuilder, Response, Url};
 use std::{
@@ -411,17 +411,8 @@ fn source_body(
     source: Arc<VerifiedSource>,
     owner: &Owner,
 ) -> Result<(Body, Work<io::Result<()>>), DavError> {
-    let (tx, rx) = mpsc::channel::<Result<Vec<u8>, io::Error>>(8);
-    let runtime = tokio::runtime::Handle::current();
-    let work=owner.submit_blocking(move|cancel|{
-        let mut file=source.reopen()?;let mut buffer=[0u8;65536];
-        loop{check(&||cancel.is_cancelled())?;let count=file.read(&mut buffer)?;if count==0{break;}let part=buffer[..count].to_vec();runtime.block_on(async{tokio::select!{_=cancel.cancelled()=>Err(io::Error::new(io::ErrorKind::Interrupted,"Upload cancelled")),sent=tx.send(Ok(part))=>sent.map_err(|_|io::Error::new(io::ErrorKind::BrokenPipe,"Upload body closed"))}})?;}
-        source.check_unchanged()
-    }).map_err(|_|DavError::Capacity)?;
-    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|item| (item, rx))
-    });
-    Ok((Body::wrap_stream(stream), work))
+    let length = source.len();
+    super::upload::source_body(source, owner, 0, length).map_err(|_| DavError::Capacity)
 }
 enum ReadPart {
     Bytes(Vec<u8>),

@@ -118,6 +118,56 @@ async fn s3_download_publishes_only_complete_bytes_and_computes_independent_sha2
     }
 }
 #[tokio::test]
+async fn s3_cancel_before_get_headers_does_not_start_or_publish_a_file_writer() {
+    let fixture = Fixture::new();
+    fs::write(fixture.0.join("archive"), b"existing destination").unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let tasks = Owner::new(1).unwrap();
+    let io = Owner::new(1).unwrap();
+    let backend = configured(listener.local_addr().unwrap(), tasks.clone(), io.clone());
+    let (received, ready) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        headers(&mut socket).await;
+        received.send(()).unwrap();
+        released.await.unwrap();
+        let _ = socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await;
+    });
+    let work = backend
+        .download(
+            "archive".to_owned(),
+            fs::File::open(&fixture.0).unwrap(),
+            PathBuf::from("archive"),
+        )
+        .unwrap();
+    ready.await.unwrap();
+    assert_eq!(io.active(), 0);
+    work.cancel();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), work.wait())
+        .await
+        .expect("GET cancellation must not wait for response headers")
+        .unwrap();
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "S3 operation cancelled; remote effect may exist"
+    );
+    release.send(()).unwrap();
+    server.await.unwrap();
+    assert_eq!(
+        fs::read(fixture.0.join("archive")).unwrap(),
+        b"existing destination"
+    );
+    assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 1);
+    assert_eq!(tasks.active(), 0);
+    assert_eq!(io.active(), 0);
+    tasks.shutdown(None).await;
+    io.shutdown(None).await;
+}
+
+#[tokio::test]
 async fn s3_body_cancel_physically_settles_writer_without_publishing_or_leaking_stage() {
     for shutdown_io in [false, true] {
         let fixture = Fixture::new();

@@ -27,8 +27,11 @@ impl S3 {
                 .get_object()
                 .bucket(&backend.bucket)
                 .key(backend.key(&remote))
-                .send()
-                .await;
+                .send();
+            let response = tokio::select! { biased;
+                _ = cancel.cancelled() => return Err(S3Error::Cancelled),
+                response = response => response,
+            };
             if cancel.is_cancelled() {
                 return Err(S3Error::Cancelled);
             }

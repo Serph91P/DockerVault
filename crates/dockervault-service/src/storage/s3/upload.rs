@@ -4,10 +4,10 @@ use crate::{
     storage::VerifiedSource,
 };
 use aws_sdk_s3::{
-    primitives::{ByteStream, Length},
+    primitives::ByteStream,
     types::{CompletedMultipartUpload, CompletedPart},
 };
-use std::{os::fd::AsRawFd, path::Path, sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 use tokio_util::{io::SyncIoBridge, sync::CancellationToken};
 
 pub struct S3UploadPolicy {
@@ -36,15 +36,15 @@ impl S3 {
                 return Err(S3Error::Cancelled);
             }
             let source_check = source.clone();
-            let retained = backend
+            backend
                 .io
-                .submit_blocking(move |_| source_check.reopen())
+                .submit_blocking(move |_| source_check.check_unchanged())
                 .map_err(|_| S3Error::Capacity)?
                 .wait()
                 .await
                 .map_err(|_| S3Error::Io)?
                 .map_err(|_| S3Error::Io)?;
-            let path = std::path::PathBuf::from(format!("/proc/self/fd/{}", retained.as_raw_fd()));
+
             let threshold = policy.multipart_threshold_bytes.max(5 * 1024 * 1024) as u64;
             let chunk = policy.multipart_chunk_size.max(5 * 1024 * 1024) as u64;
             let key = backend.key(&remote);
@@ -52,24 +52,36 @@ impl S3 {
                 return Err(S3Error::Cancelled);
             }
             if source.len() < threshold {
-                let body = file_body(&path, 0, source.len()).await?;
                 // PUT has no protocol abort. Do not select/drop the request on cancellation.
-                let result = backend
-                    .client
-                    .put_object()
-                    .bucket(&backend.bucket)
-                    .key(&key)
-                    .body(body)
-                    .send()
-                    .await;
-                if cancel.is_cancelled() {
-                    return Err(S3Error::Cancelled);
-                }
-                result.map_err(|error| {
-                    error.raw_response().map_or(S3Error::Request, |response| {
-                        S3Error::Http(response.status().as_u16())
-                    })
-                })?;
+                backend
+                    .send_file(
+                        source.clone(),
+                        0,
+                        source.len(),
+                        &cancel,
+                        false,
+                        |body| async {
+                            backend
+                                .client
+                                .put_object()
+                                .bucket(&backend.bucket)
+                                .key(&key)
+                                .content_length(
+                                    i64::try_from(source.len()).map_err(|_| S3Error::Config)?,
+                                )
+                                .body(body)
+                                .customize()
+                                .config_override(single_attempt())
+                                .send()
+                                .await
+                                .map_err(|error| {
+                                    error.raw_response().map_or(S3Error::Request, |response| {
+                                        S3Error::Http(response.status().as_u16())
+                                    })
+                                })
+                        },
+                    )
+                    .await?;
             } else {
                 if chunk > 5 * 1024 * 1024 * 1024 || source.len().div_ceil(chunk) > 10000 {
                     return Err(S3Error::Config);
@@ -91,7 +103,7 @@ impl S3 {
                     .filter(|id| !id.is_empty())
                     .ok_or(S3Error::Request)?;
                 let uploaded = backend
-                    .upload_parts(&path, source.len(), chunk, &key, upload_id, &cancel)
+                    .upload_parts(source.clone(), chunk, &key, upload_id, &cancel)
                     .await;
                 if uploaded.is_err() {
                     // Retain the ID for the durable caller if provider cleanup is not confirmed.
@@ -116,14 +128,12 @@ impl S3 {
                     return uploaded;
                 }
             }
-            drop(retained);
             backend.verify_uploaded(source, &key, &cancel).await
         })
     }
     async fn upload_parts(
         &self,
-        path: &Path,
-        length: u64,
+        source: Arc<VerifiedSource>,
         chunk: u64,
         key: &str,
         upload_id: &str,
@@ -131,28 +141,34 @@ impl S3 {
     ) -> Result<(), S3Error> {
         let mut parts = Vec::new();
         let mut offset = 0;
+        let length = source.len();
         while offset < length {
             if cancel.is_cancelled() {
                 return Err(S3Error::Cancelled);
             }
             let amount = chunk.min(length - offset);
-            let body = file_body(path, offset, amount).await?;
             let number = i32::try_from(parts.len() + 1).map_err(|_| S3Error::Config)?;
             let part = self
-                .client
-                .upload_part()
-                .bucket(&self.bucket)
-                .key(key)
-                .upload_id(upload_id)
-                .part_number(number)
-                .body(body)
-                .send()
-                .await
-                .map_err(|error| {
-                    error.raw_response().map_or(S3Error::Request, |response| {
-                        S3Error::Http(response.status().as_u16())
-                    })
-                })?;
+                .send_file(source.clone(), offset, amount, cancel, true, |body| async {
+                    self.client
+                        .upload_part()
+                        .bucket(&self.bucket)
+                        .key(key)
+                        .upload_id(upload_id)
+                        .part_number(number)
+                        .content_length(amount as i64)
+                        .body(body)
+                        .customize()
+                        .config_override(single_attempt())
+                        .send()
+                        .await
+                        .map_err(|error| {
+                            error.raw_response().map_or(S3Error::Request, |response| {
+                                S3Error::Http(response.status().as_u16())
+                            })
+                        })
+                })
+                .await?;
             parts.push(
                 CompletedPart::builder()
                     .e_tag(part.e_tag.ok_or(S3Error::Request)?)
@@ -174,7 +190,8 @@ impl S3 {
         if cancel.is_cancelled() {
             return Err(S3Error::Cancelled);
         }
-        self.client
+        let completion = self
+            .client
             .complete_multipart_upload()
             .bucket(&self.bucket)
             .key(key)
@@ -184,15 +201,94 @@ impl S3 {
                     .set_parts(Some(parts))
                     .build(),
             )
-            .send()
-            .await
-            .map_err(|error| {
-                error.raw_response().map_or(S3Error::Request, |response| {
-                    S3Error::Http(response.status().as_u16())
-                })
-            })?;
+            .send();
+        let result = tokio::select! { biased;
+            _ = cancel.cancelled() => return Err(S3Error::Cancelled),
+            result = completion => result,
+        };
+        result.map_err(|error| {
+            error.raw_response().map_or(S3Error::Request, |response| {
+                S3Error::Http(response.status().as_u16())
+            })
+        })?;
         Ok(())
     }
+    async fn send_file<T, F, Fut>(
+        &self,
+        source: Arc<VerifiedSource>,
+        offset: u64,
+        length: u64,
+        cancel: &CancellationToken,
+        abort_on_cancel: bool,
+        send: F,
+    ) -> Result<T, S3Error>
+    where
+        F: Fn(ByteStream) -> Fut,
+        Fut: Future<Output = Result<T, S3Error>>,
+    {
+        for attempt in 0..4 {
+            if cancel.is_cancelled() {
+                return Err(S3Error::Cancelled);
+            }
+            let source_check = source.clone();
+            self.io
+                .submit_blocking(move |_| source_check.check_unchanged())
+                .map_err(|_| S3Error::Capacity)?
+                .wait()
+                .await
+                .map_err(|_| S3Error::Io)?
+                .map_err(|_| S3Error::Io)?;
+            if cancel.is_cancelled() {
+                return Err(S3Error::Cancelled);
+            }
+            let (body, producer) =
+                crate::storage::upload::source_body(source.clone(), &self.io, offset, length)
+                    .map_err(|_| S3Error::Capacity)?;
+            let producer_cancel = producer.cancellation_token();
+            let body = ByteStream::new(aws_smithy_types::body::SdkBody::from_body_1_x(body));
+            let request = send(body);
+            let result = if abort_on_cancel {
+                tokio::select! { biased;
+                    _ = cancel.cancelled() => Err(S3Error::Cancelled),
+                    _ = producer_cancel.cancelled() => Err(S3Error::Io),
+                    result = request => result,
+                }
+            } else {
+                request.await
+            };
+            // Closing an HTTP future cannot settle a blocking read. Join its owner on EVERY path.
+            producer.cancel();
+            let produced = producer.wait().await.map_err(|_| S3Error::Io)?;
+            if cancel.is_cancelled() {
+                return Err(S3Error::Cancelled);
+            }
+            match result {
+                Ok(output) => {
+                    produced.map_err(|_| S3Error::Io)?;
+                    return Ok(output);
+                }
+                Err(error) => {
+                    if attempt == 3
+                        || !matches!(
+                            error,
+                            S3Error::Request | S3Error::Http(408 | 429 | 500..=599)
+                        )
+                    {
+                        return Err(error);
+                    }
+                    let mut random = [0u8; 8];
+                    getrandom::fill(&mut random).map_err(|_| S3Error::Request)?;
+                    let delay = Duration::from_secs_f64(
+                        (1u64 << attempt) as f64
+                            * (u64::from_le_bytes(random) as f64 / u64::MAX as f64),
+                    );
+                    tokio::select! { _ = cancel.cancelled() => return Err(S3Error::Cancelled), _ = tokio::time::sleep(delay) => {} }
+                }
+            }
+        }
+        unreachable!("four bounded upload attempts return their result")
+    }
+
     async fn verify_uploaded(
         &self,
         source: Arc<VerifiedSource>,
@@ -207,13 +303,16 @@ impl S3 {
             .get_object()
             .bucket(&self.bucket)
             .key(key)
-            .send()
-            .await
-            .map_err(|error| {
-                error.raw_response().map_or(S3Error::Request, |response| {
-                    S3Error::Http(response.status().as_u16())
-                })
-            })?;
+            .send();
+        let response = tokio::select! { biased;
+            _ = cancel.cancelled() => return Err(S3Error::Cancelled),
+            response = response => response,
+        };
+        let response = response.map_err(|error| {
+            error.raw_response().map_or(S3Error::Request, |response| {
+                S3Error::Http(response.status().as_u16())
+            })
+        })?;
         if cancel.is_cancelled() {
             return Err(S3Error::Cancelled);
         }
@@ -243,14 +342,7 @@ impl S3 {
         result.map_err(|_| S3Error::Verification)
     }
 }
-async fn file_body(path: &Path, offset: u64, length: u64) -> Result<ByteStream, S3Error> {
-    // A path to the HELD descriptor gives SDK retries independent offsets, never a new path occupant.
-    ByteStream::read_from()
-        .path(path)
-        .offset(offset)
-        .length(Length::Exact(length))
-        .buffer_size(65536)
-        .build()
-        .await
-        .map_err(|_| S3Error::Io)
+fn single_attempt() -> aws_sdk_s3::config::Builder {
+    aws_sdk_s3::config::Builder::new()
+        .retry_config(aws_sdk_s3::config::retry::RetryConfig::standard().with_max_attempts(1))
 }
