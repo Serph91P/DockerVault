@@ -15,6 +15,7 @@ fn configured(address: std::net::SocketAddr, owner: Owner) -> S3 {
             secret_key: "PUBLIC synthetic secret".to_owned(),
         },
         owner,
+        Owner::new(1).unwrap(),
     )
     .unwrap()
 }
@@ -207,6 +208,7 @@ async fn s3_bucket_probe_uses_explicit_signed_configuration_on_real_tcp() {
             secret_key: "PUBLIC synthetic secret".to_owned(),
         },
         tasks.clone(),
+        Owner::new(1).unwrap(),
     )
     .unwrap();
     assert_eq!(storage.key("/sub/é %?.enc"), "PUBLIC-prefix//sub/é %?.enc");

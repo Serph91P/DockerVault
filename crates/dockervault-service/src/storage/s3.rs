@@ -1,3 +1,4 @@
+mod download;
 use crate::ownership::{Owner, Work, WorkError};
 use aws_sdk_s3::{
     Client,
@@ -21,6 +22,10 @@ pub enum S3Error {
     Http(u16),
     Cancelled,
     Listing,
+    Capacity,
+    Io,
+    Verification,
+    PublicationUncertain,
 }
 impl std::fmt::Display for S3Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -30,6 +35,12 @@ impl std::fmt::Display for S3Error {
             Self::Http(code) => write!(f, "S3 HTTP status {code}"),
             Self::Cancelled => f.write_str("S3 operation cancelled; remote effect may exist"),
             Self::Listing => f.write_str("S3 listing is incomplete or invalid"),
+            Self::Capacity => f.write_str("S3 I/O capacity exhausted"),
+            Self::Io => f.write_str("S3 local I/O failed"),
+            Self::Verification => f.write_str("S3 independent byte verification failed"),
+            Self::PublicationUncertain => {
+                f.write_str("S3 local publication durability is uncertain")
+            }
         }
     }
 }
@@ -41,9 +52,10 @@ pub struct S3 {
     bucket: String,
     prefix: String,
     owner: Owner,
+    io: Owner,
 }
 impl S3 {
-    pub fn new(config: S3Config, owner: Owner) -> Result<Self, S3Error> {
+    pub fn new(config: S3Config, owner: Owner, io: Owner) -> Result<Self, S3Error> {
         if config.bucket.is_empty() || config.access_key.is_empty() || config.secret_key.is_empty()
         {
             return Err(S3Error::Config);
@@ -88,6 +100,7 @@ impl S3 {
             bucket: config.bucket,
             prefix: config.base_path,
             owner,
+            io,
         })
     }
 
