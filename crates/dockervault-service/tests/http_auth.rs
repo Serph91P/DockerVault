@@ -175,6 +175,50 @@ async fn operation_detail_requires_authentication_and_ownership() {
         .await;
     assert_eq!(status, 200);
     assert_eq!(body.as_array().unwrap().len(), 1);
+    for (query, expected) in [
+        ("limit=1.0", listing.clone()),
+        ("limit=%201%20", listing.clone()),
+        ("storage_id=1.0", json!([])),
+    ] {
+        let (status, _, body) = server
+            .request(
+                "GET",
+                &format!("/api/v1/operations?{query}"),
+                &[("Cookie", &cookie)],
+                None,
+            )
+            .await;
+        assert_eq!(status, 200, "{query}");
+        assert_eq!(body, expected, "{query}");
+    }
+    for value in ["1.1", "1e0", "1.00000000000000001"] {
+        let (status, _, body) = server
+            .request(
+                "GET",
+                &format!("/api/v1/operations?limit={value}"),
+                &[("Cookie", &cookie)],
+                None,
+            )
+            .await;
+        assert_eq!(status, 422, "{value}");
+        assert_eq!(
+            body,
+            json!({"detail":"Validation error","errors":[{"field":"query.limit","message":"Input should be a valid integer, unable to parse string as an integer"}]})
+        );
+    }
+    let (status, _, body) = server
+        .request(
+            "GET",
+            "/api/v1/operations?storage_id=0.0",
+            &[("Cookie", &cookie)],
+            None,
+        )
+        .await;
+    assert_eq!(status, 422);
+    assert_eq!(
+        body,
+        json!({"detail":"Validation error","errors":[{"field":"query.storage_id.literal['local']","message":"Input should be 'local'"},{"field":"query.storage_id.constrained-int","message":"Input should be greater than 0"}]})
+    );
     let (status, _, _) = server
         .request("GET", "/api/v1/operations/mine", &[], None)
         .await;

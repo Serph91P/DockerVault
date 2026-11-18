@@ -58,22 +58,22 @@ pub(super) async fn list(
     let storage = match query.get("storage_id").map(String::as_str) {
         None => None,
         Some("local") => Some("local".into()),
-        Some(value) => match value.parse::<i64>() {
-            Ok(value) if value > 0 => Some(value.to_string()),
+        Some(value) => match query_integer(value) {
+            Some(value) if value > 0 => Some(value.to_string()),
             parsed => {
                 errors.push(json!({"field":"query.storage_id.literal['local']","message":"Input should be 'local'"}));
-                errors.push(json!({"field":"query.storage_id.constrained-int","message":if parsed.is_ok() { "Input should be greater than 0" } else { INTEGER }}));
+                errors.push(json!({"field":"query.storage_id.constrained-int","message":if parsed.is_some() { "Input should be greater than 0" } else { INTEGER }}));
                 None
             }
         },
     };
     let limit = query
         .get("limit")
-        .map_or(Ok(20), |value| value.parse::<i64>());
+        .map_or(Some(20), |value| query_integer(value));
     let message = match limit {
-        Err(_) => Some(INTEGER),
-        Ok(n) if n < 1 => Some("Input should be greater than or equal to 1"),
-        Ok(n) if n > 100 => Some("Input should be less than or equal to 100"),
+        None => Some(INTEGER),
+        Some(n) if n < 1 => Some("Input should be greater than or equal to 1"),
+        Some(n) if n > 100 => Some("Input should be less than or equal to 100"),
         _ => None,
     };
     if let Some(message) = message {
@@ -87,6 +87,31 @@ pub(super) async fn list(
         Ok(rows) => Json(rows).into_response(),
         Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
     }
+}
+
+// Match the legacy coercion of query strings without rounding or changing JSON validation.
+fn query_integer(value: &str) -> Option<i64> {
+    let value = value.trim();
+    let integer = match value.split_once('.') {
+        Some((integer, fraction))
+            if !fraction.is_empty() && fraction.bytes().all(|b| b == b'0') =>
+        {
+            integer
+        }
+        Some(_) => return None,
+        None => value,
+    };
+    if integer.contains('_') {
+        let digits = integer.strip_prefix(['+', '-']).unwrap_or(integer);
+        if !digits
+            .split('_')
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return None;
+        }
+        return integer.replace('_', "").parse().ok();
+    }
+    integer.parse().ok()
 }
 
 fn failure(status: StatusCode, detail: &str) -> Response {
