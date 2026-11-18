@@ -748,11 +748,90 @@ struct RcloneDelete {
     processes: ProcessOwner,
     snapshot: Option<String>,
     config: Arc<crate::config::Config>,
+    managed: Option<ManagedRcloneDelete>,
+}
+
+struct ManagedRcloneDelete {
+    runner: crate::rclone::ManagedConfigBuilder,
+    state: serde_json::Value,
+    remote: String,
+    cipher: Arc<dockervault_core::crypto::CredentialCipher>,
+}
+
+async fn prepare_rclone_delete(
+    state: Option<serde_json::Value>,
+    remote: String,
+    processes: &ProcessOwner,
+    io: &Owner,
+    config: &Arc<crate::config::Config>,
+) -> Result<Option<ManagedRcloneDelete>, StorageRecoveryError> {
+    use StorageRecoveryError::InvalidStorageConfiguration as Invalid;
+    let Some(state) = state else {
+        return Ok(None);
+    };
+    let config = config.clone();
+    let cipher = io
+        .submit_blocking(move |cancel| {
+            load_delete_cipher(
+                std::path::Path::new("/app/data/.credential_key"),
+                config.credential_encryption_key.expose(),
+                || cancel.is_cancelled(),
+            )
+        })
+        .map_err(|_| Invalid)?
+        .wait()
+        .await
+        .map_err(|_| Invalid)??;
+    Ok(Some(ManagedRcloneDelete {
+        runner: crate::rclone::ManagedConfigBuilder::new(
+            processes.clone(),
+            io.clone(),
+            Owner::new(1).map_err(|_| Invalid)?,
+            "/usr/local/bin/rclone".into(),
+        ),
+        state,
+        remote,
+        cipher: Arc::new(cipher),
+    }))
 }
 
 impl RcloneDelete {
     async fn run(&self, path: String) -> DeleteOutcome {
         let destination = format!("{}{path}", self.prefix);
+        let args = [
+            "--retries",
+            "1",
+            "--low-level-retries",
+            "1",
+            "deletefile",
+            "--",
+            &destination,
+        ];
+        let timeout = Some(std::time::Duration::from_secs(360));
+        if let Some(managed) = &self.managed {
+            let dirs = self
+                .config
+                .allowed_ssh_key_dirs
+                .split(',')
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(Into::into)
+                .collect();
+            return match managed.runner.start_run_managed(
+                managed.state.clone(),
+                managed.cipher.clone(),
+                managed.remote.clone(),
+                args.into_iter().map(Into::into).collect(),
+                timeout,
+                dirs,
+            ) {
+                Ok(work) => match work.wait().await {
+                    Ok(Ok(out)) if out.code == 0 => DeleteOutcome::Succeeded,
+                    _ => DeleteOutcome::Unknown,
+                },
+                Err(_) => DeleteOutcome::Failed,
+            };
+        }
         let mut spec = crate::process::ProcessSpec::new(
             "/usr/local/bin/rclone",
             [
@@ -763,17 +842,12 @@ impl RcloneDelete {
                 "300s",
                 "--contimeout",
                 "30s",
-                "--retries",
-                "1",
-                "--low-level-retries",
-                "1",
-                "deletefile",
-                "--",
-                &destination,
             ],
         );
+        spec.args
+            .extend(args.into_iter().map(std::ffi::OsString::from));
         spec.discard_output = true;
-        spec.timeout = Some(std::time::Duration::from_secs(360));
+        spec.timeout = timeout;
         if !self.config.rclone_config_pass.expose().is_empty() {
             spec.env.push((
                 "RCLONE_CONFIG_PASS".into(),
@@ -996,17 +1070,21 @@ impl LocalDeleteJobs {
                                 .filter(|name| dockervault_core::rclone_path::valid_name(name))
                                 .ok_or(Error::InvalidStorageConfiguration)?;
                             let snapshot = rclone_state(&pool).await?;
+                            let mut managed_state = None;
                             if let Some(raw) = snapshot.as_deref().filter(|raw| !raw.is_empty()) {
                                 let state: serde_json::Value = serde_json::from_str(raw)
                                     .map_err(|_| Error::InvalidStorageConfiguration)?;
                                 let roots = state["roots"]
                                     .as_array()
                                     .ok_or(Error::InvalidStorageConfiguration)?;
-                                if roots
+                                if let Some(root) = roots
                                     .iter()
-                                    .any(|root| root["storage_id"].as_i64() == Some(id))
+                                    .find(|root| root["storage_id"].as_i64() == Some(id))
                                 {
-                                    return Err(Error::UnsupportedProvider);
+                                    if root["remote_name"].as_str() != Some(remote.as_str()) {
+                                        return Err(Error::IdentityChanged);
+                                    }
+                                    managed_state = Some(state);
                                 }
                             }
                             let prefix = format!(
@@ -1019,12 +1097,21 @@ impl LocalDeleteJobs {
                                 "/usr/local/libexec/dockervault-process-guard",
                             )
                             .map_err(|_| Error::InvalidStorageConfiguration)?;
+                            let managed = prepare_rclone_delete(
+                                managed_state,
+                                remote,
+                                &processes,
+                                &io,
+                                &config,
+                            )
+                            .await?;
                             return Ok((
                                 Some(DeleteTarget::Rclone(RcloneDelete {
                                     prefix,
                                     processes,
                                     snapshot,
                                     config: config.clone(),
+                                    managed,
                                 })),
                                 identity,
                             ));
