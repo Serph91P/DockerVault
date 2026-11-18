@@ -1298,7 +1298,7 @@ async fn local_storage_drafts_probe_without_persisting_configuration() {
         (status, body),
         (
             400,
-            json!({"detail":{"message":"Invalid storage configuration","errors":["base_path is required for local; edit this storage to repair it"]}})
+            json!({"detail":{"message":"Invalid storage configuration","errors":["base_path is required for StorageType.LOCAL; edit this storage to repair it"]}})
         )
     );
     assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
@@ -1512,6 +1512,22 @@ async fn s3_probe_uses_effective_signed_configuration_without_saving_a_draft() {
                 .unwrap();
         }
     });
+    let cleared = json!({"mode":"edit","storage_id":44,"config":{"s3_secret_key":null}});
+    let (status, _, body) = server
+        .request(
+            "POST",
+            "/api/v1/storage/test-config",
+            &headers,
+            Some(cleared),
+        )
+        .await;
+    assert_eq!(
+        (status, body),
+        (
+            400,
+            json!({"detail":{"message":"Invalid storage configuration","errors":["s3_secret_key is required for StorageType.S3; edit this storage to repair it"]}})
+        )
+    );
     let draft = json!({"mode":"edit","storage_id":44,"config":{"s3_bucket":"draft-bucket","s3_access_key":"FIXTURE_DRAFT_ACCESS","s3_secret_key":""}});
     let (status, _, body) = server
         .request("POST", "/api/v1/storage/test-config", &headers, Some(draft))

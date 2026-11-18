@@ -65,7 +65,7 @@ pub(in crate::http) async fn test_config(
             }
             saved.append(updates);
             effective = Value::Object(saved);
-            storage_errors(&effective)
+            create::create_storage_errors(&effective)
         }
         _ => return bad_shape(),
     };
