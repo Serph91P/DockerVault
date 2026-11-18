@@ -76,10 +76,12 @@ pub(super) async fn detail(State(state): State<HttpState>, Path(raw): Path<Strin
     }
 }
 
+fn invalid_id_field() -> Value {
+    json!({"field":"path.storage_id","message":"Input should be a valid integer, unable to parse string as an integer"})
+}
+
 fn invalid_id() -> Response {
-    *auth::validation(vec![
-        json!({"field":"path.storage_id","message":"Input should be a valid integer, unable to parse string as an integer"}),
-    ])
+    *auth::validation(vec![invalid_id_field()])
 }
 
 pub(super) async fn delete(State(state): State<HttpState>, Path(raw): Path<String>) -> Response {
@@ -373,11 +375,8 @@ type BrowseQuery = axum::extract::Query<std::collections::HashMap<String, String
 
 async fn configured_browse_root(
     state: &HttpState,
-    id: &str,
+    id: i64,
 ) -> Result<Option<String>, Box<Response>> {
-    let Some(id) = super::operations::query_integer(id) else {
-        return Err(Box::new(invalid_id()));
-    };
     match sqlx::query_as::<_, (String, Option<String>)>(
         "SELECT storage_type,base_path FROM remote_storages WHERE id=?",
     )
@@ -403,10 +402,16 @@ pub(super) async fn configured_size(
     Path(id): Path<String>,
     axum::extract::Query(query): BrowseQuery,
 ) -> Response {
-    let Some(path) = query.get("path") else {
-        return missing_size_path();
+    let parsed_id = super::operations::query_integer(&id);
+    let path = query.get("path");
+    let (Some(id), Some(path)) = (parsed_id, path) else {
+        let errors = [
+            parsed_id.is_none().then(invalid_id_field),
+            path.is_none().then(missing_size_path_field),
+        ];
+        return *auth::validation(errors.into_iter().flatten().collect());
     };
-    match configured_browse_root(&state, &id).await {
+    match configured_browse_root(&state, id).await {
         Ok(Some(root)) => size_at(&state, root, path).await,
         Ok(None) => unavailable_size(path),
         Err(response) => *response,
@@ -501,10 +506,12 @@ fn unavailable_size(path: &str) -> Response {
     Json(json!({"path":path,"state":"unavailable","bytes":null})).into_response()
 }
 
+fn missing_size_path_field() -> Value {
+    json!({"field":"query.path","message":"Field required"})
+}
+
 fn missing_size_path() -> Response {
-    *auth::validation(vec![
-        json!({"field":"query.path","message":"Field required"}),
-    ])
+    *auth::validation(vec![missing_size_path_field()])
 }
 
 pub(super) async fn local_size(

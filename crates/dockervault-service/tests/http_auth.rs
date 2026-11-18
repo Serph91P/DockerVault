@@ -1394,6 +1394,21 @@ async fn configured_storage_browsing_uses_only_the_persisted_root() {
             .await;
         assert_eq!((actual, result), (status, body));
     }
+    let (status, _, body) = server
+        .request(
+            "GET",
+            "/api/v1/storage/not-an-id/files/size",
+            &headers,
+            None,
+        )
+        .await;
+    assert_eq!(
+        (status, body),
+        (
+            422,
+            json!({"detail":"Validation error","errors":[{"field":"path.storage_id","message":"Input should be a valid integer, unable to parse string as an integer"},{"field":"query.path","message":"Field required"}]})
+        )
+    );
     server.close().await;
 }
 
