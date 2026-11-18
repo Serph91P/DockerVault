@@ -1,4 +1,32 @@
-use dockervault_service::storage::ssh::remote_path;
+use dockervault_service::{
+    process::{ProcessError, ProcessOwner},
+    storage::ssh::{SftpEndpoint, remote_path},
+};
+
+#[tokio::test]
+async fn unsafe_destination_is_refused_before_admitting_a_process() {
+    let processes = ProcessOwner::new(1, env!("CARGO_BIN_EXE_dockervault-process-guard")).unwrap();
+    for (host, username) in [
+        ("-ProxyCommand", "backup"),
+        ("host/path", "backup"),
+        ("backup.example", "other@backup"),
+    ] {
+        let endpoint = SftpEndpoint {
+            host: host.into(),
+            username: username.into(),
+            port: 22,
+            base: "/backups".into(),
+            known_hosts: "/app/data/ssh_known_hosts".into(),
+            identity: None,
+            password: None,
+        };
+        assert!(matches!(
+            endpoint.probe(&processes),
+            Err(ProcessError::InvalidSpec)
+        ));
+        assert_eq!(processes.active(), 0);
+    }
+}
 
 #[test]
 fn storage_box_maps_paths_only_on_port_23() {
