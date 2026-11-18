@@ -25,4 +25,6 @@ pub mod restore;
 #[cfg(target_os = "linux")]
 pub mod storage;
 #[cfg(target_os = "linux")]
+pub mod storage_recovery;
+#[cfg(target_os = "linux")]
 pub mod workload_recovery;

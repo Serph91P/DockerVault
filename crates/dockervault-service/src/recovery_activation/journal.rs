@@ -146,9 +146,15 @@ fn readiness_projection(text: &str) -> Option<Vec<u8>> {
     Some(output)
 }
 pub async fn recovery_pending(pool: &SqlitePool) -> Result<bool, JournalError> {
+    recovery_pending_in(pool).await
+}
+
+pub(crate) async fn recovery_pending_in<'e>(
+    executor: impl sqlx::SqliteExecutor<'e>,
+) -> Result<bool, JournalError> {
     let value: Option<Option<String>> =
         sqlx::query_scalar("SELECT value FROM app_settings WHERE key='recovery_activation'")
-            .fetch_optional(pool)
+            .fetch_optional(executor)
             .await
             .map_err(|_| JournalError::Io)?;
     Ok(value.flatten().is_some_and(|value| {

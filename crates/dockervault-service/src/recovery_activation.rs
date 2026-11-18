@@ -1,6 +1,7 @@
 //! Shared accepted-provider claims and owned abandoned preparation cleanup.
 mod cleanup;
 mod journal;
+pub(crate) use journal::recovery_pending_in;
 pub use journal::{
     JournalError, KeyPreparation, RecoveryGeneration, recovery_pending, require_recovery_ready,
 };
