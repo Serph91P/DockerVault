@@ -1441,6 +1441,97 @@ pub(crate) fn load_delete_cipher(
     CredentialCipher::read_key(file, cancelled).map_err(|_| invalid())
 }
 
+pub(crate) fn load_write_cipher(
+    path: &std::path::Path,
+    configured: &str,
+    first_write: bool,
+    cancelled: impl Fn() -> bool,
+) -> Result<dockervault_core::crypto::CredentialCipher, StorageRecoveryError> {
+    use dockervault_core::crypto::CredentialCipher;
+    use nix::{
+        fcntl::{AtFlags, OFlag, openat},
+        sys::stat::{Mode, fstatat},
+        unistd::linkat,
+    };
+    use std::{io::Write, os::fd::AsRawFd};
+    let invalid = || StorageRecoveryError::InvalidStorageConfiguration;
+    if !configured.is_empty() || !first_write {
+        return load_delete_cipher(path, configured, cancelled);
+    }
+    if cancelled() {
+        return Err(invalid());
+    }
+    let dir = crate::storage::local::open_root(path.parent().ok_or_else(invalid)?)
+        .map_err(|_| invalid())?;
+    let name = path.file_name().ok_or_else(invalid)?;
+    match fstatat(&dir, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+        Ok(_) => return load_delete_cipher(path, configured, cancelled),
+        Err(nix::errno::Errno::ENOENT) => {}
+        Err(_) => return Err(invalid()),
+    }
+    // Anonymous staging cannot leave private key bytes behind after a crash before publication.
+    let mut staged = std::fs::File::from(
+        openat(
+            &dir,
+            ".",
+            OFlag::O_TMPFILE | OFlag::O_RDWR | OFlag::O_CLOEXEC,
+            Mode::S_IRUSR | Mode::S_IWUSR,
+        )
+        .map_err(|_| invalid())?,
+    );
+    let key = zeroize::Zeroizing::new(CredentialCipher::generate_key());
+    staged
+        .write_all(key.as_bytes())
+        .and_then(|()| staged.sync_all())
+        .map_err(|_| invalid())?;
+    if cancelled() {
+        return Err(invalid());
+    }
+    let descriptor = format!("/proc/self/fd/{}", staged.as_raw_fd());
+    match linkat(
+        &dir,
+        descriptor.as_str(),
+        &dir,
+        name,
+        AtFlags::AT_SYMLINK_FOLLOW,
+    ) {
+        Ok(()) | Err(nix::errno::Errno::EEXIST) => {}
+        Err(_) => return Err(invalid()),
+    }
+    dir.sync_all().map_err(|_| invalid())?;
+    load_delete_cipher(path, configured, cancelled)
+}
+
+#[cfg(test)]
+#[test]
+fn first_storage_key_never_replaces_missing_custody_or_existing_key() {
+    use std::os::unix::fs::{MetadataExt, symlink};
+    let mut nonce = [0u8; 16];
+    getrandom::fill(&mut nonce).unwrap();
+    let dir = std::env::temp_dir().join(format!("dv-first-key-{nonce:02x?}"));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("key");
+    assert!(load_write_cipher(&path, "", false, || false).is_err());
+    assert!(!path.exists());
+    assert!(load_write_cipher(&path, "", true, || true).is_err());
+    let cipher = load_write_cipher(&path, "", true, || false).unwrap();
+    let token = cipher.encrypt_value("fixture");
+    let meta = std::fs::metadata(&path).unwrap();
+    assert_eq!(meta.mode() & 0o777, 0o600);
+    assert_eq!(meta.nlink(), 1);
+    assert_eq!(
+        load_write_cipher(&path, "", true, || false)
+            .unwrap()
+            .decrypt_value(&token)
+            .unwrap(),
+        "fixture"
+    );
+    assert_eq!(meta.ino(), std::fs::metadata(&path).unwrap().ino());
+    symlink(&path, dir.join("link")).unwrap();
+    assert!(load_write_cipher(&dir.join("link"), "", true, || false).is_err());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[cfg(test)]
 #[test]
 fn configured_key_precedes_existing_file_and_unsafe_files_are_not_followed() {

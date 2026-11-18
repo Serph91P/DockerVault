@@ -100,10 +100,6 @@ pub(in crate::http) async fn create(
         )
             .into_response();
     }
-    let data = match prepare(&state, data).await {
-        Ok(data) => data,
-        Err(response) => return *response,
-    };
     persist_create(&state, data).await
 }
 
@@ -182,7 +178,7 @@ async fn persist_update(state: &HttpState, id: i64, data: Value) -> Result<Respo
         )
             .into_response());
     }
-    let encoded = match prepare(state, data).await {
+    let encoded = match prepare(state, data, &mut tx).await {
         Ok(value) => value,
         Err(response) => return Ok(*response),
     };
@@ -239,7 +235,11 @@ fn coerce_storage_scalars(values: &mut serde_json::Map<String, Value>) {
     }
 }
 
-async fn prepare(state: &HttpState, mut data: Value) -> Result<Value, Box<Response>> {
+async fn prepare(
+    state: &HttpState,
+    mut data: Value,
+    tx: &mut sqlx::SqliteConnection,
+) -> Result<Value, Box<Response>> {
     let config = state.config.clone();
     let needs_key = SECRETS
         .iter()
@@ -248,6 +248,12 @@ async fn prepare(state: &HttpState, mut data: Value) -> Result<Value, Box<Respon
         .as_str()
         .is_some_and(|text| !text.is_empty());
     if needs_key || needs_path {
+        let first_write = if needs_key && config.credential_encryption_key.expose().is_empty() {
+            sqlx::query_scalar::<_, bool>("SELECT NOT EXISTS (SELECT 1 FROM remote_storages WHERE password LIKE 'fernet:%' OR s3_access_key LIKE 'fernet:%' OR s3_secret_key LIKE 'fernet:%') AND NOT EXISTS (SELECT 1 FROM app_settings WHERE key IN ('recovery_rclone','recovery_activation'))")
+                .fetch_one(tx).await.map_err(|_| Box::new(storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")))?
+        } else {
+            false
+        };
         let work = state.auth.blocking().submit_blocking(move |cancel| {
             if needs_path {
                 let dirs: Vec<_> = config
@@ -272,9 +278,10 @@ async fn prepare(state: &HttpState, mut data: Value) -> Result<Value, Box<Respon
                 data["ssh_key_path"] = json!(path);
             }
             if needs_key {
-                let cipher = crate::storage_recovery::load_delete_cipher(
+                let cipher = crate::storage_recovery::load_write_cipher(
                     std::path::Path::new("/app/data/.credential_key"),
                     config.credential_encryption_key.expose(),
+                    first_write,
                     || cancel.is_cancelled(),
                 )
                 .map_err(|_| {
@@ -320,6 +327,7 @@ async fn prepare(state: &HttpState, mut data: Value) -> Result<Value, Box<Respon
 async fn persist_create(state: &HttpState, data: Value) -> Response {
     let result = async {
         let mut tx = state.auth.pool().begin_with("BEGIN IMMEDIATE").await?;
+        let data = match prepare(state, data, &mut tx).await { Ok(value) => value, Err(response) => return Ok(*response) };
         let id = sqlx::query_scalar::<_, i64>("INSERT INTO remote_storages(name,storage_type,enabled,host,port,username,password,base_path,ssh_key_path,s3_bucket,s3_region,s3_access_key,s3_secret_key,s3_endpoint_url,webdav_url,rclone_remote,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,strftime('%Y-%m-%d %H:%M:%f','now'),strftime('%Y-%m-%d %H:%M:%f','now')) RETURNING id")
             .bind(data["name"].as_str()).bind(data["storage_type"].as_str()).bind(data["enabled"].as_bool())
             .bind(data["host"].as_str()).bind(data["port"].as_i64()).bind(data["username"].as_str())
@@ -330,10 +338,10 @@ async fn persist_create(state: &HttpState, data: Value) -> Response {
         let row = sqlx::query_scalar::<_,String>(select_storage!(" WHERE id=?")).bind(id).fetch_one(&mut *tx).await?;
         let view = storage_view(row).ok_or(sqlx::Error::Protocol("Invalid storage record".into()))?;
         tx.commit().await?;
-        Ok::<_, sqlx::Error>(view)
+        Ok::<_, sqlx::Error>(Json(view).into_response())
     }.await;
     match result {
-        Ok(view) => Json(view).into_response(),
+        Ok(response) => response,
         Err(_) => storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
     }
 }
