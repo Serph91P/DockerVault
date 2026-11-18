@@ -1404,7 +1404,7 @@ async fn open_delete_credentials(
     .map_err(|_| Invalid)?
 }
 
-fn load_delete_cipher(
+pub(crate) fn load_delete_cipher(
     path: &std::path::Path,
     configured: &str,
     cancelled: impl Fn() -> bool,

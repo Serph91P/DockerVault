@@ -228,6 +228,10 @@ struct Inner {
     registry: SessionRegistry,
 }
 impl AuthService {
+    pub(crate) fn blocking(&self) -> &Owner {
+        &self.inner.crypto
+    }
+
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.inner.pool
     }

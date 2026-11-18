@@ -20,6 +20,9 @@ macro_rules! select_storage {
 ) FROM remote_storages", $suffix) };
 }
 
+mod create;
+pub(super) use create::create;
+
 fn storage_view(row: String) -> Option<Value> {
     let mut value: Value = serde_json::from_str(&row).ok()?;
     let errors = storage_errors(&value);

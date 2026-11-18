@@ -1151,6 +1151,54 @@ async fn storage_inventory_and_detail_keep_legacy_repair_hints_without_credentia
 }
 
 #[tokio::test]
+async fn storage_create_persists_provider_fields_and_encrypts_credentials() {
+    let key = dockervault_core::crypto::CredentialCipher::generate_key();
+    let cipher = dockervault_core::crypto::CredentialCipher::new(&key).unwrap();
+    let server = Server::configured(
+        Config::from_pairs([
+            ("COOKIE_SECURE", "false"),
+            ("CORS_ORIGINS", "http://localhost:3000"),
+            ("CREDENTIAL_ENCRYPTION_KEY", key.as_str()),
+        ])
+        .unwrap(),
+    )
+    .await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let access = dockervault_core::crypto::CredentialCipher::generate_key();
+    let secret = dockervault_core::crypto::CredentialCipher::generate_key();
+    let (status, _, view) = server
+        .request(
+            "POST",
+            "/api/v1/storage",
+            &headers,
+            Some(json!({
+                "name":"Synthetic", "storage_type":"s3", "s3_bucket":"fixture-bucket",
+                "s3_access_key":access.as_str(), "s3_secret_key":secret.as_str()
+            })),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(view["base_path"], "/backups");
+    assert_eq!(view["enabled"], true);
+    assert_eq!(view["validation_errors"], json!([]));
+    assert!(view.get("s3_access_key").is_none() && view.get("s3_secret_key").is_none());
+    let (saved_access, saved_secret): (String, String) =
+        sqlx::query_as("SELECT s3_access_key,s3_secret_key FROM remote_storages WHERE id=?")
+            .bind(view["id"].as_i64().unwrap())
+            .fetch_one(server.db.pool())
+            .await
+            .unwrap();
+    assert!(saved_access.starts_with("fernet:") && saved_secret.starts_with("fernet:"));
+    assert!(cipher.decrypt_value(&saved_access).unwrap() == access.as_str());
+    assert!(cipher.decrypt_value(&saved_secret).unwrap() == secret.as_str());
+    server.close().await;
+}
+
+#[tokio::test]
 async fn storage_configuration_delete_preserves_catalog_references_and_archive_bytes() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
