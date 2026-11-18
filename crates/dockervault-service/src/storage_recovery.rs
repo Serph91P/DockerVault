@@ -1,4 +1,5 @@
 //! Atomic restart settlement for interrupted user-owned storage operations.
+use crate::storage::webdav::{DavConfig, DavError, WebDav};
 use crate::{
     ownership::{Owner, Work, WorkError},
     process::ProcessOwner,
@@ -31,6 +32,7 @@ pub enum StorageRecoveryError {
     UnsupportedProvider,
     StorageNotFound,
     StorageDisabled,
+    InvalidStorageConfiguration,
 }
 
 #[derive(Clone, Copy)]
@@ -263,7 +265,7 @@ pub(crate) async fn replay_remote_delete(
     Err(match supported {
         None => Error::StorageNotFound,
         Some((false, _)) => Error::StorageDisabled,
-        Some((true, kind)) if kind == "local" => return Ok(None),
+        Some((true, kind)) if matches!(kind.as_str(), "local" | "webdav") => return Ok(None),
         Some((true, _)) => Error::UnsupportedProvider,
     })
 }
@@ -690,6 +692,48 @@ pub(crate) struct LocalSelection {
     pub parent: Option<RetryParent>,
 }
 
+enum DeleteTarget {
+    Local(LocalStorage),
+    Dav(WebDav),
+}
+
+impl DeleteTarget {
+    async fn next(
+        &self,
+        pool: &SqlitePool,
+        user: i64,
+        operation: &str,
+        identity: &serde_json::Value,
+        remote_id: Option<i64>,
+    ) -> Result<bool, StorageRecoveryError> {
+        let Self::Dav(dav) = self else {
+            let Self::Local(local) = self else {
+                unreachable!()
+            };
+            return delete_next_local(pool, local, user, operation, identity, remote_id).await;
+        };
+        let Some(item) = claim_delete(pool, user, operation, identity, remote_id).await? else {
+            return Ok(false);
+        };
+        let outcome = if let Some(path) = relative_path(&item.path, false) {
+            match dav.delete(path) {
+                Ok(effect) => match effect.wait().await {
+                    Ok(Ok(())) => DeleteOutcome::Succeeded,
+                    Ok(Err(
+                        DavError::Transport | DavError::Cancelled | DavError::Http(500..=599),
+                    ))
+                    | Err(_) => DeleteOutcome::Unknown,
+                    Ok(Err(_)) => DeleteOutcome::Failed,
+                },
+                Err(_) => DeleteOutcome::Failed,
+            }
+        } else {
+            DeleteOutcome::InvalidPath
+        };
+        record_settled(pool, user, operation, item.id, outcome).await
+    }
+}
+
 pub(crate) struct RetryParent {
     id: String,
     identity: serde_json::Value,
@@ -733,6 +777,28 @@ impl LocalSelection {
 }
 
 impl LocalDeleteJobs {
+    async fn pin_local(
+        &self,
+        path: String,
+        identity: &mut serde_json::Value,
+    ) -> Option<DeleteTarget> {
+        let io = self.io.clone();
+        let result = match self
+            .io
+            .submit_blocking(move |_| LocalStorage::pin_configured(std::path::Path::new(&path), io))
+        {
+            Ok(work) => work.wait().await.ok().and_then(Result::ok),
+            Err(_) => None,
+        };
+        if let Some((local, inode)) = result {
+            identity["root_inode"] = serde_json::json!(inode);
+            Some(DeleteTarget::Local(local))
+        } else {
+            *identity = serde_json::Value::Null;
+            None
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             jobs: Owner::new(64).expect("bounded storage admission"),
@@ -745,7 +811,7 @@ impl LocalDeleteJobs {
     pub async fn submit(
         self: &Arc<Self>,
         pool: SqlitePool,
-        root: String,
+        config: Arc<crate::config::Config>,
         selection: LocalSelection,
         draining: CancellationToken,
         notify: impl Fn(i64, &str) + Send + Sync + 'static,
@@ -759,6 +825,7 @@ impl LocalDeleteJobs {
             .submit_async(move |_| async move {
                 let mut tail = this.tail.lock().await;
                 let io = this.io.clone();
+                let root = &config.backup_base_path;
                 let prepared = async {
                     use sqlx::Row;
                     if let Some(id) = selection.remote_id {
@@ -766,39 +833,60 @@ impl LocalDeleteJobs {
                         if !row.try_get::<Option<bool>, _>("enabled")?.unwrap_or(false) {
                             return Err(Error::StorageDisabled);
                         }
-                        if row.try_get::<String, _>("storage_type")? != "local" {
+                        let mut identity = remote_identity(&row)?;
+                        let kind: String = row.try_get("storage_type")?;
+                        let base: Option<String> = row.try_get("base_path")?;
+                        if kind == "webdav" {
+                            let password: Option<String> = row.try_get("password")?;
+                            let password = match password {
+                                Some(value) if value.starts_with("fernet:") => Some(
+                                    dockervault_core::crypto::CredentialCipher::new(
+                                        config.credential_encryption_key.expose(),
+                                    )
+                                    .and_then(|cipher| cipher.decrypt_value(&value))
+                                    .map_err(|_| Error::InvalidStorageConfiguration)?,
+                                ),
+                                value => value,
+                            };
+                            let dav = WebDav::new(
+                                DavConfig {
+                                    url: row
+                                        .try_get::<Option<String>, _>("webdav_url")?
+                                        .ok_or(Error::InvalidStorageConfiguration)?,
+                                    base_path: base.unwrap_or_default(),
+                                    username: row.try_get("username")?,
+                                    password,
+                                    max_attempts: 1,
+                                    verify_head: false,
+                                },
+                                io.clone(),
+                                io.clone(),
+                            )
+                            .map_err(|_| Error::InvalidStorageConfiguration)?;
+                            return Ok((Some(DeleteTarget::Dav(dav)), identity));
+                        }
+                        if kind != "local" {
                             return Err(Error::UnsupportedProvider);
                         }
-                        let root = row
-                            .try_get::<Option<String>, _>("base_path")?
+                        let root = base
+                            .filter(|path| !path.is_empty())
                             .ok_or(Error::IdentityChanged)?;
-                        if root.is_empty() {
-                            return Err(Error::IdentityChanged);
-                        }
-                        Ok((root, remote_identity(&row)?))
+                        let local = this.pin_local(root, &mut identity).await;
+                        Ok((local, identity))
                     } else {
-                        Ok((root.clone(), serde_json::json!({"root":root})))
+                        let mut identity = serde_json::json!({"root":root});
+                        let local = this.pin_local(root.clone(), &mut identity).await;
+                        Ok((local, identity))
                     }
                 }
                 .await;
-                let (root_path, mut identity) = match prepared {
+                let (target, identity) = match prepared {
                     Ok(prepared) => prepared,
                     Err(error) => {
                         let _ = accepted.send(Err(error));
                         return;
                     }
                 };
-                let pinned = match this.io.submit_blocking(move |_| {
-                    LocalStorage::pin_configured(std::path::Path::new(&root_path), io)
-                }) {
-                    Ok(work) => work.wait().await.ok().and_then(Result::ok),
-                    Err(_) => None,
-                };
-                if let Some((_, inode)) = &pinned {
-                    identity["root_inode"] = serde_json::json!(inode);
-                } else {
-                    identity = serde_json::Value::Null;
-                }
                 let storage_id = selection
                     .remote_id
                     .map_or_else(|| "local".to_owned(), |id| id.to_string());
@@ -818,8 +906,8 @@ impl LocalDeleteJobs {
                     selection.remote_id,
                 )
                 .await;
-                let (id, local) = match (admission, pinned) {
-                    (Ok((id, true)), Some((local, _))) => (id, local),
+                let (id, target) = match (admission, target) {
+                    (Ok((id, true)), Some(target)) => (id, target),
                     (Ok((id, false)), _) => {
                         let _ = accepted.send(Ok(id));
                         return;
@@ -853,19 +941,13 @@ impl LocalDeleteJobs {
                             request_cancel(&pool, user, &id).await?;
                             break;
                         }
-                        if !delete_next_local(
-                            &pool,
-                            &local,
-                            user,
-                            &id,
-                            &identity,
-                            selection.remote_id,
-                        )
-                        .await?
-                        {
+                        let more = target
+                            .next(&pool, user, &id, &identity, selection.remote_id)
+                            .await?;
+                        notify(user, &id);
+                        if !more {
                             break;
                         }
-                        notify(user, &id);
                     }
                     Result::<(), Error>::Ok(())
                 }

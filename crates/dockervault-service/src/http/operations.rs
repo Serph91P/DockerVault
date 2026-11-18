@@ -140,7 +140,7 @@ async fn admit_local(state: &HttpState, selection: LocalSelection) -> Response {
         .local_delete
         .submit(
             state.auth.pool().clone(),
-            state.config.backup_base_path.clone(),
+            state.config.clone(),
             selection,
             state.draining.clone(),
             move |user, id| {
@@ -175,6 +175,9 @@ fn admission_response(result: Result<String, StorageRecoveryError>, retry: bool)
         Err(Error::OperationNotFound) => failure(StatusCode::NOT_FOUND, "Operation not found"),
         Err(Error::StorageNotFound) => failure(StatusCode::NOT_FOUND, "Storage not found"),
         Err(Error::StorageDisabled) => failure(StatusCode::CONFLICT, "Storage is disabled"),
+        Err(Error::InvalidStorageConfiguration) => {
+            failure(StatusCode::CONFLICT, "Storage configuration is unavailable")
+        }
         Err(Error::OperationActive) => {
             failure(StatusCode::CONFLICT, "Wait for operation settlement")
         }

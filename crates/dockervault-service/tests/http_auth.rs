@@ -304,6 +304,81 @@ async fn local_delete_submit_commits_before_effect_and_replay_does_not_delete_ag
 }
 
 #[tokio::test]
+async fn configured_webdav_delete_waits_for_the_provider_and_records_the_effect() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/dav", listener.local_addr().unwrap());
+    let remote = server.path.join("dav-fixture.tar");
+    std::fs::write(&remote, b"selected bytes").unwrap();
+    let target = remote.clone();
+    let provider = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            assert!(head.len() < 4096);
+            head.push(stream.read_u8().await.unwrap());
+        }
+        let head = String::from_utf8(head).unwrap();
+        assert!(
+            head.starts_with("DELETE /dav/backups/dav-fixture.tar HTTP/1.1\r\n"),
+            "{head}"
+        );
+        assert!(
+            head.lines()
+                .any(|line| line.eq_ignore_ascii_case("authorization: Basic Zml4dHVyZTpwdWJsaWM="))
+        );
+        std::fs::remove_file(target).unwrap();
+        stream
+            .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+    });
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,webdav_url,username,password) VALUES (42,'fixture dav','webdav',1,'backups',?,'fixture','public')")
+        .bind(url).execute(server.db.pool()).await.unwrap();
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let (status, _, result) = server
+        .request(
+            "POST",
+            "/api/v1/operations",
+            &headers,
+            Some(json!({
+                "action":"storage_delete", "storage_id":42, "path":"", "paths":["dav-fixture.tar"],
+                "request_id":"2943eea3-0dd6-48b5-8d76-a01c54e40f99"
+            })),
+        )
+        .await;
+    assert_eq!(status, 202);
+    tokio::time::timeout(std::time::Duration::from_secs(5), provider)
+        .await
+        .unwrap()
+        .unwrap();
+    let detail = format!(
+        "/api/v1/operations/{}",
+        result["operation_id"].as_str().unwrap()
+    );
+    let final_state = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let (status, _, snapshot) = server.request("GET", &detail, &headers, None).await;
+            assert_eq!(status, 200);
+            if snapshot["finished_at"].is_string() {
+                break snapshot;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(final_state["state"], "completed");
+    assert_eq!(final_state["succeeded"], 1);
+    assert!(!remote.exists());
+    server.close().await;
+}
+
+#[tokio::test]
 async fn configured_local_target_deletes_from_its_own_root() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

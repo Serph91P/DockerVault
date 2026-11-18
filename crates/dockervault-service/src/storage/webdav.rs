@@ -77,6 +77,7 @@ impl WebDav {
         let client = Client::builder()
             .use_native_tls()
             .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
             .http1_only()
             .pool_max_idle_per_host(0)
             .connect_timeout(Duration::from_secs(30))
