@@ -400,7 +400,7 @@ async fn ftp_delete_claim_survives_cancel_until_provider_acknowledges() {
 
 #[tokio::test]
 async fn ftp_mlsd_requires_finished_control_exchange_and_keeps_exact_names() {
-    for final_status in [226, 426] {
+    for final_status in [200, 226, 426] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let owner = Owner::new(1).unwrap();
         let ftp = backend(&listener, &owner, "owned", "synthetic");
@@ -427,7 +427,7 @@ async fn ftp_mlsd_requires_finished_control_exchange_and_keeps_exact_names() {
                 .write_all(format!("{final_status} listing result\r\n").as_bytes())
                 .await
                 .unwrap();
-            if final_status == 226 {
+            if final_status != 426 {
                 assert_eq!(read_command(&mut control).await, "QUIT\r\n");
                 control.write_all(b"221 goodbye\r\n").await.unwrap();
             }
@@ -440,7 +440,7 @@ async fn ftp_mlsd_requires_finished_control_exchange_and_keeps_exact_names() {
         .await
         .unwrap()
         .unwrap();
-        if final_status == 226 {
+        if final_status != 426 {
             let entries = result.unwrap();
             assert_eq!(entries.len(), 2);
             assert_eq!(entries[0].name, "My archive.tar");

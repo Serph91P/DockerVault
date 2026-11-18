@@ -49,7 +49,8 @@ impl Ftp {
                 control.abort_transfer().await?;
                 return Err(error);
             }
-            expect(control.reply().await?, &[226, 250])?;
+            // The accepted aioftp server sends 200 after MLSD data EOF.
+            expect(control.reply().await?, &[200, 226, 250])?;
             control.quit().await?;
             let listing = std::str::from_utf8(&listing).map_err(|_| FtpError::Protocol)?;
             let mut entries = Vec::new();
