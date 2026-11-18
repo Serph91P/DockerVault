@@ -381,6 +381,110 @@ pub(crate) fn list_directory(
     Ok(files)
 }
 
+type DirectoryStamp = (u64, u64, u32, i64, i64, i64, i64, i64);
+
+fn directory_stamp(info: nix::sys::stat::FileStat) -> DirectoryStamp {
+    (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_size,
+        info.st_mtime,
+        info.st_mtime_nsec,
+        info.st_ctime,
+        info.st_ctime_nsec,
+    )
+}
+
+pub(crate) fn directory_size(
+    root: &Path,
+    path: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> io::Result<u64> {
+    use nix::sys::stat::fstat;
+    let path = super::relative_path(path, false).ok_or_else(|| invalid("Invalid file path"))?;
+    let root_path = std::path::absolute(root)?;
+    let root = open_root(&root_path)?;
+    let root_info = fstat(&root)?;
+    let scan = |root: &File,
+                fingerprints: &mut Vec<(PathBuf, DirectoryStamp)>|
+     -> io::Result<u64> {
+        fn walk(
+            dir: &File,
+            path: &Path,
+            depth: usize,
+            cancelled: &dyn Fn() -> bool,
+            entries: &mut Vec<(PathBuf, DirectoryStamp)>,
+        ) -> io::Result<u64> {
+            check(cancelled)?;
+            if depth >= 128 {
+                return Err(io::Error::other("Directory nesting limit exceeded"));
+            }
+            let before = directory_stamp(fstat(dir)?);
+            let mut total = 0u64;
+            for entry in Dir::from_fd(dir.try_clone()?.into())?.iter() {
+                check(cancelled)?;
+                let entry = entry?;
+                let name = entry.file_name();
+                if matches!(name.to_bytes(), b"." | b"..") {
+                    continue;
+                }
+                if entries.len() >= 100_000 {
+                    return Err(io::Error::other("Directory size entry limit exceeded"));
+                }
+                let info = fstatat(dir, name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
+                let stamp = directory_stamp(info);
+                let kind = SFlag::from_bits_truncate(info.st_mode) & SFlag::S_IFMT;
+                let child = path.join(OsStr::from_bytes(name.to_bytes()));
+                entries.push((child.clone(), stamp));
+                let bytes = match kind {
+                    SFlag::S_IFDIR => {
+                        let child_dir = open_directory(dir, OsStr::from_bytes(name.to_bytes()))?;
+                        if directory_stamp(fstat(&child_dir)?) != stamp {
+                            return Err(io::Error::other("Directory replaced"));
+                        }
+                        walk(&child_dir, &child, depth + 1, cancelled, entries)?
+                    }
+                    SFlag::S_IFREG => u64::try_from(info.st_size).map_err(io::Error::other)?,
+                    _ => 0,
+                };
+                total = total
+                    .checked_add(bytes)
+                    .ok_or_else(|| io::Error::other("Directory size overflow"))?;
+            }
+            if directory_stamp(fstat(dir)?) != before {
+                return Err(io::Error::other("Directory changed"));
+            }
+            Ok(total)
+        }
+        let path = Path::new(&path);
+        let (parent, name) = parent(root, path, false)?;
+        let directory = open_directory(&parent, &name)?;
+        fingerprints.push((path.to_owned(), directory_stamp(fstat(&directory)?)));
+        walk(&directory, path, 0, cancelled, fingerprints)
+    };
+    let mut fingerprints = Vec::new();
+    let bytes = scan(&root, &mut fingerprints)?;
+    let reopened = open_root(&root_path)?;
+    let current = fstat(&reopened)?;
+    if (root_info.st_dev, root_info.st_ino) != (current.st_dev, current.st_ino) {
+        return Err(io::Error::other("Storage root replaced"));
+    }
+    for (path, before) in fingerprints {
+        check(cancelled)?;
+        let (parent, name) = parent(&reopened, &path, false)?;
+        let after = directory_stamp(fstatat(
+            &parent,
+            name.as_os_str(),
+            AtFlags::AT_SYMLINK_NOFOLLOW,
+        )?);
+        if before != after {
+            return Err(io::Error::other("Directory contents changed"));
+        }
+    }
+    Ok(bytes)
+}
+
 pub(crate) fn open_root(path: &Path) -> io::Result<File> {
     walk_root(path, false)
 }

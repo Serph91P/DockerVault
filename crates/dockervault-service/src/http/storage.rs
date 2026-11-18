@@ -356,6 +356,39 @@ fn local_writable(path: &std::path::Path) -> std::io::Result<()> {
     file.sync_all()
 }
 
+pub(super) async fn local_size(
+    State(state): State<HttpState>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let Some(raw) = query.get("path") else {
+        return *auth::validation(vec![
+            json!({"field":"query.path","message":"Field required"}),
+        ]);
+    };
+    let unavailable =
+        || Json(json!({"path":raw,"state":"unavailable","bytes":null})).into_response();
+    let Some(path) = crate::storage::relative_path(raw, false) else {
+        return unavailable();
+    };
+    let config = state.config.clone();
+    let Ok(work) = state.auth.blocking().submit_blocking(move |cancel| {
+        let bytes = crate::storage::local::directory_size(
+            std::path::Path::new(&config.backup_base_path),
+            &path,
+            &|| cancel.is_cancelled(),
+        )?;
+        Ok::<_, std::io::Error>((path, bytes))
+    }) else {
+        return unavailable();
+    };
+    match work.wait().await {
+        Ok(Ok((path, bytes))) => {
+            Json(json!({"path":path,"state":"completed","bytes":bytes})).into_response()
+        }
+        _ => unavailable(),
+    }
+}
+
 pub(super) async fn list_local_files(
     State(state): State<HttpState>,
     axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,

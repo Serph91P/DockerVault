@@ -1232,6 +1232,63 @@ async fn storage_create_persists_provider_fields_and_encrypts_credentials() {
 }
 
 #[tokio::test]
+async fn local_directory_size_lists_only_regular_bytes_and_reflects_nested_writes() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [("Cookie", cookie.as_str())];
+    let root = server.path.join("backups");
+    let nested = root.join("scan/nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    let file = nested.join("item");
+    std::fs::write(&file, b"123").unwrap();
+    std::os::unix::fs::symlink(&file, nested.join("link")).unwrap();
+    for (path, length) in [
+        (".%2Fscan%2F", Some(3)),
+        ("missing", None),
+        ("%2E%2E", None),
+    ] {
+        let (status, _, body) = server
+            .request(
+                "GET",
+                &format!("/api/v1/storage/local/files/size?path={path}"),
+                &headers,
+                None,
+            )
+            .await;
+        let display_path = match path {
+            ".%2Fscan%2F" => "scan",
+            "%2E%2E" => "..",
+            _ => path,
+        };
+        assert_eq!(
+            (status, body),
+            (
+                200,
+                json!({"path":display_path,"bytes":length,"state":if length.is_some(){"completed"}else{"unavailable"}})
+            )
+        );
+    }
+    std::fs::write(file, b"12345678").unwrap();
+    let (status, _, body) = server
+        .request(
+            "GET",
+            "/api/v1/storage/local/files/size?path=scan",
+            &headers,
+            None,
+        )
+        .await;
+    assert_eq!(
+        (status, body),
+        (200, json!({"path":"scan","bytes":8,"state":"completed"}))
+    );
+    let (status, _, _) = server
+        .request("GET", "/api/v1/storage/local/files/size", &headers, None)
+        .await;
+    assert_eq!(status, 422);
+    server.close().await;
+}
+
+#[tokio::test]
 async fn local_listing_reports_entries_without_following_symlinks() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
