@@ -106,6 +106,57 @@ fn storage_error(status: StatusCode, detail: &'static str) -> Response {
     (status, Json(json!({"detail":detail}))).into_response()
 }
 
+pub(super) async fn test_saved(
+    State(state): State<HttpState>,
+    Path(raw): Path<String>,
+) -> Response {
+    let Some(id) = super::operations::query_integer(&raw) else {
+        return invalid_id();
+    };
+    let row = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT storage_type,base_path FROM remote_storages WHERE id=?",
+    )
+    .bind(id)
+    .fetch_optional(state.auth.pool())
+    .await;
+    match row {
+        Ok(Some((kind, path))) if kind == "local" => {
+            let success = if let Some(path) = path.filter(|path| !path.is_empty()) {
+                match state.auth.blocking().submit_blocking(move |cancel| {
+                    !cancel.is_cancelled() && local_writable(std::path::Path::new(&path)).is_ok()
+                }) {
+                    Ok(work) => work.wait().await.unwrap_or(false),
+                    Err(_) => false,
+                }
+            } else {
+                false
+            };
+            Json(json!({"success": success, "message": if success { "Connection test succeeded" } else { "Connection test failed" }})).into_response()
+        }
+        Ok(Some(_)) => storage_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "Remote storage operations are unavailable",
+        ),
+        Ok(None) => storage_error(StatusCode::NOT_FOUND, "Storage not found"),
+        Err(_) => storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+    }
+}
+
+fn local_writable(path: &std::path::Path) -> std::io::Result<()> {
+    use nix::fcntl::{OFlag, openat};
+    use std::io::Write;
+    let directory = crate::storage::local::open_root(path)?;
+    let probe = openat(
+        &directory,
+        ".",
+        OFlag::O_WRONLY | OFlag::O_TMPFILE | OFlag::O_CLOEXEC,
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+    )?;
+    let mut file = std::fs::File::from(probe);
+    file.write_all(b"test")?;
+    file.sync_all()
+}
+
 pub(super) async fn types() -> Json<Value> {
     Json(json!({
         "local": {

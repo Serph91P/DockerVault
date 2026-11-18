@@ -1232,6 +1232,38 @@ async fn storage_create_persists_provider_fields_and_encrypts_credentials() {
 }
 
 #[tokio::test]
+async fn saved_local_storage_probe_checks_writability_without_leaving_a_file() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let target = server.path.join("backups");
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path) VALUES(44,'local fixture','local',1,?)")
+        .bind(target.to_str().unwrap()).execute(server.db.pool()).await.unwrap();
+    let (status, _, result) = server
+        .request("POST", "/api/v1/storage/44/test", &headers, None)
+        .await;
+    assert_eq!(
+        (status, result),
+        (
+            200,
+            json!({"success":true,"message":"Connection test succeeded"})
+        )
+    );
+    assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+    let (status, _, result) = server
+        .request("POST", "/api/v1/storage/99/test", &headers, None)
+        .await;
+    assert_eq!(
+        (status, result),
+        (404, json!({"detail":"Storage not found"}))
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn storage_configuration_delete_preserves_catalog_references_and_archive_bytes() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
