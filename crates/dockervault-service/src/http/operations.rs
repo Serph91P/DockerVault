@@ -80,7 +80,10 @@ pub(super) async fn submit(State(state): State<HttpState>, mut request: Request)
         return invalid("body.request_id", "Input should be a valid UUID");
     };
     if let Some(id) = remote_id {
-        use crate::storage_recovery::remote_enabled;
+        use crate::storage_recovery::{normalize_delete_selection, remote_enabled};
+        if let Err(error) = normalize_delete_selection(targets.iter().map(String::as_str)) {
+            return admission_response(Err(error), false);
+        }
         return match remote_enabled(state.auth.pool(), id).await {
             Ok(None) => failure(StatusCode::NOT_FOUND, "Storage not found"),
             Ok(Some(false)) => failure(StatusCode::CONFLICT, "Storage is disabled"),

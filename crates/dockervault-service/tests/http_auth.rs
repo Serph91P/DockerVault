@@ -165,6 +165,16 @@ async fn local_delete_submit_commits_before_effect_and_replay_does_not_delete_ag
     assert_eq!(post(&valid, invalid).await.0, 422);
     let mut remote = payload.clone();
     remote["storage_id"] = json!(41);
+    let mut oversized_remote = remote.clone();
+    oversized_remote["paths"] = json!((0..1001).map(|i| format!("item-{i}")).collect::<Vec<_>>());
+    let oversized = post(&valid, oversized_remote).await;
+    assert_eq!(
+        (oversized.0, oversized.2),
+        (
+            422,
+            json!({"detail":"Select between 1 and 1000 nonempty paths"})
+        )
+    );
     let missing = post(&valid, remote.clone()).await;
     assert_eq!(
         (missing.0, missing.2),
@@ -172,6 +182,16 @@ async fn local_delete_submit_commits_before_effect_and_replay_does_not_delete_ag
     );
     sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled) VALUES (41,'disabled fixture','ssh',0)")
         .execute(server.db.pool()).await.unwrap();
+    let mut blank_remote = remote.clone();
+    blank_remote["paths"] = json!([" "]);
+    let blank = post(&valid, blank_remote).await;
+    assert_eq!(
+        (blank.0, blank.2),
+        (
+            422,
+            json!({"detail":"Select between 1 and 1000 nonempty paths"})
+        )
+    );
     let disabled = post(&valid, remote).await;
     assert_eq!(
         (disabled.0, disabled.2),

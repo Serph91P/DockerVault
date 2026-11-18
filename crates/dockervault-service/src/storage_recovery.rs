@@ -75,23 +75,7 @@ async fn admit_delete(
     }
     let request_id = request.request_id.to_ascii_lowercase();
     let path = relative_path(request.path, true).ok_or(Error::InvalidRequest)?;
-    let mut paths = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for &candidate in request.paths {
-        if candidate.trim().is_empty() || candidate.chars().count() > 1024 {
-            return Err(Error::InvalidRequest);
-        }
-        let candidate = relative_path(candidate, false).unwrap_or_else(|| candidate.to_owned());
-        if seen.insert(candidate.clone()) {
-            paths.push(candidate);
-        }
-        if paths.len() > 1000 {
-            return Err(Error::InvalidRequest);
-        }
-    }
-    if paths.is_empty() {
-        return Err(Error::InvalidRequest);
-    }
+    let paths = normalize_delete_selection(request.paths.iter().copied())?;
     let parent_id = parent.map(|parent| parent.id.as_str());
     let payload = serde_json::json!({"action":"storage_delete", "storage_id":request.storage_id, "path":path, "paths":paths, "parent_id":parent_id});
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -164,6 +148,31 @@ async fn admit_delete(
     }
     tx.commit().await?;
     Ok((id, true))
+}
+
+pub(crate) fn normalize_delete_selection<'a>(
+    paths: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<String>, StorageRecoveryError> {
+    use StorageRecoveryError::InvalidRequest;
+    let mut selected = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for path in paths {
+        if path.trim().is_empty() || path.chars().count() > 1024 {
+            return Err(InvalidRequest);
+        }
+        // Invalid lexical paths remain itemized, but are never sent to a provider.
+        let path = relative_path(path, false).unwrap_or_else(|| path.to_owned());
+        if seen.insert(path.clone()) {
+            selected.push(path);
+        }
+        if selected.len() > 1000 {
+            return Err(InvalidRequest);
+        }
+    }
+    if selected.is_empty() {
+        return Err(InvalidRequest);
+    }
+    Ok(selected)
 }
 
 macro_rules! snapshot_sql {
