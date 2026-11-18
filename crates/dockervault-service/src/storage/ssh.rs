@@ -147,6 +147,33 @@ impl SftpEndpoint {
             .map_err(SftpDownloadError::Admission)
     }
 
+    pub fn delete(
+        &self,
+        processes: &ProcessOwner,
+        workers: &Owner,
+        child: &str,
+    ) -> Result<Work<Result<(), SftpDownloadError>>, SftpDownloadError> {
+        let invalid = || SftpDownloadError::Process(ProcessError::InvalidSpec);
+        if matches!(child.rsplit('/').next(), None | Some("" | "." | "..")) {
+            return Err(invalid());
+        }
+        let remote =
+            remote_path(&self.host, self.port, &self.base, child).map_err(|_| invalid())?;
+        let mut spec = self.batch_spec().map_err(SftpDownloadError::Process)?;
+        spec.input = format!("@rm {}\n@quit\n", batch_path(&remote)).into_bytes();
+        let processes = processes.clone();
+        workers
+            .submit_async(move |cancel| async move {
+                if cancel.is_cancelled() {
+                    return Err(SftpDownloadError::Process(ProcessError::Cancelled));
+                }
+                run_batch(&processes, spec, &cancel)
+                    .await
+                    .map_err(|_| SftpDownloadError::MutationUnverified)
+            })
+            .map_err(SftpDownloadError::Admission)
+    }
+
     fn batch_spec(&self) -> Result<ProcessSpec, ProcessError> {
         let host = self
             .host

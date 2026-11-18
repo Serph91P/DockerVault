@@ -88,6 +88,28 @@ async fn unsafe_upload_is_rejected_before_mutation_or_admission() {
     assert_eq!((processes.active(), workers.active()), (0, 0));
 }
 
+#[tokio::test]
+async fn unsafe_delete_never_starts_an_sftp_session() {
+    let processes = ProcessOwner::new(1, env!("CARGO_BIN_EXE_dockervault-process-guard")).unwrap();
+    let workers = Owner::new(1).unwrap();
+    let endpoint = SftpEndpoint {
+        host: "127.0.0.1".into(),
+        username: "backup".into(),
+        port: 22,
+        base: "/backups".into(),
+        known_hosts: "/app/data/ssh_known_hosts".into(),
+        identity: None,
+        password: None,
+    };
+    for child in ["", "../a.key", "dir/..", "dir/.", "dir/", "bad\nname"] {
+        assert!(
+            endpoint.delete(&processes, &workers, child).is_err(),
+            "{child:?}"
+        );
+    }
+    assert_eq!((processes.active(), workers.active()), (0, 0));
+}
+
 #[test]
 fn storage_box_maps_paths_only_on_port_23() {
     for (host, port, base, child, expected) in [
