@@ -2,9 +2,10 @@
 use super::{FileIdentity, VerifiedSource, check, invalid};
 use crate::ownership::{Owner, Work, WorkError};
 use nix::{
-    fcntl::{OFlag, openat, renameat},
+    dir::Dir,
+    fcntl::{AtFlags, OFlag, OpenHow, ResolveFlag, openat, openat2, renameat},
     sys::{
-        stat::{Mode, futimens, mkdirat},
+        stat::{Mode, SFlag, fstatat, futimens, mkdirat},
         time::TimeSpec,
     },
     unistd::{UnlinkatFlags, unlinkat},
@@ -14,7 +15,10 @@ use std::{
     ffi::{OsStr, OsString},
     fs::File,
     io::{self, Read, Write},
-    os::unix::fs::{MetadataExt, PermissionsExt},
+    os::unix::{
+        ffi::OsStrExt,
+        fs::{MetadataExt, PermissionsExt},
+    },
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
@@ -126,6 +130,23 @@ impl LocalStorage {
         path: PathBuf,
         expected_root: (u64, u64),
     ) -> Result<Work<Result<(), TransferError>>, WorkError> {
+        self.delete(path, expected_root, false)
+    }
+
+    pub(crate) fn delete_target(
+        &self,
+        path: PathBuf,
+        expected_root: (u64, u64),
+    ) -> Result<Work<Result<(), TransferError>>, WorkError> {
+        self.delete(path, expected_root, true)
+    }
+
+    fn delete(
+        &self,
+        path: PathBuf,
+        expected_root: (u64, u64),
+        recursive: bool,
+    ) -> Result<Work<Result<(), TransferError>>, WorkError> {
         let root = self.root.clone();
         let configured = self.configured_root.clone();
         self.workers.submit_blocking(move |cancel| {
@@ -142,6 +163,21 @@ impl LocalStorage {
                 if (current.dev(), current.ino()) != expected_root {
                     return Err(invalid("Storage root changed").into());
                 }
+            }
+            check(&|| cancel.is_cancelled())?;
+            if recursive {
+                let mut removal = TreeRemoval {
+                    root: &root,
+                    mutated: false,
+                    cancel: &|| cancel.is_cancelled(),
+                };
+                return removal.remove(Path::new(&path), None, 0).map_err(|error| {
+                    if removal.mutated {
+                        TransferError::PublicationUncertain(error)
+                    } else {
+                        TransferError::Io(error)
+                    }
+                });
             }
             let (parent, name) = parent(&root, Path::new(&path), false)?;
             check(&|| cancel.is_cancelled())?;
@@ -180,6 +216,97 @@ impl LocalStorage {
         })
     }
 }
+
+struct TreeRemoval<'a> {
+    root: &'a File,
+    mutated: bool,
+    cancel: &'a dyn Fn() -> bool,
+}
+
+impl TreeRemoval<'_> {
+    fn remove(&mut self, path: &Path, parent_pin: Option<&File>, depth: usize) -> io::Result<()> {
+        check(self.cancel)?;
+        if depth >= 128 {
+            return Err(invalid("Storage tree exceeds the directory depth limit"));
+        }
+        let parent_path = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let name = path
+            .file_name()
+            .ok_or_else(|| invalid("Storage root is not a deletion target"))?;
+        let parent = open_tree_directory(self.root, parent_path)?;
+        if let Some(pin) = parent_pin {
+            let expected = pin.metadata()?;
+            let actual = parent.metadata()?;
+            if (expected.dev(), expected.ino()) != (actual.dev(), actual.ino()) {
+                return Err(invalid("Storage parent moved"));
+            }
+        }
+        let stat = fstatat(&parent, name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
+        let directory = stat.st_mode & SFlag::S_IFMT.bits() == SFlag::S_IFDIR.bits();
+        let expected = (stat.st_dev, stat.st_ino);
+        let directory_pin = if directory {
+            let fd = open_tree_directory(&parent, Path::new(name))?;
+            let metadata = fd.metadata()?;
+            if (metadata.dev(), metadata.ino()) != expected {
+                return Err(invalid("Storage directory changed"));
+            }
+            let mut entries = Dir::from_fd(openat(
+                &fd,
+                ".",
+                OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_DIRECTORY,
+                Mode::empty(),
+            )?)?;
+            for entry in entries.iter() {
+                let entry = entry?;
+                let name = entry.file_name().to_bytes();
+                if name == b"." || name == b".." {
+                    continue;
+                }
+                self.remove(&path.join(OsStr::from_bytes(name)), Some(&fd), depth + 1)?;
+            }
+            Some(fd)
+        } else {
+            None
+        };
+        // Reopen from the root, rather than deleting through a directory moved out of it.
+        let current = open_tree_directory(self.root, parent_path)?;
+        let old_parent = parent.metadata()?;
+        let current_parent = current.metadata()?;
+        let stat = fstatat(&current, name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
+        if (old_parent.dev(), old_parent.ino()) != (current_parent.dev(), current_parent.ino())
+            || (stat.st_dev, stat.st_ino) != expected
+        {
+            return Err(invalid("Storage target changed"));
+        }
+        unlinkat(
+            &current,
+            name,
+            if directory_pin.is_some() {
+                UnlinkatFlags::RemoveDir
+            } else {
+                UnlinkatFlags::NoRemoveDir
+            },
+        )?;
+        self.mutated = true;
+        current.sync_all()
+    }
+}
+
+fn open_tree_directory(parent: &File, path: &Path) -> io::Result<File> {
+    // Kernel-enforced containment also rejects bind mounts within a selected tree.
+    let how = OpenHow::new()
+        .flags(OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC)
+        .resolve(
+            ResolveFlag::RESOLVE_BENEATH
+                | ResolveFlag::RESOLVE_NO_SYMLINKS
+                | ResolveFlag::RESOLVE_NO_XDEV,
+        );
+    Ok(File::from(openat2(parent, path, how)?))
+}
+
 fn parent(root: &File, path: &Path, create: bool) -> io::Result<(File, OsString)> {
     let mut parts = Vec::new();
     for component in path.components() {

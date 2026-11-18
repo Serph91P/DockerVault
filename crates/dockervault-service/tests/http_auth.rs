@@ -270,6 +270,60 @@ async fn local_delete_submit_commits_before_effect_and_replay_does_not_delete_ag
 }
 
 #[tokio::test]
+async fn local_delete_removes_a_selected_tree_without_following_links() {
+    use std::os::unix::fs::symlink;
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let root = server.path.join("backups");
+    let outside = server.path.join("outside");
+    std::fs::create_dir_all(root.join("selected/nested")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(root.join("selected/nested/data"), b"selected").unwrap();
+    std::fs::write(outside.join("keep"), b"outside").unwrap();
+    std::fs::write(root.join("neighbor"), b"untouched").unwrap();
+    symlink(&outside, root.join("selected/nested/link")).unwrap();
+    let route = "/api/v1/operations";
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let (status, _, body) = server
+        .request(
+            "POST",
+            route,
+            &headers,
+            Some(json!({
+                "action":"storage_delete", "storage_id":"local", "path":"", "paths":["selected"],
+                "request_id":"1b5124a4-55f0-46d5-b6ab-3251c8827a2f"
+            })),
+        )
+        .await;
+    assert_eq!(status, 202);
+    let detail = format!("{route}/{}", body["operation_id"].as_str().unwrap());
+    let settled = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let (status, _, snapshot) = server.request("GET", &detail, &headers, None).await;
+            assert_eq!(status, 200);
+            if snapshot["finished_at"].is_string() {
+                break snapshot;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(settled["state"], "completed");
+    assert_eq!(
+        settled["items"],
+        json!([{"path":"selected","state":"succeeded","error":null}])
+    );
+    assert!(!root.join("selected").exists());
+    assert_eq!(std::fs::read(outside.join("keep")).unwrap(), b"outside");
+    assert_eq!(std::fs::read(root.join("neighbor")).unwrap(), b"untouched");
+    server.close().await;
+}
+
+#[tokio::test]
 async fn retry_links_only_failed_items_and_replay_does_not_touch_recreated_bytes() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

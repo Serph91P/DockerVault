@@ -484,7 +484,7 @@ async fn delete_next_local(
         return Ok(false);
     };
     let outcome = match relative_path(&item.path, false) {
-        Some(path) => match local.delete_leaf(path.into(), expected_root) {
+        Some(path) => match local.delete_target(path.into(), expected_root) {
             Ok(effect) => match effect.wait().await {
                 Ok(Ok(())) => DeleteOutcome::Succeeded,
                 Ok(Err(TransferError::PublicationUncertain(_))) | Err(_) => DeleteOutcome::Unknown,
