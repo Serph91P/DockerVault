@@ -80,18 +80,18 @@ pub(super) async fn submit(State(state): State<HttpState>, mut request: Request)
         return invalid("body.request_id", "Input should be a valid UUID");
     };
     if let Some(id) = remote_id {
-        use crate::storage_recovery::{normalize_delete_selection, remote_enabled};
-        if let Err(error) = normalize_delete_selection(targets.iter().map(String::as_str)) {
-            return admission_response(Err(error), false);
-        }
-        return match remote_enabled(state.auth.pool(), id).await {
-            Ok(None) => failure(StatusCode::NOT_FOUND, "Storage not found"),
-            Ok(Some(false)) => failure(StatusCode::CONFLICT, "Storage is disabled"),
-            Ok(Some(true)) => {
-                admission_response(Err(StorageRecoveryError::UnsupportedProvider), false)
-            }
-            Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
-        };
+        return admission_response(
+            crate::storage_recovery::replay_remote_delete(
+                state.auth.pool(),
+                user.id,
+                id,
+                &request_id,
+                path,
+                &targets,
+            )
+            .await,
+            false,
+        );
     }
     admit_local(
         &state,
@@ -170,6 +170,8 @@ fn admission_response(result: Result<String, StorageRecoveryError>, retry: bool)
             },
         ),
         Err(Error::OperationNotFound) => failure(StatusCode::NOT_FOUND, "Operation not found"),
+        Err(Error::StorageNotFound) => failure(StatusCode::NOT_FOUND, "Storage not found"),
+        Err(Error::StorageDisabled) => failure(StatusCode::CONFLICT, "Storage is disabled"),
         Err(Error::OperationActive) => {
             failure(StatusCode::CONFLICT, "Wait for operation settlement")
         }

@@ -29,6 +29,8 @@ pub enum StorageRecoveryError {
     OperationActive,
     NothingToRetry,
     UnsupportedProvider,
+    StorageNotFound,
+    StorageDisabled,
 }
 
 #[derive(Clone, Copy)]
@@ -77,7 +79,7 @@ async fn admit_delete(
     let path = relative_path(request.path, true).ok_or(Error::InvalidRequest)?;
     let paths = normalize_delete_selection(request.paths.iter().copied())?;
     let parent_id = parent.map(|parent| parent.id.as_str());
-    let payload = serde_json::json!({"action":"storage_delete", "storage_id":request.storage_id, "path":path, "paths":paths, "parent_id":parent_id});
+    let payload = delete_payload(request.storage_id, &path, &paths, parent_id);
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     if recovery_pending_in(&mut *tx)
         .await
@@ -85,24 +87,9 @@ async fn admit_delete(
     {
         return Err(Error::RecoveryPending);
     }
-    let existing: Option<(String, String)> = sqlx::query_as(
-        "SELECT id,payload FROM storage_operations WHERE user_id=? AND request_id=?",
-    )
-    .bind(request.user_id)
-    .bind(&request_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    if let Some((id, saved)) = existing {
+    if let Some(id) = matching_delete(&mut tx, request.user_id, &request_id, &payload).await? {
         tx.rollback().await?;
-        return if serde_json::from_str::<serde_json::Value>(&saved)
-            .as_ref()
-            .ok()
-            == Some(&payload)
-        {
-            Ok((id, false))
-        } else {
-            Err(Error::RequestConflict)
-        };
+        return Ok((id, false));
     }
     if !request.accepting {
         return Err(Error::ShuttingDown);
@@ -203,14 +190,74 @@ pub async fn storage_operation_detail(
     row.map(decode_snapshot).transpose()
 }
 
-pub(crate) async fn remote_enabled(
+fn delete_payload(
+    storage: &str,
+    path: &str,
+    paths: &[String],
+    parent: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({"action":"storage_delete", "storage_id":storage, "path":path, "paths":paths, "parent_id":parent})
+}
+
+async fn matching_delete(
+    connection: &mut sqlx::SqliteConnection,
+    user_id: i64,
+    request_id: &str,
+    payload: &serde_json::Value,
+) -> Result<Option<String>, StorageRecoveryError> {
+    let existing: Option<(String, String)> = sqlx::query_as(
+        "SELECT id,payload FROM storage_operations WHERE user_id=? AND request_id=?",
+    )
+    .bind(user_id)
+    .bind(request_id)
+    .fetch_optional(connection)
+    .await?;
+    match existing {
+        None => Ok(None),
+        Some((id, saved))
+            if serde_json::from_str::<serde_json::Value>(&saved)
+                .ok()
+                .as_ref()
+                == Some(payload) =>
+        {
+            Ok(Some(id))
+        }
+        Some(_) => Err(StorageRecoveryError::RequestConflict),
+    }
+}
+
+pub(crate) async fn replay_remote_delete(
     pool: &SqlitePool,
+    user_id: i64,
     id: i64,
-) -> Result<Option<bool>, sqlx::Error> {
-    sqlx::query_scalar("SELECT COALESCE(enabled != 0, 0) FROM remote_storages WHERE id=?")
-        .bind(id)
-        .fetch_optional(pool)
+    request_id: &str,
+    path: &str,
+    paths: &[String],
+) -> Result<String, StorageRecoveryError> {
+    use StorageRecoveryError as Error;
+    let normalized = normalize_delete_selection(paths.iter().map(String::as_str))?;
+    let path = relative_path(path, true).ok_or(Error::InvalidRequest)?;
+    let payload = delete_payload(&id.to_string(), &path, &normalized, None);
+    let mut tx = pool.begin().await?;
+    if recovery_pending_in(&mut *tx)
         .await
+        .map_err(Error::Activation)?
+    {
+        return Err(Error::RecoveryPending);
+    }
+    if let Some(operation) = matching_delete(&mut tx, user_id, request_id, &payload).await? {
+        return Ok(operation);
+    }
+    let supported: Option<bool> =
+        sqlx::query_scalar("SELECT COALESCE(enabled != 0, 0) FROM remote_storages WHERE id=?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    Err(match supported {
+        None => Error::StorageNotFound,
+        Some(false) => Error::StorageDisabled,
+        Some(true) => Error::UnsupportedProvider,
+    })
 }
 
 /// Produce the published Python storage configuration digest before provider dispatch.

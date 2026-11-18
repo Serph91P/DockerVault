@@ -304,6 +304,50 @@ async fn local_delete_submit_commits_before_effect_and_replay_does_not_delete_ag
 }
 
 #[tokio::test]
+async fn python_remote_receipt_can_be_replayed_after_its_target_was_removed() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let root = server.path.join("backups");
+    std::fs::write(root.join("fixture.tar"), b"replacement").unwrap();
+    const REQUEST: &str = "9843eea3-0dd6-48b5-8d76-a01c54e40f99";
+    let payload = json!({"action":"storage_delete","storage_id":"41","path":"","paths":["fixture.tar"],"parent_id":null});
+    sqlx::query("INSERT INTO storage_operations(id,user_id,request_id,payload,storage_identity,action,storage_id,path,state,stage,total,completed,succeeded,failed,skipped,unknown,cancel_requested,created_at,updated_at) VALUES ('legacy-remote',1,?,?,'{}','storage_delete','41','','completed','finished',1,1,1,0,0,0,0,'2024-01-01','2024-01-01')")
+        .bind(REQUEST).bind(payload.to_string()).execute(server.db.pool()).await.unwrap();
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let mut body = json!({"action":"storage_delete","storage_id":41,"path":".","paths":["./fixture.tar","fixture.tar"],"request_id":REQUEST});
+    let (status, _, receipt) = server
+        .request("POST", "/api/v1/operations", &headers, Some(body.clone()))
+        .await;
+    assert_eq!(
+        (status, receipt),
+        (202, json!({"operation_id":"legacy-remote"}))
+    );
+    body["paths"] = json!(["different.tar"]);
+    assert_eq!(
+        server
+            .request("POST", "/api/v1/operations", &headers, Some(body))
+            .await
+            .0,
+        409
+    );
+    assert_eq!(
+        std::fs::read(root.join("fixture.tar")).unwrap(),
+        b"replacement"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM storage_operations")
+            .fetch_one(server.db.pool())
+            .await
+            .unwrap(),
+        1
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn local_delete_removes_a_selected_tree_without_following_links() {
     use std::os::unix::fs::symlink;
     let server = Server::start("http://localhost:3000").await;
