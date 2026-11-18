@@ -81,6 +81,43 @@ fn standalone_service_migrates_serves_and_shuts_down_without_python() {
             .unwrap(),
         7
     );
+    db.execute_batch("INSERT INTO users(id,username,password_hash) VALUES(1,'fixture','synthetic');
+      INSERT INTO storage_operations(id,user_id,request_id,payload,storage_identity,action,storage_id,path,state,stage,total,completed,succeeded,failed,skipped,unknown,cancel_requested,created_at,updated_at) VALUES
+      ('interrupted',1,'fixture-request','{}','{}','storage_delete','local','','running','deleting',2,0,0,0,0,0,0,'2024-01-01','2024-01-01');
+      INSERT INTO storage_operation_items(operation_id,path,state) VALUES ('interrupted','possibly removed','running'),('interrupted','not started','pending');").unwrap();
+    let neighbor = dir.join("not started");
+    std::fs::write(&neighbor, b"fixture must not be replayed").unwrap();
+    process.kill().unwrap();
+    assert!(!process.wait().unwrap().success());
+    let mut process = run(&dir, port);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ready().unwrap_or(false) {
+        if process.try_wait().unwrap().is_some() || Instant::now() >= deadline {
+            let _ = process.kill();
+            let _ = process.wait();
+            panic!("restarted native process never served health");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let row = db
+        .query_row(
+            "SELECT state,stage,unknown,skipped FROM storage_operations WHERE id='interrupted'",
+            [],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(row, ("failed".into(), "interrupted".into(), 1, 1));
+    assert_eq!(
+        std::fs::read(neighbor).unwrap(),
+        b"fixture must not be replayed"
+    );
     kill(Pid::from_raw(process.id() as i32), Signal::SIGTERM).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
