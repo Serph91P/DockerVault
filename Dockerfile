@@ -61,7 +61,8 @@ EXPOSE 80
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD curl -sf http://127.0.0.1/health || exit 1
 VOLUME ["/app/data", "/backups"]
-ENTRYPOINT ["/usr/local/sbin/dockervault-init"]
+# Match docker/python-rollback.Dockerfile: hold the mount's inode before either init runs.
+ENTRYPOINT ["/usr/bin/flock", "--exclusive", "--nonblock", "--conflict-exit-code", "73", "--no-fork", "/app/data", "/usr/local/sbin/dockervault-init"]
 
 # =============================================================================
 # Stage 3: Python Dependencies Builder

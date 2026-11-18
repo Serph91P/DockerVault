@@ -46,6 +46,19 @@ jobs:
           test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = 'linux/${{ matrix.arch }}'
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$sha"
           sh docker/test-native-candidate.sh "$image"
+      - name: Rehearse exclusive writer startup with fenced Python rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref=39124ea3a98963b6307a69a0fbaf5902a17cde3d
+          git fetch --no-tags --depth=1 origin "$ref"
+          git archive "$ref" | docker build --platform 'linux/${{ matrix.arch }}' --target production \
+            --build-arg "COMMIT_SHA=$ref" -t dockervault-r14-python-ref:39124ea -
+          docker build --platform 'linux/${{ matrix.arch }}' -f docker/python-rollback.Dockerfile \
+            --target python-rollback -t dockervault-python-rollback-ci .
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' dockervault-python-rollback-ci)" = 'linux/${{ matrix.arch }}'
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' dockervault-python-rollback-ci)" = "$ref"
+          sh docker/test-writer-fence.sh dockervault-native-candidate-ci dockervault-python-rollback-ci
       - name: Native pinned rclone capabilities and encrypted preparation without network
         run: |
           docker build -f docker/rclone-test.Dockerfile -t dockervault-rclone-ci .
