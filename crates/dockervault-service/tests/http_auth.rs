@@ -600,7 +600,17 @@ async fn configured_s3_delete_lost_response_is_unknown_and_not_sent_again() {
 }
 
 async fn configured_s3_delete(acknowledge: bool) {
-    let server = Server::start("http://localhost:3000").await;
+    let key = dockervault_core::crypto::CredentialCipher::generate_key();
+    let cipher = dockervault_core::crypto::CredentialCipher::new(&key).unwrap();
+    let server = Server::configured(
+        Config::from_pairs([
+            ("COOKIE_SECURE", "false"),
+            ("CORS_ORIGINS", "http://localhost:3000"),
+            ("CREDENTIAL_ENCRYPTION_KEY", key.as_str()),
+        ])
+        .unwrap(),
+    )
+    .await;
     let cookie = server.setup().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -644,7 +654,7 @@ async fn configured_s3_delete(acknowledge: bool) {
         listener
     });
     sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,s3_bucket,s3_endpoint_url,s3_access_key,s3_secret_key) VALUES (45,'fixture s3','s3',1,'backups','fixture-bucket',?,?,?)")
-        .bind(url).bind(access.as_str()).bind(secret.as_str()).execute(server.db.pool()).await.unwrap();
+        .bind(url).bind(cipher.encrypt_value(&access)).bind(cipher.encrypt_value(&secret)).execute(server.db.pool()).await.unwrap();
     let headers = [
         ("Cookie", cookie.as_str()),
         ("Origin", "http://localhost:3000"),

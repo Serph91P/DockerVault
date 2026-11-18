@@ -907,28 +907,14 @@ impl LocalDeleteJobs {
                             } else {
                                 "password"
                             })?;
-                            let password = match password {
-                                Some(value) if value.starts_with("fernet:") => {
-                                    let config = config.clone();
-                                    let work = io
-                                        .submit_blocking(move |cancel| {
-                                            load_delete_cipher(
-                                                std::path::Path::new("/app/data/.credential_key"),
-                                                config.credential_encryption_key.expose(),
-                                                || cancel.is_cancelled(),
-                                            )?
-                                            .decrypt_value(&value)
-                                            .map_err(|_| Error::InvalidStorageConfiguration)
-                                        })
-                                        .map_err(|_| Error::InvalidStorageConfiguration)?;
-                                    Some(
-                                        work.wait()
-                                            .await
-                                            .map_err(|_| Error::InvalidStorageConfiguration)??,
-                                    )
-                                }
-                                value => value,
+                            let access_key = if kind == "s3" {
+                                row.try_get("s3_access_key")?
+                            } else {
+                                None
                             };
+                            let [password, access_key] =
+                                open_delete_credentials([password, access_key], &io, &config)
+                                    .await?;
                             if kind == "s3" {
                                 let s3 = S3::for_claimed_delete(
                                     S3Config {
@@ -940,8 +926,7 @@ impl LocalDeleteJobs {
                                             .try_get::<Option<String>, _>("s3_bucket")?
                                             .ok_or(Error::InvalidStorageConfiguration)?,
                                         base_path: base.unwrap_or_default(),
-                                        access_key: row
-                                            .try_get::<Option<String>, _>("s3_access_key")?
+                                        access_key: access_key
                                             .ok_or(Error::InvalidStorageConfiguration)?,
                                         secret_key: password
                                             .ok_or(Error::InvalidStorageConfiguration)?,
@@ -1101,6 +1086,34 @@ impl LocalDeleteJobs {
         self.jobs.shutdown(None).await;
         self.io.shutdown(None).await;
     }
+}
+
+async fn open_delete_credentials(
+    mut values: [Option<String>; 2],
+    io: &Owner,
+    config: &Arc<crate::config::Config>,
+) -> Result<[Option<String>; 2], StorageRecoveryError> {
+    use StorageRecoveryError::InvalidStorageConfiguration as Invalid;
+    let encrypted = |value: &str| value.starts_with("fernet:");
+    if !values.iter().flatten().any(|value| encrypted(value)) {
+        return Ok(values);
+    }
+    let config = config.clone();
+    io.submit_blocking(move |cancel| {
+        let cipher = load_delete_cipher(
+            std::path::Path::new("/app/data/.credential_key"),
+            config.credential_encryption_key.expose(),
+            || cancel.is_cancelled(),
+        )?;
+        for value in values.iter_mut().flatten().filter(|value| encrypted(value)) {
+            *value = cipher.decrypt_value(value).map_err(|_| Invalid)?;
+        }
+        Ok(values)
+    })
+    .map_err(|_| Invalid)?
+    .wait()
+    .await
+    .map_err(|_| Invalid)?
 }
 
 fn load_delete_cipher(
