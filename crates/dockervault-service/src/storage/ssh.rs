@@ -71,13 +71,49 @@ impl SftpEndpoint {
         root: File,
         destination: PathBuf,
     ) -> Result<Work<Result<Downloaded, SftpDownloadError>>, SftpDownloadError> {
+        self.download_with(processes, workers, child, root, destination, false)
+    }
+
+    pub fn download_rsync(
+        &self,
+        processes: &ProcessOwner,
+        workers: &Owner,
+        child: &str,
+        root: File,
+        destination: PathBuf,
+    ) -> Result<Work<Result<Downloaded, SftpDownloadError>>, SftpDownloadError> {
+        self.download_with(processes, workers, child, root, destination, true)
+    }
+
+    fn download_with(
+        &self,
+        processes: &ProcessOwner,
+        workers: &Owner,
+        child: &str,
+        root: File,
+        destination: PathBuf,
+        rsync: bool,
+    ) -> Result<Work<Result<Downloaded, SftpDownloadError>>, SftpDownloadError> {
         let invalid = || SftpDownloadError::Process(ProcessError::InvalidSpec);
-        if child.trim_start_matches('/').is_empty() {
+        if matches!(child.rsplit('/').next(), None | Some("" | "." | "..")) {
             return Err(invalid());
         }
         let path = remote_path(&self.host, self.port, &self.base, child).map_err(|_| invalid())?;
-        let remote = batch_path(&path);
-        let mut spec = self.batch_spec().map_err(SftpDownloadError::Process)?;
+        let (mut spec, remote) = if rsync {
+            self.rsync_spec().map(|(spec, destination)| {
+                (
+                    spec,
+                    format!(
+                        "{destination}:{}{}",
+                        if path.starts_with('/') { "" } else { "./" },
+                        rsync_literal(&path)
+                    ),
+                )
+            })
+        } else {
+            self.batch_spec().map(|spec| (spec, batch_path(&path)))
+        }
+        .map_err(SftpDownloadError::Process)?;
         let processes = processes.clone();
         workers
             .submit_async(move |cancel| async move {
@@ -89,9 +125,25 @@ impl SftpEndpoint {
                 if cancel.is_cancelled() {
                     return Err(SftpDownloadError::Process(ProcessError::Cancelled));
                 }
-                spec.input =
-                    format!("@get {remote} {}\n@quit\n", staging.descriptor_path()).into_bytes();
-                run_batch(&processes, spec, &cancel).await?;
+                if rsync {
+                    spec.args.extend([
+                        "--inplace".into(),
+                        "--out-format=%i".into(),
+                        "--".into(),
+                        remote.into(),
+                        staging.inplace_path().into(),
+                    ]);
+                    let result = run_batch(&processes, spec, &cancel).await?;
+                    // An exit of zero can also mean a directory was skipped.
+                    let item = result.stdout.strip_suffix(b"\n").unwrap_or_default();
+                    if item.len() != 11 || !item.starts_with(b">f") {
+                        return Err(SftpDownloadError::ProviderRejected);
+                    }
+                } else {
+                    spec.input = format!("@get {remote} {}\n@quit\n", staging.descriptor_path())
+                        .into_bytes();
+                    run_batch(&processes, spec, &cancel).await?;
+                }
                 tokio::task::spawn_blocking(move || staging.finish(&|| cancel.is_cancelled()))
                     .await
                     .map_err(|_| SftpDownloadError::Admission(WorkError::WorkerFailed))?
@@ -241,6 +293,18 @@ impl SftpEndpoint {
     }
 
     fn rsync_put_spec(&self, path: &str, local: &str) -> Result<ProcessSpec, ProcessError> {
+        let (mut spec, destination) = self.rsync_spec()?;
+        spec.args.extend([
+            "-tL".into(),
+            "--mkpath".into(),
+            "--".into(),
+            local.into(),
+            format!("{destination}:{path}").into(),
+        ]);
+        Ok(spec)
+    }
+
+    fn rsync_spec(&self) -> Result<(ProcessSpec, String), ProcessError> {
         let (ssh, destination) = self.connection_args("-p")?;
         let mut command = "/usr/bin/ssh".to_owned();
         for arg in ssh {
@@ -250,19 +314,18 @@ impl SftpEndpoint {
             command.push_str(&arg.replace('\'', "''"));
             command.push('\'');
         }
-        Ok(self.wrap_password(
-            "/usr/bin/rsync",
-            vec![
-                "-tzL".into(),
-                "--ignore-times".into(),
-                "--secluded-args".into(),
-                "--mkpath".into(),
-                "-e".into(),
-                command.into(),
-                "--".into(),
-                local.into(),
-                format!("{destination}:{path}").into(),
-            ],
+        Ok((
+            self.wrap_password(
+                "/usr/bin/rsync",
+                vec![
+                    "-z".into(),
+                    "--ignore-times".into(),
+                    "--secluded-args".into(),
+                    "-e".into(),
+                    command.into(),
+                ],
+            ),
+            destination,
         ))
     }
 
@@ -366,6 +429,20 @@ async fn run_batch(
         return Err(SftpDownloadError::ProviderRejected);
     }
     Ok(output)
+}
+
+fn rsync_literal(path: &str) -> String {
+    if !path.contains(['[', '*', '?']) {
+        return path.into();
+    }
+    let mut escaped = String::with_capacity(path.len());
+    for c in path.chars() {
+        if matches!(c, '\\' | '[' | '*' | '?') {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
 }
 
 fn batch_path(path: &str) -> String {

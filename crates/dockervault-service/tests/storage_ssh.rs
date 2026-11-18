@@ -53,6 +53,14 @@ async fn unsafe_download_is_rejected_without_replacing_destination() {
         std::fs::File::open(&dir).unwrap(),
         "existing.tar.gz".into(),
     );
+    let rsync_result = endpoint.download_rsync(
+        &processes,
+        &workers,
+        "../unsafe",
+        std::fs::File::open(&dir).unwrap(),
+        "existing.tar.gz".into(),
+    );
+    assert!(rsync_result.is_err());
     let untouched = std::fs::read(&existing).unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(result.is_err());

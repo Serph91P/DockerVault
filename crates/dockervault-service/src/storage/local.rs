@@ -271,6 +271,16 @@ impl CliDownload {
         )
     }
 
+    pub(super) fn inplace_path(&self) -> String {
+        use std::os::fd::AsRawFd;
+        format!(
+            "/proc/{}/fd/{}/{}",
+            std::process::id(),
+            self.staging.parent.as_raw_fd(),
+            self.staging.name.to_str().expect("ASCII staging name"),
+        )
+    }
+
     pub(super) fn verify(
         mut self,
         source: &VerifiedSource,
@@ -281,9 +291,14 @@ impl CliDownload {
 
     pub(super) fn finish(mut self, cancel: &dyn Fn() -> bool) -> Result<Downloaded, TransferError> {
         let file = &mut self.staging.file;
-        let length = file.metadata()?.len();
+        let before = FileIdentity::read(&file.metadata()?)?;
         let digest = super::hash_reader(file, cancel)?;
         file.sync_all()?;
+        let named = read_leaf(&self.staging.parent, &self.staging.name)?;
+        if FileIdentity::read(&named.metadata()?)? != before {
+            return Err(invalid("Transfer staging changed before publication").into());
+        }
+        let length = before.length;
         self.staging.publish(&self.target, cancel)?;
         Ok(Downloaded { length, digest })
     }
