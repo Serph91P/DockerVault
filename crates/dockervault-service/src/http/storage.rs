@@ -277,10 +277,20 @@ async fn probe_ssh(state: &HttpState, config: &Value, draft: bool) -> Response {
 }
 
 async fn probe_s3(state: &HttpState, config: &Value) -> Option<()> {
+    s3_provider(state, config)?
+        .test_connection()
+        .ok()?
+        .wait()
+        .await
+        .ok()?
+        .ok()
+}
+
+fn s3_provider(state: &HttpState, config: &Value) -> Option<crate::storage::s3::S3> {
     use crate::storage::s3::{S3, S3Config};
     let field = |key: &str| config[key].as_str().map(str::to_owned);
     let io = state.auth.blocking();
-    let provider = S3::new(
+    S3::new(
         S3Config {
             endpoint_url: field("s3_endpoint_url").filter(|url| !url.is_empty()),
             region: field("s3_region").unwrap_or_default(),
@@ -289,11 +299,10 @@ async fn probe_s3(state: &HttpState, config: &Value) -> Option<()> {
             access_key: field("s3_access_key")?,
             secret_key: field("s3_secret_key")?,
         },
-        io.clone(),
+        state.probe_jobs.clone(),
         io.clone(),
     )
-    .ok()?;
-    provider.test_connection().ok()?.wait().await.ok()?.ok()
+    .ok()
 }
 
 async fn probe_ftp(state: &HttpState, config: &Value) -> Option<()> {
@@ -450,11 +459,30 @@ pub(super) async fn list_configured_files(
             )
             .await
         }
-        Some("webdav") => {
+        Some("webdav" | "s3") => {
+            let is_s3 = config["storage_type"] == "s3";
             let Some(path) = crate::storage::relative_path(raw, true) else {
                 return storage_error(StatusCode::BAD_REQUEST, "Invalid file path");
             };
-            match list_webdav(&state, &mut config, path.clone()).await {
+            let files = if is_s3 {
+                async {
+                    if !open_probe_credentials(&state, &mut config, None).await {
+                        return None;
+                    }
+                    let provider = s3_provider(&state, &Value::Object(config))?;
+                    provider
+                        .list_files(path.clone())
+                        .ok()?
+                        .wait()
+                        .await
+                        .ok()?
+                        .ok()
+                }
+                .await
+            } else {
+                list_webdav(&state, &mut config, path.clone()).await
+            };
+            match files {
                 Some(files) => Json(json!({"files":files,"path":path})).into_response(),
                 None => storage_error(StatusCode::BAD_GATEWAY, "Remote listing failed"),
             }

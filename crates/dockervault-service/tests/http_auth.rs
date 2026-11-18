@@ -1232,6 +1232,57 @@ async fn storage_create_persists_provider_fields_and_encrypts_credentials() {
 }
 
 #[tokio::test]
+async fn configured_s3_listing_preserves_nested_keys_and_reports_rejection() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [("Cookie", cookie.as_str())];
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,s3_bucket,s3_endpoint_url,s3_access_key,s3_secret_key) VALUES (44,'fixture','s3',1,'base','fixture-bucket',?,'fixture-access','fixture-secret')")
+        .bind(endpoint).execute(server.db.pool()).await.unwrap();
+    let provider = tokio::spawn(async move {
+        let success = "<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>base/folder/sub/archive.tar</Key><LastModified>2024-01-01T00:00:00Z</LastModified><Size>7</Size></Contents></ListBucketResult>";
+        for (status, body) in [
+            ("200 OK", success),
+            ("403 Forbidden", "<Error><Code>AccessDenied</Code></Error>"),
+        ] {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut line = String::new();
+            stream.read_line(&mut line).await.unwrap();
+            assert!(line.starts_with("GET /fixture-bucket"));
+            assert!(line.contains("list-type=2"));
+            assert!(line.contains("prefix=base%2Ffolder%2F"));
+            loop {
+                line.clear();
+                assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            stream.get_mut().write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+        }
+    });
+    let path = "/api/v1/storage/44/files?path=folder";
+    let (status, _, body) = server.request("GET", path, &headers, None).await;
+    assert_eq!(
+        (status, body),
+        (
+            200,
+            json!({"path":"folder","files":[{"name":"sub/archive.tar","size":7,"is_dir":false,"modified":1704067200.0}]})
+        )
+    );
+    let (status, _, body) = server.request("GET", path, &headers, None).await;
+    assert_eq!(
+        (status, body),
+        (502, json!({"detail":"Remote listing failed"}))
+    );
+    provider.await.unwrap();
+    server.close().await;
+}
+
+#[tokio::test]
 async fn configured_ftp_listing_waits_for_mlsd_completion() {
     use tokio::io::{AsyncBufReadExt, BufReader};
     let server = Server::start("http://localhost:3000").await;
