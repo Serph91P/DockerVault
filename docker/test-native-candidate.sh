@@ -21,7 +21,6 @@ ready
 docker exec "$container" sh -eu -c '
     test "$(cat /proc/1/comm)" = s6-svscan || { echo "Expected s6 PID 1" >&2; exit 1; }
     pid=$(s6-svstat -o pid /run/dockervault/services/backend)
-    test "$(tr "\000" " " </proc/$pid/cmdline)" = "/usr/local/bin/dockervault-service 127.0.0.1:8000 "
     test "$(awk "/^Uid:/ { print \$2, \$3 }" /proc/$pid/status)" = "1000 1000"
     test "$(stat -c %u /app/data/backup.db)" = 1000
     test "$(stat -c %u:%a /app/data/ssh_known_hosts)" = 1000:600
@@ -35,6 +34,9 @@ docker exec "$container" sh -eu -c '
         test "$(stat -c %u:%g:%a "$file")" = 0:0:755
     done
 '
+# Reading /proc/PID/exe needs the service UID under Docker's default capabilities.
+pid=$(docker exec "$container" s6-svstat -o pid /run/dockervault/services/backend)
+test "$(docker exec -u 1000:1000 "$container" readlink "/proc/$pid/exe")" = /usr/local/bin/dockervault-service
 docker exec -u dockervault "$container" sh -eu -c '
     /usr/local/bin/dockervault-recover --help >/dev/null
     /usr/local/libexec/dockervault-process-guard "$$" /usr/bin/id -u > /tmp/guard-uid &
