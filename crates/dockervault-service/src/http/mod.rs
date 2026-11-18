@@ -97,6 +97,10 @@ pub fn router(state: HttpState) -> Router {
             "/api/v1/storage/{storage_id}/files/size",
             get(storage::configured_size),
         )
+        .route(
+            "/api/v1/storage/{storage_id}/files/download",
+            get(storage::configured_download),
+        )
         .route("/api/v1/storage/test-config", post(storage::test_config))
         .route(
             "/api/v1/storage/{storage_id}/test",

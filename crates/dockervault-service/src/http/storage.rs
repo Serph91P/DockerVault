@@ -424,18 +424,49 @@ pub(super) async fn configured_size(
     Path(id): Path<String>,
     axum::extract::Query(query): BrowseQuery,
 ) -> Response {
-    let parsed_id = super::operations::query_integer(&id);
-    let path = query.get("path");
-    let (Some(id), Some(path)) = (parsed_id, path) else {
-        let errors = [
-            parsed_id.is_none().then(invalid_id_field),
-            path.is_none().then(missing_size_path_field),
-        ];
-        return *auth::validation(errors.into_iter().flatten().collect());
+    let (id, path) = match configured_path(&id, query.get("path").map(String::as_str)) {
+        Ok(inputs) => inputs,
+        Err(response) => return *response,
     };
     match configured_browse_root(&state, id).await {
         Ok(Some(root)) => size_at(&state, root, path).await,
         Ok(None) => unavailable_size(path),
+        Err(response) => *response,
+    }
+}
+
+fn configured_path<'a>(id: &str, path: Option<&'a str>) -> Result<(i64, &'a str), Box<Response>> {
+    let id = super::operations::query_integer(id);
+    match (id, path) {
+        (Some(id), Some(path)) => Ok((id, path)),
+        _ => Err(auth::validation(
+            [
+                id.is_none().then(invalid_id_field),
+                path.is_none().then(missing_size_path_field),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        )),
+    }
+}
+
+pub(super) async fn configured_download(
+    State(state): State<HttpState>,
+    Path(id): Path<String>,
+    axum::extract::Query(query): BrowseQuery,
+) -> Response {
+    let (id, path) = match configured_path(&id, query.get("path").map(String::as_str)) {
+        Ok(inputs) => inputs,
+        Err(response) => return *response,
+    };
+    match configured_browse_root(&state, id).await {
+        Ok(Some(root)) if !root.is_empty() => download_at(&state, root, path).await,
+        Ok(Some(_)) => storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Download failed"),
+        Ok(None) => storage_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "Remote storage operations are unavailable",
+        ),
         Err(response) => *response,
     }
 }
@@ -595,13 +626,17 @@ pub(super) async fn local_download(
     State(state): State<HttpState>,
     axum::extract::Query(query): BrowseQuery,
 ) -> Response {
+    let Some(path) = query.get("path") else {
+        return missing_size_path();
+    };
+    download_at(&state, state.config.backup_base_path.clone(), path).await
+}
+
+async fn download_at(state: &HttpState, root: String, path: &str) -> Response {
     use axum::{body::Body, http::header};
     use futures_util::{StreamExt, stream};
     use std::path::{Path, PathBuf};
 
-    let Some(path) = query.get("path") else {
-        return missing_size_path();
-    };
     let Some(path) = crate::storage::relative_path(path, false) else {
         return storage_error(StatusCode::BAD_REQUEST, "Invalid file path");
     };
@@ -623,7 +658,7 @@ pub(super) async fn local_download(
             "Download capacity exhausted",
         );
     };
-    let root = PathBuf::from(&state.config.backup_base_path);
+    let root = PathBuf::from(root);
     let result = async {
         state
             .auth

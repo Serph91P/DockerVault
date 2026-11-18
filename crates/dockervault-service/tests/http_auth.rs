@@ -1475,6 +1475,53 @@ async fn local_download_serves_attachment_bytes_and_rejects_symlinks() {
 }
 
 #[tokio::test]
+async fn configured_local_download_only_uses_the_selected_root() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [("Cookie", cookie.as_str())];
+    let stored = server.path.join("stored");
+    std::fs::create_dir(&stored).unwrap();
+    std::fs::write(stored.join("backup.tar"), b"configured bytes").unwrap();
+    std::fs::write(server.path.join("backups/backup.tar"), b"default bytes").unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path) VALUES(44,'fixture','local',0,?)")
+        .bind(stored.to_str().unwrap()).execute(server.db.pool()).await.unwrap();
+    let (status, _, body) = server
+        .request(
+            "GET",
+            "/api/v1/storage/44/files/download?path=backup.tar",
+            &headers,
+            None,
+        )
+        .await;
+    assert_eq!((status, body), (200, json!("configured bytes")));
+    let (status, _, body) = server
+        .request(
+            "GET",
+            "/api/v1/storage/45/files/download?path=backup.tar",
+            &headers,
+            None,
+        )
+        .await;
+    assert_eq!((status, body), (404, json!({"detail":"Storage not found"})));
+    let (status, _, body) = server
+        .request(
+            "GET",
+            "/api/v1/storage/not-an-id/files/download",
+            &headers,
+            None,
+        )
+        .await;
+    assert_eq!(
+        (status, body),
+        (
+            422,
+            json!({"detail":"Validation error","errors":[{"field":"path.storage_id","message":"Input should be a valid integer, unable to parse string as an integer"},{"field":"query.path","message":"Field required"}]})
+        )
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn configured_storage_browsing_uses_only_the_persisted_root() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
