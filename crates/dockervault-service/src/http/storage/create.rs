@@ -27,6 +27,7 @@ pub(in crate::http) async fn create(
     let body = data.as_object_mut().expect("validated object");
     body.entry("enabled").or_insert(json!(true));
     body.entry("base_path").or_insert(json!("/backups"));
+    coerce_storage_scalars(body);
     let mut errors = Vec::new();
     let mut invalid = |field: &str, message: &str| {
         errors.push(json!({"field":format!("body.{field}"),"message":message}))
@@ -81,7 +82,17 @@ pub(in crate::http) async fn create(
     if !errors.is_empty() {
         return *auth::validation(errors);
     }
-    let errors = storage_errors(&data);
+    let mut errors = storage_errors(&data);
+    if let Some(kind) = data["storage_type"].as_str() {
+        let marker = format!(" is required for {kind};");
+        let enum_marker = format!(
+            " is required for StorageType.{};",
+            kind.to_ascii_uppercase()
+        );
+        for error in &mut errors {
+            *error = error.replace(&marker, &enum_marker);
+        }
+    }
     if !errors.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -109,6 +120,7 @@ pub(in crate::http) async fn update(
         Err(response) => return *response,
     };
     let values = data.as_object_mut().expect("validated object");
+    coerce_storage_scalars(values);
     values.retain(|key, value| {
         (OPTIONAL.contains(&key.as_str())
             || matches!(key.as_str(), "name" | "base_path" | "enabled" | "port"))
@@ -191,6 +203,40 @@ async fn persist_update(state: &HttpState, id: i64, data: Value) -> Result<Respo
     let view = storage_view(row).ok_or(sqlx::Error::Protocol("Invalid storage record".into()))?;
     tx.commit().await?;
     Ok(Json(view).into_response())
+}
+
+fn coerce_storage_scalars(values: &mut serde_json::Map<String, Value>) {
+    if let Some(value) = values.get_mut("enabled") {
+        let flag = match value {
+            Value::String(text) => match text.to_ascii_lowercase().as_str() {
+                "0" | "false" | "off" | "n" | "no" | "f" => Some(false),
+                "1" | "true" | "on" | "y" | "yes" | "t" => Some(true),
+                _ => None,
+            },
+            Value::Number(number) if number.as_f64() == Some(0.0) => Some(false),
+            Value::Number(number) if number.as_f64() == Some(1.0) => Some(true),
+            _ => None,
+        };
+        if let Some(flag) = flag {
+            *value = json!(flag);
+        }
+    }
+    if let Some(value) = values.get_mut("port") {
+        let port = match value {
+            Value::Bool(flag) => Some(i64::from(*flag)),
+            Value::String(text) => super::super::operations::query_integer(text),
+            Value::Number(number) => number.as_i64().or_else(|| {
+                number
+                    .as_f64()
+                    .filter(|value| value.fract() == 0.0 && value.abs() < i64::MAX as f64)
+                    .map(|value| value as i64)
+            }),
+            _ => None,
+        };
+        if let Some(port) = port {
+            *value = json!(port);
+        }
+    }
 }
 
 async fn prepare(state: &HttpState, mut data: Value) -> Result<Value, Box<Response>> {
