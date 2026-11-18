@@ -1,5 +1,8 @@
 //! Atomic restart settlement for interrupted user-owned storage operations.
-use crate::storage::webdav::{DavConfig, DavError, WebDav};
+use crate::storage::{
+    ftp::{Ftp, FtpConfig, FtpError},
+    webdav::{DavConfig, DavError, WebDav},
+};
 use crate::{
     ownership::{Owner, Work, WorkError},
     process::ProcessOwner,
@@ -265,7 +268,9 @@ pub(crate) async fn replay_remote_delete(
     Err(match supported {
         None => Error::StorageNotFound,
         Some((false, _)) => Error::StorageDisabled,
-        Some((true, kind)) if matches!(kind.as_str(), "local" | "webdav") => return Ok(None),
+        Some((true, kind)) if matches!(kind.as_str(), "local" | "webdav" | "ftp") => {
+            return Ok(None);
+        }
         Some((true, _)) => Error::UnsupportedProvider,
     })
 }
@@ -695,6 +700,7 @@ pub(crate) struct LocalSelection {
 enum DeleteTarget {
     Local(LocalStorage),
     Dav(WebDav),
+    Ftp(Ftp),
 }
 
 impl DeleteTarget {
@@ -706,26 +712,34 @@ impl DeleteTarget {
         identity: &serde_json::Value,
         remote_id: Option<i64>,
     ) -> Result<bool, StorageRecoveryError> {
-        let Self::Dav(dav) = self else {
-            let Self::Local(local) = self else {
-                unreachable!()
-            };
+        if let Self::Local(local) = self {
             return delete_next_local(pool, local, user, operation, identity, remote_id).await;
-        };
+        }
         let Some(item) = claim_delete(pool, user, operation, identity, remote_id).await? else {
             return Ok(false);
         };
         let outcome = if let Some(path) = relative_path(&item.path, false) {
-            match dav.delete(path) {
-                Ok(effect) => match effect.wait().await {
-                    Ok(Ok(())) => DeleteOutcome::Succeeded,
-                    Ok(Err(
-                        DavError::Transport | DavError::Cancelled | DavError::Http(500..=599),
-                    ))
-                    | Err(_) => DeleteOutcome::Unknown,
-                    Ok(Err(_)) => DeleteOutcome::Failed,
+            match self {
+                Self::Ftp(ftp) => match ftp.delete(path) {
+                    Ok(effect) => match effect.wait().await {
+                        Ok(Ok(())) => DeleteOutcome::Succeeded,
+                        Ok(Err(FtpError::Reply(_) | FtpError::Config)) => DeleteOutcome::Failed,
+                        _ => DeleteOutcome::Unknown,
+                    },
+                    Err(_) => DeleteOutcome::Failed,
                 },
-                Err(_) => DeleteOutcome::Failed,
+                Self::Dav(dav) => match dav.delete(path) {
+                    Ok(effect) => match effect.wait().await {
+                        Ok(Ok(())) => DeleteOutcome::Succeeded,
+                        Ok(Err(
+                            DavError::Transport | DavError::Cancelled | DavError::Http(500..=599),
+                        ))
+                        | Err(_) => DeleteOutcome::Unknown,
+                        Ok(Err(_)) => DeleteOutcome::Failed,
+                    },
+                    Err(_) => DeleteOutcome::Failed,
+                },
+                Self::Local(_) => unreachable!(),
             }
         } else {
             DeleteOutcome::InvalidPath
@@ -836,7 +850,7 @@ impl LocalDeleteJobs {
                         let mut identity = remote_identity(&row)?;
                         let kind: String = row.try_get("storage_type")?;
                         let base: Option<String> = row.try_get("base_path")?;
-                        if kind == "webdav" {
+                        if matches!(kind.as_str(), "webdav" | "ftp") {
                             let password: Option<String> = row.try_get("password")?;
                             let password = match password {
                                 Some(value) if value.starts_with("fernet:") => {
@@ -860,6 +874,33 @@ impl LocalDeleteJobs {
                                 }
                                 value => value,
                             };
+                            if kind == "ftp" {
+                                let port = row
+                                    .try_get::<Option<i64>, _>("port")?
+                                    .map(|port| {
+                                        u16::try_from(port)
+                                            .ok()
+                                            .filter(|port| *port > 0)
+                                            .ok_or(Error::InvalidStorageConfiguration)
+                                    })
+                                    .transpose()?;
+                                let ftp = Ftp::new(
+                                    FtpConfig {
+                                        host: row
+                                            .try_get::<Option<String>, _>("host")?
+                                            .ok_or(Error::InvalidStorageConfiguration)?,
+                                        port,
+                                        username: row
+                                            .try_get::<Option<String>, _>("username")?
+                                            .unwrap_or_default(),
+                                        password: password.unwrap_or_default(),
+                                        base_path: base.unwrap_or_default(),
+                                    },
+                                    io.clone(),
+                                )
+                                .map_err(|_| Error::InvalidStorageConfiguration)?;
+                                return Ok((Some(DeleteTarget::Ftp(ftp)), identity));
+                            }
                             let dav = WebDav::new(
                                 DavConfig {
                                     url: row
