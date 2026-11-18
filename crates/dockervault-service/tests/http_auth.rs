@@ -502,6 +502,15 @@ async fn configured_webdav_retry_reexecutes_a_confirmed_rejection_once() {
 
 #[tokio::test]
 async fn configured_ftp_delete_settles_after_the_control_session_closes() {
+    configured_ftp_delete("221 bye\r\n").await;
+}
+
+#[tokio::test]
+async fn confirmed_ftp_unlink_cannot_be_retried_after_quit_rejection() {
+    configured_ftp_delete("500 quit not supported\r\n").await;
+}
+
+async fn configured_ftp_delete(quit_reply: &'static str) {
     use tokio::io::{AsyncBufReadExt, BufStream};
     let username = dockervault_core::crypto::CredentialCipher::generate_key();
     let password = dockervault_core::crypto::CredentialCipher::generate_key();
@@ -524,7 +533,7 @@ async fn configured_ftp_delete_settles_after_the_control_session_closes() {
             (user_command.as_str(), "331 password\r\n"),
             (pass_command.as_str(), "230 logged in\r\n"),
             ("DELE /backups/ftp-fixture.tar\r\n", "250 deleted\r\n"),
-            ("QUIT\r\n", "221 bye\r\n"),
+            ("QUIT\r\n", quit_reply),
         ] {
             line.clear();
             stream.read_line(&mut line).await.unwrap();

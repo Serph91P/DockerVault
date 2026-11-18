@@ -115,7 +115,8 @@ impl Ftp {
             // DELE cannot be recalled after the server receives it.
             let result = control.command("DELE", Some(&remote)).await;
             expect(result.map_err(|_| FtpError::DeleteUnsettled)?, &[250])?;
-            control.quit().await?;
+            // The socket closes on drop; a QUIT error cannot undo acknowledged DELE.
+            let _ = control.quit().await;
             if cancel.is_cancelled() {
                 Err(FtpError::Cancelled)
             } else {
