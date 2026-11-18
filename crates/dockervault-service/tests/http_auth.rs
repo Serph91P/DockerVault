@@ -1444,23 +1444,51 @@ async fn configured_webdav_listing_reports_provider_failure_not_empty_success() 
 
 #[tokio::test]
 async fn webdav_bulk_download_stages_success_and_skips_missing_objects() {
+    http_bulk_download_stages_success_and_skips_missing_objects(false).await;
+}
+
+#[tokio::test]
+async fn s3_bulk_download_stages_success_and_skips_missing_objects() {
+    http_bulk_download_stages_success_and_skips_missing_objects(true).await;
+}
+
+async fn http_bulk_download_stages_success_and_skips_missing_objects(s3: bool) {
     use tokio::io::{AsyncBufReadExt, BufReader};
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,webdav_url) VALUES(44,'fixture','webdav',1,'/base',?)")
-        .bind(format!("http://{}",listener.local_addr().unwrap())).execute(server.db.pool()).await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    if s3 {
+        sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,s3_bucket,s3_endpoint_url,s3_access_key,s3_secret_key) VALUES(44,'fixture','s3',1,'base','fixture-bucket',?,'fixture-access','fixture-secret')")
+            .bind(endpoint).execute(server.db.pool()).await.unwrap();
+    } else {
+        sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,webdav_url) VALUES(44,'fixture','webdav',1,'/base',?)")
+            .bind(endpoint).execute(server.db.pool()).await.unwrap();
+    }
     let provider = tokio::spawn(async move {
         for (name, status, body) in [
             ("archive.tar", "200 OK", "fixture"),
-            ("missing.tar", "404 Not Found", ""),
+            (
+                "missing.tar",
+                "404 Not Found",
+                if s3 {
+                    "<Error><Code>NoSuchKey</Code></Error>"
+                } else {
+                    ""
+                },
+            ),
             ("short.tar", "200 OK", "short"),
         ] {
             let (stream, _) = listener.accept().await.unwrap();
             let mut stream = BufReader::new(stream);
             let mut line = String::new();
             stream.read_line(&mut line).await.unwrap();
-            assert_eq!(line, format!("GET /base/{name} HTTP/1.1\r\n"));
+            let path = if s3 {
+                format!("/fixture-bucket/base/{name}?x-id=GetObject")
+            } else {
+                format!("/base/{name}")
+            };
+            assert_eq!(line, format!("GET {path} HTTP/1.1\r\n"));
             loop {
                 line.clear();
                 assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);

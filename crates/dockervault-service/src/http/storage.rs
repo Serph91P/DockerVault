@@ -935,6 +935,21 @@ async fn bulk_download(
                 };
                 DownloadSource::Webdav(provider)
             }
+            Some("s3") => {
+                if !open_probe_credentials(state, &mut config, None).await {
+                    return storage_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Bulk download failed",
+                    );
+                }
+                let Some(provider) = s3_provider(state, &Value::Object(config)) else {
+                    return storage_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Bulk download failed",
+                    );
+                };
+                DownloadSource::S3(provider)
+            }
             _ => {
                 return storage_error(
                     StatusCode::NOT_IMPLEMENTED,
@@ -982,6 +997,20 @@ async fn bulk_download(
                         return None;
                     }
                     let input = match &source {
+                        DownloadSource::S3(provider) => {
+                            let work = provider.download_snapshot(path.clone(), ()).ok()?;
+                            match rclone::settled(work, Some(&cancel)).await? {
+                                Ok((file, _, ())) => file,
+                                Err(crate::storage::s3::S3Error::Http(404)) => continue,
+                                Err(crate::storage::s3::S3Error::Provider {
+                                    status: Some(404),
+                                    code,
+                                }) if matches!(code.as_str(), "NoSuchKey" | "NotFound" | "404") => {
+                                    continue;
+                                }
+                                Err(_) => return None,
+                            }
+                        }
                         DownloadSource::Webdav(provider) => {
                             let work = provider.download_snapshot(path.clone(), ()).ok()?;
                             match rclone::settled(work, Some(&cancel)).await? {
