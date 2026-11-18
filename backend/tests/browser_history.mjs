@@ -16,6 +16,7 @@ async function download(button, expected) { const received = page.waitForEvent('
 try {
   await goto('/')
   const password=randomBytes(24).toString('hex')
+  await page.getByRole('button',{name:'Create new installation',exact:true}).click()
   await page.getByLabel('Username',{exact:true}).fill('history-operator')
   await page.getByLabel('Account password',{exact:true}).fill(password)
   await page.getByLabel('Confirm account password',{exact:true}).fill(password)
@@ -116,7 +117,7 @@ try {
   await page.getByRole('button',{name:'Expand root',exact:true}).click()
   await download(page.getByRole('button',{name:'Download file-0000.txt',exact:true}),Buffer.from('owned history payload 0'))
   await page.getByRole('link',{name:/Open storage History offsite/}).click()
-  await expect(page.getByRole('dialog')).toBeVisible()
+  await expect(page.getByRole('region',{name:'Browse History offsite',exact:true})).toBeVisible()
   await expect(page.getByText('remote.tar',{exact:true})).toBeVisible()
   await page.getByRole('button',{name:/Close storage browser/i}).click()
   await page.getByRole('link',{name:'Return to archive context',exact:true}).click()

@@ -13,7 +13,7 @@ const username = 'truthful-states-operator', password = randomBytes(24).toString
 const routes = [
   ['/', '/targets', 'Plans'], ['/protection', '/targets', 'Plans'], ['/history', '/backups/history', 'History'],
   ['/protection/schedules', '/schedules', 'Schedules'], ['/protection/retention', '/retention', 'Retention policies'],
-  ['/storage', '/storage', 'Storage locations'], ['/settings', '/settings/storage', 'Storage settings'],
+  ['/storage', '/storage', 'Storage locations'], ['/settings#storage-safeguards', '/settings/storage', 'Storage settings'],
 ]
 async function api(path, method = 'GET', data) {
   const response = await context.request.fetch(base + '/api/v1' + path, { method, data })
@@ -42,6 +42,7 @@ async function fault(endpoint, mode) {
 }
 try {
   await page.goto(base)
+  await page.getByRole('button', { name: 'Create new installation', exact: true }).click()
   await page.getByLabel('Username', { exact: true }).fill(username)
   await page.getByLabel('Account password', { exact: true }).fill(password)
   await page.getByLabel('Confirm account password').fill(password)
@@ -69,7 +70,7 @@ try {
   // Review regressions: native populated SSH responses and scoped nested inventory faults.
   const pageErrors = []
   page.on('pageerror', error => pageErrors.push(error.message))
-  await ready('/storage', 'Storage locations')
+  await ready('/settings#ssh-keys', 'SSH keys')
   await page.getByRole('button', { name: 'Generate', exact: true }).click()
   const keyDialog = page.getByRole('dialog', { name: 'Generate SSH key', exact: true })
   await keyDialog.getByRole('textbox', { name: 'Name', exact: true }).fill('truthful_key')
@@ -86,6 +87,7 @@ try {
   await page.getByRole('dialog', { name: 'Install key on remote', exact: true }).waitFor()
   await page.keyboard.press('Escape')
   check(await page.getByRole('button', { name: 'Install on remote', exact: true }).evaluate(element => element === document.activeElement), 'B1: install dialog opens and returns keyboard focus without provider access')
+  await ready('/storage', 'Storage locations')
   await page.getByRole('button', { name: 'Add Storage', exact: true }).click()
   const storageDraft = page.getByRole('dialog', { name: 'Add New Storage', exact: true })
   await storageDraft.getByRole('textbox', { name: 'Name', exact: true }).fill('Unsaved SSH selection')

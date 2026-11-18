@@ -14,6 +14,7 @@ try {
   await page.routeWebSocket('**', socket => socket.close())
   await page.goto(base)
   const password = randomBytes(24).toString('hex')
+  await page.getByRole('button', { name: 'Create new installation', exact: true }).click()
   await page.getByLabel('Username', { exact: true }).fill('recovery-operator')
   await page.getByLabel('Account password', { exact: true }).fill(password)
   await page.getByLabel('Confirm account password').fill(password)
@@ -48,7 +49,7 @@ try {
   })
   await page.goto(base + '/storage')
   await page.getByTitle('Browse Files').first().click()
-  const panel = page.getByRole('dialog', { name: 'Browse Local Backups' })
+  const panel = page.getByRole('region', { name: 'Browse Local Backups' })
   if (scenario === 'discovery') {
     await gotRead
     assert.equal(await panel.getByText('Loading storage operations...', { exact: true }).isVisible(), true)

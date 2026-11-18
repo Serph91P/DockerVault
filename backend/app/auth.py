@@ -61,7 +61,7 @@ def generate_session_token() -> str:
     return secrets.token_urlsafe(SESSION_TOKEN_LENGTH)
 
 
-async def create_session(user_id: int, db: AsyncSession) -> str:
+async def create_session(user_id: int, db: AsyncSession, *, commit: bool = True) -> str:
     """Create a new session for a user.
 
     The raw token is returned to be set in the cookie.
@@ -78,9 +78,11 @@ async def create_session(user_id: int, db: AsyncSession) -> str:
         expires_at=expires_at,
     )
     db.add(session)
-    await db.commit()
-
-    logger.info("Created session for user %s", user_id)
+    if commit:
+        await db.commit()
+        logger.info("Created session for user %s", user_id)
+    else:
+        await db.flush()
     return token
 
 

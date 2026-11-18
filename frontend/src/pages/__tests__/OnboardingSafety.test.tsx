@@ -59,6 +59,7 @@ it('keeps account success recoverable through encryption failure and reload, wit
   )
   mount()
   const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: 'Create new installation' }))
   await user.type(await screen.findByLabelText('Username'), 'operator')
   await user.type(screen.getByLabelText('Account password'), 'synthetic-password')
   await user.type(screen.getByLabelText('Confirm account password'), 'synthetic-password')

@@ -72,6 +72,7 @@ try {
   check(await page.getByRole('button', { name: 'Create account' }).count() === 0, '503 offered account setup')
   await page.unroute('**/api/v1/auth/status')
   await page.getByRole('button', { name: 'Retry', exact: true }).click()
+  await page.getByRole('button', { name: 'Create new installation', exact: true }).click()
   await page.getByLabel('Username', { exact: true }).waitFor()
   await noOverflow()
   await page.keyboard.press('Tab')

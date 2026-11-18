@@ -26,6 +26,7 @@ class TestBackupScheduler:
         """Test scheduler start and stop."""
         # Mock empty database query
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         mock_result = MagicMock()
@@ -46,6 +47,7 @@ class TestBackupScheduler:
     async def test_start_twice_only_starts_once(self, mock_session):
         """Test that starting twice doesn't cause issues."""
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         mock_result = MagicMock()
@@ -64,6 +66,7 @@ class TestBackupScheduler:
     async def test_load_schedules_from_database(self, mock_session):
         """Test loading schedules from database."""
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         # Mock target with schedule
@@ -96,6 +99,7 @@ class TestBackupScheduler:
     async def test_add_schedule(self, mock_session):
         """Test adding a schedule."""
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         mock_result = MagicMock()
@@ -125,6 +129,7 @@ class TestBackupScheduler:
     async def test_add_schedule_no_cron(self, mock_session):
         """Test adding schedule without cron expression returns False."""
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         mock_result = MagicMock()
@@ -150,6 +155,7 @@ class TestBackupScheduler:
     async def test_remove_schedule(self, mock_session):
         """Test removing a schedule."""
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         mock_result = MagicMock()
@@ -181,6 +187,7 @@ class TestBackupScheduler:
     async def test_remove_nonexistent_schedule(self, mock_session):
         """Test removing a schedule that doesn't exist."""
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         mock_result = MagicMock()
@@ -224,6 +231,7 @@ class TestBackupScheduler:
     async def test_get_scheduled_jobs(self, mock_session):
         """Test getting all scheduled jobs."""
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         mock_result = MagicMock()
@@ -266,6 +274,7 @@ class TestBackupScheduler:
         """Test triggering immediate backup."""
         # Setup mock session
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         # Mock target from database
@@ -301,6 +310,7 @@ class TestBackupScheduler:
     ):
         """Test triggering backup for non-existent target."""
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         mock_result = MagicMock()
@@ -322,6 +332,7 @@ class TestBackupScheduler:
     ):
         """Test immediate backup rejects a disabled target."""
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         target = MagicMock(spec=BackupTarget)
@@ -350,6 +361,7 @@ class TestBackupScheduler:
     async def test_estimate_backup_window(self, mock_session):
         """Test estimating backup window."""
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         mock_result = MagicMock()
@@ -382,6 +394,7 @@ class TestBackupScheduler:
     ):
         """Test running a scheduled backup."""
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         # Mock target from database
@@ -417,6 +430,7 @@ class TestBackupScheduler:
     async def test_run_scheduled_backup_target_not_found(self, mock_session):
         """Test scheduled backup with non-existent target."""
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         mock_result = MagicMock()
@@ -432,6 +446,7 @@ class TestBackupScheduler:
     async def test_run_scheduled_backup_disabled_target(self, mock_session):
         """Test scheduled backup skips disabled targets."""
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         # Mock disabled target
@@ -466,6 +481,7 @@ class TestSchedulerEdgeCases:
     async def test_add_schedule_with_invalid_cron(self, mock_session):
         """Test adding schedule with invalid cron expression."""
         mock_session_instance = AsyncMock()
+        mock_session_instance.scalar.return_value = None  # No recovery preparation marker.
         mock_session.return_value.__aenter__.return_value = mock_session_instance
 
         mock_result = MagicMock()

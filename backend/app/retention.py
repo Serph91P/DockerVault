@@ -63,11 +63,14 @@ class RetentionManager:
         Returns dict with counts of kept and deleted backups.
         """
         from app.backup_engine import backup_engine
+        from app.recovery_activation import require_recovery_ready
 
         async with (
             backup_engine._get_target_lock(target_id),
             backup_db_session(async_session) as session,
         ):
+            await session.execute(text("BEGIN IMMEDIATE"))
+            await require_recovery_ready(session)
             # Get target with retention policy
             result = await session.execute(
                 select(BackupTarget).where(BackupTarget.id == target_id)
@@ -264,6 +267,8 @@ class RetentionManager:
 
     async def cleanup_orphaned_files(self) -> CleanupResult:
         """Collect global *.tar* orphans; report settled effects, not just successes."""
+        from app.recovery_activation import require_recovery_ready
+
         backup_dir = Path(settings.BACKUP_BASE_PATH)
         deleted = failed = protected = freed_bytes = scan_errors = 0
 
@@ -273,6 +278,7 @@ class RetentionManager:
             logger.error(f"Orphan scan failed: {error}")
 
         async with backup_db_session(async_session) as session:
+            await require_recovery_ready(session)
             known_paths = await _known_artifact_paths(session)
 
         # Path.rglob suppresses scan errors; walk exposes incomplete traversal.
@@ -296,6 +302,7 @@ class RetentionManager:
                             continue
                         async with backup_db_session(async_session) as session:
                             await session.execute(text("BEGIN IMMEDIATE"))
+                            await require_recovery_ready(session)
                             # Recheck reservations with the existing writer admission.
                             known_paths = await _known_artifact_paths(session)
                             if str(file_path.resolve()) in known_paths:

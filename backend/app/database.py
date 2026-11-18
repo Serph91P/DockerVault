@@ -526,6 +526,12 @@ async def backup_db_session(
 async def init_db():
     """Initialize the database only after all required migrations succeed."""
     await run_migrations()
+    from app.recovery_activation import recover_incomplete_setup, recovery_pending
+
+    await recover_incomplete_setup(async_session)
+    async with async_session() as session:
+        if await recovery_pending(session):
+            return  # Another process still owns setup; do not mutate its pre-activation state.
 
     # Encrypt any plaintext credentials in remote_storage
     await _migrate_plaintext_credentials()
