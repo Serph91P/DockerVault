@@ -1,7 +1,7 @@
 use dockervault_service::{
     db::Database,
     ownership::Owner,
-    storage_recovery::{claim_next, settle_interrupted},
+    storage_recovery::{DeleteOutcome, claim_next, record_settled, settle_interrupted},
 };
 
 #[tokio::test]
@@ -99,6 +99,40 @@ async fn restart_keeps_uncertain_effects_unknown_and_never_replays_unstarted_ite
             .await
             .unwrap();
     assert_eq!(untouched, ("completed".into(), "done".into()));
+    sqlx::raw_sql("INSERT INTO storage_operations(id,user_id,request_id,payload,storage_identity,action,storage_id,path,state,stage,total,completed,succeeded,failed,skipped,unknown,cancel_requested,created_at,updated_at) VALUES
+        ('settled',1,'r3','{}','{}','delete','local','','queued','queued',2,0,0,0,0,0,0,'2024-01-01','2024-01-01');
+        INSERT INTO storage_operation_items(operation_id,path,state) VALUES ('settled','first','pending'),('settled','next','pending');")
+        .execute(db.pool()).await.unwrap();
+    let claim = claim_next(db.pool(), 1, "settled", &identity)
+        .await
+        .unwrap()
+        .unwrap();
+    sqlx::query("UPDATE storage_operations SET cancel_requested=1 WHERE id='settled'")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    assert!(
+        !record_settled(db.pool(), 2, "settled", claim.id, DeleteOutcome::Unknown)
+            .await
+            .unwrap()
+    );
+    assert!(
+        record_settled(db.pool(), 1, "settled", claim.id, DeleteOutcome::Unknown)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !record_settled(db.pool(), 1, "settled", claim.id, DeleteOutcome::Succeeded)
+            .await
+            .unwrap()
+    );
+    let row: (String, String, i64, i64, i64) = sqlx::query_as(
+        "SELECT state,stage,completed,unknown,skipped FROM storage_operations WHERE id='settled'",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(row, ("failed".into(), "finished".into(), 2, 1, 1));
     db.close().await;
     owner.shutdown(None).await;
     std::fs::remove_dir_all(dir).unwrap();

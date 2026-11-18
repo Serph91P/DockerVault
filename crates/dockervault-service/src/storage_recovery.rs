@@ -71,6 +71,71 @@ pub async fn claim_next(
     Ok(item.map(|(id, path)| ClaimedItem { id, path }))
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum DeleteOutcome {
+    Succeeded,
+    Failed,
+    Unknown,
+}
+
+/// Record the settled physical outcome once. An unconfirmed provider response
+/// is unknown even when the user has requested cancellation.
+pub async fn record_settled(
+    pool: &SqlitePool,
+    user_id: i64,
+    operation_id: &str,
+    item_id: i64,
+    outcome: DeleteOutcome,
+) -> Result<bool, StorageRecoveryError> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let (state, message) = match outcome {
+        DeleteOutcome::Succeeded => ("succeeded", None),
+        DeleteOutcome::Failed => ("failed", Some("Delete failed")),
+        DeleteOutcome::Unknown => (
+            "unknown",
+            Some("Delete not confirmed; inspect the actual target"),
+        ),
+    };
+    let updated = sqlx::query(
+        "UPDATE storage_operation_items SET state=?,error=? WHERE id=? AND operation_id=? AND state='running'
+         AND EXISTS(SELECT 1 FROM storage_operations WHERE id=? AND user_id=? AND action='delete' AND state='running')",
+    ).bind(state).bind(message).bind(item_id).bind(operation_id).bind(operation_id).bind(user_id)
+        .execute(&mut *tx).await?.rows_affected();
+    if updated == 0 {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+    sqlx::query(
+        "UPDATE storage_operation_items SET state='skipped',error='Not started; cancellation requested'
+         WHERE operation_id=? AND state='pending'
+           AND EXISTS(SELECT 1 FROM storage_operations WHERE id=? AND cancel_requested=1)",
+    ).bind(operation_id).bind(operation_id).execute(&mut *tx).await?;
+    let (succeeded, failed, skipped, unknown, active): (i64,i64,i64,i64,i64) = sqlx::query_as(
+        "SELECT count(CASE WHEN state='succeeded' THEN 1 END), count(CASE WHEN state='failed' THEN 1 END),
+                count(CASE WHEN state='skipped' THEN 1 END), count(CASE WHEN state='unknown' THEN 1 END),
+                count(CASE WHEN state IN ('pending','running') THEN 1 END)
+         FROM storage_operation_items WHERE operation_id=?",
+    ).bind(operation_id).fetch_one(&mut *tx).await?;
+    let next = if active != 0 {
+        "running"
+    } else if failed != 0 || unknown != 0 {
+        "failed"
+    } else if skipped != 0 {
+        "cancelled"
+    } else {
+        "completed"
+    };
+    sqlx::query(
+        "UPDATE storage_operations SET succeeded=?,failed=?,skipped=?,unknown=?,completed=?,state=?,
+           stage=CASE WHEN ?='running' THEN 'deleting' ELSE 'finished' END,
+           finished_at=CASE WHEN ?='running' THEN NULL ELSE strftime('%Y-%m-%d %H:%M:%f','now') END,
+           updated_at=strftime('%Y-%m-%d %H:%M:%f','now') WHERE id=?",
+    ).bind(succeeded).bind(failed).bind(skipped).bind(unknown).bind(succeeded+failed+skipped+unknown)
+        .bind(next).bind(next).bind(next).bind(operation_id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
 impl From<sqlx::Error> for StorageRecoveryError {
     fn from(error: sqlx::Error) -> Self {
         Self::Database(error)
