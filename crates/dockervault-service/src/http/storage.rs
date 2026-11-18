@@ -21,6 +21,7 @@ macro_rules! select_storage {
 }
 
 mod create;
+mod download;
 mod draft;
 mod rclone;
 pub(super) use create::{create, update};
@@ -455,13 +456,14 @@ pub(super) async fn configured_download(
     State(state): State<HttpState>,
     Path(id): Path<String>,
     axum::extract::Query(query): BrowseQuery,
+    headers: axum::http::HeaderMap,
 ) -> Response {
     let (id, path) = match configured_path(&id, query.get("path").map(String::as_str)) {
         Ok(inputs) => inputs,
         Err(response) => return *response,
     };
     match configured_browse_root(&state, id).await {
-        Ok(Some(root)) if !root.is_empty() => download_at(&state, root, path).await,
+        Ok(Some(root)) if !root.is_empty() => download_at(&state, root, path, &headers).await,
         Ok(Some(_)) => storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Download failed"),
         Ok(None) => storage_error(
             StatusCode::NOT_IMPLEMENTED,
@@ -625,16 +627,26 @@ fn missing_size_path() -> Response {
 pub(super) async fn local_download(
     State(state): State<HttpState>,
     axum::extract::Query(query): BrowseQuery,
+    headers: axum::http::HeaderMap,
 ) -> Response {
     let Some(path) = query.get("path") else {
         return missing_size_path();
     };
-    download_at(&state, state.config.backup_base_path.clone(), path).await
+    download_at(
+        &state,
+        state.config.backup_base_path.clone(),
+        path,
+        &headers,
+    )
+    .await
 }
 
-async fn download_at(state: &HttpState, root: String, path: &str) -> Response {
-    use axum::{body::Body, http::header};
-    use futures_util::{StreamExt, stream};
+async fn download_at(
+    state: &HttpState,
+    root: String,
+    path: &str,
+    headers: &axum::http::HeaderMap,
+) -> Response {
     use std::path::{Path, PathBuf};
 
     let Some(path) = crate::storage::relative_path(path, false) else {
@@ -668,7 +680,8 @@ async fn download_at(state: &HttpState, root: String, path: &str) -> Response {
                     crate::storage::local::snapshot_download(&root, Path::new(&path), &|| {
                         cancel.is_cancelled()
                     })?;
-                Ok::<_, std::io::Error>((file, length, slot))
+                let validators = download::Validators::read(&file, length)?;
+                Ok::<_, std::io::Error>((file, length, slot, validators))
             })
             .ok()?
             .wait()
@@ -677,24 +690,10 @@ async fn download_at(state: &HttpState, root: String, path: &str) -> Response {
             .ok()
     }
     .await;
-    let Some((file, length, slot)) = result else {
+    let Some((file, length, slot, validators)) = result else {
         return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Download failed");
     };
-    let reader =
-        tokio_util::io::ReaderStream::with_capacity(tokio::fs::File::from_std(file), 64 * 1024);
-    let body = Body::from_stream(stream::unfold(
-        (reader, slot),
-        |(mut reader, slot)| async move { reader.next().await.map(|chunk| (chunk, (reader, slot))) },
-    ));
-    (
-        [
-            (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
-            (header::CONTENT_DISPOSITION, disposition),
-            (header::CONTENT_LENGTH, length.to_string()),
-        ],
-        body,
-    )
-        .into_response()
+    download::response(file, length, slot, disposition, validators, headers)
 }
 
 pub(super) async fn local_size(

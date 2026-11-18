@@ -1045,6 +1045,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "indexmap",
+ "md-5",
  "nix",
  "percent-encoding",
  "quick-xml",

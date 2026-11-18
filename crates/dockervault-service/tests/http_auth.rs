@@ -1475,6 +1475,64 @@ async fn local_download_serves_attachment_bytes_and_rejects_symlinks() {
 }
 
 #[tokio::test]
+async fn local_download_honors_ranges_and_file_validators() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let path = server.path.join("backups/archive.tar");
+    std::fs::write(&path, b"0123456789abcdef").unwrap();
+    let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1704067200);
+    std::fs::File::open(path)
+        .unwrap()
+        .set_modified(when)
+        .unwrap();
+    let url = "/api/v1/storage/local/files/download?path=archive.tar";
+    let cookie = ("Cookie", cookie.as_str());
+    let (status, headers, body) = server
+        .request("GET", url, &[cookie, ("Range", "bytes=5-11")], None)
+        .await;
+    assert_eq!((status, body), (206, json!("56789ab")));
+    assert!(headers.contains("content-range: bytes 5-11/16"));
+    assert!(headers.contains("accept-ranges: bytes"));
+    assert!(headers.contains("last-modified: Mon, 01 Jan 2024 00:00:00 GMT"));
+    let etag = headers
+        .lines()
+        .find_map(|line| line.strip_prefix("etag: "))
+        .unwrap();
+    let (status, _, body) = server
+        .request(
+            "GET",
+            url,
+            &[cookie, ("Range", "bytes=-2"), ("If-Range", etag)],
+            None,
+        )
+        .await;
+    assert_eq!((status, body), (206, json!("ef")));
+    let (status, _, body) = server
+        .request(
+            "GET",
+            url,
+            &[cookie, ("Range", "bytes=5-11"), ("If-Range", "\"older\"")],
+            None,
+        )
+        .await;
+    assert_eq!((status, body), (200, json!("0123456789abcdef")));
+    let (status, headers, _) = server
+        .request("GET", url, &[cookie, ("Range", "bytes=99-100")], None)
+        .await;
+    assert_eq!(status, 416);
+    assert!(headers.contains("content-range: bytes */16"));
+    let (status, headers, body) = server
+        .request("GET", url, &[cookie, ("Range", "bytes=0-1,14-15")], None)
+        .await;
+    assert_eq!(status, 206);
+    assert!(headers.contains("content-type: multipart/byteranges; boundary="));
+    let body = body.as_str().unwrap();
+    assert!(body.contains("Content-Range: bytes 0-1/16\r\n\r\n01\r\n"));
+    assert!(body.contains("Content-Range: bytes 14-15/16\r\n\r\nef\r\n"));
+    server.close().await;
+}
+
+#[tokio::test]
 async fn configured_local_download_only_uses_the_selected_root() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
