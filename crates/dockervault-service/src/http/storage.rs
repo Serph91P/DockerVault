@@ -356,27 +356,95 @@ fn local_writable(path: &std::path::Path) -> std::io::Result<()> {
     file.sync_all()
 }
 
+type BrowseQuery = axum::extract::Query<std::collections::HashMap<String, String>>;
+
+async fn configured_browse_root(
+    state: &HttpState,
+    id: &str,
+) -> Result<Option<String>, Box<Response>> {
+    let Some(id) = super::operations::query_integer(id) else {
+        return Err(Box::new(invalid_id()));
+    };
+    match sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT storage_type,base_path FROM remote_storages WHERE id=?",
+    )
+    .bind(id)
+    .fetch_optional(state.auth.pool())
+    .await
+    {
+        Ok(Some((kind, path))) if kind == "local" => Ok(Some(path.unwrap_or_default())),
+        Ok(Some(_)) => Ok(None),
+        Ok(None) => Err(Box::new(storage_error(
+            StatusCode::NOT_FOUND,
+            "Storage not found",
+        ))),
+        Err(_) => Err(Box::new(storage_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error",
+        ))),
+    }
+}
+
+pub(super) async fn configured_size(
+    State(state): State<HttpState>,
+    Path(id): Path<String>,
+    axum::extract::Query(query): BrowseQuery,
+) -> Response {
+    let Some(path) = query.get("path") else {
+        return missing_size_path();
+    };
+    match configured_browse_root(&state, &id).await {
+        Ok(Some(root)) => size_at(&state, root, path).await,
+        Ok(None) => unavailable_size(path),
+        Err(response) => *response,
+    }
+}
+
+pub(super) async fn list_configured_files(
+    State(state): State<HttpState>,
+    Path(id): Path<String>,
+    axum::extract::Query(query): BrowseQuery,
+) -> Response {
+    match configured_browse_root(&state, &id).await {
+        Ok(Some(root)) => list_at(&state, root, query.get("path").map_or("", String::as_str)).await,
+        Ok(None) => storage_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "Remote storage operations are unavailable",
+        ),
+        Err(response) => *response,
+    }
+}
+
+fn unavailable_size(path: &str) -> Response {
+    Json(json!({"path":path,"state":"unavailable","bytes":null})).into_response()
+}
+
+fn missing_size_path() -> Response {
+    *auth::validation(vec![
+        json!({"field":"query.path","message":"Field required"}),
+    ])
+}
+
 pub(super) async fn local_size(
     State(state): State<HttpState>,
-    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+    axum::extract::Query(query): BrowseQuery,
 ) -> Response {
-    let Some(raw) = query.get("path") else {
-        return *auth::validation(vec![
-            json!({"field":"query.path","message":"Field required"}),
-        ]);
+    let Some(path) = query.get("path") else {
+        return missing_size_path();
     };
-    let unavailable =
-        || Json(json!({"path":raw,"state":"unavailable","bytes":null})).into_response();
+    size_at(&state, state.config.backup_base_path.clone(), path).await
+}
+
+async fn size_at(state: &HttpState, root: String, raw: &str) -> Response {
+    let unavailable = || unavailable_size(raw);
     let Some(path) = crate::storage::relative_path(raw, false) else {
         return unavailable();
     };
-    let config = state.config.clone();
     let Ok(work) = state.auth.blocking().submit_blocking(move |cancel| {
-        let bytes = crate::storage::local::directory_size(
-            std::path::Path::new(&config.backup_base_path),
-            &path,
-            &|| cancel.is_cancelled(),
-        )?;
+        let bytes =
+            crate::storage::local::directory_size(std::path::Path::new(&root), &path, &|| {
+                cancel.is_cancelled()
+            })?;
         Ok::<_, std::io::Error>((path, bytes))
     }) else {
         return unavailable();
@@ -391,19 +459,25 @@ pub(super) async fn local_size(
 
 pub(super) async fn list_local_files(
     State(state): State<HttpState>,
-    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+    axum::extract::Query(query): BrowseQuery,
 ) -> Response {
-    let raw = query.get("path").map_or("", String::as_str);
+    list_at(
+        &state,
+        state.config.backup_base_path.clone(),
+        query.get("path").map_or("", String::as_str),
+    )
+    .await
+}
+
+async fn list_at(state: &HttpState, root: String, raw: &str) -> Response {
     let Some(path) = crate::storage::relative_path(raw, true) else {
         return storage_error(StatusCode::BAD_REQUEST, "Invalid file path");
     };
-    let config = state.config.clone();
     let result = state.auth.blocking().submit_blocking(move |cancel| {
-        let files = crate::storage::local::list_directory(
-            std::path::Path::new(&config.backup_base_path),
-            &path,
-            &|| cancel.is_cancelled(),
-        )?;
+        let files =
+            crate::storage::local::list_directory(std::path::Path::new(&root), &path, &|| {
+                cancel.is_cancelled()
+            })?;
         Ok::<_, std::io::Error>((path, files))
     });
     let Ok(work) = result else {

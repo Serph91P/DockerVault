@@ -1232,6 +1232,54 @@ async fn storage_create_persists_provider_fields_and_encrypts_credentials() {
 }
 
 #[tokio::test]
+async fn configured_storage_browsing_uses_only_the_persisted_root() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [("Cookie", cookie.as_str())];
+    let configured = server.path.join("configured");
+    std::fs::create_dir_all(configured.join("child")).unwrap();
+    std::fs::write(configured.join("child/from-saved"), b"fixture").unwrap();
+    std::fs::write(
+        server.path.join("backups/from-default"),
+        b"not the configured root",
+    )
+    .unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path) VALUES(44,'Saved','local',0,?),(45,'Remote','webdav',1,'/')")
+        .bind(configured.to_str().unwrap()).execute(server.db.pool()).await.unwrap();
+    let (status, _, result) = server
+        .request("GET", "/api/v1/storage/44/files?path=child", &headers, None)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(result["path"], "child");
+    assert_eq!(result["files"].as_array().unwrap().len(), 1);
+    assert_eq!(result["files"][0]["name"], "from-saved");
+    for (id, status, body) in [
+        (
+            44,
+            200,
+            json!({"path":"child","state":"completed","bytes":7}),
+        ),
+        (
+            45,
+            200,
+            json!({"path":"child","state":"unavailable","bytes":null}),
+        ),
+        (46, 404, json!({"detail":"Storage not found"})),
+    ] {
+        let (actual, _, result) = server
+            .request(
+                "GET",
+                &format!("/api/v1/storage/{id}/files/size?path=child"),
+                &headers,
+                None,
+            )
+            .await;
+        assert_eq!((actual, result), (status, body));
+    }
+    server.close().await;
+}
+
+#[tokio::test]
 async fn local_directory_size_lists_only_regular_bytes_and_reflects_nested_writes() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
