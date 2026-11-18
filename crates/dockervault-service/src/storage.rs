@@ -2,6 +2,7 @@
 pub mod ftp;
 pub mod local;
 pub mod s3;
+pub mod ssh;
 mod upload;
 pub mod webdav;
 use sha2::{Digest, Sha256};
