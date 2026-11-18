@@ -1836,6 +1836,15 @@ async fn configured_sftp_download_rejects_invalid_path_before_contact() {
 
 #[tokio::test]
 async fn configured_ftp_download_requires_successful_quit_after_data_eof() {
+    ftp_download_requires_successful_quit(false).await;
+}
+
+#[tokio::test]
+async fn configured_ftp_bulk_download_requires_successful_quit_after_data_eof() {
+    ftp_download_requires_successful_quit(true).await;
+}
+
+async fn ftp_download_requires_successful_quit(bulk: bool) {
     use tokio::io::{AsyncBufReadExt, BufReader};
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
@@ -1889,10 +1898,52 @@ async fn configured_ftp_download_requires_successful_quit_after_data_eof() {
     });
     let headers = [("Cookie", cookie.as_str())];
     let url = "/api/v1/storage/44/files/download?path=archive.tar";
-    let (status, _, body) = server.request("GET", url, &headers, None).await;
-    assert_eq!((status, body), (200, json!("archive bytes")));
-    let (status, _, body) = server.request("GET", url, &headers, None).await;
-    assert_eq!((status, body), (500, json!({"detail":"Download failed"})));
+    if bulk {
+        use async_zip::base::read1::seek::ZipArchiveReader;
+        use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
+        let route = "/api/v1/storage/44/files/bulk-download";
+        let response = reqwest::Client::new()
+            .post(format!("http://{}{route}", server.address))
+            .header("Cookie", &cookie)
+            .header("Content-Type", "application/json")
+            .body(r#"{"paths":["archive.tar"]}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let mut archive =
+            ZipArchiveReader::open(std::io::Cursor::new(response.bytes().await.unwrap()).compat())
+                .await
+                .unwrap();
+        assert_eq!(archive.find(b"archive.tar").unwrap().count(), 1);
+        let mut bytes = Vec::new();
+        archive
+            .file(0)
+            .await
+            .unwrap()
+            .compat()
+            .read_to_end(&mut bytes)
+            .await
+            .unwrap();
+        assert_eq!(bytes, b"archive bytes");
+        let (status, _, body) = server
+            .request(
+                "POST",
+                route,
+                &headers,
+                Some(json!({"paths":["archive.tar"]})),
+            )
+            .await;
+        assert_eq!(
+            (status, body),
+            (500, json!({"detail":"Bulk download failed"}))
+        );
+    } else {
+        let (status, _, body) = server.request("GET", url, &headers, None).await;
+        assert_eq!((status, body), (200, json!("archive bytes")));
+        let (status, _, body) = server.request("GET", url, &headers, None).await;
+        assert_eq!((status, body), (500, json!({"detail":"Download failed"})));
+    }
     provider.await.unwrap();
     server.close().await;
 }

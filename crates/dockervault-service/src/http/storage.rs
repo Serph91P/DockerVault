@@ -950,6 +950,21 @@ async fn bulk_download(
                 };
                 DownloadSource::S3(provider)
             }
+            Some("ftp") => {
+                if !open_probe_credentials(state, &mut config, None).await {
+                    return storage_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Bulk download failed",
+                    );
+                }
+                let Some(provider) = ftp_provider(state, &Value::Object(config)) else {
+                    return storage_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Bulk download failed",
+                    );
+                };
+                DownloadSource::Ftp(provider)
+            }
             _ => {
                 return storage_error(
                     StatusCode::NOT_IMPLEMENTED,
@@ -981,6 +996,7 @@ async fn bulk_download(
         );
     };
     let result = async {
+        let io_owner = state.auth.blocking().clone();
         state
             .download_jobs
             .submit_async(move |cancel| async move {
@@ -997,6 +1013,13 @@ async fn bulk_download(
                         return None;
                     }
                     let input = match &source {
+                        DownloadSource::Ftp(provider) => {
+                            let work = provider
+                                .download_snapshot(path.clone(), &io_owner, ())
+                                .ok()?;
+                            let (file, _, ()) = rclone::settled(work, Some(&cancel)).await?.ok()?;
+                            file
+                        }
                         DownloadSource::S3(provider) => {
                             let work = provider.download_snapshot(path.clone(), ()).ok()?;
                             match rclone::settled(work, Some(&cancel)).await? {
