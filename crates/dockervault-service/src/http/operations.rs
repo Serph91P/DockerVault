@@ -52,24 +52,36 @@ pub(super) async fn list(
         Err(response) => return *response,
     };
     let Ok(axum::extract::Query(query)) = query else {
-        return failure(StatusCode::UNPROCESSABLE_ENTITY, "Validation error");
+        return *super::auth::validation(vec![json!({"field":"query","message":"Invalid value"})]);
     };
-    let limit = query.limit.as_deref().map(str::parse::<i64>).transpose();
-    let Ok(limit) = limit else {
-        return failure(StatusCode::UNPROCESSABLE_ENTITY, "Validation error");
-    };
-    let limit = limit.unwrap_or(20);
+    const INTEGER: &str = "Input should be a valid integer, unable to parse string as an integer";
+    let mut errors = Vec::new();
     let storage = match query.storage_id.as_deref() {
         None => None,
         Some("local") => Some("local".into()),
         Some(value) => match value.parse::<i64>() {
             Ok(value) if value > 0 => Some(value.to_string()),
-            _ => return failure(StatusCode::UNPROCESSABLE_ENTITY, "Validation error"),
+            parsed => {
+                errors.push(json!({"field":"query.storage_id.literal['local']","message":"Input should be 'local'"}));
+                errors.push(json!({"field":"query.storage_id.constrained-int","message":if parsed.is_ok() { "Input should be greater than 0" } else { INTEGER }}));
+                None
+            }
         },
     };
-    if !(1..=100).contains(&limit) {
-        return failure(StatusCode::UNPROCESSABLE_ENTITY, "Validation error");
+    let limit = query.limit.as_deref().map_or(Ok(20), str::parse::<i64>);
+    let message = match limit {
+        Err(_) => Some(INTEGER),
+        Ok(n) if n < 1 => Some("Input should be greater than or equal to 1"),
+        Ok(n) if n > 100 => Some("Input should be less than or equal to 100"),
+        _ => None,
+    };
+    if let Some(message) = message {
+        errors.push(json!({"field":"query.limit","message":message}));
     }
+    if !errors.is_empty() {
+        return *super::auth::validation(errors);
+    }
+    let limit = limit.expect("invalid limit reported as field error");
     match storage_operation_list(state.auth.pool(), user.id, storage.as_deref(), limit).await {
         Ok(rows) => Json(rows).into_response(),
         Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),

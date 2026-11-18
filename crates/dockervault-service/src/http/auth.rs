@@ -46,7 +46,7 @@ pub(super) fn error(error: AuthError) -> Response {
     )
         .into_response()
 }
-fn validation(errors: Vec<Value>) -> Box<Response> {
+pub(super) fn validation(errors: Vec<Value>) -> Box<Response> {
     Box::new(
         (
             StatusCode::UNPROCESSABLE_ENTITY,

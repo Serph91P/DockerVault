@@ -152,7 +152,7 @@ async fn operation_detail_requires_authentication_and_ownership() {
     assert_eq!(status, 200);
     assert_eq!(listing.as_array().unwrap().len(), 1);
     assert_eq!(listing[0]["id"], "mine");
-    let (status, _, _) = server
+    let (status, _, body) = server
         .request(
             "GET",
             "/api/v1/operations?limit=101",
@@ -161,6 +161,10 @@ async fn operation_detail_requires_authentication_and_ownership() {
         )
         .await;
     assert_eq!(status, 422);
+    assert_eq!(
+        body,
+        json!({"detail":"Validation error","errors":[{"field":"query.limit","message":"Input should be less than or equal to 100"}]})
+    );
     let (status, _, _) = server
         .request("GET", "/api/v1/operations/mine", &[], None)
         .await;
