@@ -11,7 +11,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
 };
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -395,6 +395,64 @@ async fn ftp_delete_claim_survives_cancel_until_provider_acknowledges() {
         Err(FtpError::Cancelled)
     );
     assert_eq!(owner.active(), 0);
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn ftp_legacy_list_uses_fresh_data_connection_only_for_unsupported_mlsd() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let owner = Owner::new(1).unwrap();
+    let ftp = backend(&listener, &owner, "owned", "synthetic");
+    let server = tokio::spawn(async move {
+        let mut control = BufReader::new(listener.accept().await.unwrap().0);
+        control.write_all(b"220 ready\r\n").await.unwrap();
+        assert_eq!(read_command(&mut control).await, "USER owned\r\n");
+        control.write_all(b"230 logged in\r\n").await.unwrap();
+        for command in ["MLSD", "LIST"] {
+            assert_eq!(read_command(&mut control).await, "TYPE I\r\n");
+            control.write_all(b"200 binary\r\n").await.unwrap();
+            assert_eq!(read_command(&mut control).await, "EPSV\r\n");
+            let passive = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = passive.local_addr().unwrap().port();
+            control
+                .write_all(format!("229 entering (|||{port}|)\r\n").as_bytes())
+                .await
+                .unwrap();
+            assert_eq!(
+                read_command(&mut control).await,
+                format!("{command} /backups/nested\r\n")
+            );
+            let mut data = passive.accept().await.unwrap().0;
+            if command == "MLSD" {
+                control.write_all(b"502 not implemented\r\n").await.unwrap();
+                assert_eq!(data.read(&mut [0]).await.unwrap(), 0);
+                continue;
+            }
+            control.write_all(b"150 listing\r\n").await.unwrap();
+            data.write_all(b"-rw-r--r-- 1 user group 5 Jan  1  2024 My archive.tar\r\n01/01/2024  12:00 AM       <DIR>          Windows directory\r\n").await.unwrap();
+            drop(data);
+            control.write_all(b"226 complete\r\n").await.unwrap();
+        }
+        assert_eq!(read_command(&mut control).await, "QUIT\r\n");
+        control.write_all(b"221 goodbye\r\n").await.unwrap();
+    });
+    let entries = tokio::time::timeout(
+        Duration::from_secs(2),
+        ftp.list("nested".into()).unwrap().wait(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].name, "My archive.tar");
+    assert_eq!(entries[0].size, 5);
+    assert_eq!(entries[0].modified, 1_704_067_200.0);
+    assert!(!entries[0].is_dir);
+    assert_eq!(entries[1].name, "Windows directory");
+    assert_eq!(entries[1].size, 0);
+    assert_eq!(entries[1].modified, 1_704_067_200.0);
+    assert!(entries[1].is_dir);
     server.await.unwrap();
 }
 
