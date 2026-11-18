@@ -5,7 +5,7 @@ use dockervault_service::{
     storage::ssh::SftpEndpoint,
     storage_recovery::{
         DeleteAdmission, DeleteOutcome, SftpDeleteWorker, claim_next, record_settled,
-        request_cancel, settle_interrupted, submit_delete,
+        request_cancel, settle_interrupted, storage_operation_detail, submit_delete,
     },
 };
 
@@ -223,6 +223,23 @@ async fn restart_keeps_uncertain_effects_unknown_and_never_replays_unstarted_ite
             .await
             .unwrap();
     assert_eq!(cancelled, ("cancelled".into(), 1, 2));
+    let detail = storage_operation_detail(db.pool(), 1, &id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(detail["state"], "cancelled");
+    assert_eq!(detail["cancel_requested"], true);
+    assert_eq!(detail["storage_id"], "local");
+    assert_eq!(detail["items"][0]["path"], "a/b");
+    assert_eq!(detail["items"][0]["state"], "skipped");
+    assert!(detail["finished_at"].as_str().unwrap().ends_with('Z'));
+    assert!(
+        storage_operation_detail(db.pool(), 2, &id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(detail.get("payload").is_none() && detail.get("storage_identity").is_none());
     let payload: String = sqlx::query_scalar("SELECT payload FROM storage_operations WHERE id=?")
         .bind(&id)
         .fetch_one(db.pool())

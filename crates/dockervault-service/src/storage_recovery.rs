@@ -144,6 +144,31 @@ pub async fn submit_delete(
     Ok(id)
 }
 
+/// An owner-scoped snapshot; the headline counters and items are read together.
+pub async fn storage_operation_detail(
+    pool: &SqlitePool,
+    user_id: i64,
+    operation_id: &str,
+) -> Result<Option<serde_json::Value>, StorageRecoveryError> {
+    let row: Option<String> = sqlx::query_scalar(
+        "SELECT json_object(
+            'id',op.id,'action',op.action,'path',op.path,'state',op.state,'stage',op.stage,
+            'total',op.total,'completed',op.completed,'succeeded',op.succeeded,
+            'failed',op.failed,'skipped',op.skipped,'unknown',op.unknown,
+            'cancel_requested',json(CASE WHEN op.cancel_requested THEN 'true' ELSE 'false' END),
+            'parent_id',op.parent_id,
+            'storage_id',CASE WHEN op.storage_id='local' THEN 'local' ELSE CAST(op.storage_id AS INTEGER) END,
+            'created_at',replace(op.created_at,' ','T')||'Z',
+            'updated_at',replace(op.updated_at,' ','T')||'Z',
+            'finished_at',replace(op.finished_at,' ','T')||'Z',
+            'items',json((SELECT json_group_array(json_object('path',path,'state',state,'error',error))
+                     FROM (SELECT path,state,error FROM storage_operation_items WHERE operation_id=op.id ORDER BY id))))
+         FROM storage_operations AS op WHERE op.user_id=? AND op.id=? AND op.action='storage_delete'",
+    ).bind(user_id).bind(operation_id).fetch_optional(pool).await?;
+    row.map(|row| serde_json::from_str(&row).map_err(|_| StorageRecoveryError::InvalidRequest))
+        .transpose()
+}
+
 fn relative_path(path: &str, allow_root: bool) -> Option<String> {
     if path.chars().count() > 1024
         || path.contains(['\0', '\\'])
