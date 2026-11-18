@@ -136,6 +136,123 @@ impl Server {
 }
 
 #[tokio::test]
+async fn backup_catalog_reads_records_and_validates_filters() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [("Cookie", cookie.as_str())];
+    for (query, status, expected) in [
+        ("", 200, json!([])),
+        (
+            "?limit=0",
+            422,
+            json!({"detail":"Validation error","errors":[{"field":"query.limit","message":"Input should be greater than or equal to 1"}]}),
+        ),
+    ] {
+        let (actual, _, response) = server
+            .request("GET", &format!("/api/v1/backups{query}"), &headers, None)
+            .await;
+        assert_eq!((actual, response), (status, expected));
+    }
+    assert_eq!(
+        server
+            .request("GET", "/api/v1/backups/1/restore-info", &headers, None)
+            .await
+            .2,
+        json!({"detail":"Backup not found"})
+    );
+    let (_, _, empty) = server
+        .request("GET", "/api/v1/backups/history", &headers, None)
+        .await;
+    assert_eq!(empty["total"], 0);
+    assert_eq!(empty["snapshot"], 0);
+    assert_eq!(empty["items"], json!([]));
+    assert_eq!(
+        server.request("GET", "/api/v1/backups", &[], None).await.0,
+        401
+    );
+
+    let archive = server.path.join("backups").join("fixture_.tar");
+    std::fs::write(&archive, b"fixture").unwrap();
+    let recorded = server.path.join("backups").join("fixture::__.tar");
+    sqlx::raw_sql("INSERT INTO backup_targets(id,name,target_type,host_path,dependencies) VALUES
+            (1,'Alpha % plan','path','/fixture','[\"fixture-dependency\"]'),(2,'Other plan','volume',NULL,NULL);
+        INSERT INTO remote_storages(id,name,storage_type,enabled) VALUES (1,'Store','LOCAL',1);
+        INSERT INTO backups(id,target_id,backup_type,status,created_at) VALUES
+            (2,1,'FULL','FAILED','2026-01-02 10:00:00.000001'),
+            (3,2,'INCREMENTAL','PENDING','2026-01-03 10:00:00.000000');
+        INSERT INTO backup_logs(backup_id,step,message,created_at) VALUES(2,'failed','fixture','2026-01-02 10:01:00.000000');")
+        .execute(server.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO backups(id,target_id,backup_type,status,file_path,file_size,encrypted,created_at) VALUES
+        (1,1,'FULL','COMPLETED',?,1024,1,'2026-01-01 10:00:00.000000')")
+        .bind(recorded.to_str().unwrap()).execute(server.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO backup_storage_syncs(backup_id,storage_id,remote_path,sync_status) VALUES(1,1,'remote/fixture.tar','completed')")
+        .execute(server.db.pool()).await.unwrap();
+    let (_, _, body) = server
+        .request(
+            "GET",
+            "/api/v1/backups?target_id=1&status=completed&limit=1",
+            &headers,
+            None,
+        )
+        .await;
+    assert_eq!(body[0]["id"], 1);
+    assert_eq!(body[0]["local_available"], true);
+    assert_eq!(body[0]["remote_synced"], true);
+    assert_eq!(body[0]["file_size_human"], "1.00 KB");
+    assert_eq!(body[0]["created_at"], "2026-01-01T10:00:00Z");
+    let (_, _, body) = server
+        .request("GET", "/api/v1/backups?limit=1&offset=1", &headers, None)
+        .await;
+    assert_eq!(body[0]["id"], 2);
+    assert_eq!(body[0]["created_at"], "2026-01-02T10:00:00.000001Z");
+    let (_, _, history) = server
+        .request(
+            "GET",
+            "/api/v1/backups/history?q=%25&source=path&limit=1&sort=created&direction=asc",
+            &headers,
+            None,
+        )
+        .await;
+    assert_eq!(history["total"], 2);
+    assert_eq!(history["snapshot"], 3);
+    assert_eq!(history["items"][0]["can_restore"], true);
+    assert_eq!(
+        history["items"][0]["remote_sync_details"][0]["availability"],
+        "unknown"
+    );
+    let (_, _, history) = server
+        .request(
+            "GET",
+            "/api/v1/backups/history?snapshot=2&limit=1",
+            &headers,
+            None,
+        )
+        .await;
+    assert_eq!(history["total"], 2);
+    assert_eq!(history["items"][0]["stage"], "failed");
+    assert_eq!(history["items"][0]["archive_state"], "never_created");
+    let (status, _, info) = server
+        .request("GET", "/api/v1/backups/1/restore-info", &headers, None)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(info["backup"]["local_available"], true);
+    assert_eq!(info["volume_discovery"], "unavailable");
+    assert_eq!(info["containers_to_stop"], json!(["fixture-dependency"]));
+    assert_eq!(
+        info["remote_copies"][0]["remote_path"],
+        "remote/fixture.tar"
+    );
+    assert_eq!(
+        server
+            .request("GET", "/api/v1/backups/2/restore-info", &headers, None)
+            .await
+            .0,
+        400
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn local_delete_submit_commits_before_effect_and_replay_does_not_delete_again() {
     const ROUTE: &str = "/api/v1/operations";
     let server = Server::start("http://localhost:3000").await;

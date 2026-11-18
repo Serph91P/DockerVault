@@ -65,6 +65,21 @@ impl DockerClient {
         self.request(|api| async move { api.ping().await.map(|_| ()) })
             .await
     }
+    pub async fn volume_names(&self) -> Result<Vec<String>, DockerError> {
+        let mut names: Vec<_> = self
+            .request(|api| async move {
+                api.list_volumes(None::<bollard::query_parameters::ListVolumesOptions>)
+                    .await
+            })
+            .await?
+            .volumes
+            .unwrap_or_default()
+            .into_iter()
+            .map(|volume| volume.name)
+            .collect();
+        names.sort();
+        Ok(names)
+    }
     pub async fn identity(&self, name: &str) -> Result<String, DockerError> {
         let name = name.to_owned();
         let found = self
