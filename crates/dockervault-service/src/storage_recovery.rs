@@ -4,6 +4,7 @@ use crate::{
     process::ProcessOwner,
     recovery_activation::{JournalError, recovery_pending_in},
     storage::{
+        local::{LocalStorage, TransferError},
         relative_path,
         ssh::{SftpDownloadError, SftpEndpoint},
     },
@@ -421,6 +422,41 @@ impl SftpDeleteWorker {
             record_settled(&pool, user_id, &operation_id, item.id, outcome).await
         })
     }
+}
+
+pub fn start_local_delete(
+    pool: &SqlitePool,
+    jobs: &Owner,
+    local: LocalStorage,
+    user_id: i64,
+    operation_id: String,
+    identity: serde_json::Value,
+) -> Result<Work<Result<bool, StorageRecoveryError>>, WorkError> {
+    let pool = pool.clone();
+    jobs.submit_async(move |cancel| async move {
+        if cancel.is_cancelled() {
+            return Ok(false);
+        }
+        let expected_root = serde_json::from_value::<(u64, u64)>(identity["root_inode"].clone())
+            .map_err(|_| StorageRecoveryError::IdentityChanged)?;
+        let Some(item) = claim_next(&pool, user_id, &operation_id, &identity).await? else {
+            return Ok(false);
+        };
+        let outcome = match relative_path(&item.path, false) {
+            Some(path) => match local.delete_leaf(path.into(), expected_root) {
+                Ok(effect) => match effect.wait().await {
+                    Ok(Ok(())) => DeleteOutcome::Succeeded,
+                    Ok(Err(TransferError::PublicationUncertain(_))) | Err(_) => {
+                        DeleteOutcome::Unknown
+                    }
+                    Ok(Err(_)) => DeleteOutcome::Failed,
+                },
+                Err(_) => DeleteOutcome::Failed,
+            },
+            None => DeleteOutcome::InvalidPath,
+        };
+        record_settled(&pool, user_id, &operation_id, item.id, outcome).await
+    })
 }
 
 impl From<sqlx::Error> for StorageRecoveryError {

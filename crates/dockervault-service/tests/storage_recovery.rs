@@ -10,6 +10,72 @@ use dockervault_service::{
 };
 
 #[tokio::test]
+async fn local_worker_settles_exactly_one_claim_and_does_not_replay_after_cancel() {
+    use dockervault_service::{storage::local::LocalStorage, storage_recovery::start_local_delete};
+    use std::{fs, os::unix::fs::MetadataExt};
+    let mut nonce = [0u8; 16];
+    getrandom::fill(&mut nonce).unwrap();
+    let dir = std::env::temp_dir().join(format!("dv-local-delete-claim-{nonce:02x?}"));
+    let root = dir.join("remote");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("first"), b"delete").unwrap();
+    fs::write(root.join("second"), b"preserve").unwrap();
+    let owner = Owner::new(1).unwrap();
+    let transport = Owner::new(1).unwrap();
+    let db = Database::open(dir.join("db"), dir.join("backups"), &owner)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO users(id,username,password_hash) VALUES(1,'fixture','synthetic')")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let meta = fs::metadata(&root).unwrap();
+    let identity = serde_json::json!({"root":root,"root_inode":[meta.dev(),meta.ino()]});
+    let id = submit_delete(
+        db.pool(),
+        DeleteAdmission {
+            user_id: 1,
+            request_id: "12345678-1234-1234-1234-123456789abc",
+            storage_id: "local",
+            path: "",
+            paths: &["first", "second"],
+            identity: &identity,
+            accepting: true,
+        },
+    )
+    .await
+    .unwrap();
+    let local = LocalStorage::new(fs::File::open(&root).unwrap(), transport.clone()).unwrap();
+    let run = || {
+        start_local_delete(
+            db.pool(),
+            &owner,
+            local.clone(),
+            1,
+            id.clone(),
+            identity.clone(),
+        )
+        .unwrap()
+    };
+    assert!(run().wait().await.unwrap().unwrap());
+    assert!(!root.join("first").exists());
+    assert!(request_cancel(db.pool(), 1, &id).await.unwrap());
+    assert!(!run().wait().await.unwrap().unwrap());
+    assert_eq!(fs::read(root.join("second")).unwrap(), b"preserve");
+    let states: Vec<String> = sqlx::query_scalar(
+        "SELECT state FROM storage_operation_items WHERE operation_id=? ORDER BY id",
+    )
+    .bind(&id)
+    .fetch_all(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(states, ["succeeded", "skipped"]);
+    assert_eq!((owner.active(), transport.active()), (0, 0));
+    db.close().await;
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn restart_keeps_uncertain_effects_unknown_and_never_replays_unstarted_items() {
     let mut nonce = [0u8; 16];
     getrandom::fill(&mut nonce).unwrap();
