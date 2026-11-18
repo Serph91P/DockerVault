@@ -1232,6 +1232,60 @@ async fn storage_create_persists_provider_fields_and_encrypts_credentials() {
 }
 
 #[tokio::test]
+async fn local_listing_reports_entries_without_following_symlinks() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let root = server.path.join("backups");
+    let nested = root.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    let archive = nested.join("archive.tar");
+    std::fs::write(&archive, b"bytes").unwrap();
+    let target = server.path.join("outside");
+    std::fs::create_dir(&target).unwrap();
+    std::os::unix::fs::symlink(&target, nested.join("link")).unwrap();
+    let headers = [("Cookie", cookie.as_str())];
+    let (status, _, body) = server
+        .request(
+            "GET",
+            "/api/v1/storage/local/files?path=.%2Fnested%2F",
+            &headers,
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["path"], "nested");
+    let files = body["files"].as_array().unwrap();
+    assert_eq!(files.len(), 2);
+    let archive = files.iter().find(|f| f["name"] == "archive.tar").unwrap();
+    assert_eq!(archive["size"], 5);
+    assert_eq!(archive["is_dir"], false);
+    assert_eq!(archive["is_symlink"], false);
+    assert!(archive["modified"].is_number());
+    let link = files.iter().find(|f| f["name"] == "link").unwrap();
+    assert_eq!(link["is_symlink"], true);
+    assert_eq!(link["is_dir"], false);
+    assert_eq!(link["size"], Value::Null);
+    for (path, status, detail) in [
+        ("nested%2Flink", 400, "Invalid file path"),
+        ("nested%2Farchive.tar", 400, "Invalid file path"),
+        ("nested%2F..", 400, "Invalid file path"),
+        ("missing", 404, "Directory not found"),
+    ] {
+        let (actual, _, body) = server
+            .request(
+                "GET",
+                &format!("/api/v1/storage/local/files?path={path}"),
+                &headers,
+                None,
+            )
+            .await;
+        assert_eq!((actual, body), (status, json!({"detail":detail})));
+    }
+    assert_eq!(std::fs::read(nested.join("archive.tar")).unwrap(), b"bytes");
+    server.close().await;
+}
+
+#[tokio::test]
 async fn local_storage_drafts_probe_without_persisting_configuration() {
     const URL: &str = "/api/v1/storage/test-config";
     let server = Server::start("http://localhost:3000").await;

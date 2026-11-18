@@ -335,6 +335,52 @@ fn parent(root: &File, path: &Path, create: bool) -> io::Result<(File, OsString)
     }
     Ok((current, name))
 }
+#[derive(serde::Serialize)]
+pub(crate) struct LocalEntry {
+    name: String,
+    size: Option<i64>,
+    is_dir: bool,
+    is_symlink: bool,
+    modified: f64,
+}
+
+pub(crate) fn list_directory(
+    root: &Path,
+    path: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> io::Result<Vec<LocalEntry>> {
+    let path = super::relative_path(path, true).ok_or_else(|| invalid("Invalid file path"))?;
+    let mut directory = open_root(&std::path::absolute(root)?)?;
+    for part in path.split('/').filter(|part| !part.is_empty()) {
+        check(cancelled)?;
+        directory = open_directory(&directory, OsStr::new(part))?;
+    }
+    let mut files = Vec::new();
+    for entry in Dir::from_fd(directory.try_clone()?.into())?.iter() {
+        check(cancelled)?;
+        let entry = entry?;
+        let name = entry.file_name();
+        if matches!(name.to_bytes(), b"." | b"..") {
+            continue;
+        }
+        if files.len() == 100_000 {
+            return Err(io::Error::other(
+                "Directory listing exceeds its entry limit",
+            ));
+        }
+        let info = fstatat(&directory, name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
+        let kind = SFlag::from_bits_truncate(info.st_mode) & SFlag::S_IFMT;
+        files.push(LocalEntry {
+            name: name.to_str().map_err(io::Error::other)?.to_owned(),
+            size: (kind == SFlag::S_IFREG).then_some(info.st_size),
+            is_dir: kind == SFlag::S_IFDIR,
+            is_symlink: kind == SFlag::S_IFLNK,
+            modified: info.st_mtime as f64 + info.st_mtime_nsec as f64 / 1e9,
+        });
+    }
+    Ok(files)
+}
+
 pub(crate) fn open_root(path: &Path) -> io::Result<File> {
     walk_root(path, false)
 }

@@ -356,6 +356,51 @@ fn local_writable(path: &std::path::Path) -> std::io::Result<()> {
     file.sync_all()
 }
 
+pub(super) async fn list_local_files(
+    State(state): State<HttpState>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let raw = query.get("path").map_or("", String::as_str);
+    let Some(path) = crate::storage::relative_path(raw, true) else {
+        return storage_error(StatusCode::BAD_REQUEST, "Invalid file path");
+    };
+    let config = state.config.clone();
+    let result = state.auth.blocking().submit_blocking(move |cancel| {
+        let files = crate::storage::local::list_directory(
+            std::path::Path::new(&config.backup_base_path),
+            &path,
+            &|| cancel.is_cancelled(),
+        )?;
+        Ok::<_, std::io::Error>((path, files))
+    });
+    let Ok(work) = result else {
+        return storage_error(StatusCode::SERVICE_UNAVAILABLE, "Service unavailable");
+    };
+    match work.wait().await {
+        Ok(Ok((path, files))) => {
+            #[derive(serde::Serialize)]
+            struct Listing {
+                files: Vec<crate::storage::local::LocalEntry>,
+                path: String,
+            }
+            Json(Listing { files, path }).into_response()
+        }
+        Ok(Err(error)) => match error.kind() {
+            std::io::ErrorKind::InvalidInput | std::io::ErrorKind::NotADirectory => {
+                storage_error(StatusCode::BAD_REQUEST, "Invalid file path")
+            }
+            std::io::ErrorKind::NotFound => {
+                storage_error(StatusCode::NOT_FOUND, "Directory not found")
+            }
+            std::io::ErrorKind::PermissionDenied => {
+                storage_error(StatusCode::FORBIDDEN, "Permission denied")
+            }
+            _ => storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Listing failed"),
+        },
+        Err(_) => storage_error(StatusCode::SERVICE_UNAVAILABLE, "Service unavailable"),
+    }
+}
+
 pub(super) async fn types() -> Json<Value> {
     Json(json!({
         "local": {
