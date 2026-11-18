@@ -28,7 +28,6 @@ DockerVault is a containerized backup system for Docker volumes and host paths. 
 - **GFS Retention** — Grandfather-Father-Son retention strategy per backup target
 - **Remote Storage** — Sync to SSH, S3, WebDAV, FTP, or 40+ providers via Rclone
 - **Real-time UI** — WebSocket-based live updates in the web interface
-- **Komodo Integration** — Optional integration with Komodo for container orchestration
 - **Security First** — Docker socket and volumes mounted read-only
 
 ## Getting Started
@@ -125,16 +124,6 @@ Schedule format: `Minute Hour Day Month Weekday`
 | `0 3 * * 0` | Sundays at 03:00 |
 | `0 */6 * * *` | Every 6 hours |
 | `30 1 1 * *` | 1st of every month at 01:30 |
-
-### Komodo Integration
-
-Enable optional integration with [Komodo](https://github.com/mbecker20/komodo):
-
-```env
-KOMODO_ENABLED=true
-KOMODO_API_URL=http://komodo:8080
-KOMODO_API_KEY=your-api-key
-```
 
 ## Security
 

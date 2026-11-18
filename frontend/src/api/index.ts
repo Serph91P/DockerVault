@@ -462,31 +462,6 @@ export interface SSHKeyInfo {
   created_at: number
 }
 
-// Komodo API
-export const komodoApi = {
-  getStatus: () => api.get('/komodo/status'),
-  test: () => api.post('/komodo/test'),
-  containerAction: (container_name: string, action: string, reason?: string) =>
-    api.post('/komodo/container-action', { container_name, action, reason }),
-  getContainerStatus: (container_name: string) => 
-    api.get(`/komodo/container/${container_name}`),
-}
-
-// Settings API
-export interface KomodoSettings {
-  enabled: boolean
-  api_url: string | null
-  has_api_key: boolean
-  has_api_secret: boolean
-  connected: boolean
-}
-
-export interface KomodoTestResult {
-  success: boolean
-  message: string
-  version?: string
-}
-
 export interface SystemInfo {
   disk_status?: 'available' | 'unavailable'
   backup_dir: string
@@ -507,10 +482,6 @@ export interface StorageSettings {
 }
 
 export const settingsApi = {
-  getKomodo: () => api.get<KomodoSettings>('/settings/komodo'),
-  updateKomodo: (data: { enabled: boolean; api_url?: string; api_key?: string; api_secret?: string }) =>
-    api.put<KomodoSettings>('/settings/komodo', data),
-  testKomodo: () => api.post<KomodoTestResult>('/settings/komodo/test'),
   getSystemInfo: () => api.get<SystemInfo>('/settings/system-info'),
   getStorageSettings: () => api.get<StorageSettings>('/settings/storage'),
   updateStorageSettings: (data: StorageSettings) =>

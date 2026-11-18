@@ -136,9 +136,15 @@ async fn full_offline_state_validation_matches_actual_provider_and_normalizes_pu
             rclone_options: options.clone(),
         };
         let result = validate_state(case["payload"].clone(), context, &owner).await;
+        // The frozen Python oracle retains the old accept results. The retired
+        // settings are now subject to the same rejection as any unsupported key.
+        let retired = matches!(
+            case["name"].as_str().unwrap(),
+            "column-app_settings-key-'komodo_enabled'" | "column-app_settings-key-'komodo_api_key'"
+        );
         assert_eq!(
             result.is_ok(),
-            case["accepted"].as_bool().unwrap(),
+            case["accepted"].as_bool().unwrap() && !retired,
             "{}",
             case["name"]
         );

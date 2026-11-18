@@ -54,16 +54,6 @@ pub fn insert_state(
             *value = cipher.encrypt_value(value);
         }
     }
-    for setting in &mut records.app_settings {
-        if cancel.is_cancelled() {
-            return Err(Cancelled);
-        }
-        if matches!(setting.key.as_str(), "komodo_api_key" | "komodo_api_secret")
-            && let Some(value) = &mut setting.value
-        {
-            *value = cipher.encrypt_value(value);
-        }
-    }
     for backup in &mut records.backups {
         if cancel.is_cancelled() {
             return Err(Cancelled);

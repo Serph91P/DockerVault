@@ -247,8 +247,8 @@ complete R0–R14 acceptance.
 
 Logical `recovery_import::insert_state` likewise accepts only `ValidatedState`
 and a caller-owned, FK-enabled SQLite transaction. It reuses the offline stage's
-exact enum/datetime/lossless-JSON binder, protects only the three storage and two
-Komodo secret fields with the deployment Fernet cipher, and relocates archive
+exact enum/datetime/lossless-JSON binder, protects the three storage secret
+fields with the deployment Fernet cipher, and relocates archive
 and sidecar paths lexically to the configured root. It neither commits nor deletes
 rows or creates files; late SQL failure/cancellation remains the caller's rollback
 obligation. Retained deployment extension columns keep their defaults. Actual

@@ -129,7 +129,6 @@ def main():
             entrypoint=["python", "/app/data/runtime_restore_app.py"],
             environment={
                 "COOKIE_SECURE": "false",
-                "KOMODO_ENABLED": "false",
                 "PYTHONPATH": "/app",
                 "DOCKER_SOCKET": "/testsocket/docker.sock",
             },

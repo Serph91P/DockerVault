@@ -113,7 +113,6 @@ def main():
         labels={"dockervault.test": "storage-142"},
         environment={
             "COOKIE_SECURE": "false",
-            "KOMODO_ENABLED": "false",
             "PYTHONPATH": "/app/test-fixture:/app",
         },
     )

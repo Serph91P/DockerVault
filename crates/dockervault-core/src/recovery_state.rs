@@ -218,10 +218,6 @@ pub fn parse_state_json(
     let storage_ids: BTreeSet<i64> = tables.remote_storages.iter().map(|s| s.id).collect();
     for row in &tables.app_settings {
         if ![
-            "komodo_enabled",
-            "komodo_api_url",
-            "komodo_api_key",
-            "komodo_api_secret",
             "storage_check_quota_before_upload",
             "encryption_onboarding_deferred",
         ]

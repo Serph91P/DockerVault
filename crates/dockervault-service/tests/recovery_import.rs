@@ -23,8 +23,22 @@ async fn every_inserted_column_matches_the_unchanged_accepted_python_sql_snapsho
     .await
     .unwrap();
     db.close().await;
-    let fixture: Value =
+    let mut fixture: Value =
         serde_json::from_str(include_str!("fixtures/insert-state-source.TEST_ONLY.json")).unwrap();
+    // Project only the retired row out of the historical control; all other
+    // inserted columns still compare against the original Python SQL capture.
+    for rows in [
+        "/payload/tables/app_settings",
+        "/plaintext_sql_rows/app_settings",
+    ] {
+        let rows = fixture.pointer_mut(rows).unwrap().as_array_mut().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.remove(1)["key"], "komodo_api_secret");
+    }
+    fixture["payload"]["manifest"]["tables"]["app_settings"] = json!({
+        "count": 1,
+        "sha256": "0409b3ab7ea58437dfc0da6c257e78934efa41237f2fb0289fd006a92d0026ff"
+    });
     let state = validate_state(
         fixture["payload"].clone(),
         ValidationContext {
@@ -74,13 +88,6 @@ async fn every_inserted_column_matches_the_unchanged_accepted_python_sql_snapsho
             }
             let fields = if table == "remote_storages" {
                 vec!["password", "s3_access_key", "s3_secret_key"]
-            } else if table == "app_settings"
-                && matches!(
-                    object["key"].as_str(),
-                    Some("komodo_api_key" | "komodo_api_secret")
-                )
-            {
-                vec!["value"]
             } else {
                 vec![]
             };
@@ -206,7 +213,6 @@ async fn insertion_protects_credentials_rebases_paths_and_never_commits_or_creat
     .unwrap();
     let mut payload = fixture["cases"][0]["payload"].clone();
     payload["tables"]["remote_storages"][0]["s3_access_key"] = json!("");
-    payload["tables"]["app_settings"].as_array_mut().unwrap().push(json!({"id":2,"key":"komodo_api_secret","value":"PUBLIC literal credential","updated_at":null}));
     payload["tables"]["backups"][0]["file_path"] =
         json!("/PUBLIC/exported/backups/nested/./archive.tar.gz.enc");
     payload["tables"]["backups"][0]["encryption_key_path"] =
@@ -295,18 +301,6 @@ async fn insertion_protects_credentials_rebases_paths_and_never_commits_or_creat
             .get::<_, String>(0))
             .unwrap(),
         "PUBLIC-extension"
-    );
-    let secret: String = conn
-        .query_row(
-            "SELECT value FROM app_settings WHERE key='komodo_api_secret'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(secret.starts_with("fernet:"));
-    assert_eq!(
-        cipher.decrypt_value(&secret).unwrap(),
-        "PUBLIC literal credential"
     );
     assert_eq!(
         conn.query_row(

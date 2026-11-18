@@ -25,7 +25,7 @@ def main():
             auto_remove=True,
             detach=True,
             network_mode="none",
-            environment={"COOKIE_SECURE": "false", "KOMODO_ENABLED": "false"},
+            environment={"COOKIE_SECURE": "false"},
             labels={"dockervault.test": "ux183"},
         )
         for _ in range(90):

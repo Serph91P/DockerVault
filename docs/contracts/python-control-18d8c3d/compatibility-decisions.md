@@ -1,5 +1,33 @@
 # Compatibility decisions and observed asymmetries
 
+## Scope change: remove the retired orchestration integration
+
+[#248](https://github.com/Serph91P/DockerVault/issues/248) supersedes the
+Komodo-specific portability and feature-parity rows in the historical source
+inventory and the R0, R4, R10, R11, R12 and R14 issue text. Docker scheduling,
+Docker Compose stacks, storage providers and their tests are not retired. No
+published migration is changed. Existing settings rows, databases and recovery
+files are not rewritten by the removal. Unsupported settings are rejected in
+recovery validation before insertion, rather than silently activated, rewritten
+or copied in plaintext. Do not convert unknown workload owners to Docker or
+acknowledge unresolved shutdown/restart work during writer handoff.
+
+The historical Python #143 exporter included four provider fields even on
+installations that did not enable it. A bundle carrying retired fields is not
+accepted by the new validator; preserve that file and the corresponding prior
+release for rollback. General recovery and the end-to-end writer handoff must
+still be qualified separately. Remove obsolete variables from a **copy** of
+any deployment dotenv file prepared for Rust; the unknown-key guard remains.
+
+R12 disposition: `backend/tests/test_komodo_configuration.py` is historical
+only. Effective config, encrypted setting persistence, changes and failure
+atomicity, lifecycle calls and provider URL checks in that file all exercised
+the retired implementation. It remains reproducible from the frozen Python base,
+not from a live runtime. The replacement Settings UI test and route-removal
+assertions verify the new product boundary. The frozen recovery vectors remain
+byte-identical; only the two retired-setting cases have a different acceptance
+expectation, and the unrelated columns retain their independent SQL assertions.
+
 Scope: unchanged Python control
 `18d8c3d7f5d464195ac3fb3918048c794ef1079a`; implementation #248.
 These observations are contracts to test, not evidence that Rust implements them.

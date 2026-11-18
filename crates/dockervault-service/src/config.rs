@@ -54,11 +54,6 @@ pub struct Config {
     pub storage_upload_chunk_size: i64,
     pub s3_multipart_threshold_bytes: i64,
     pub s3_multipart_chunk_size: i64,
-    pub komodo_api_url: String,
-    pub komodo_api_key: Secret,
-    pub komodo_api_secret: Secret,
-    pub komodo_enabled: bool,
-    pub komodo_allowed_hosts: String,
     pub tz: String,
 }
 
@@ -95,11 +90,6 @@ const NAMES: &[&str] = &[
     "STORAGE_UPLOAD_CHUNK_SIZE",
     "S3_MULTIPART_THRESHOLD_BYTES",
     "S3_MULTIPART_CHUNK_SIZE",
-    "KOMODO_API_URL",
-    "KOMODO_API_KEY",
-    "KOMODO_API_SECRET",
-    "KOMODO_ENABLED",
-    "KOMODO_ALLOWED_HOSTS",
     "TZ",
 ];
 
@@ -189,11 +179,6 @@ impl Config {
                 64 * 1024 * 1024,
             )?,
             s3_multipart_chunk_size: number(&values, "S3_MULTIPART_CHUNK_SIZE", 16 * 1024 * 1024)?,
-            komodo_api_url: text(&values, "KOMODO_API_URL", ""),
-            komodo_api_key: Secret(text(&values, "KOMODO_API_KEY", "")),
-            komodo_api_secret: Secret(text(&values, "KOMODO_API_SECRET", "")),
-            komodo_enabled: boolean(&values, "KOMODO_ENABLED", false)?,
-            komodo_allowed_hosts: text(&values, "KOMODO_ALLOWED_HOSTS", ""),
             tz: text(&values, "TZ", "Europe/Berlin"),
         })
     }

@@ -66,7 +66,6 @@ def main():
             entrypoint=["python", "/app/data/runtime_policy_app.py"],
             environment={
                 "COOKIE_SECURE": "false",
-                "KOMODO_ENABLED": "false",
                 "PYTHONPATH": "/app",
                 "TZ": "America/New_York",
             },

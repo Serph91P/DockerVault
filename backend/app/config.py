@@ -70,13 +70,6 @@ class Settings(BaseSettings):
     # S3 multipart chunk size (bytes).
     S3_MULTIPART_CHUNK_SIZE: int = 16 * 1024 * 1024  # 16 MiB
 
-    # Komodo Integration
-    KOMODO_API_URL: str = ""
-    KOMODO_API_KEY: str = ""
-    KOMODO_API_SECRET: str = ""
-    KOMODO_ENABLED: bool = False
-    KOMODO_ALLOWED_HOSTS: str = ""  # Exact operator-approved internal hostnames
-
     # Timezone
     TZ: str = "Europe/Berlin"
 

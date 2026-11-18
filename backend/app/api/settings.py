@@ -3,65 +3,24 @@ Application settings API endpoints.
 """
 
 import logging
-import asyncio
 import os
 import shutil
 import time
 from pathlib import Path
 from typing import Literal, Optional
 
-import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from app.config import Settings
 from app.database import AppSettings, Backup, BackupTarget, async_session
-from app.komodo_config import (
-    load_komodo_config,
-    save_komodo_config,
-    validate_komodo_url,
-)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 _start_time = time.time()
-
-
-def _validate_komodo_url(url: str) -> str:
-    try:
-        return validate_komodo_url(url)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-class KomodoSettingsRequest(BaseModel):
-    """Komodo settings update request."""
-
-    enabled: bool
-    api_url: Optional[str] = None
-    api_key: Optional[str] = None
-    api_secret: Optional[str] = None
-
-
-class KomodoSettingsResponse(BaseModel):
-    """Komodo settings response."""
-
-    enabled: bool
-    api_url: Optional[str] = None
-    has_api_key: bool = False
-    has_api_secret: bool = False
-    connected: bool = False
-
-
-class KomodoTestResponse(BaseModel):
-    """Komodo connection test response."""
-
-    success: bool
-    message: str
-    version: Optional[str] = None
 
 
 async def get_setting(key: str) -> Optional[str]:
@@ -89,133 +48,6 @@ async def set_setting(key: str, value: Optional[str]) -> None:
             session.add(setting)
 
         await session.commit()
-
-
-@router.get("/komodo", response_model=KomodoSettingsResponse)
-async def get_komodo_settings():
-    """Get Komodo integration settings."""
-    config = await load_komodo_config()
-    enabled, api_url, api_key, api_secret = (
-        config.enabled,
-        config.api_url,
-        config.api_key,
-        config.api_secret,
-    )
-
-    connected = False
-    if enabled and api_url and api_key and api_secret:
-        try:
-            await asyncio.to_thread(_validate_komodo_url, api_url)
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.post(
-                    f"{api_url.rstrip('/')}/read",
-                    json={"type": "GetVersion"},
-                    headers={
-                        "x-api-key": api_key,
-                        "x-api-secret": api_secret,
-                    },
-                )
-                connected = response.status_code == 200
-        except Exception:
-            connected = False
-
-    return KomodoSettingsResponse(
-        enabled=enabled,
-        api_url=api_url,
-        has_api_key=bool(api_key),
-        has_api_secret=bool(api_secret),
-        connected=connected,
-    )
-
-
-@router.put("/komodo", response_model=KomodoSettingsResponse)
-async def update_komodo_settings(request: KomodoSettingsRequest):
-    """Update Komodo integration settings."""
-    try:
-        await save_komodo_config(request.model_dump(exclude_unset=True))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    from app.komodo import komodo_client
-
-    await komodo_client.refresh()
-
-    logger.info(f"Komodo settings updated: enabled={request.enabled}")
-
-    return await get_komodo_settings()
-
-
-@router.post("/komodo/test", response_model=KomodoTestResponse)
-async def test_komodo_connection():
-    """Test Komodo connection with current settings."""
-    config = await load_komodo_config()
-    enabled, api_url, api_key, api_secret = (
-        config.enabled,
-        config.api_url,
-        config.api_key,
-        config.api_secret,
-    )
-
-    if not enabled:
-        return KomodoTestResponse(
-            success=False, message="Komodo integration is disabled"
-        )
-
-    if not api_url:
-        return KomodoTestResponse(success=False, message="API URL is not configured")
-
-    if not api_key:
-        return KomodoTestResponse(success=False, message="API key is not configured")
-
-    if not api_secret:
-        return KomodoTestResponse(success=False, message="API secret is not configured")
-
-    try:
-        await asyncio.to_thread(_validate_komodo_url, api_url)
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                f"{api_url.rstrip('/')}/read",
-                json={"type": "GetVersion"},
-                headers={
-                    "x-api-key": api_key,
-                    "x-api-secret": api_secret,
-                },
-            )
-
-            if response.status_code == 200:
-                data = response.json()
-                version = data.get("version", "unknown")
-                return KomodoTestResponse(
-                    success=True,
-                    message="Connection successful",
-                    version=version,
-                )
-            elif response.status_code == 401:
-                return KomodoTestResponse(
-                    success=False,
-                    message="Authentication failed - check API key and secret",
-                )
-            elif response.status_code == 403:
-                return KomodoTestResponse(
-                    success=False,
-                    message="Access forbidden - check API key/secret permissions",
-                )
-            else:
-                return KomodoTestResponse(
-                    success=False,
-                    message=f"Unexpected response: {response.status_code}",
-                )
-    except httpx.ConnectError:
-        return KomodoTestResponse(
-            success=False, message=f"Cannot connect to {api_url} - check URL"
-        )
-    except httpx.TimeoutException:
-        return KomodoTestResponse(
-            success=False, message="Connection timed out - check network"
-        )
-    except Exception as e:
-        logger.error(f"Komodo connection test failed: {e}")
-        return KomodoTestResponse(success=False, message=str(e))
 
 
 class StorageSettingsResponse(BaseModel):

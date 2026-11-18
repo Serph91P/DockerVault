@@ -74,7 +74,6 @@ fn explicit_empty_false_and_zero_are_not_replaced_by_truthy_defaults() {
         ("COOKIE_SECURE", "false"),
         ("STORAGE_VERIFY_AFTER_UPLOAD", "0"),
         ("DEFAULT_KEEP_LAST", "0"),
-        ("KOMODO_API_URL", ""),
         ("CORS_ORIGINS", ""),
         ("ALLOWED_HOOK_COMMANDS", ""),
     ])
@@ -82,9 +81,18 @@ fn explicit_empty_false_and_zero_are_not_replaced_by_truthy_defaults() {
     assert!(!config.cookie_secure);
     assert!(!config.storage_verify_after_upload);
     assert_eq!(config.default_keep_last, 0);
-    assert_eq!(config.komodo_api_url, "");
     assert_eq!(config.cors_origins, "");
     assert_eq!(config.allowed_hook_commands, "");
+}
+
+#[test]
+fn retired_integration_env_does_not_configure_the_service() {
+    let config = Config::from_pairs([
+        ("KOMODO_ENABLED", "no-longer-a-boolean-setting"),
+        ("COOKIE_SECURE", "false"),
+    ])
+    .unwrap();
+    assert!(!config.cookie_secure);
 }
 
 #[test]
@@ -125,26 +133,15 @@ fn invalid_typed_values_fail_closed_without_echoing_the_value() {
 
 #[test]
 fn secret_configuration_never_appears_in_debug_output() {
-    let config = Config::from_pairs([
-        ("CREDENTIAL_ENCRYPTION_KEY", "private-test-fernet-material"),
-        ("KOMODO_API_KEY", "private-test-api-key"),
-        ("KOMODO_API_SECRET", "private-test-api-secret"),
-        (
-            "KOMODO_API_URL",
-            "https://private-test-user:private-test-pass@example.invalid",
-        ),
-    ])
-    .unwrap();
+    let config =
+        Config::from_pairs([("CREDENTIAL_ENCRYPTION_KEY", "private-test-fernet-material")])
+            .unwrap();
     let debug = format!("{config:?}");
-    for value in [
-        "private-test-fernet-material",
-        "private-test-api-key",
-        "private-test-api-secret",
-        "private-test-pass",
-    ] {
-        assert!(!debug.contains(value));
-    }
-    assert_eq!(config.komodo_api_key.expose(), "private-test-api-key");
+    assert!(!debug.contains("private-test-fernet-material"));
+    assert_eq!(
+        config.credential_encryption_key.expose(),
+        "private-test-fernet-material"
+    );
 }
 
 #[test]
