@@ -1314,6 +1314,109 @@ async fn local_storage_drafts_probe_without_persisting_configuration() {
 }
 
 #[tokio::test]
+async fn webdav_draft_credentials_are_applied_only_to_the_probe() {
+    use dockervault_core::crypto::CredentialCipher;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    let config = Config::from_pairs([
+        ("COOKIE_SECURE", "false"),
+        ("CORS_ORIGINS", "http://localhost:3000"),
+        ("CREDENTIAL_ENCRYPTION_KEY", key),
+    ])
+    .unwrap();
+    let server = Server::configured(config).await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/dav", listener.local_addr().unwrap());
+    let stored = CredentialCipher::new(key).unwrap().encrypt_value("saved");
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,webdav_url,username,password) VALUES (44,'fixture','webdav',1,'base path',?,'user',?)")
+        .bind(&url).bind(&stored).execute(server.db.pool()).await.unwrap();
+    let provider = tokio::spawn(async move {
+        for (path, auth) in [
+            ("/dav/draft%20path", Some("Basic dXNlcjpmZXJuZXQ6ZHJhZnQ=")),
+            ("/dav/base%20path", Some("Basic dXNlcjpzYXZlZA==")),
+            ("/dav/base%20path", Some("Basic dXNlcjpzYXZlZA==")),
+            ("/dav/base%20path", None),
+        ] {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut line = String::new();
+            stream.read_line(&mut line).await.unwrap();
+            assert_eq!(line.trim_end(), format!("PROPFIND {path} HTTP/1.1"));
+            let mut authorization = None;
+            let mut depth = None;
+            loop {
+                line.clear();
+                assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.trim_end().split_once(':') {
+                    if name.eq_ignore_ascii_case("authorization") {
+                        authorization = Some(value.trim().to_owned());
+                    } else if name.eq_ignore_ascii_case("depth") {
+                        depth = Some(value.trim().to_owned());
+                    }
+                }
+            }
+            assert!(authorization.as_deref() == auth);
+            assert_eq!(depth.as_deref(), Some("0"));
+            let status = if auth.is_some() {
+                "207 Multi-Status"
+            } else {
+                "403 Forbidden"
+            };
+            stream
+                .get_mut()
+                .write_all(
+                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                        .as_bytes(),
+                )
+                .await
+                .unwrap();
+        }
+    });
+    for (body, success) in [
+        (
+            json!({"mode":"create","config":{"name":"Draft","storage_type":"webdav","webdav_url":url,"base_path":"draft path","username":"user","password":"fernet:draft"}}),
+            true,
+        ),
+        (json!({"mode":"edit","storage_id":44,"config":{}}), true),
+        (
+            json!({"mode":"edit","storage_id":44,"config":{"password":""}}),
+            true,
+        ),
+        (
+            json!({"mode":"edit","storage_id":44,"config":{"password":null}}),
+            false,
+        ),
+    ] {
+        let (status, _, result) = server
+            .request("POST", "/api/v1/storage/test-config", &headers, Some(body))
+            .await;
+        assert_eq!(
+            (status, result),
+            (
+                200,
+                json!({"success":success,"message":if success { "Connection test succeeded" } else { "Connection test failed" }})
+            )
+        );
+    }
+    provider.await.unwrap();
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT base_path,password FROM remote_storages")
+            .fetch_all(server.db.pool())
+            .await
+            .unwrap();
+    assert!(rows == [("base path".to_owned(), stored)]);
+    server.close().await;
+}
+
+#[tokio::test]
 async fn saved_webdav_probe_waits_for_the_remote_propfind_result() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

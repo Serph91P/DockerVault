@@ -150,10 +150,20 @@ pub(super) async fn test_saved(
             probe_response(probe_local(&state, path).await)
         }
         Ok(Some((kind, path, url, username, password))) if kind == "webdav" => {
-            let success = probe_webdav(&state, path, url, username, password)
-                .await
-                .is_some();
-            Json(json!({"success": success, "message": if success { "Connection test succeeded" } else { "Connection test failed" }})).into_response()
+            let Ok([password, _]) = crate::storage_recovery::open_delete_credentials(
+                [password, None],
+                state.auth.blocking(),
+                &state.config,
+            )
+            .await
+            else {
+                return probe_response(false);
+            };
+            probe_response(
+                probe_webdav(&state, path, url, username, password)
+                    .await
+                    .is_some(),
+            )
         }
         Ok(Some(_)) => storage_error(
             StatusCode::NOT_IMPLEMENTED,
@@ -173,10 +183,6 @@ async fn probe_webdav(
 ) -> Option<()> {
     use crate::storage::webdav::{DavConfig, WebDav};
     let io = state.auth.blocking();
-    let [password, _] =
-        crate::storage_recovery::open_delete_credentials([password, None], io, &state.config)
-            .await
-            .ok()?;
     let provider = WebDav::new(
         DavConfig {
             url: url?,

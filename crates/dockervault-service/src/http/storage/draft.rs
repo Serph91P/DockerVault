@@ -55,6 +55,23 @@ pub(in crate::http) async fn test_config(
             let Ok(mut saved) = serde_json::from_str::<serde_json::Map<String, Value>>(&raw) else {
                 return db_error();
             };
+            // Only inherited values are ciphertext. Draft replacements are literal secrets.
+            if saved["storage_type"] == "webdav" && !updates.contains_key("password") {
+                let password = saved
+                    .get("password")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                let Ok([password, _]) = crate::storage_recovery::open_delete_credentials(
+                    [password, None],
+                    state.auth.blocking(),
+                    &state.config,
+                )
+                .await
+                else {
+                    return probe_response(false);
+                };
+                saved.insert("password".into(), json!(password));
+            }
             saved.append(updates);
             effective = Value::Object(saved);
             storage_errors(&effective)
@@ -68,6 +85,20 @@ pub(in crate::http) async fn test_config(
         Some("local") => {
             let path = effective["base_path"].as_str().map(str::to_owned);
             probe_response(probe_local(&state, path).await)
+        }
+        Some("webdav") => {
+            let field = |key: &str| effective[key].as_str().map(str::to_owned);
+            probe_response(
+                probe_webdav(
+                    &state,
+                    field("base_path"),
+                    field("webdav_url"),
+                    field("username"),
+                    field("password"),
+                )
+                .await
+                .is_some(),
+            )
         }
         _ => storage_error(
             StatusCode::NOT_IMPLEMENTED,
