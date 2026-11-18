@@ -1,4 +1,5 @@
 //! Invocation-local source identity and provider byte-verification primitives.
+pub mod ftp;
 pub mod local;
 pub mod s3;
 mod upload;
