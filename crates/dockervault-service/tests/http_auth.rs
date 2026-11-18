@@ -685,6 +685,58 @@ async fn configured_local_target_deletes_from_its_own_root() {
         std::fs::read(root.join("same.tar")).unwrap(),
         b"must survive config drift"
     );
+    let retry = format!("{detail}/retry");
+    let body = json!({"request_id":"f45fb043-5463-4205-a666-d4b9db6356b2"});
+    let (status, _, rejection) = server
+        .request("POST", &retry, &headers, Some(body.clone()))
+        .await;
+    assert_eq!(
+        (status, rejection),
+        (
+            409,
+            json!({"detail":"Storage identity changed; inspect before starting a new operation"})
+        )
+    );
+    sqlx::raw_sql("DROP TRIGGER drift_after_admission; UPDATE remote_storages SET name='fixture' WHERE id=41;")
+        .execute(server.db.pool()).await.unwrap();
+    let (status, _, receipt) = server
+        .request("POST", &retry, &headers, Some(body.clone()))
+        .await;
+    assert_eq!(status, 202);
+    let child = format!(
+        "/api/v1/operations/{}",
+        receipt["operation_id"].as_str().unwrap()
+    );
+    let child = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let (status, _, snapshot) = server.request("GET", &child, &headers, None).await;
+            assert_eq!(status, 200);
+            if snapshot["finished_at"].is_string() {
+                break snapshot;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(child["parent_id"], response["operation_id"]);
+    assert_eq!(child["storage_id"], 41);
+    assert_eq!(
+        child["items"],
+        json!([{"path":"same.tar","state":"succeeded","error":null}])
+    );
+    assert!(!root.join("same.tar").exists());
+    std::fs::write(root.join("same.tar"), b"replacement").unwrap();
+    sqlx::query("DELETE FROM remote_storages WHERE id=41")
+        .execute(server.db.pool())
+        .await
+        .unwrap();
+    let (status, _, replay) = server.request("POST", &retry, &headers, Some(body)).await;
+    assert_eq!((status, replay), (202, receipt));
+    assert_eq!(
+        std::fs::read(root.join("same.tar")).unwrap(),
+        b"replacement"
+    );
     server.close().await;
 }
 

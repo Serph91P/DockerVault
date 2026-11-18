@@ -245,11 +245,17 @@ pub(crate) async fn replay_remote_delete(
     request_id: &str,
     path: &str,
     paths: &[String],
+    parent: Option<&RetryParent>,
 ) -> Result<Option<String>, StorageRecoveryError> {
     use StorageRecoveryError as Error;
     let normalized = normalize_delete_selection(paths.iter().map(String::as_str))?;
     let path = relative_path(path, true).ok_or(Error::InvalidRequest)?;
-    let payload = delete_payload(&id.to_string(), &path, &normalized, None);
+    let payload = delete_payload(
+        &id.to_string(),
+        &path,
+        &normalized,
+        parent.map(|parent| parent.id.as_str()),
+    );
     let mut tx = pool.begin().await?;
     if recovery_pending_in(&mut *tx)
         .await
@@ -789,16 +795,24 @@ impl LocalSelection {
         if paths.is_empty() {
             return Err(Error::NothingToRetry);
         }
-        if storage != "local" {
-            return Err(Error::UnsupportedProvider);
-        }
+        let remote_id = if storage == "local" {
+            None
+        } else {
+            Some(
+                storage
+                    .parse::<i64>()
+                    .ok()
+                    .filter(|id| *id > 0 && id.to_string() == storage)
+                    .ok_or(Error::InvalidRequest)?,
+            )
+        };
         let identity = serde_json::from_str(&identity).map_err(|_| Error::IdentityChanged)?;
         Ok(Self {
             user_id,
             request_id,
             path,
             paths,
-            remote_id: None,
+            remote_id,
             parent: Some(RetryParent { id, identity }),
         })
     }
@@ -852,6 +866,29 @@ impl LocalDeleteJobs {
             .jobs
             .submit_async(move |_| async move {
                 let mut tail = this.tail.lock().await;
+                if let (Some(id), Some(parent)) = (selection.remote_id, selection.parent.as_ref()) {
+                    match replay_remote_delete(
+                        &pool,
+                        selection.user_id,
+                        id,
+                        &selection.request_id,
+                        &selection.path,
+                        &selection.paths,
+                        Some(parent),
+                    )
+                    .await
+                    {
+                        Ok(None) => {}
+                        Ok(Some(receipt)) => {
+                            let _ = accepted.send(Ok(receipt));
+                            return;
+                        }
+                        Err(error) => {
+                            let _ = accepted.send(Err(error));
+                            return;
+                        }
+                    }
+                }
                 let io = this.io.clone();
                 let root = &config.backup_base_path;
                 let prepared = async {
