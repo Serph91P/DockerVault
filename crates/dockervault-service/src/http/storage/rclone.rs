@@ -85,7 +85,7 @@ pub(super) async fn download_snapshot(
         .ok()?
 }
 
-async fn settled<T>(
+pub(super) async fn settled<T>(
     work: crate::ownership::Work<T>,
     cancel: Option<&CancellationToken>,
 ) -> Option<T> {

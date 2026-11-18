@@ -881,7 +881,7 @@ async fn bulk_download(
     mut request: axum::extract::Request,
 ) -> Response {
     use std::io::Seek;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_util::compat::FuturesAsyncWriteCompatExt;
 
@@ -911,21 +911,41 @@ async fn bulk_download(
     if paths.is_empty() {
         return storage_error(StatusCode::BAD_REQUEST, "No files specified");
     }
-    let root = if let Some(id) = parsed_id {
-        match configured_browse_root(state, id).await {
-            Ok(Some(root)) => root,
-            Ok(None) => {
+    let source = if let Some(id) = parsed_id {
+        let mut config = match configured_browse_config(state, id).await {
+            Ok(config) => config,
+            Err(response) => return *response,
+        };
+        match config["storage_type"].as_str() {
+            Some("local") => {
+                DownloadSource::Local(config["base_path"].as_str().unwrap_or_default().into())
+            }
+            Some("webdav") => {
+                if !open_probe_credentials(state, &mut config, None).await {
+                    return storage_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Bulk download failed",
+                    );
+                }
+                let Some(provider) = configured_webdav(state, &config) else {
+                    return storage_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Bulk download failed",
+                    );
+                };
+                DownloadSource::Webdav(provider)
+            }
+            _ => {
                 return storage_error(
                     StatusCode::NOT_IMPLEMENTED,
                     "Remote storage operations are unavailable",
                 );
             }
-            Err(response) => return *response,
         }
     } else {
-        state.config.backup_base_path.clone()
+        DownloadSource::Local(state.config.backup_base_path.clone().into())
     };
-    if root.is_empty() {
+    if matches!(&source, DownloadSource::Local(root) if root.as_os_str().is_empty()) {
         return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Bulk download failed");
     }
     let folder = selection[0]
@@ -945,7 +965,6 @@ async fn bulk_download(
             "Download capacity exhausted",
         );
     };
-    let root = PathBuf::from(root);
     let result = async {
         state
             .download_jobs
@@ -962,29 +981,43 @@ async fn bulk_download(
                     if cancel.is_cancelled() {
                         return None;
                     }
-                    let source_root = root.clone();
-                    let source_path = path.clone();
-                    let source_cancel = cancel.clone();
-                    let (input, _) = match tokio::task::spawn_blocking(move || {
-                        crate::storage::local::snapshot_download(
-                            &source_root,
-                            Path::new(&source_path),
-                            &|| source_cancel.is_cancelled(),
-                        )
-                    })
-                    .await
-                    .ok()?
-                    {
-                        Ok(item) => item,
-                        Err(error)
-                            if matches!(
-                                error.kind(),
-                                std::io::ErrorKind::NotFound | std::io::ErrorKind::IsADirectory
-                            ) =>
-                        {
-                            continue;
+                    let input = match &source {
+                        DownloadSource::Webdav(provider) => {
+                            let work = provider.download_snapshot(path.clone(), ()).ok()?;
+                            match rclone::settled(work, Some(&cancel)).await? {
+                                Ok((file, _, ())) => file,
+                                Err(crate::storage::webdav::DavError::Http(404)) => continue,
+                                Err(_) => return None,
+                            }
                         }
-                        Err(_) => return None,
+                        DownloadSource::Local(root) => {
+                            let root = root.clone();
+                            let source_path = path.clone();
+                            let source_cancel = cancel.clone();
+                            match tokio::task::spawn_blocking(move || {
+                                crate::storage::local::snapshot_download(
+                                    &root,
+                                    Path::new(&source_path),
+                                    &|| source_cancel.is_cancelled(),
+                                )
+                            })
+                            .await
+                            .ok()?
+                            {
+                                Ok((file, _)) => file,
+                                Err(error)
+                                    if matches!(
+                                        error.kind(),
+                                        std::io::ErrorKind::NotFound
+                                            | std::io::ErrorKind::IsADirectory
+                                    ) =>
+                                {
+                                    continue;
+                                }
+                                Err(_) => return None,
+                            }
+                        }
+                        _ => return None,
                     };
                     let mut input = tokio::fs::File::from_std(input);
                     let opts = async_zip::ZipEntryBuilder::new(

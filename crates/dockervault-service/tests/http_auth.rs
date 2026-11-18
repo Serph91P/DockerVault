@@ -1443,6 +1443,79 @@ async fn configured_webdav_listing_reports_provider_failure_not_empty_success() 
 }
 
 #[tokio::test]
+async fn webdav_bulk_download_stages_success_and_skips_missing_objects() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,webdav_url) VALUES(44,'fixture','webdav',1,'/base',?)")
+        .bind(format!("http://{}",listener.local_addr().unwrap())).execute(server.db.pool()).await.unwrap();
+    let provider = tokio::spawn(async move {
+        for (name, status, body) in [
+            ("archive.tar", "200 OK", "fixture"),
+            ("missing.tar", "404 Not Found", ""),
+            ("short.tar", "200 OK", "short"),
+        ] {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut line = String::new();
+            stream.read_line(&mut line).await.unwrap();
+            assert_eq!(line, format!("GET /base/{name} HTTP/1.1\r\n"));
+            loop {
+                line.clear();
+                assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let expected = if name == "short.tar" { 20 } else { body.len() };
+            stream.get_mut().write_all(format!("HTTP/1.1 {status}\r\nContent-Length: {expected}\r\nConnection: close\r\n\r\n{body}").as_bytes()).await.unwrap();
+        }
+    });
+    let client = reqwest::Client::new();
+    let route = "/api/v1/storage/44/files/bulk-download";
+    let response = client
+        .post(format!("http://{}{route}", server.address))
+        .header("Cookie", &cookie)
+        .header("Content-Type", "application/json")
+        .body(r#"{"paths":["archive.tar","missing.tar"]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["content-type"], "application/zip");
+    let mut archive = async_zip::base::read1::seek::ZipArchiveReader::open(
+        tokio_util::compat::TokioAsyncReadCompatExt::compat(std::io::Cursor::new(
+            response.bytes().await.unwrap(),
+        )),
+    )
+    .await
+    .unwrap();
+    assert_eq!(archive.cdrs().len(), 1);
+    assert_eq!(archive.find(b"archive.tar").unwrap().count(), 1);
+    let mut contents = Vec::new();
+    tokio_util::compat::FuturesAsyncReadCompatExt::compat(archive.file(0).await.unwrap())
+        .read_to_end(&mut contents)
+        .await
+        .unwrap();
+    assert_eq!(contents, b"fixture");
+    let (status, _, body) = server
+        .request(
+            "POST",
+            route,
+            &[("Cookie", cookie.as_str())],
+            Some(json!({"paths":["short.tar"]})),
+        )
+        .await;
+    assert_eq!(
+        (status, body),
+        (500, json!({"detail":"Bulk download failed"}))
+    );
+    provider.await.unwrap();
+    server.close().await;
+}
+
+#[tokio::test]
 async fn configured_local_bulk_download_reports_missing_storage() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
