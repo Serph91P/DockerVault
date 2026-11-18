@@ -839,13 +839,25 @@ impl LocalDeleteJobs {
                         if kind == "webdav" {
                             let password: Option<String> = row.try_get("password")?;
                             let password = match password {
-                                Some(value) if value.starts_with("fernet:") => Some(
-                                    dockervault_core::crypto::CredentialCipher::new(
-                                        config.credential_encryption_key.expose(),
+                                Some(value) if value.starts_with("fernet:") => {
+                                    let config = config.clone();
+                                    let work = io
+                                        .submit_blocking(move |cancel| {
+                                            load_delete_cipher(
+                                                std::path::Path::new("/app/data/.credential_key"),
+                                                config.credential_encryption_key.expose(),
+                                                || cancel.is_cancelled(),
+                                            )?
+                                            .decrypt_value(&value)
+                                            .map_err(|_| Error::InvalidStorageConfiguration)
+                                        })
+                                        .map_err(|_| Error::InvalidStorageConfiguration)?;
+                                    Some(
+                                        work.wait()
+                                            .await
+                                            .map_err(|_| Error::InvalidStorageConfiguration)??,
                                     )
-                                    .and_then(|cipher| cipher.decrypt_value(&value))
-                                    .map_err(|_| Error::InvalidStorageConfiguration)?,
-                                ),
+                                }
                                 value => value,
                             };
                             let dav = WebDav::new(
@@ -971,6 +983,89 @@ impl LocalDeleteJobs {
         self.jobs.shutdown(None).await;
         self.io.shutdown(None).await;
     }
+}
+
+fn load_delete_cipher(
+    path: &std::path::Path,
+    configured: &str,
+    cancelled: impl Fn() -> bool,
+) -> Result<dockervault_core::crypto::CredentialCipher, StorageRecoveryError> {
+    use dockervault_core::crypto::CredentialCipher;
+    use nix::fcntl::{OFlag, openat};
+    use std::os::unix::fs::MetadataExt;
+    let invalid = || StorageRecoveryError::InvalidStorageConfiguration;
+    if cancelled() {
+        return Err(invalid());
+    }
+    if !configured.is_empty() {
+        return CredentialCipher::new(configured).map_err(|_| invalid());
+    }
+    let dir = crate::storage::local::open_root(path.parent().ok_or_else(invalid)?)
+        .map_err(|_| invalid())?;
+    let file = std::fs::File::from(
+        openat(
+            &dir,
+            path.file_name().ok_or_else(invalid)?,
+            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+            nix::sys::stat::Mode::empty(),
+        )
+        .map_err(|_| invalid())?,
+    );
+    let meta = file.metadata().map_err(|_| invalid())?;
+    if !meta.is_file()
+        || meta.mode() & 0o777 != 0o600
+        || meta.nlink() != 1
+        || meta.uid() != nix::unistd::geteuid().as_raw()
+    {
+        return Err(invalid());
+    }
+    CredentialCipher::read_key(file, cancelled).map_err(|_| invalid())
+}
+
+#[cfg(test)]
+#[test]
+fn configured_key_precedes_existing_file_and_unsafe_files_are_not_followed() {
+    use dockervault_core::crypto::CredentialCipher;
+    use std::os::unix::fs::{OpenOptionsExt, symlink};
+
+    use std::io::Write;
+    let mut nonce = [0u8; 16];
+    getrandom::fill(&mut nonce).unwrap();
+    let dir = std::env::temp_dir().join(format!("dv-delete-key-{nonce:02x?}"));
+    std::fs::create_dir(&dir).unwrap();
+    let key = CredentialCipher::generate_key();
+    let path = dir.join("key");
+    let wrong = CredentialCipher::generate_key();
+    let encrypted = CredentialCipher::new(&key)
+        .unwrap()
+        .encrypt_value("synthetic");
+    let mut file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&path)
+        .unwrap();
+    writeln!(file, "{}", key.as_str()).unwrap();
+    drop(file);
+    assert_eq!(
+        load_delete_cipher(&path, "", || false)
+            .unwrap()
+            .decrypt_value(&encrypted)
+            .unwrap(),
+        "synthetic"
+    );
+    assert!(
+        load_delete_cipher(&path, &wrong, || false)
+            .unwrap()
+            .decrypt_value(&encrypted)
+            .is_err()
+    );
+    assert!(load_delete_cipher(&path, "invalid", || false).is_err());
+    symlink(&path, dir.join("link")).unwrap();
+    assert!(load_delete_cipher(&dir.join("link"), "", || false).is_err());
+    assert!(load_delete_cipher(&dir.join("missing"), "", || false).is_err());
+    assert!(!dir.join("missing").exists());
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 impl From<sqlx::Error> for StorageRecoveryError {

@@ -305,7 +305,17 @@ async fn local_delete_submit_commits_before_effect_and_replay_does_not_delete_ag
 
 #[tokio::test]
 async fn configured_webdav_delete_waits_for_the_provider_and_records_the_effect() {
-    let server = Server::start("http://localhost:3000").await;
+    let key = dockervault_core::crypto::CredentialCipher::generate_key();
+    let ciphertext = dockervault_core::crypto::CredentialCipher::new(&key)
+        .unwrap()
+        .encrypt_value("public");
+    let config = Config::from_pairs([
+        ("COOKIE_SECURE", "false"),
+        ("CORS_ORIGINS", "http://localhost:3000"),
+        ("CREDENTIAL_ENCRYPTION_KEY", key.as_str()),
+    ])
+    .unwrap();
+    let server = Server::configured(config).await;
     let cookie = server.setup().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/dav", listener.local_addr().unwrap());
@@ -334,8 +344,8 @@ async fn configured_webdav_delete_waits_for_the_provider_and_records_the_effect(
             .await
             .unwrap();
     });
-    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,webdav_url,username,password) VALUES (42,'fixture dav','webdav',1,'backups',?,'fixture','public')")
-        .bind(url).execute(server.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,webdav_url,username,password) VALUES (42,'fixture dav','webdav',1,'backups',?,'fixture',?)")
+        .bind(url).bind(ciphertext).execute(server.db.pool()).await.unwrap();
     let headers = [
         ("Cookie", cookie.as_str()),
         ("Origin", "http://localhost:3000"),

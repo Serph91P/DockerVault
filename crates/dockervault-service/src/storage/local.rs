@@ -335,7 +335,7 @@ fn parent(root: &File, path: &Path, create: bool) -> io::Result<(File, OsString)
     }
     Ok((current, name))
 }
-fn open_root(path: &Path) -> io::Result<File> {
+pub(crate) fn open_root(path: &Path) -> io::Result<File> {
     let mut current = File::open("/")?;
     for component in path
         .strip_prefix("/")
