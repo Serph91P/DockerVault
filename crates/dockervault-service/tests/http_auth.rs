@@ -1232,6 +1232,24 @@ async fn storage_create_persists_provider_fields_and_encrypts_credentials() {
 }
 
 #[tokio::test]
+async fn configured_rclone_listing_rejects_an_invalid_path() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,rclone_remote) VALUES(44,'fixture','rclone',1,'/base','fixture')")
+        .execute(server.db.pool()).await.unwrap();
+    let (status, _, body) = server
+        .request(
+            "GET",
+            "/api/v1/storage/44/files?path=..%2Foutside",
+            &[("Cookie", cookie.as_str())],
+            None,
+        )
+        .await;
+    assert_eq!((status, body), (400, json!({"detail":"Invalid file path"})));
+    server.close().await;
+}
+
+#[tokio::test]
 async fn configured_sftp_listing_rejects_an_invalid_path_before_opening_a_connection() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

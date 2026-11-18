@@ -544,6 +544,15 @@ pub(super) async fn list_configured_files(
                 None => storage_error(StatusCode::BAD_GATEWAY, "Remote listing failed"),
             }
         }
+        Some("rclone") => {
+            let Some(path) = crate::storage::relative_path(raw, true) else {
+                return storage_error(StatusCode::BAD_REQUEST, "Invalid file path");
+            };
+            match rclone::list(&state, &Value::Object(config), &path).await {
+                Some(files) => Json(json!({"files":files,"path":path})).into_response(),
+                None => storage_error(StatusCode::BAD_GATEWAY, "Remote listing failed"),
+            }
+        }
         _ => storage_error(
             StatusCode::NOT_IMPLEMENTED,
             "Remote storage operations are unavailable",
