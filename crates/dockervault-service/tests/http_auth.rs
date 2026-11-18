@@ -1417,6 +1417,75 @@ async fn webdav_draft_credentials_are_applied_only_to_the_probe() {
 }
 
 #[tokio::test]
+async fn ftp_probe_reports_only_the_settled_login_and_quit_result() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,host,port,base_path,username,password) VALUES (44,'FTP','ftp',1,'127.0.0.1',?,'/fixture','fixture-user','synthetic-saved')")
+        .bind(port).execute(server.db.pool()).await.unwrap();
+    let provider = tokio::spawn(async move {
+        for (password, quit) in [
+            ("synthetic-draft", "221 goodbye"),
+            ("synthetic-saved", "500 rejected"),
+        ] {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            stream.get_mut().write_all(b"220 hello\r\n").await.unwrap();
+            for (command, reply) in [
+                ("USER fixture-user".to_owned(), "331 need password"),
+                (format!("PASS {password}"), "230 logged in"),
+                ("QUIT".to_owned(), quit),
+            ] {
+                let mut line = String::new();
+                stream.read_line(&mut line).await.unwrap();
+                assert!(line.trim_end() == command);
+                stream
+                    .get_mut()
+                    .write_all(format!("{reply}\r\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+            let mut end = String::new();
+            assert_eq!(stream.read_line(&mut end).await.unwrap(), 0);
+        }
+    });
+    let input = json!({"mode":"edit","storage_id":44,"config":{"password":"synthetic-draft"}});
+    let (status, _, result) = server
+        .request("POST", "/api/v1/storage/test-config", &headers, Some(input))
+        .await;
+    assert_eq!(
+        (status, result),
+        (
+            200,
+            json!({"success":true,"message":"Connection test succeeded"})
+        )
+    );
+    let (status, _, result) = server
+        .request("POST", "/api/v1/storage/44/test", &headers, None)
+        .await;
+    assert_eq!(
+        (status, result),
+        (
+            200,
+            json!({"success":false,"message":"Connection test failed"})
+        )
+    );
+    provider.await.unwrap();
+    let credentials: Vec<String> = sqlx::query_scalar("SELECT password FROM remote_storages")
+        .fetch_all(server.db.pool())
+        .await
+        .unwrap();
+    assert!(credentials == ["synthetic-saved"]);
+    server.close().await;
+}
+
+#[tokio::test]
 async fn saved_webdav_probe_waits_for_the_remote_propfind_result() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

@@ -139,39 +139,92 @@ pub(super) async fn test_saved(
     let Some(id) = super::operations::query_integer(&raw) else {
         return invalid_id();
     };
-    let row = sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>)>(
-        "SELECT storage_type,base_path,webdav_url,username,password FROM remote_storages WHERE id=?",
-    )
-    .bind(id)
-    .fetch_optional(state.auth.pool())
-    .await;
-    match row {
-        Ok(Some((kind, path, _, _, _))) if kind == "local" => {
-            probe_response(probe_local(&state, path).await)
-        }
-        Ok(Some((kind, path, url, username, password))) if kind == "webdav" => {
-            let Ok([password, _]) = crate::storage_recovery::open_delete_credentials(
-                [password, None],
-                state.auth.blocking(),
-                &state.config,
-            )
-            .await
-            else {
-                return probe_response(false);
-            };
-            probe_response(
-                probe_webdav(&state, path, url, username, password)
-                    .await
-                    .is_some(),
-            )
-        }
-        Ok(Some(_)) => storage_error(
-            StatusCode::NOT_IMPLEMENTED,
-            "Remote storage operations are unavailable",
-        ),
-        Ok(None) => storage_error(StatusCode::NOT_FOUND, "Storage not found"),
-        Err(_) => storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+    let raw = match sqlx::query_scalar::<_, String>(select_storage!(" WHERE id=?"))
+        .bind(id)
+        .fetch_optional(state.auth.pool())
+        .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => return storage_error(StatusCode::NOT_FOUND, "Storage not found"),
+        Err(_) => return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+    };
+    let Ok(mut saved) = serde_json::from_str::<serde_json::Map<String, Value>>(&raw) else {
+        return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
+    };
+    if !open_probe_password(&state, &mut saved).await {
+        return probe_response(false);
     }
+    probe_provider(&state, Value::Object(saved)).await
+}
+
+async fn open_probe_password(
+    state: &HttpState,
+    config: &mut serde_json::Map<String, Value>,
+) -> bool {
+    if !matches!(config["storage_type"].as_str(), Some("webdav" | "ftp")) {
+        return true;
+    }
+    let password = config
+        .get("password")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let Ok([password, _]) = crate::storage_recovery::open_delete_credentials(
+        [password, None],
+        state.auth.blocking(),
+        &state.config,
+    )
+    .await
+    else {
+        return false;
+    };
+    config.insert("password".into(), json!(password));
+    true
+}
+
+async fn probe_provider(state: &HttpState, config: Value) -> Response {
+    let field = |key: &str| config[key].as_str().map(str::to_owned);
+    let success = match config["storage_type"].as_str() {
+        Some("local") => probe_local(state, field("base_path")).await,
+        Some("webdav") => probe_webdav(
+            state,
+            field("base_path"),
+            field("webdav_url"),
+            field("username"),
+            field("password"),
+        )
+        .await
+        .is_some(),
+        Some("ftp") => probe_ftp(state, &config).await.is_some(),
+        _ => {
+            return storage_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "Remote storage operations are unavailable",
+            );
+        }
+    };
+    probe_response(success)
+}
+
+async fn probe_ftp(state: &HttpState, config: &Value) -> Option<()> {
+    use crate::storage::ftp::{Ftp, FtpConfig};
+    let field = |key: &str| config[key].as_str().unwrap_or_default().to_owned();
+    let port = if config["port"].is_null() {
+        None
+    } else {
+        Some(u16::try_from(config["port"].as_i64()?).ok()?)
+    };
+    let provider = Ftp::new(
+        FtpConfig {
+            host: field("host"),
+            port,
+            username: field("username"),
+            password: field("password"),
+            base_path: field("base_path"),
+        },
+        state.auth.blocking().clone(),
+    )
+    .ok()?;
+    provider.test_connection().ok()?.wait().await.ok()?.ok()
 }
 
 async fn probe_webdav(
