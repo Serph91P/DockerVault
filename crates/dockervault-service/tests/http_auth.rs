@@ -1107,6 +1107,46 @@ async fn storage_types_requires_session_and_returns_current_provider_contract() 
 }
 
 #[tokio::test]
+async fn storage_inventory_and_detail_keep_legacy_repair_hints_without_credentials() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let fields = ["password", "s3_access_key", "s3_secret_key"];
+    let synthesized = dockervault_core::crypto::CredentialCipher::generate_key();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,webdav_url,password,s3_access_key,s3_secret_key,created_at,updated_at) VALUES (44,'fixture','webdav',0,'backups','not a URL',?,?,?,'2024-02-01 01:02:03.000000','2024-02-02 01:02:03.120000')")
+        .bind(synthesized.as_str()).bind(synthesized.as_str()).bind(synthesized.as_str()).execute(server.db.pool()).await.unwrap();
+    let headers = [("Cookie", cookie.as_str())];
+    let (status, _, list) = server
+        .request("GET", "/api/v1/storage", &headers, None)
+        .await;
+    assert_eq!(status, 200);
+    let (_, _, detail) = server
+        .request("GET", "/api/v1/storage/44", &headers, None)
+        .await;
+    assert!(
+        fields
+            .iter()
+            .all(|field| detail.get(field).is_none() && list[0].get(field).is_none())
+    );
+    assert_eq!(list[0], detail);
+    assert_eq!(detail["id"], 44);
+    assert_eq!(detail["enabled"], false);
+    assert_eq!(detail["created_at"], "2024-02-01T01:02:03");
+    assert_eq!(detail["updated_at"], "2024-02-02T01:02:03.120000");
+    assert_eq!(
+        detail["validation_errors"],
+        json!(["webdav_url must be an http(s) URL with a valid hostname and port"])
+    );
+    let (status, _, missing) = server
+        .request("GET", "/api/v1/storage/45", &headers, None)
+        .await;
+    assert_eq!(
+        (status, missing),
+        (404, json!({"detail":"Storage not found"}))
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn operation_detail_requires_authentication_and_ownership() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
