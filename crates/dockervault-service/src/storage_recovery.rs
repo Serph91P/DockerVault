@@ -6,6 +6,69 @@ use sqlx::SqlitePool;
 pub enum StorageRecoveryError {
     Activation(JournalError),
     Database(sqlx::Error),
+    IdentityChanged,
+}
+
+#[derive(Debug)]
+pub struct ClaimedItem {
+    pub id: i64,
+    pub path: String,
+}
+
+/// Commit a single owned delete claim before touching the provider. The caller
+/// must hold the verified storage handle through the effect and settlement.
+pub async fn claim_next(
+    pool: &SqlitePool,
+    user_id: i64,
+    operation_id: &str,
+    current_identity: &serde_json::Value,
+) -> Result<Option<ClaimedItem>, StorageRecoveryError> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    if recovery_pending_in(&mut *tx)
+        .await
+        .map_err(StorageRecoveryError::Activation)?
+    {
+        tx.rollback().await?;
+        return Ok(None);
+    }
+    let identity: Option<String> = sqlx::query_scalar(
+        "SELECT storage_identity FROM storage_operations WHERE id=? AND user_id=?
+         AND action='delete' AND state IN ('queued','running') AND cancel_requested=0",
+    )
+    .bind(operation_id)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(identity) = identity else {
+        tx.rollback().await?;
+        return Ok(None);
+    };
+    if !current_identity.is_object()
+        || serde_json::from_str::<serde_json::Value>(&identity)
+            .as_ref()
+            .ok()
+            != Some(current_identity)
+    {
+        tx.rollback().await?;
+        return Err(StorageRecoveryError::IdentityChanged);
+    }
+    let item: Option<(i64, String)> = sqlx::query_as(
+        "UPDATE storage_operation_items SET state='running'
+         WHERE id=(SELECT id FROM storage_operation_items WHERE operation_id=? AND state='pending' ORDER BY id LIMIT 1)
+           AND NOT EXISTS(SELECT 1 FROM storage_operation_items WHERE operation_id=? AND state='running')
+         RETURNING id,path",
+    ).bind(operation_id).bind(operation_id).fetch_optional(&mut *tx).await?;
+    if item.is_some() {
+        sqlx::query(
+            "UPDATE storage_operations SET state='running',stage='deleting',
+                     updated_at=strftime('%Y-%m-%d %H:%M:%f','now') WHERE id=?",
+        )
+        .bind(operation_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(item.map(|(id, path)| ClaimedItem { id, path }))
 }
 
 impl From<sqlx::Error> for StorageRecoveryError {

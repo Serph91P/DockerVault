@@ -1,4 +1,8 @@
-use dockervault_service::{db::Database, ownership::Owner, storage_recovery::settle_interrupted};
+use dockervault_service::{
+    db::Database,
+    ownership::Owner,
+    storage_recovery::{claim_next, settle_interrupted},
+};
 
 #[tokio::test]
 async fn restart_keeps_uncertain_effects_unknown_and_never_replays_unstarted_items() {
@@ -14,12 +18,42 @@ async fn restart_keeps_uncertain_effects_unknown_and_never_replays_unstarted_ite
         .unwrap();
     sqlx::raw_sql("INSERT INTO users(id,username,password_hash) VALUES(1,'fixture','synthetic');
         INSERT INTO storage_operations(id,user_id,request_id,payload,storage_identity,action,storage_id,path,state,stage,total,completed,succeeded,failed,skipped,unknown,cancel_requested,created_at,updated_at) VALUES
-        ('interrupted',1,'r1','{}','{}','delete','local','','running','deleting',4,2,1,1,0,0,1,'2024-01-01','2024-01-01'),
+        ('interrupted',1,'r1','{}','{}','delete','local','','queued','queued',4,2,1,1,0,0,0,'2024-01-01','2024-01-01'),
         ('finished',1,'r2','{}','{}','delete','local','','completed','done',1,1,1,0,0,0,0,'2024-01-01','2024-01-01');
         INSERT INTO storage_operation_items(operation_id,path,state,error) VALUES
-        ('interrupted','a','succeeded',NULL),('interrupted','b','running',NULL),
-        ('interrupted','c','pending',NULL),('interrupted','d','failed','retained'),('finished','e','succeeded',NULL);
-        INSERT INTO app_settings(key,value) VALUES ('recovery_activation','incomplete');")
+        ('interrupted','a','succeeded',NULL),('interrupted','b','pending',NULL),
+        ('interrupted','c','pending',NULL),('interrupted','d','failed','retained'),('finished','e','succeeded',NULL);")
+        .execute(db.pool()).await.unwrap();
+    let identity = serde_json::json!({});
+    assert!(
+        claim_next(db.pool(), 2, "interrupted", &identity)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        claim_next(
+            db.pool(),
+            1,
+            "interrupted",
+            &serde_json::json!({"replaced": true})
+        )
+        .await
+        .is_err()
+    );
+    let claim = claim_next(db.pool(), 1, "interrupted", &identity)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(claim.path, "b");
+    assert!(
+        claim_next(db.pool(), 1, "interrupted", &identity)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    sqlx::raw_sql("UPDATE storage_operations SET cancel_requested=1 WHERE id='interrupted';
+                   INSERT INTO app_settings(key,value) VALUES ('recovery_activation','incomplete');")
         .execute(db.pool()).await.unwrap();
     db.close().await;
     let db = Database::open(path, backups, &owner).await.unwrap();
