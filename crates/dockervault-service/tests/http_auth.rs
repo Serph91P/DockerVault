@@ -479,6 +479,92 @@ async fn configured_ftp_delete_settles_after_the_control_session_closes() {
 }
 
 #[tokio::test]
+async fn configured_s3_delete_settles_after_signed_provider_response() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let object = server.path.join("s3-fixture.tar");
+    std::fs::write(&object, b"selected bytes").unwrap();
+    let selected = object.clone();
+    let access = dockervault_core::crypto::CredentialCipher::generate_key();
+    let secret = dockervault_core::crypto::CredentialCipher::generate_key();
+    let expected_access = format!("Credential={}/", access.as_str());
+    let provider = tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut stream = BufReader::new(stream);
+        let mut line = String::new();
+        stream.read_line(&mut line).await.unwrap();
+        assert!(line.starts_with(
+            "DELETE /fixture-bucket/backups/s3-fixture.tar?x-id=DeleteObject HTTP/1.1"
+        ));
+        let mut signed = false;
+        loop {
+            line.clear();
+            assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':') {
+                signed |= name.eq_ignore_ascii_case("authorization")
+                    && value.trim_start().starts_with("AWS4-HMAC-SHA256 ")
+                    && value.contains(&expected_access);
+            }
+        }
+        assert!(signed, "missing configured S3 signing identity");
+        std::fs::remove_file(selected).unwrap();
+        stream
+            .get_mut()
+            .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+    });
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,s3_bucket,s3_endpoint_url,s3_access_key,s3_secret_key) VALUES (45,'fixture s3','s3',1,'backups','fixture-bucket',?,?,?)")
+        .bind(url).bind(access.as_str()).bind(secret.as_str()).execute(server.db.pool()).await.unwrap();
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let (status, _, result) = server
+        .request(
+            "POST",
+            "/api/v1/operations",
+            &headers,
+            Some(json!({
+                "action":"storage_delete", "storage_id":45, "path":"", "paths":["s3-fixture.tar"],
+                "request_id":"4ef7c55b-1394-4157-a577-f4f40b587ec5"
+            })),
+        )
+        .await;
+    assert_eq!(status, 202);
+    tokio::time::timeout(std::time::Duration::from_secs(5), provider)
+        .await
+        .unwrap()
+        .unwrap();
+    let endpoint = format!(
+        "/api/v1/operations/{}",
+        result["operation_id"].as_str().unwrap()
+    );
+    let snapshot = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let (status, _, snapshot) = server.request("GET", &endpoint, &headers, None).await;
+            assert_eq!(status, 200);
+            if snapshot["finished_at"].is_string() {
+                break snapshot;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(snapshot["state"], "completed");
+    assert_eq!(snapshot["succeeded"], 1);
+    assert!(!object.exists());
+    server.close().await;
+}
+
+#[tokio::test]
 async fn configured_local_target_deletes_from_its_own_root() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

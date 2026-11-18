@@ -129,6 +129,20 @@ pub struct S3 {
 }
 impl S3 {
     pub fn new(config: S3Config, owner: Owner, io: Owner) -> Result<Self, S3Error> {
+        Self::with_attempts(config, owner, io, 4)
+    }
+
+    pub(crate) fn for_claimed_delete(config: S3Config, owner: Owner) -> Result<Self, S3Error> {
+        // A lost response does not authorize sending a second mutation.
+        Self::with_attempts(config, owner.clone(), owner, 1)
+    }
+
+    fn with_attempts(
+        config: S3Config,
+        owner: Owner,
+        io: Owner,
+        attempts: u32,
+    ) -> Result<Self, S3Error> {
         if config.bucket.is_empty() || config.access_key.is_empty() || config.secret_key.is_empty()
         {
             return Err(S3Error::Config);
@@ -148,7 +162,7 @@ impl S3 {
                 None,
                 "explicit-storage",
             ))
-            .retry_config(RetryConfig::standard().with_max_attempts(4))
+            .retry_config(RetryConfig::standard().with_max_attempts(attempts))
             .timeout_config(
                 TimeoutConfig::builder()
                     .connect_timeout(Duration::from_secs(30))

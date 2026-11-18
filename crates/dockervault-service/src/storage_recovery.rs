@@ -1,6 +1,7 @@
 //! Atomic restart settlement for interrupted user-owned storage operations.
 use crate::storage::{
     ftp::{Ftp, FtpConfig, FtpError},
+    s3::{S3, S3Config},
     webdav::{DavConfig, DavError, WebDav},
 };
 use crate::{
@@ -268,7 +269,7 @@ pub(crate) async fn replay_remote_delete(
     Err(match supported {
         None => Error::StorageNotFound,
         Some((false, _)) => Error::StorageDisabled,
-        Some((true, kind)) if matches!(kind.as_str(), "local" | "webdav" | "ftp") => {
+        Some((true, kind)) if matches!(kind.as_str(), "local" | "webdav" | "ftp" | "s3") => {
             return Ok(None);
         }
         Some((true, _)) => Error::UnsupportedProvider,
@@ -701,6 +702,7 @@ enum DeleteTarget {
     Local(LocalStorage),
     Dav(WebDav),
     Ftp(Ftp),
+    S3(S3),
 }
 
 impl DeleteTarget {
@@ -720,6 +722,18 @@ impl DeleteTarget {
         };
         let outcome = if let Some(path) = relative_path(&item.path, false) {
             match self {
+                Self::S3(s3) => match s3.delete(path) {
+                    Ok(effect) => match effect.wait().await {
+                        Ok(Ok(())) => DeleteOutcome::Succeeded,
+                        Ok(Err(error))
+                            if matches!(error.http_status(), Some(400 | 401 | 403 | 404)) =>
+                        {
+                            DeleteOutcome::Failed
+                        }
+                        _ => DeleteOutcome::Unknown,
+                    },
+                    Err(_) => DeleteOutcome::Failed,
+                },
                 Self::Ftp(ftp) => match ftp.delete(path) {
                     Ok(effect) => match effect.wait().await {
                         Ok(Ok(())) => DeleteOutcome::Succeeded,
@@ -850,8 +864,12 @@ impl LocalDeleteJobs {
                         let mut identity = remote_identity(&row)?;
                         let kind: String = row.try_get("storage_type")?;
                         let base: Option<String> = row.try_get("base_path")?;
-                        if matches!(kind.as_str(), "webdav" | "ftp") {
-                            let password: Option<String> = row.try_get("password")?;
+                        if matches!(kind.as_str(), "webdav" | "ftp" | "s3") {
+                            let password: Option<String> = row.try_get(if kind == "s3" {
+                                "s3_secret_key"
+                            } else {
+                                "password"
+                            })?;
                             let password = match password {
                                 Some(value) if value.starts_with("fernet:") => {
                                     let config = config.clone();
@@ -874,6 +892,28 @@ impl LocalDeleteJobs {
                                 }
                                 value => value,
                             };
+                            if kind == "s3" {
+                                let s3 = S3::for_claimed_delete(
+                                    S3Config {
+                                        endpoint_url: row.try_get("s3_endpoint_url")?,
+                                        region: row
+                                            .try_get::<Option<String>, _>("s3_region")?
+                                            .unwrap_or_default(),
+                                        bucket: row
+                                            .try_get::<Option<String>, _>("s3_bucket")?
+                                            .ok_or(Error::InvalidStorageConfiguration)?,
+                                        base_path: base.unwrap_or_default(),
+                                        access_key: row
+                                            .try_get::<Option<String>, _>("s3_access_key")?
+                                            .ok_or(Error::InvalidStorageConfiguration)?,
+                                        secret_key: password
+                                            .ok_or(Error::InvalidStorageConfiguration)?,
+                                    },
+                                    io.clone(),
+                                )
+                                .map_err(|_| Error::InvalidStorageConfiguration)?;
+                                return Ok((Some(DeleteTarget::S3(s3)), identity));
+                            }
                             if kind == "ftp" {
                                 let port = row
                                     .try_get::<Option<i64>, _>("port")?
