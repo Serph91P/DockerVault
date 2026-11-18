@@ -248,6 +248,39 @@ pub(super) fn receive_download(
     Ok(receipt)
 }
 
+pub(super) struct CliDownload {
+    staging: Staging,
+    target: OsString,
+}
+
+impl CliDownload {
+    pub(super) fn prepare(root: File, path: &Path) -> io::Result<Self> {
+        let (parent, target) = parent(&root, path, true)?;
+        Ok(Self {
+            staging: Staging::new(parent)?,
+            target,
+        })
+    }
+
+    pub(super) fn descriptor_path(&self) -> String {
+        use std::os::fd::AsRawFd;
+        format!(
+            "/proc/{}/fd/{}",
+            std::process::id(),
+            self.staging.file.as_raw_fd()
+        )
+    }
+
+    pub(super) fn finish(mut self, cancel: &dyn Fn() -> bool) -> Result<Downloaded, TransferError> {
+        let file = &mut self.staging.file;
+        let length = file.metadata()?.len();
+        let digest = super::hash_reader(file, cancel)?;
+        file.sync_all()?;
+        self.staging.publish(&self.target, cancel)?;
+        Ok(Downloaded { length, digest })
+    }
+}
+
 struct Staging {
     parent: File,
     name: OsString,

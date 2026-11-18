@@ -1,4 +1,5 @@
 use dockervault_service::{
+    ownership::Owner,
     process::{ProcessError, ProcessOwner},
     storage::ssh::{SftpEndpoint, remote_path},
 };
@@ -26,6 +27,38 @@ async fn unsafe_destination_is_refused_before_admitting_a_process() {
         ));
         assert_eq!(processes.active(), 0);
     }
+}
+
+#[tokio::test]
+async fn unsafe_download_is_rejected_without_replacing_destination() {
+    let processes = ProcessOwner::new(1, env!("CARGO_BIN_EXE_dockervault-process-guard")).unwrap();
+    let workers = Owner::new(1).unwrap();
+    let dir = std::env::temp_dir().join(format!("dockervault-sftp-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let existing = dir.join("existing.tar.gz");
+    std::fs::write(&existing, b"previous archive").unwrap();
+    let endpoint = SftpEndpoint {
+        host: "127.0.0.1".into(),
+        username: "backup".into(),
+        port: 22,
+        base: "/backups".into(),
+        known_hosts: dir.join("known_hosts"),
+        identity: None,
+        password: None,
+    };
+    let result = endpoint.download(
+        &processes,
+        &workers,
+        "../unsafe",
+        std::fs::File::open(&dir).unwrap(),
+        "existing.tar.gz".into(),
+    );
+    let untouched = std::fs::read(&existing).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(result.is_err());
+    assert_eq!(processes.active(), 0);
+    assert_eq!(workers.active(), 0);
+    assert_eq!(untouched, b"previous archive");
 }
 
 #[test]
