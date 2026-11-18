@@ -22,6 +22,7 @@ pub struct HttpState {
     local_delete: Arc<LocalDeleteJobs>,
     probe_processes: Option<crate::process::ProcessOwner>,
     probe_jobs: crate::ownership::Owner,
+    download_slots: Arc<tokio::sync::Semaphore>,
 }
 impl HttpState {
     pub fn new(auth: AuthService, config: Config) -> Self {
@@ -38,6 +39,7 @@ impl HttpState {
             )
             .ok(),
             probe_jobs: crate::ownership::Owner::new(4).expect("positive probe capacity"),
+            download_slots: Arc::new(tokio::sync::Semaphore::new(4)),
         }
     }
 
@@ -83,6 +85,10 @@ pub fn router(state: HttpState) -> Router {
             get(storage::list_local_files),
         )
         .route("/api/v1/storage/local/files/size", get(storage::local_size))
+        .route(
+            "/api/v1/storage/local/files/download",
+            get(storage::local_download),
+        )
         .route(
             "/api/v1/storage/{storage_id}/files",
             get(storage::list_configured_files),

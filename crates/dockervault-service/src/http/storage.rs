@@ -591,6 +591,77 @@ fn missing_size_path() -> Response {
     *auth::validation(vec![missing_size_path_field()])
 }
 
+pub(super) async fn local_download(
+    State(state): State<HttpState>,
+    axum::extract::Query(query): BrowseQuery,
+) -> Response {
+    use axum::{body::Body, http::header};
+    use futures_util::{StreamExt, stream};
+    use std::path::{Path, PathBuf};
+
+    let Some(path) = query.get("path") else {
+        return missing_size_path();
+    };
+    let Some(path) = crate::storage::relative_path(path, false) else {
+        return storage_error(StatusCode::BAD_REQUEST, "Invalid file path");
+    };
+    let name = path.rsplit('/').next().unwrap_or_default();
+    const FILENAME_ENCODE: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'_')
+        .remove(b'.')
+        .remove(b'~');
+    let encoded = percent_encoding::utf8_percent_encode(name, FILENAME_ENCODE).to_string();
+    let disposition = if encoded == name {
+        format!("attachment; filename=\"{name}\"")
+    } else {
+        format!("attachment; filename*=utf-8''{encoded}")
+    };
+    let Ok(slot) = state.download_slots.clone().try_acquire_owned() else {
+        return storage_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Download capacity exhausted",
+        );
+    };
+    let root = PathBuf::from(&state.config.backup_base_path);
+    let result = async {
+        state
+            .auth
+            .blocking()
+            .submit_blocking(move |cancel| {
+                let (file, length) =
+                    crate::storage::local::snapshot_download(&root, Path::new(&path), &|| {
+                        cancel.is_cancelled()
+                    })?;
+                Ok::<_, std::io::Error>((file, length, slot))
+            })
+            .ok()?
+            .wait()
+            .await
+            .ok()?
+            .ok()
+    }
+    .await;
+    let Some((file, length, slot)) = result else {
+        return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Download failed");
+    };
+    let reader =
+        tokio_util::io::ReaderStream::with_capacity(tokio::fs::File::from_std(file), 64 * 1024);
+    let body = Body::from_stream(stream::unfold(
+        (reader, slot),
+        |(mut reader, slot)| async move { reader.next().await.map(|chunk| (chunk, (reader, slot))) },
+    ));
+    (
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
+            (header::CONTENT_DISPOSITION, disposition),
+            (header::CONTENT_LENGTH, length.to_string()),
+        ],
+        body,
+    )
+        .into_response()
+}
+
 pub(super) async fn local_size(
     State(state): State<HttpState>,
     axum::extract::Query(query): BrowseQuery,

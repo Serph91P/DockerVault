@@ -542,6 +542,28 @@ fn read_leaf(parent: &File, name: &OsStr) -> io::Result<File> {
     FileIdentity::read(&file.metadata()?)?;
     Ok(file)
 }
+
+pub(crate) fn snapshot_download(
+    root: &Path,
+    path: &Path,
+    cancelled: &dyn Fn() -> bool,
+) -> io::Result<(File, u64)> {
+    check(cancelled)?;
+    let root = open_root(root)?;
+    let (parent, name) = parent(&root, path, false)?;
+    let source = read_leaf(&parent, &name)?;
+    let temp = open_root(&std::env::temp_dir())?;
+    let mut snapshot = File::from(openat(
+        &temp,
+        ".",
+        OFlag::O_TMPFILE | OFlag::O_RDWR | OFlag::O_CLOEXEC,
+        Mode::S_IRUSR | Mode::S_IWUSR,
+    )?);
+    let receipt = copy_complete(source, &mut snapshot, cancelled)?;
+    std::io::Seek::rewind(&mut snapshot)?;
+    Ok((snapshot, receipt.length))
+}
+
 fn copy_complete(
     mut source: File,
     output: &mut File,

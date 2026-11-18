@@ -1443,6 +1443,38 @@ async fn configured_webdav_listing_reports_provider_failure_not_empty_success() 
 }
 
 #[tokio::test]
+async fn local_download_serves_attachment_bytes_and_rejects_symlinks() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [("Cookie", cookie.as_str())];
+    let root = server.path.join("backups");
+    std::fs::write(root.join("an archive.tar"), b"archive bytes").unwrap();
+    let outside = server.path.join("outside");
+    std::fs::write(&outside, b"outside").unwrap();
+    std::os::unix::fs::symlink(outside, root.join("alias.tar")).unwrap();
+    let url = "/api/v1/storage/local/files/download";
+    let (status, response, body) = server
+        .request(
+            "GET",
+            &format!("{url}?path=an%20archive.tar"),
+            &headers,
+            None,
+        )
+        .await;
+    assert_eq!((status, body), (200, json!("archive bytes")));
+    assert!(response.contains("content-type: application/octet-stream"));
+    assert!(
+        response.contains("content-disposition: attachment; filename*=utf-8''an%20archive.tar")
+    );
+    assert!(response.contains("content-length: 13"));
+    let (status, _, body) = server
+        .request("GET", &format!("{url}?path=alias.tar"), &headers, None)
+        .await;
+    assert_eq!((status, body), (500, json!({"detail":"Download failed"})));
+    server.close().await;
+}
+
+#[tokio::test]
 async fn configured_storage_browsing_uses_only_the_persisted_root() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
