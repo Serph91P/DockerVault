@@ -110,6 +110,32 @@ impl LocalStorage {
             Ok(())
         })
     }
+    /// Unlink a leaf (including a symlink itself), never traverse or remove directories.
+    pub fn delete_leaf(
+        &self,
+        path: PathBuf,
+        expected_root: (u64, u64),
+    ) -> Result<Work<Result<(), TransferError>>, WorkError> {
+        let root = self.root.clone();
+        self.workers.submit_blocking(move |cancel| {
+            let path = path
+                .to_str()
+                .and_then(|path| super::relative_path(path, false))
+                .ok_or_else(|| invalid("Invalid file path"))?;
+            let actual = root.metadata()?;
+            if (actual.dev(), actual.ino()) != expected_root {
+                return Err(invalid("Storage root changed").into());
+            }
+            let (parent, name) = parent(&root, Path::new(&path), false)?;
+            check(&|| cancel.is_cancelled())?;
+            unlinkat(&parent, name.as_os_str(), UnlinkatFlags::NoRemoveDir)
+                .map_err(io::Error::from)?;
+            parent
+                .sync_all()
+                .map_err(TransferError::PublicationUncertain)
+        })
+    }
+
     pub fn download(
         &self,
         remote: PathBuf,

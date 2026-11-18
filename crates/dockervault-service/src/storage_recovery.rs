@@ -3,7 +3,10 @@ use crate::{
     ownership::{Owner, Work, WorkError},
     process::ProcessOwner,
     recovery_activation::{JournalError, recovery_pending_in},
-    storage::ssh::{SftpDownloadError, SftpEndpoint},
+    storage::{
+        relative_path,
+        ssh::{SftpDownloadError, SftpEndpoint},
+    },
 };
 use sqlx::SqlitePool;
 
@@ -198,26 +201,6 @@ pub async fn storage_operation_list(
 
 fn decode_snapshot(row: String) -> Result<serde_json::Value, StorageRecoveryError> {
     serde_json::from_str(&row).map_err(|_| StorageRecoveryError::InvalidRequest)
-}
-
-fn relative_path(path: &str, allow_root: bool) -> Option<String> {
-    if path.chars().count() > 1024
-        || path.contains(['\0', '\\'])
-        || path.starts_with('/')
-        || path
-            .as_bytes()
-            .get(..2)
-            .is_some_and(|p| p[0].is_ascii_alphabetic() && p[1] == b':')
-        || path.split('/').any(|part| part == "..")
-    {
-        return None;
-    }
-    let normalized = path
-        .split('/')
-        .filter(|part| !matches!(*part, "" | "."))
-        .collect::<Vec<_>>()
-        .join("/");
-    (allow_root || !normalized.is_empty()).then_some(normalized)
 }
 
 #[derive(Debug)]

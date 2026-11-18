@@ -84,6 +84,48 @@ async fn real_local_upload_and_independent_download_preserve_bytes_mode_and_mtim
     );
 }
 #[tokio::test]
+async fn delete_leaf_unlinks_only_the_requested_name_under_the_expected_root() {
+    use std::os::unix::fs::{MetadataExt, symlink};
+    let (root, backend, owner) = setup();
+    let remote = root.0.join("remote");
+    let metadata = fs::metadata(&remote).unwrap();
+    let identity = (metadata.dev(), metadata.ino());
+    let outside = root.0.join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("keep"), b"untouched").unwrap();
+    fs::write(remote.join("file"), b"remove me").unwrap();
+    symlink(&outside, remote.join("link")).unwrap();
+    for (name, expected) in [
+        ("link/keep", identity),
+        ("file", (0, 0)),
+        ("../outside/keep", identity),
+    ] {
+        assert!(
+            backend
+                .delete_leaf(name.into(), expected)
+                .unwrap()
+                .wait()
+                .await
+                .unwrap()
+                .is_err()
+        );
+    }
+    assert_eq!(fs::read(remote.join("file")).unwrap(), b"remove me");
+    for name in ["file", "link"] {
+        backend
+            .delete_leaf(name.into(), identity)
+            .unwrap()
+            .wait()
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(fs::symlink_metadata(remote.join(name)).is_err());
+    }
+    assert_eq!(fs::read(outside.join("keep")).unwrap(), b"untouched");
+    assert_eq!(owner.active(), 0);
+}
+
+#[tokio::test]
 async fn paths_cannot_escape_root_or_follow_an_existing_link() {
     use std::os::unix::fs::symlink;
     let (root, backend, _) = setup();

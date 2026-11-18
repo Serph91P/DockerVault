@@ -5,6 +5,26 @@ pub mod s3;
 pub mod ssh;
 mod upload;
 pub mod webdav;
+
+pub(crate) fn relative_path(path: &str, allow_root: bool) -> Option<String> {
+    if path.chars().count() > 1024
+        || path.contains(['\0', '\\'])
+        || path.starts_with('/')
+        || path
+            .as_bytes()
+            .get(..2)
+            .is_some_and(|p| p[0].is_ascii_alphabetic() && p[1] == b':')
+        || path.split('/').any(|part| part == "..")
+    {
+        return None;
+    }
+    let normalized = path
+        .split('/')
+        .filter(|part| !matches!(*part, "" | "."))
+        .collect::<Vec<_>>()
+        .join("/");
+    (allow_root || !normalized.is_empty()).then_some(normalized)
+}
 use sha2::{Digest, Sha256};
 use std::{
     fs::{File, Metadata, OpenOptions},
