@@ -1,6 +1,7 @@
 //! Plain FTP control sessions. No TLS, clear-text credential logging or detached session tasks.
 use crate::ownership::{Owner, Work, WorkError};
 mod download;
+mod upload;
 use std::{fmt, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -29,6 +30,7 @@ pub enum FtpError {
     Protocol,
     Reply(u16),
     AbortUnsettled,
+    Verification,
     PublicationUncertain,
 }
 impl fmt::Display for FtpError {
@@ -41,6 +43,7 @@ impl fmt::Display for FtpError {
             Self::Protocol => f.write_str("Invalid FTP reply"),
             Self::Reply(status) => write!(f, "FTP server returned status {status}"),
             Self::AbortUnsettled => f.write_str("FTP transfer abort is unconfirmed"),
+            Self::Verification => f.write_str("FTP independent byte verification failed"),
             Self::PublicationUncertain => {
                 f.write_str("FTP download publication durability is uncertain")
             }

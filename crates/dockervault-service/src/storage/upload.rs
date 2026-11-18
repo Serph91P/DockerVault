@@ -8,13 +8,28 @@ use std::{
 };
 use tokio::sync::mpsc;
 
+type SourceChunks = (mpsc::Receiver<Vec<u8>>, Work<io::Result<()>>);
+
 pub(super) fn source_body(
     source: Arc<VerifiedSource>,
     owner: &Owner,
     offset: u64,
     length: u64,
 ) -> Result<(reqwest::Body, Work<io::Result<()>>), WorkError> {
-    let (tx, rx) = mpsc::channel::<Result<Vec<u8>, io::Error>>(8);
+    let (rx, work) = source_chunks(source, owner, offset, length)?;
+    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|item| (Ok::<_, io::Error>(item), rx))
+    });
+    Ok((reqwest::Body::wrap_stream(stream.fuse()), work))
+}
+
+pub(super) fn source_chunks(
+    source: Arc<VerifiedSource>,
+    owner: &Owner,
+    offset: u64,
+    length: u64,
+) -> Result<SourceChunks, WorkError> {
+    let (tx, rx) = mpsc::channel(8);
     let runtime = tokio::runtime::Handle::current();
     let work = owner.submit_blocking(move |cancel| {
         let mut file = source.reopen()?;
@@ -34,15 +49,12 @@ pub(super) fn source_body(
             runtime.block_on(async {
                 tokio::select! {
                     _ = cancel.cancelled() => Err(io::Error::new(io::ErrorKind::Interrupted, "Upload cancelled")),
-                    sent = tx.send(Ok(part)) => sent.map_err(|_|io::Error::new(io::ErrorKind::BrokenPipe, "Upload body closed")),
+                    sent = tx.send(part) => sent.map_err(|_|io::Error::new(io::ErrorKind::BrokenPipe, "Upload body closed")),
                 }
             })?;
         }
         check(&||cancel.is_cancelled())?;
         source.check_unchanged()
     })?;
-    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|item| (item, rx))
-    });
-    Ok((reqwest::Body::wrap_stream(stream.fuse()), work))
+    Ok((rx, work))
 }

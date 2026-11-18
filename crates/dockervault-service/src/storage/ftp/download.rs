@@ -139,7 +139,7 @@ async fn pump(data: &mut TcpStream, send: &mpsc::Sender<Option<Bytes>>) -> Resul
 }
 
 impl Control {
-    async fn passive(&mut self) -> Result<TcpStream, FtpError> {
+    pub(super) async fn passive(&mut self) -> Result<TcpStream, FtpError> {
         expect(self.command("TYPE", Some("I")).await?, &[200])?;
         self.send("EPSV", None).await?;
         let (reply, line) = self.reply_line().await?;
@@ -168,7 +168,7 @@ impl Control {
             .map_err(|_| FtpError::Timeout)?
             .map_err(|_| FtpError::Io)
     }
-    async fn abort_transfer(&mut self) -> Result<(), FtpError> {
+    pub(super) async fn abort_transfer(&mut self) -> Result<(), FtpError> {
         let abort = timeout(Duration::from_secs(10), async {
             let reply = self.command("ABOR", None).await?;
             let reply = if reply == 426 {
