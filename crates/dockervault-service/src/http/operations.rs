@@ -53,6 +53,16 @@ pub(super) async fn submit(State(state): State<HttpState>, mut request: Request)
     let Some(paths) = body["paths"].as_array() else {
         return invalid("body.paths", "Input should be a valid list");
     };
+    // Bound the wire list separately; admission limits the normalized unique selection.
+    if paths.len() > 10_000 {
+        return invalid(
+            "body.paths",
+            &format!(
+                "List should have at most 10000 items after validation, not {}",
+                paths.len()
+            ),
+        );
+    }
     let mut targets = Vec::with_capacity(paths.len());
     for (index, item) in paths.iter().enumerate() {
         let Some(path) = item.as_str() else {

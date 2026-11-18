@@ -166,6 +166,11 @@ async fn local_delete_submit_commits_before_effect_and_replay_does_not_delete_ag
     let mut over_limit = payload.clone();
     over_limit["paths"] = json!((0..1001).map(|i| format!("item-{i}")).collect::<Vec<_>>());
     assert_eq!(post(&valid, over_limit).await.0, 422);
+    let mut too_many_duplicates = payload.clone();
+    too_many_duplicates["paths"] = json!(vec!["z.tar"; 10001]);
+    let response = post(&valid, too_many_duplicates).await;
+    assert_eq!(response.0, 422);
+    assert_eq!(response.2["errors"][0]["field"], "body.paths");
     assert_eq!(std::fs::read(root.join("z.tar")).unwrap(), b"selected");
 
     // A rejected transaction must leave no operation/items and do no deletion.
@@ -237,7 +242,7 @@ async fn local_delete_submit_commits_before_effect_and_replay_does_not_delete_ag
     assert_eq!(std::fs::read(root.join("keep.tar")).unwrap(), b"untouched");
     std::fs::write(root.join("z.tar"), b"recreated").unwrap();
     assert_eq!(post(&valid, payload.clone()).await.2, first.2);
-    let mut conflict = payload;
+    let mut conflict = payload.clone();
     conflict["paths"] = json!(["z.tar"]);
     assert_eq!(post(&valid, conflict).await.0, 409);
     assert_eq!(std::fs::read(root.join("z.tar")).unwrap(), b"recreated");
@@ -248,6 +253,19 @@ async fn local_delete_submit_commits_before_effect_and_replay_does_not_delete_ag
             .unwrap(),
         1
     );
+    sqlx::query("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<32)
+        INSERT INTO storage_operations(id,user_id,request_id,payload,storage_identity,action,storage_id,path,state,stage,total,completed,succeeded,failed,skipped,unknown,cancel_requested,created_at,updated_at)
+        SELECT 'queued-'||i,1,'synthetic-'||i,'{}','{}','storage_delete','local','','queued','queued',1,0,0,0,0,0,0,'2024-01-01','2024-01-01' FROM n")
+        .execute(pool).await.unwrap();
+    let mut another = payload.clone();
+    another["request_id"] = json!("e8f37f38-8195-4d6e-9b23-166930276666");
+    assert_eq!(post(&valid, another.clone()).await.0, 429);
+    assert_eq!(post(&valid, payload.clone()).await.2, first.2);
+    let renamed = server.path.join("old-root");
+    std::fs::rename(&root, &renamed).unwrap();
+    assert_eq!(post(&valid, payload).await.2, first.2);
+    assert_eq!(post(&valid, another).await.0, 429);
+    assert_eq!(std::fs::read(renamed.join("z.tar")).unwrap(), b"recreated");
     server.close().await;
 }
 
