@@ -48,6 +48,39 @@ pub struct SftpEndpoint {
     pub password: Option<String>,
 }
 
+pub(crate) fn key_file(path: &Path, allowed: &[PathBuf]) -> Option<File> {
+    let path = path.canonicalize().ok()?;
+    for root in allowed {
+        let Ok(root) = root.canonicalize() else {
+            continue;
+        };
+        let Ok(relative) = path.strip_prefix(&root) else {
+            continue;
+        };
+        let held = super::local::open_root(&root).ok()?;
+        let mut parts = relative.components().peekable();
+        let mut directory = held;
+        while let Some(part) = parts.next() {
+            let std::path::Component::Normal(name) = part else {
+                return None;
+            };
+            use nix::fcntl::{OFlag, openat};
+            let mut flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+            flags |= if parts.peek().is_some() {
+                OFlag::O_DIRECTORY
+            } else {
+                OFlag::O_NONBLOCK
+            };
+            directory =
+                File::from(openat(&directory, name, flags, nix::sys::stat::Mode::empty()).ok()?);
+        }
+        if directory.metadata().ok()?.is_file() {
+            return Some(directory);
+        }
+    }
+    None
+}
+
 impl SftpEndpoint {
     /// The process exit status, not command admission, reports the probe result.
     pub fn probe(

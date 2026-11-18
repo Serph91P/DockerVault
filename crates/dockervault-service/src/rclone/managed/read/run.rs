@@ -3,6 +3,7 @@
 mod tests;
 use super::*;
 use crate::rclone::managed::material::MaterializedFiles;
+use crate::storage::ssh::key_file;
 use dockervault_core::rclone_path::environment_name;
 use std::{ffi::OsString, os::unix::process::ExitStatusExt};
 
@@ -49,50 +50,7 @@ fn check(cancel: &CancellationToken) -> Result<()> {
         Ok(())
     }
 }
-fn open_beneath(mut directory: File, path: &Path, leaf: bool) -> Option<File> {
-    let parts: Vec<_> = path
-        .components()
-        .filter_map(|part| match part {
-            std::path::Component::RootDir | std::path::Component::CurDir => None,
-            part => Some(part),
-        })
-        .collect();
-    for (i, part) in parts.iter().enumerate() {
-        let std::path::Component::Normal(name) = part else {
-            return None;
-        };
-        let mut flags = nix::fcntl::OFlag::O_RDONLY
-            | nix::fcntl::OFlag::O_NOFOLLOW
-            | nix::fcntl::OFlag::O_CLOEXEC;
-        if !leaf || i + 1 != parts.len() {
-            flags |= nix::fcntl::OFlag::O_DIRECTORY;
-        } else {
-            flags |= nix::fcntl::OFlag::O_NONBLOCK;
-        }
-        directory = File::from(
-            nix::fcntl::openat(&directory, *name, flags, nix::sys::stat::Mode::empty()).ok()?,
-        );
-    }
-    Some(directory)
-}
-fn key_file(path: &Path, allowed: &[PathBuf]) -> Option<File> {
-    let path = path.canonicalize().ok()?;
-    for root in allowed {
-        let Ok(root) = root.canonicalize() else {
-            continue;
-        };
-        let Ok(relative) = path.strip_prefix(&root) else {
-            continue;
-        };
-        let system = directory(Path::new("/")).ok()?;
-        let root = open_beneath(system, &root, false)?;
-        let file = open_beneath(root, relative, true)?;
-        if file.metadata().ok()?.is_file() {
-            return Some(file);
-        }
-    }
-    None
-}
+
 fn cache(parent: &Generation) -> Result<Generation> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| Invalid)?;

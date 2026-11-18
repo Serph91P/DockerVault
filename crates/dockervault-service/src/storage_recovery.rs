@@ -721,7 +721,7 @@ enum DeleteTarget {
     Dav(WebDav),
     Ftp(Ftp),
     S3(S3),
-    Sftp(SftpEndpoint, ProcessOwner, Owner),
+    Sftp(SftpEndpoint, ProcessOwner, Owner, Option<std::fs::File>),
 }
 
 impl DeleteTarget {
@@ -741,7 +741,7 @@ impl DeleteTarget {
         };
         let outcome = if let Some(path) = relative_path(&item.path, false) {
             match self {
-                Self::Sftp(endpoint, processes, transport) => {
+                Self::Sftp(endpoint, processes, transport, _held_key) => {
                     settle_sftp_delete(endpoint, processes, transport, &path).await
                 }
                 Self::S3(s3) => match s3.delete(path) {
@@ -920,24 +920,21 @@ impl LocalDeleteJobs {
                         if matches!(kind.as_str(), "ssh" | "sftp") {
                             let key: Option<String> = row.try_get("ssh_key_path")?;
                             let mut password = None;
-                            let identity_path = if let Some(key) = key.filter(|key| !key.is_empty())
-                            {
+                            let held_key = if let Some(key) = key.filter(|key| !key.is_empty()) {
                                 let dirs = config.allowed_ssh_key_dirs.clone();
                                 let work = io
                                     .submit_blocking(move |_| {
-                                        let path = std::fs::canonicalize(key)
-                                            .map_err(|_| Error::InvalidStorageConfiguration)?;
-                                        if !path.is_file()
-                                            || !dirs
-                                                .split(',')
-                                                .map(str::trim)
-                                                .filter(|dir| !dir.is_empty())
-                                                .filter_map(|dir| std::fs::canonicalize(dir).ok())
-                                                .any(|dir| path.starts_with(dir))
-                                        {
-                                            return Err(Error::InvalidStorageConfiguration);
-                                        }
-                                        Ok(path)
+                                        let allowed: Vec<std::path::PathBuf> = dirs
+                                            .split(',')
+                                            .map(str::trim)
+                                            .filter(|dir| !dir.is_empty())
+                                            .map(Into::into)
+                                            .collect();
+                                        crate::storage::ssh::key_file(
+                                            std::path::Path::new(&key),
+                                            &allowed,
+                                        )
+                                        .ok_or(Error::InvalidStorageConfiguration)
                                     })
                                     .map_err(|_| Error::InvalidStorageConfiguration)?;
                                 Some(
@@ -971,7 +968,11 @@ impl LocalDeleteJobs {
                                 port,
                                 base: base.unwrap_or_default(),
                                 known_hosts: "/app/data/ssh_known_hosts".into(),
-                                identity: identity_path,
+                                identity: held_key.as_ref().map(|key| {
+                                    use std::os::fd::AsRawFd;
+                                    format!("/proc/{}/fd/{}", std::process::id(), key.as_raw_fd())
+                                        .into()
+                                }),
                                 password,
                             };
                             let processes = ProcessOwner::new(
@@ -980,7 +981,12 @@ impl LocalDeleteJobs {
                             )
                             .map_err(|_| Error::InvalidStorageConfiguration)?;
                             return Ok((
-                                Some(DeleteTarget::Sftp(endpoint, processes, io.clone())),
+                                Some(DeleteTarget::Sftp(
+                                    endpoint,
+                                    processes,
+                                    io.clone(),
+                                    held_key,
+                                )),
                                 identity,
                             ));
                         }
