@@ -1232,6 +1232,30 @@ async fn storage_create_persists_provider_fields_and_encrypts_credentials() {
 }
 
 #[tokio::test]
+async fn configured_sftp_listing_rejects_an_invalid_path_before_opening_a_connection() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,host,port,username) VALUES(44,'fixture','sftp',1,'/base','127.0.0.1',?,'fixture')")
+        .bind(listener.local_addr().unwrap().port()).execute(server.db.pool()).await.unwrap();
+    let (status, _, body) = server
+        .request(
+            "GET",
+            "/api/v1/storage/44/files?path=..%2Foutside",
+            &[("Cookie", cookie.as_str())],
+            None,
+        )
+        .await;
+    assert_eq!((status, body), (400, json!({"detail":"Invalid file path"})));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+            .await
+            .is_err()
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn configured_s3_listing_preserves_nested_keys_and_reports_rejection() {
     use tokio::io::{AsyncBufReadExt, BufReader};
     let server = Server::start("http://localhost:3000").await;

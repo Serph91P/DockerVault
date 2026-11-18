@@ -29,7 +29,7 @@ pub enum SftpDownloadError {
     MutationUnverified,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct SftpEntry {
     pub name: String,
     pub size: u64,
@@ -316,6 +316,16 @@ impl SftpEndpoint {
         workers: &Owner,
         child: &str,
     ) -> Result<Work<Result<Vec<SftpEntry>, SftpDownloadError>>, SftpDownloadError> {
+        self.list_holding(processes, workers, child, None)
+    }
+
+    pub(crate) fn list_holding(
+        &self,
+        processes: &ProcessOwner,
+        workers: &Owner,
+        child: &str,
+        held_key: Option<std::fs::File>,
+    ) -> Result<Work<Result<Vec<SftpEntry>, SftpDownloadError>>, SftpDownloadError> {
         let remote = remote_path(&self.host, self.port, &self.base, child)
             .map_err(|_| SftpDownloadError::Process(ProcessError::InvalidSpec))?;
         let mut spec = self.batch_spec().map_err(SftpDownloadError::Process)?;
@@ -326,7 +336,7 @@ impl SftpEndpoint {
         let processes = processes.clone();
         workers
             .submit_async(move |cancel| async move {
-                let output = run_batch(&processes, spec, &cancel).await?;
+                let output = run_batch_holding(&processes, spec, &cancel, held_key).await?;
                 parse_listing(&output.stdout)
             })
             .map_err(SftpDownloadError::Admission)
@@ -455,10 +465,21 @@ async fn run_batch(
     spec: ProcessSpec,
     cancel: &CancellationToken,
 ) -> Result<ProcessOutput, SftpDownloadError> {
+    run_batch_holding(processes, spec, cancel, None).await
+}
+
+async fn run_batch_holding(
+    processes: &ProcessOwner,
+    spec: ProcessSpec,
+    cancel: &CancellationToken,
+    held_key: Option<std::fs::File>,
+) -> Result<ProcessOutput, SftpDownloadError> {
     if cancel.is_cancelled() {
         return Err(SftpDownloadError::Process(ProcessError::Cancelled));
     }
-    let process = processes.start(spec).map_err(SftpDownloadError::Process)?;
+    let process = processes
+        .start_holding(spec, held_key)
+        .map_err(SftpDownloadError::Process)?;
     let process_cancel = process.cancellation_token();
     let mut reply = std::pin::pin!(process.wait());
     let settled = tokio::select! { biased;

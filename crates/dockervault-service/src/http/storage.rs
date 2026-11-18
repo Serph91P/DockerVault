@@ -221,6 +221,25 @@ async fn probe_provider(state: &HttpState, config: Value, draft: bool) -> Respon
 }
 
 async fn probe_ssh(state: &HttpState, config: &Value, draft: bool) -> Response {
+    let (endpoint, held) = match ssh_endpoint(state, config, draft, String::new()).await {
+        Ok(parts) => parts,
+        Err(response) => return *response,
+    };
+    let Some(processes) = state.probe_processes.as_ref() else {
+        return probe_response(false);
+    };
+    let Ok(work) = endpoint.probe_handshake(processes, held) else {
+        return probe_response(false);
+    };
+    probe_response(matches!(work.wait().await, Ok(Ok(output)) if output.status.success()))
+}
+
+async fn ssh_endpoint(
+    state: &HttpState,
+    config: &Value,
+    draft: bool,
+    base: String,
+) -> Result<(crate::storage::ssh::SftpEndpoint, Option<std::fs::File>), Box<Response>> {
     use crate::storage::ssh::{SftpEndpoint, key_file};
     use std::{os::fd::AsRawFd, path::PathBuf};
     let field = |key: &str| config[key].as_str().map(str::to_owned);
@@ -240,40 +259,34 @@ async fn probe_ssh(state: &HttpState, config: &Value, draft: bool) -> Response {
             }
             key_file(std::path::Path::new(&path), &allowed)
         }) else {
-            return probe_response(false);
+            return Err(Box::new(probe_response(false)));
         };
         match work.wait().await {
             Ok(Some(file)) => Some(file),
-            Ok(None) if draft => return (StatusCode::BAD_REQUEST, Json(json!({"detail":format!("SSH key path must be within allowed directories: {dirs:?}")}))).into_response(),
-            _ => return probe_response(false),
+            Ok(None) if draft => return Err(Box::new((StatusCode::BAD_REQUEST, Json(json!({"detail":format!("SSH key path must be within allowed directories: {dirs:?}")}))).into_response())),
+            _ => return Err(Box::new(probe_response(false))),
         }
     } else {
         None
     };
     let port = config["port"].as_i64().unwrap_or(22);
-    let (Some(host), Some(username), Ok(port), Some(processes)) = (
-        field("host"),
-        field("username"),
-        u16::try_from(port),
-        state.probe_processes.as_ref(),
-    ) else {
-        return probe_response(false);
+    let (Some(host), Some(username), Ok(port)) =
+        (field("host"), field("username"), u16::try_from(port))
+    else {
+        return Err(Box::new(probe_response(false)));
     };
     let endpoint = SftpEndpoint {
         host,
         username,
         port,
-        base: String::new(),
+        base,
         known_hosts: "/app/data/ssh_known_hosts".into(),
         identity: held
             .as_ref()
             .map(|file| format!("/proc/{}/fd/{}", std::process::id(), file.as_raw_fd()).into()),
         password: field("password"),
     };
-    let Ok(work) = endpoint.probe_handshake(processes, held) else {
-        return probe_response(false);
-    };
-    probe_response(matches!(work.wait().await, Ok(Ok(output)) if output.status.success()))
+    Ok((endpoint, held))
 }
 
 async fn probe_s3(state: &HttpState, config: &Value) -> Option<()> {
@@ -482,6 +495,33 @@ pub(super) async fn list_configured_files(
             } else {
                 list_webdav(&state, &mut config, path.clone()).await
             };
+            match files {
+                Some(files) => Json(json!({"files":files,"path":path})).into_response(),
+                None => storage_error(StatusCode::BAD_GATEWAY, "Remote listing failed"),
+            }
+        }
+        Some("ssh" | "sftp") => {
+            let Some(path) = crate::storage::relative_path(raw, true) else {
+                return storage_error(StatusCode::BAD_REQUEST, "Invalid file path");
+            };
+            let files = async {
+                let processes = state.probe_processes.as_ref()?;
+                if !open_probe_credentials(&state, &mut config, None).await {
+                    return None;
+                }
+                let base = config["base_path"].as_str().unwrap_or_default().to_owned();
+                let (endpoint, held) = ssh_endpoint(&state, &Value::Object(config), false, base)
+                    .await
+                    .ok()?;
+                endpoint
+                    .list_holding(processes, &state.probe_jobs, &path, held)
+                    .ok()?
+                    .wait()
+                    .await
+                    .ok()?
+                    .ok()
+            }
+            .await;
             match files {
                 Some(files) => Json(json!({"files":files,"path":path})).into_response(),
                 None => storage_error(StatusCode::BAD_GATEWAY, "Remote listing failed"),
