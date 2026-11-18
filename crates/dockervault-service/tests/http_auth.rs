@@ -1475,6 +1475,50 @@ async fn local_download_serves_attachment_bytes_and_rejects_symlinks() {
 }
 
 #[tokio::test]
+async fn local_download_slots_are_shared_and_returned_on_disconnect() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let root = server.path.join("backups");
+    std::fs::File::create(root.join("large.tar"))
+        .unwrap()
+        .set_len(16 * 1024 * 1024)
+        .unwrap();
+    std::fs::write(root.join("small.tar"), b"released").unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path) VALUES(44,'fixture','local',1,?)")
+        .bind(root.to_str().unwrap()).execute(server.db.pool()).await.unwrap();
+
+    let mut readers = Vec::new();
+    for provider in ["local", "44", "local", "44"] {
+        let mut stream = BufReader::new(TcpStream::connect(server.address).await.unwrap());
+        stream.get_mut().write_all(format!("GET /api/v1/storage/{provider}/files/download?path=large.tar HTTP/1.1\r\nHost: {}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n", server.address).as_bytes()).await.unwrap();
+        let mut line = String::new();
+        stream.read_line(&mut line).await.unwrap();
+        assert!(line.starts_with("HTTP/1.1 200"), "{line}");
+        readers.push(stream);
+    }
+    let short = "/api/v1/storage/44/files/download?path=small.tar";
+    let headers = [("Cookie", cookie.as_str())];
+    assert_eq!(server.request("GET", short, &headers, None).await.0, 503);
+    assert_eq!(server.request("GET", "/health", &[], None).await.0, 200);
+    drop(readers);
+    let recovered = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let (status, _, body) = server.request("GET", short, &headers, None).await;
+            if status == 200 {
+                break body;
+            }
+            assert_eq!(status, 503);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(recovered, json!("released"));
+    server.close().await;
+}
+
+#[tokio::test]
 async fn local_download_honors_ranges_and_file_validators() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
