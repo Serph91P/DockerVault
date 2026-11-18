@@ -399,6 +399,108 @@ async fn configured_webdav_delete_waits_for_the_provider_and_records_the_effect(
 }
 
 #[tokio::test]
+async fn configured_webdav_retry_reexecutes_a_confirmed_rejection_once() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/dav", listener.local_addr().unwrap());
+    let selected = server.path.join("retry.tar");
+    std::fs::write(&selected, b"retry payload").unwrap();
+    let remote = selected.clone();
+    let provider = tokio::spawn(async move {
+        for reply in [403, 204] {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut line = String::new();
+            stream.read_line(&mut line).await.unwrap();
+            assert!(line.starts_with("DELETE /dav/backups/retry.tar HTTP/1.1"));
+            loop {
+                line.clear();
+                assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let response = if reply == 403 {
+                "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            } else {
+                std::fs::remove_file(&remote).unwrap();
+                "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"
+            };
+            stream
+                .get_mut()
+                .write_all(response.as_bytes())
+                .await
+                .unwrap();
+        }
+        listener
+    });
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,webdav_url) VALUES (42,'fixture dav','webdav',1,'backups',?)")
+        .bind(url).execute(server.db.pool()).await.unwrap();
+    let (status, _, first) = server.request("POST", "/api/v1/operations", &headers, Some(json!({
+        "request_id":"b0598cda-877a-4f34-9173-c6762fa1d764", "action":"storage_delete", "storage_id":42, "path":"", "paths":["retry.tar"]
+    }))).await;
+    assert_eq!(status, 202);
+    let server_ref = &server;
+    let headers_ref = &headers;
+    let settled = |detail: String| async move {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let (status, _, snapshot) =
+                    server_ref.request("GET", &detail, headers_ref, None).await;
+                assert_eq!(status, 200);
+                if snapshot["finished_at"].is_string() {
+                    break snapshot;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap()
+    };
+    let parent = first["operation_id"].as_str().unwrap();
+    let snapshot = settled(format!("/api/v1/operations/{parent}")).await;
+    assert_eq!(snapshot["items"][0]["state"], "failed");
+    assert_eq!(std::fs::read(&selected).unwrap(), b"retry payload");
+    let retry = format!("/api/v1/operations/{parent}/retry");
+    let body = json!({"request_id":"784b259d-59a5-424d-a81c-b2b450ebbdd5"});
+    let (status, _, receipt) = server
+        .request("POST", &retry, &headers, Some(body.clone()))
+        .await;
+    assert_eq!(status, 202);
+    let child = settled(format!(
+        "/api/v1/operations/{}",
+        receipt["operation_id"].as_str().unwrap()
+    ))
+    .await;
+    assert_eq!(child["parent_id"], parent);
+    assert_eq!(
+        child["items"],
+        json!([{"path":"retry.tar","state":"succeeded","error":null}])
+    );
+    assert!(!selected.exists());
+    std::fs::write(&selected, b"replacement").unwrap();
+    let (status, _, replay) = server.request("POST", &retry, &headers, Some(body)).await;
+    assert_eq!((status, replay), (202, receipt));
+    let listener = tokio::time::timeout(std::time::Duration::from_secs(5), provider)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&selected).unwrap(), b"replacement");
+    server.close().await;
+}
+
+#[tokio::test]
 async fn configured_ftp_delete_settles_after_the_control_session_closes() {
     use tokio::io::{AsyncBufReadExt, BufStream};
     let username = dockervault_core::crypto::CredentialCipher::generate_key();
