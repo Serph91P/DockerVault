@@ -1,7 +1,11 @@
 use dockervault_service::{
     db::Database,
     ownership::Owner,
-    storage_recovery::{DeleteOutcome, claim_next, record_settled, settle_interrupted},
+    process::ProcessOwner,
+    storage::ssh::SftpEndpoint,
+    storage_recovery::{
+        DeleteOutcome, SftpDeleteWorker, claim_next, record_settled, settle_interrupted,
+    },
 };
 
 #[tokio::test]
@@ -133,6 +137,43 @@ async fn restart_keeps_uncertain_effects_unknown_and_never_replays_unstarted_ite
     .await
     .unwrap();
     assert_eq!(row, ("failed".into(), "finished".into(), 2, 1, 1));
+    sqlx::raw_sql("INSERT INTO storage_operations(id,user_id,request_id,payload,storage_identity,action,storage_id,path,state,stage,total,completed,succeeded,failed,skipped,unknown,cancel_requested,created_at,updated_at) VALUES
+        ('invalid-path',1,'r4','{}','{}','delete','local','','queued','queued',1,0,0,0,0,0,0,'2024-01-01','2024-01-01');
+        INSERT INTO storage_operation_items(operation_id,path,state) VALUES ('invalid-path','../outside','pending');")
+        .execute(db.pool()).await.unwrap();
+    let processes = ProcessOwner::new(1, env!("CARGO_BIN_EXE_dockervault-process-guard")).unwrap();
+    let transport = Owner::new(1).unwrap();
+    let endpoint = SftpEndpoint {
+        host: "127.0.0.1".into(),
+        username: "fixture".into(),
+        port: 22,
+        base: "/backups".into(),
+        known_hosts: dir.join("known_hosts"),
+        identity: None,
+        password: None,
+    };
+    let worker = SftpDeleteWorker::new(
+        db.pool().clone(),
+        owner.clone(),
+        processes.clone(),
+        transport,
+    );
+    let effect = worker
+        .start(endpoint, 1, "invalid-path".into(), identity.clone())
+        .unwrap()
+        .wait()
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(effect);
+    let state: String = sqlx::query_scalar(
+        "SELECT state FROM storage_operation_items WHERE operation_id='invalid-path'",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(state, "failed");
+    assert_eq!(processes.active(), 0);
     db.close().await;
     owner.shutdown(None).await;
     std::fs::remove_dir_all(dir).unwrap();

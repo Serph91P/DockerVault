@@ -1,5 +1,10 @@
 //! Atomic restart settlement for interrupted user-owned storage operations.
-use crate::recovery_activation::{JournalError, recovery_pending_in};
+use crate::{
+    ownership::{Owner, Work, WorkError},
+    process::ProcessOwner,
+    recovery_activation::{JournalError, recovery_pending_in},
+    storage::ssh::{SftpDownloadError, SftpEndpoint},
+};
 use sqlx::SqlitePool;
 
 #[derive(Debug)]
@@ -134,6 +139,58 @@ pub async fn record_settled(
         .bind(next).bind(next).bind(next).bind(operation_id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(true)
+}
+
+/// Binds a durable claim to a supervised SFTP effect. Caller supplies the
+/// endpoint and identity from the same pinned storage configuration.
+pub struct SftpDeleteWorker {
+    pool: SqlitePool,
+    jobs: Owner,
+    processes: ProcessOwner,
+    transport: Owner,
+}
+
+impl SftpDeleteWorker {
+    pub fn new(pool: SqlitePool, jobs: Owner, processes: ProcessOwner, transport: Owner) -> Self {
+        Self {
+            pool,
+            jobs,
+            processes,
+            transport,
+        }
+    }
+
+    pub fn start(
+        &self,
+        endpoint: SftpEndpoint,
+        user_id: i64,
+        operation_id: String,
+        identity: serde_json::Value,
+    ) -> Result<Work<Result<bool, StorageRecoveryError>>, WorkError> {
+        let pool = self.pool.clone();
+        let processes = self.processes.clone();
+        let transport = self.transport.clone();
+        self.jobs.submit_async(move |cancel| async move {
+            if cancel.is_cancelled() {
+                return Ok(false);
+            }
+            let Some(item) = claim_next(&pool, user_id, &operation_id, &identity).await? else {
+                return Ok(false);
+            };
+            // Once claimed, do not relay caller cancellation to a physical mutation.
+            let outcome = match endpoint.delete(&processes, &transport, &item.path) {
+                Ok(effect) => match effect.wait().await {
+                    Ok(Ok(())) => DeleteOutcome::Succeeded,
+                    Ok(Err(SftpDownloadError::MutationUnverified)) | Err(_) => {
+                        DeleteOutcome::Unknown
+                    }
+                    Ok(Err(_)) => DeleteOutcome::Failed,
+                },
+                Err(_) => DeleteOutcome::Failed,
+            };
+            record_settled(&pool, user_id, &operation_id, item.id, outcome).await
+        })
+    }
 }
 
 impl From<sqlx::Error> for StorageRecoveryError {
