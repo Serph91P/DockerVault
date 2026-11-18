@@ -1,8 +1,8 @@
 //! Five-field APScheduler 3.11 preview semantics, with caller-owned TZif data.
 //! No clock, filesystem, process, scheduler registration or ambient timezone access.
 use crate::timestamp::Timestamp;
-use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike};
 use std::collections::BTreeSet;
+use time::{Date, Month, PlainDateTime, UtcDateTime};
 pub use tz::TimeZone;
 use tz::datetime::FoundDateTimeKind;
 use unicode_general_category::{GeneralCategory, get_general_category};
@@ -36,13 +36,14 @@ pub struct FireTime {
 }
 #[derive(Clone, Copy)]
 struct Wall {
-    date: NaiveDateTime,
+    date: PlainDateTime,
     offset: i32,
     fold: bool,
 }
 impl Wall {
     fn epoch(self) -> i64 {
-        self.date.and_utc().timestamp_micros() - i64::from(self.offset) * 1_000_000
+        (self.date.as_utc().unix_timestamp_nanos() / 1000) as i64
+            - i64::from(self.offset) * 1_000_000
     }
 }
 fn whitespace(c: char) -> bool {
@@ -120,9 +121,9 @@ fn field(text: &str, index: usize) -> Result<Field> {
     }
     let (min, max) = limits(
         index,
-        NaiveDate::from_ymd_opt(2024, 1, 1)
+        Date::from_calendar_date(2024, Month::January, 1)
             .unwrap()
-            .and_hms_opt(0, 0, 0)
+            .with_hms(0, 0, 0)
             .unwrap(),
     );
     let mut out = Field {
@@ -195,21 +196,21 @@ fn field(text: &str, index: usize) -> Result<Field> {
     }
     Ok(out)
 }
-fn limits(index: usize, date: NaiveDateTime) -> (u32, u32) {
+fn limits(index: usize, date: PlainDateTime) -> (u32, u32) {
     match index {
         0 => (1970, 9999),
         1 => (1, 12),
         2 => {
-            let day = if date.month() == 12 {
+            let day = if date.month() == Month::December {
                 31
             } else {
-                NaiveDate::from_ymd_opt(date.year(), date.month() + 1, 1)
+                Date::from_calendar_date(date.year(), date.month().next(), 1)
                     .unwrap()
-                    .pred_opt()
+                    .previous_day()
                     .unwrap()
                     .day()
             };
-            (1, day)
+            (1, u32::from(day))
         }
         3 => (0, 6),
         4 => (0, 23),
@@ -217,38 +218,39 @@ fn limits(index: usize, date: NaiveDateTime) -> (u32, u32) {
         _ => unreachable!(),
     }
 }
-fn value(index: usize, date: NaiveDateTime) -> u32 {
+fn value(index: usize, date: PlainDateTime) -> u32 {
     match index {
         0 => date.year() as u32,
-        1 => date.month(),
-        2 => date.day(),
-        3 => date.weekday().num_days_from_monday(),
-        4 => date.hour(),
-        5 => date.minute(),
-        6 => date.second(),
+        1 => date.month() as u32,
+        2 => u32::from(date.day()),
+        3 => u32::from(date.weekday().number_days_from_monday()),
+        4 => u32::from(date.hour()),
+        5 => u32::from(date.minute()),
+        6 => u32::from(date.second()),
         _ => unreachable!(),
     }
 }
-fn make(values: &[u32; 7]) -> Result<NaiveDateTime> {
-    NaiveDate::from_ymd_opt(values[0] as i32, values[1], values[2])
-        .and_then(|d| d.and_hms_opt(values[4], values[5], values[6]))
-        .ok_or(CronError::NoFuture)
+fn make(values: &[u32; 7]) -> Result<PlainDateTime> {
+    let month = Month::try_from(values[1] as u8).map_err(|_| CronError::NoFuture)?;
+    Date::from_calendar_date(values[0] as i32, month, values[2] as u8)
+        .and_then(|d| d.with_hms(values[4] as u8, values[5] as u8, values[6] as u8))
+        .map_err(|_| CronError::NoFuture)
 }
-fn find(zone: &TimeZone, date: NaiveDateTime) -> Result<Vec<FoundDateTimeKind>> {
+fn find(zone: &TimeZone, date: PlainDateTime) -> Result<Vec<FoundDateTimeKind>> {
     tz::DateTime::find(
         date.year(),
         date.month() as u8,
-        date.day() as u8,
-        date.hour() as u8,
-        date.minute() as u8,
-        date.second() as u8,
+        date.day(),
+        date.hour(),
+        date.minute(),
+        date.second(),
         date.nanosecond(),
         zone.as_ref(),
     )
     .map(|v| v.into_inner())
     .map_err(|_| CronError::Invalid)
 }
-fn resolve(zone: &TimeZone, date: NaiveDateTime, fold: bool) -> Result<Wall> {
+fn resolve(zone: &TimeZone, date: PlainDateTime, fold: bool) -> Result<Wall> {
     let found = find(zone, date)?;
     let selected = if fold { found.last() } else { found.first() }.ok_or(CronError::Invalid)?;
     let offset = match selected {
@@ -268,26 +270,27 @@ fn resolve(zone: &TimeZone, date: NaiveDateTime, fold: bool) -> Result<Wall> {
 }
 fn project(zone: &TimeZone, epoch: i64) -> Result<Wall> {
     // datetime_utc_add must first represent the UTC intermediate in Python's range.
-    chrono::DateTime::from_timestamp_micros(epoch)
-        .filter(|v| (1..=9999).contains(&v.year()))
-        .ok_or(CronError::NoFuture)?;
+    let utc = UtcDateTime::from_unix_timestamp_nanos(i128::from(epoch) * 1000)
+        .map_err(|_| CronError::NoFuture)?;
+    if !(1..=9999).contains(&utc.year()) {
+        return Err(CronError::NoFuture);
+    }
     let d = tz::DateTime::from_timespec(
         epoch.div_euclid(1_000_000),
         (epoch.rem_euclid(1_000_000) * 1000) as u32,
         zone.as_ref(),
     )
     .map_err(|_| CronError::NoFuture)?;
-    let date = NaiveDate::from_ymd_opt(d.year(), u32::from(d.month()), u32::from(d.month_day()))
-        .and_then(|v| {
-            v.and_hms_micro_opt(
-                u32::from(d.hour()),
-                u32::from(d.minute()),
-                u32::from(d.second()),
-                d.nanoseconds() / 1000,
-            )
-        })
-        .filter(|v| (1..=9999).contains(&v.year()))
-        .ok_or(CronError::NoFuture)?;
+    let date = Date::from_calendar_date(
+        d.year(),
+        Month::try_from(d.month()).map_err(|_| CronError::NoFuture)?,
+        d.month_day(),
+    )
+    .and_then(|v| v.with_hms_micro(d.hour(), d.minute(), d.second(), d.nanoseconds() / 1000))
+    .map_err(|_| CronError::NoFuture)?;
+    if !(1..=9999).contains(&date.year()) {
+        return Err(CronError::NoFuture);
+    }
     let found = find(zone, date)?;
     let fold = found.len() > 1
         && matches!(found.last(),Some(FoundDateTimeKind::Normal(last)) if last.unix_time()==d.unix_time());
@@ -320,7 +323,7 @@ impl Schedule {
         }
         Ok(Self { fields })
     }
-    fn next_value(&self, index: usize, date: NaiveDateTime) -> Option<u32> {
+    fn next_value(&self, index: usize, date: PlainDateTime) -> Option<u32> {
         let current = value(index, date);
         let max = limits(index, date).1;
         if index == 0 {
@@ -367,10 +370,8 @@ impl Schedule {
             }
             i += 1;
         }
-        let delta = make(&values)?
-            .signed_duration_since(wall.date)
-            .num_microseconds()
-            .ok_or(CronError::NoFuture)?;
+        let delta = i64::try_from((make(&values)? - wall.date).whole_microseconds())
+            .map_err(|_| CronError::NoFuture)?;
         Ok((
             project(
                 zone,
@@ -405,7 +406,7 @@ impl Schedule {
             &normalized
         };
         let epoch = match base.offset {
-            Some(offset) => base.naive.and_utc().timestamp_micros() - offset,
+            Some(offset) => (base.naive.as_utc().unix_timestamp_nanos() / 1000) as i64 - offset,
             None => resolve(zone, base.naive, false)?.epoch(),
         };
         let mut wall = project(zone, epoch)?;

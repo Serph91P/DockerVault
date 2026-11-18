@@ -1,6 +1,6 @@
 //! Preserve SQLAlchemy's six-digit wall-time storage and Python ISO API strings.
 mod iso;
-use chrono::{NaiveDateTime, Timelike};
+use time::PlainDateTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidTimestamp;
@@ -13,7 +13,7 @@ impl std::error::Error for InvalidTimestamp {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timestamp {
-    pub(crate) naive: NaiveDateTime,
+    pub(crate) naive: PlainDateTime,
     pub(crate) offset: Option<i64>,
 }
 impl serde::Serialize for Timestamp {
@@ -33,17 +33,23 @@ impl Timestamp {
         Ok(Self { naive, offset })
     }
     pub fn sql(self) -> String {
-        self.naive.format("%Y-%m-%d %H:%M:%S%.6f").to_string()
+        let d = self.naive;
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:06}",
+            d.year(),
+            d.month() as u8,
+            d.day(),
+            d.hour(),
+            d.minute(),
+            d.second(),
+            d.microsecond()
+        )
     }
     pub fn api(self) -> String {
-        let mut text = self
-            .naive
-            .format(if self.naive.nanosecond() == 0 {
-                "%Y-%m-%dT%H:%M:%S"
-            } else {
-                "%Y-%m-%dT%H:%M:%S%.6f"
-            })
-            .to_string();
+        let mut text = self.sql().replace(' ', "T");
+        if self.naive.nanosecond() == 0 {
+            text.truncate(19);
+        }
         if let Some(offset) = self.offset {
             let sign = if offset < 0 { '-' } else { '+' };
             let micros = offset.unsigned_abs();

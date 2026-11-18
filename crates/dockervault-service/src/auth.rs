@@ -2,7 +2,6 @@
 use crate::ownership::{Owner, WorkError};
 use crate::recovery_activation::{ClaimKind, PreparationClaims, PreparationError};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use chrono::{DateTime, TimeDelta, Utc};
 use dockervault_core::timestamp::Timestamp;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -11,6 +10,9 @@ use std::{
     fmt,
     sync::{Arc, Mutex, Weak},
     time::Duration,
+};
+use time::{
+    SignedDuration as TimeDelta, UtcDateTime as Utc, format_description::well_known::Rfc3339,
 };
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -91,8 +93,9 @@ struct StoredUser {
     user: User,
     password_hash: String,
 }
-fn timestamp(value: DateTime<Utc>) -> Result<Timestamp, AuthError> {
-    Timestamp::parse(&value.to_rfc3339()).map_err(|_| AuthError::Database)
+fn timestamp(value: Utc) -> Result<Timestamp, AuthError> {
+    Timestamp::parse(&value.format(&Rfc3339).map_err(|_| AuthError::Database)?)
+        .map_err(|_| AuthError::Database)
 }
 fn user(row: &SqliteRow) -> Result<User, AuthError> {
     let created: String = row.try_get("created_at")?;

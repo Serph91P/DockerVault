@@ -54,6 +54,20 @@ includes combining alphabetic marks, so it is not Python's `\\w` name contract.
 The native test checks every Unicode scalar against the actual provider oracle.
 Source: <https://github.com/yeslogic/unicode-general-category>.
 
+## Native Gregorian calendar and UTC clock
+
+`time` 0.3.55 (MIT OR Apache-2.0, Rust1.88+) was already locked for the
+SDK. Its standard calendar, ISO-week, UTC-clock and RFC parsers replace Chrono,
+whose versions are unmaintained under RUSTSEC-2026-0543; no advisory is ignored.
+Core uses `std`, `formatting` and `parsing`; service additionally uses `macros`
+for the fixed cookie date. Ambient local-offset and large-dates APIs are not
+enabled. Python's explicit 1..9999 calendar range and fractional offset storage
+remain in the existing framing adapter, not a replacement calendar algorithm.
+
+- API/features: <https://docs.rs/time/0.3.55/time/>
+- License/MSRV: <https://docs.rs/crate/time/0.3.55/source/Cargo.toml>
+- Advisory: <https://rustsec.org/advisories/RUSTSEC-2026-0543.html>
+
 ## Native cron and TZif compatibility
 
 `tz-rs` 0.7.3 (MIT OR Apache-2.0, Rust1.85+, dependency-free) is pinned with
@@ -66,7 +80,7 @@ ignore-leap-record behavior against that image's actual ZoneInfo/CronTrigger.
 Source: <https://docs.rs/crate/tz-rs/0.7.3>.
 
 `dockervault-core/src/cron.rs` adapts APScheduler3.11.3's five-field expression
-and field-stepping algorithms to Chrono and tz-rs. The executed stock Croner4.0.3
+and field-stepping algorithms to time and tz-rs. The executed stock Croner4.0.3
 five-field/AND-mode comparison did not preserve the accepted provider's skipped
 DST time or named/prefix expression grammar, so Croner is **not** a dependency.
 The adapter preserves Monday-zero weekdays, day-of-month **and** weekday,
@@ -103,7 +117,7 @@ Public SSH metadata decoding in `dockervault-core/src/ssh_public.rs` also adapts
 CPython 3.14.10 `binascii.a2b_base64` filtering/padding acceptance around the existing
 native Base64 decoder; it never retains comments or following input lines.
 Timestamp ISO framing in `dockervault-core/src/timestamp/iso.rs` adapts CPython
-3.14.10 `_datetimemodule.c` around Chrono's calendar validation. This preserves
+3.14.10 `_datetimemodule.c` around time's calendar validation. This preserves
 basic/week dates, Unicode separators, midnight rollover and microsecond offsets
 without loading Python or reducing timestamp precision to whole offset seconds.
 Provider configuration repair hints in `dockervault-core/src/storage_validation.rs`

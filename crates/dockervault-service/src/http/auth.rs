@@ -7,8 +7,8 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
-use chrono::Utc;
 use serde_json::{Value, json};
+use time::UtcDateTime as Utc;
 
 pub(super) fn error(error: AuthError) -> Response {
     let (status, detail) = match error {
@@ -248,7 +248,11 @@ pub(super) async fn logout(State(state): State<HttpState>, request: Request) -> 
     }
     let cookie = format!(
         "session_token=\"\"; expires={}; HttpOnly; Max-Age=0; Path=/; SameSite=lax{}",
-        Utc::now().format("%a, %d %b %Y %H:%M:%S GMT"),
+        Utc::now()
+            .format(time::macros::format_description!(
+                "[weekday repr:short], [day] [month repr:short] [year] [hour]:[minute]:[second] GMT"
+            ))
+            .expect("fixed UTC cookie date format"),
         if state.config.cookie_secure {
             "; Secure"
         } else {

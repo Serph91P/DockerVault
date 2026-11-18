@@ -184,10 +184,12 @@ pub(super) fn parse(
                         }
                         let name = href.rsplit('/').next().unwrap_or("");
                         if !name.is_empty() {
-                            let modified =
-                                chrono::DateTime::parse_from_rfc2822(draft.modified.trim())
-                                    .map(|date| date.timestamp() as f64)
-                                    .unwrap_or(0.0);
+                            let modified = time::OffsetDateTime::parse(
+                                draft.modified.trim(),
+                                &time::format_description::well_known::Rfc2822,
+                            )
+                            .map(|date| date.unix_timestamp() as f64)
+                            .unwrap_or(0.0);
                             parsed.entries.push(StorageEntry {
                                 name: percent_encoding::percent_decode_str(name)
                                     .decode_utf8_lossy()

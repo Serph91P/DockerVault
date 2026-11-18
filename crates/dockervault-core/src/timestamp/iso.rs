@@ -1,7 +1,7 @@
-//! CPython 3.14 ISO framing around Chrono's validated Gregorian calendar.
+//! CPython 3.14 ISO framing around time's validated Gregorian calendar.
 //! See the CPython attribution in RUST_DEPENDENCY_NOTICES.md.
 use super::InvalidTimestamp;
-use chrono::{Datelike, NaiveDate, NaiveDateTime, Weekday};
+use time::{Date, Month, PlainDateTime, Weekday};
 
 fn byte(input: &[u8], at: usize) -> u8 {
     input.get(at).copied().unwrap_or(0)
@@ -88,17 +88,17 @@ fn date(input: &[u8]) -> Result<(i32, u32, u32), InvalidTimestamp> {
             digits(input, pos, 1)?
         };
         let day = match day {
-            1 => Weekday::Mon,
-            2 => Weekday::Tue,
-            3 => Weekday::Wed,
-            4 => Weekday::Thu,
-            5 => Weekday::Fri,
-            6 => Weekday::Sat,
-            7 => Weekday::Sun,
+            1 => Weekday::Monday,
+            2 => Weekday::Tuesday,
+            3 => Weekday::Wednesday,
+            4 => Weekday::Thursday,
+            5 => Weekday::Friday,
+            6 => Weekday::Saturday,
+            7 => Weekday::Sunday,
             _ => return Err(InvalidTimestamp),
         };
-        let date = NaiveDate::from_isoywd_opt(year, week, day).ok_or(InvalidTimestamp)?;
-        Ok((date.year(), date.month(), date.day()))
+        let date = Date::from_iso_week_date(year, week as u8, day).map_err(|_| InvalidTimestamp)?;
+        Ok((date.year(), date.month() as u32, u32::from(date.day())))
     } else {
         if input.len() != if separated { 10 } else { 8 } {
             return Err(InvalidTimestamp);
@@ -158,7 +158,7 @@ fn clock(input: &[u8], end: usize) -> Result<([u32; 4], bool), InvalidTimestamp>
     }
     Ok((fields, byte(input, pos) != 0))
 }
-pub(super) fn parse(input: &str) -> Result<(NaiveDateTime, Option<i64>), InvalidTimestamp> {
+pub(super) fn parse(input: &str) -> Result<(PlainDateTime, Option<i64>), InvalidTimestamp> {
     let bytes = input.as_bytes();
     let split = separator(bytes)?;
     let (mut year, mut month, mut day) = date(bytes.get(..split).ok_or(InvalidTimestamp)?)?;
@@ -230,8 +230,9 @@ pub(super) fn parse(input: &str) -> Result<(NaiveDateTime, Option<i64>), Invalid
     if !(1..=9999).contains(&year) {
         return Err(InvalidTimestamp);
     }
-    let naive = NaiveDate::from_ymd_opt(year, month, day)
-        .and_then(|d| d.and_hms_micro_opt(hour, minute, second, micros))
-        .ok_or(InvalidTimestamp)?;
+    let month = Month::try_from(month as u8).map_err(|_| InvalidTimestamp)?;
+    let naive = Date::from_calendar_date(year, month, day as u8)
+        .and_then(|d| d.with_hms_micro(hour as u8, minute as u8, second as u8, micros))
+        .map_err(|_| InvalidTimestamp)?;
     Ok((naive, offset))
 }

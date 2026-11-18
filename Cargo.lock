@@ -741,15 +741,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chrono"
-version = "0.4.45"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
 name = "cipher"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1024,13 +1015,13 @@ dependencies = [
  "argon2",
  "base64 0.22.1",
  "bech32",
- "chrono",
  "fernet",
  "indexmap",
  "openssl",
  "serde",
  "serde_json",
  "ssh-key",
+ "time",
  "tz-rs",
  "unicode-general-category",
  "zeroize",
@@ -1047,7 +1038,6 @@ dependencies = [
  "bcrypt",
  "bech32",
  "bollard",
- "chrono",
  "dockervault-core",
  "dockervault-tools",
  "dotenvy",
@@ -1065,6 +1055,7 @@ dependencies = [
  "sha2 0.11.1",
  "sqlx",
  "tar",
+ "time",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",

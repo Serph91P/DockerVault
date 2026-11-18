@@ -1,12 +1,12 @@
 //! Durable workload intents; no archive/upload effect is replayed by the journal.
 use crate::ownership::{Owner, WorkError};
-use chrono::Utc;
 use dockervault_core::{encoding::python_json, timestamp::Timestamp};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sqlx::{Row, SqlitePool, sqlite::SqliteRow};
 use std::time::Duration;
+use time::{UtcDateTime as Utc, format_description::well_known::Rfc3339};
 
 const INCOMPLETE: &str = "Workload recovery incomplete; retry reconciliation before new jobs";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,7 +175,7 @@ impl Journal {
             python_json(&serde_json::to_value(resources).map_err(|_| JournalError::InvalidRecord)?);
         let pool = self.pool.clone();
         self.owner.submit_async(move |_|async move {
-            let now=Timestamp::parse(&Utc::now().to_rfc3339()).map_err(|_|JournalError::InvalidRecord)?.sql();
+            let now=Timestamp::parse(&Utc::now().format(&Rfc3339).map_err(|_|JournalError::InvalidRecord)?).map_err(|_|JournalError::InvalidRecord)?.sql();
             let result=sqlx::query("INSERT INTO workload_operations(backup_id,kind,phase,state,resources,error,created_at) VALUES(?,?,'claimed','active',?,NULL,?)").bind(backup_id).bind(kind.as_str()).bind(resources).bind(now).execute(&pool).await?;
             Ok(result.last_insert_rowid())
         })?.wait().await?
@@ -250,7 +250,7 @@ impl Journal {
                 let resources=python_json(&serde_json::to_value(&operation.resources).map_err(|_|JournalError::InvalidRecord)?);
                 sqlx::query("UPDATE workload_operations SET state=?,error=?,resources=? WHERE id=?").bind(state).bind(&message).bind(resources).bind(id).execute(&mut *transaction).await?;
                 if let Some(backup)=operation.backup_id {
-                    let now=Timestamp::parse(&Utc::now().to_rfc3339()).map_err(|_|JournalError::InvalidRecord)?.sql();
+                    let now=Timestamp::parse(&Utc::now().format(&Rfc3339).map_err(|_|JournalError::InvalidRecord)?).map_err(|_|JournalError::InvalidRecord)?.sql();
                     if operation.kind==Kind::Backup {
                         sqlx::query("UPDATE backups SET status='FAILED',error_message=?,completed_at=? WHERE id=?").bind(&message).bind(&now).bind(backup).execute(&mut *transaction).await?;
                     }
