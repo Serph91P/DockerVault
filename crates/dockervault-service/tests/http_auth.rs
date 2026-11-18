@@ -1459,6 +1459,28 @@ async fn configured_local_bulk_download_reports_missing_storage() {
 }
 
 #[tokio::test]
+async fn configured_bulk_download_aggregates_invalid_id_and_body() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let (status, _, body) = server
+        .request(
+            "POST",
+            "/api/v1/storage/invalid/files/bulk-download",
+            &[("Cookie", cookie.as_str())],
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(
+        (status, body),
+        (
+            422,
+            json!({"detail":"Validation error","errors":[{"field":"path.storage_id","message":"Input should be a valid integer, unable to parse string as an integer"},{"field":"body.paths","message":"Field required"}]})
+        )
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn local_bulk_download_rejects_empty_selection() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
@@ -1493,7 +1515,7 @@ async fn local_bulk_download_contains_only_existing_selected_file_bytes() {
         .post(url)
         .header("Cookie", cookie)
         .header("Content-Type", "application/json")
-        .body(r#"{"paths":["folder/archive.tar","folder/missing.tar"]}"#)
+        .body(r#"{"paths":["folder/archive.tar","folder/missing.tar","folder"]}"#)
         .send()
         .await
         .unwrap();

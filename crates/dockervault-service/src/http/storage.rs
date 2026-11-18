@@ -887,15 +887,15 @@ async fn bulk_download(
         Ok(body) => body,
         Err(response) => return *response,
     };
-    let Some(paths) = body["paths"].as_array() else {
-        return *auth::validation(vec![
-            json!({"field":"body.paths","message":if body.get("paths").is_none() {"Field required"} else {"Input should be a valid list"}}),
-        ]);
-    };
-    if paths.is_empty() {
-        return storage_error(StatusCode::BAD_REQUEST, "No files specified");
-    }
+    let parsed_id = id.as_deref().and_then(super::operations::query_integer);
     let mut errors = Vec::new();
+    if id.is_some() && parsed_id.is_none() {
+        errors.push(invalid_id_field());
+    }
+    let Some(paths) = body["paths"].as_array() else {
+        errors.push(json!({"field":"body.paths","message":if body.get("paths").is_none() {"Field required"} else {"Input should be a valid list"}}));
+        return *auth::validation(errors);
+    };
     let mut selection = Vec::with_capacity(paths.len());
     for (index, value) in paths.iter().enumerate() {
         match value.as_str() {
@@ -906,10 +906,10 @@ async fn bulk_download(
     if !errors.is_empty() {
         return *auth::validation(errors);
     }
-    let root = if let Some(id) = id {
-        let Some(id) = super::operations::query_integer(&id) else {
-            return invalid_id();
-        };
+    if paths.is_empty() {
+        return storage_error(StatusCode::BAD_REQUEST, "No files specified");
+    }
+    let root = if let Some(id) = parsed_id {
         match configured_browse_root(state, id).await {
             Ok(Some(root)) => root,
             Ok(None) => {
@@ -962,7 +962,14 @@ async fn bulk_download(
                         &|| cancel.is_cancelled(),
                     ) {
                         Ok(item) => item,
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::NotFound | std::io::ErrorKind::IsADirectory
+                            ) =>
+                        {
+                            continue;
+                        }
                         Err(error) => return Err(error),
                     };
                     let opts = zip::write::SimpleFileOptions::default()

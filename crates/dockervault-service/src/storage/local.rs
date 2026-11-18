@@ -539,7 +539,11 @@ fn read_leaf(parent: &File, name: &OsStr) -> io::Result<File> {
         OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
         Mode::empty(),
     )?);
-    FileIdentity::read(&file.metadata()?)?;
+    let metadata = file.metadata()?;
+    if metadata.is_dir() {
+        return Err(io::ErrorKind::IsADirectory.into());
+    }
+    FileIdentity::read(&metadata)?;
     Ok(file)
 }
 
