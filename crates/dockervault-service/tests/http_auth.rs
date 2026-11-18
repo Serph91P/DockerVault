@@ -1501,12 +1501,17 @@ async fn local_bulk_download_rejects_empty_selection() {
 
 #[tokio::test]
 async fn local_bulk_download_contains_only_existing_selected_file_bytes() {
-    use std::io::{Cursor, Read};
+    use async_zip::base::read1::seek::ZipArchiveReader;
+    use std::io::Cursor;
+    use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
     let dir = server.path.join("backups/folder");
     std::fs::create_dir(&dir).unwrap();
     std::fs::write(dir.join("archive.tar"), b"\0archive\xff").unwrap();
+    let other = server.path.join("backups/other");
+    std::fs::create_dir(&other).unwrap();
+    std::fs::write(other.join("archive.tar"), b"second").unwrap();
     let url = format!(
         "http://{}/api/v1/storage/local/files/bulk-download",
         server.address
@@ -1515,7 +1520,9 @@ async fn local_bulk_download_contains_only_existing_selected_file_bytes() {
         .post(url)
         .header("Cookie", cookie)
         .header("Content-Type", "application/json")
-        .body(r#"{"paths":["folder/archive.tar","folder/missing.tar","folder"]}"#)
+        .body(
+            r#"{"paths":["folder/archive.tar","folder/missing.tar","folder","other/archive.tar"]}"#,
+        )
         .send()
         .await
         .unwrap();
@@ -1525,13 +1532,26 @@ async fn local_bulk_download_contains_only_existing_selected_file_bytes() {
         "attachment; filename=\"folder.zip\""
     );
     assert_eq!(response.headers()["content-type"], "application/zip");
-    let mut archive = zip::ZipArchive::new(Cursor::new(response.bytes().await.unwrap())).unwrap();
-    assert_eq!(archive.len(), 1);
-    let mut file = archive.by_name("archive.tar").unwrap();
-    assert_eq!(file.compression(), zip::CompressionMethod::Deflated);
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).unwrap();
-    assert_eq!(bytes, b"\0archive\xff");
+    let mut archive = ZipArchiveReader::open(Cursor::new(response.bytes().await.unwrap()).compat())
+        .await
+        .unwrap();
+    assert_eq!(archive.cdrs().len(), 2);
+    assert_eq!(archive.find(b"archive.tar").unwrap().count(), 2);
+    for (index, expected) in [b"\0archive\xff".as_slice(), b"second".as_slice()]
+        .into_iter()
+        .enumerate()
+    {
+        let mut bytes = Vec::new();
+        archive
+            .file(index)
+            .await
+            .unwrap()
+            .compat()
+            .read_to_end(&mut bytes)
+            .await
+            .unwrap();
+        assert_eq!(bytes, expected);
+    }
     server.close().await;
 }
 

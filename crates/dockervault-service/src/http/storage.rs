@@ -880,8 +880,10 @@ async fn bulk_download(
     id: Option<String>,
     mut request: axum::extract::Request,
 ) -> Response {
-    use std::io::{Read, Seek, Write};
+    use std::io::Seek;
     use std::path::{Path, PathBuf};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_util::compat::FuturesAsyncWriteCompatExt;
 
     let body = match auth::json_body(state, &mut request).await {
         Ok(body) => body,
@@ -946,21 +948,33 @@ async fn bulk_download(
     let root = PathBuf::from(root);
     let result = async {
         state
-            .auth
-            .blocking()
-            .submit_blocking(move |cancel| -> std::io::Result<_> {
-                let stage = crate::storage::local::anonymous_download()?;
-                let mut archive = zip::ZipWriter::new(stage);
+            .download_jobs
+            .submit_async(move |cancel| async move {
+                let stage = tokio::task::spawn_blocking(crate::storage::local::anonymous_download)
+                    .await
+                    .ok()?
+                    .ok()?;
+                let mut archive = async_zip::tokio::write::ZipFileWriter::with_tokio(
+                    tokio::fs::File::from_std(stage),
+                );
                 let mut buf = [0; 64 * 1024];
                 for path in paths {
                     if cancel.is_cancelled() {
-                        return Err(std::io::ErrorKind::Interrupted.into());
+                        return None;
                     }
-                    let (mut input, length) = match crate::storage::local::snapshot_download(
-                        &root,
-                        Path::new(&path),
-                        &|| cancel.is_cancelled(),
-                    ) {
+                    let source_root = root.clone();
+                    let source_path = path.clone();
+                    let source_cancel = cancel.clone();
+                    let (input, _) = match tokio::task::spawn_blocking(move || {
+                        crate::storage::local::snapshot_download(
+                            &source_root,
+                            Path::new(&source_path),
+                            &|| source_cancel.is_cancelled(),
+                        )
+                    })
+                    .await
+                    .ok()?
+                    {
                         Ok(item) => item,
                         Err(error)
                             if matches!(
@@ -970,34 +984,46 @@ async fn bulk_download(
                         {
                             continue;
                         }
-                        Err(error) => return Err(error),
+                        Err(_) => return None,
                     };
-                    let opts = zip::write::SimpleFileOptions::default()
-                        .compression_method(zip::CompressionMethod::Deflated)
-                        .large_file(length >= u64::from(u32::MAX));
-                    archive.start_file(path.rsplit('/').next().unwrap_or_default(), opts)?;
+                    let mut input = tokio::fs::File::from_std(input);
+                    let opts = async_zip::ZipEntryBuilder::new(
+                        path.rsplit('/')
+                            .next()
+                            .unwrap_or_default()
+                            .to_owned()
+                            .into(),
+                        async_zip::Compression::Deflate,
+                    );
+                    let mut entry = archive.write_entry_stream(opts).await.ok()?.compat_write();
                     loop {
                         if cancel.is_cancelled() {
-                            return Err(std::io::ErrorKind::Interrupted.into());
+                            return None;
                         }
-                        let count = input.read(&mut buf)?;
+                        let count = input.read(&mut buf).await.ok()?;
                         if count == 0 {
                             break;
                         }
-                        archive.write_all(&buf[..count])?;
+                        entry.write_all(&buf[..count]).await.ok()?;
                     }
+                    entry.into_inner().close().await.ok()?;
                 }
-                let mut file = archive.finish()?;
-                let length = file.metadata()?.len();
-                file.rewind()?;
-                let validators = download::Validators::read(&file, length)?;
-                Ok((file, length, slot, validators))
+                let mut file = archive.close().await.ok()?.into_inner();
+                file.flush().await.ok()?;
+                let mut file = file.into_std().await;
+                tokio::task::spawn_blocking(move || {
+                    let length = file.metadata().ok()?.len();
+                    file.rewind().ok()?;
+                    let validators = download::Validators::read(&file, length).ok()?;
+                    Some((file, length, slot, validators))
+                })
+                .await
+                .ok()?
             })
             .ok()?
             .wait()
             .await
             .ok()?
-            .ok()
     }
     .await;
     let Some((file, length, slot, validators)) = result else {
