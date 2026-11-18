@@ -5,7 +5,7 @@ use tokio::{io::AsyncReadExt, time::timeout};
 
 const MAX_LISTING_BYTES: usize = 16 * 1024 * 1024;
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct FtpEntry {
     pub name: String,
     pub size: i64,

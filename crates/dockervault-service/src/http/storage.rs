@@ -295,6 +295,11 @@ async fn probe_s3(state: &HttpState, config: &Value) -> Option<()> {
 }
 
 async fn probe_ftp(state: &HttpState, config: &Value) -> Option<()> {
+    let provider = ftp_provider(state, config)?;
+    provider.test_connection().ok()?.wait().await.ok()?.ok()
+}
+
+fn ftp_provider(state: &HttpState, config: &Value) -> Option<crate::storage::ftp::Ftp> {
     use crate::storage::ftp::{Ftp, FtpConfig};
     let field = |key: &str| config[key].as_str().unwrap_or_default().to_owned();
     let port = if config["port"].is_null() {
@@ -302,7 +307,7 @@ async fn probe_ftp(state: &HttpState, config: &Value) -> Option<()> {
     } else {
         Some(u16::try_from(config["port"].as_i64()?).ok()?)
     };
-    let provider = Ftp::new(
+    Ftp::new(
         FtpConfig {
             host: field("host"),
             port,
@@ -312,8 +317,7 @@ async fn probe_ftp(state: &HttpState, config: &Value) -> Option<()> {
         },
         state.auth.blocking().clone(),
     )
-    .ok()?;
-    provider.test_connection().ok()?.wait().await.ok()?.ok()
+    .ok()
 }
 
 async fn probe_webdav(
@@ -446,6 +450,23 @@ pub(super) async fn list_configured_files(
                 return storage_error(StatusCode::BAD_REQUEST, "Invalid file path");
             };
             match list_webdav(&state, &mut config, path.clone()).await {
+                Some(files) => Json(json!({"files":files,"path":path})).into_response(),
+                None => storage_error(StatusCode::BAD_GATEWAY, "Remote listing failed"),
+            }
+        }
+        Some("ftp") => {
+            let Some(path) = crate::storage::relative_path(raw, true) else {
+                return storage_error(StatusCode::BAD_REQUEST, "Invalid file path");
+            };
+            let files = async {
+                if !open_probe_credentials(&state, &mut config, None).await {
+                    return None;
+                }
+                let provider = ftp_provider(&state, &Value::Object(config))?;
+                provider.list(path.clone()).ok()?.wait().await.ok()?.ok()
+            }
+            .await;
+            match files {
                 Some(files) => Json(json!({"files":files,"path":path})).into_response(),
                 None => storage_error(StatusCode::BAD_GATEWAY, "Remote listing failed"),
             }

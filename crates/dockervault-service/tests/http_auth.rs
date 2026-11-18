@@ -1232,6 +1232,74 @@ async fn storage_create_persists_provider_fields_and_encrypts_credentials() {
 }
 
 #[tokio::test]
+async fn configured_ftp_listing_waits_for_mlsd_completion() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,host,port,username) VALUES (44,'fixture','ftp',1,'/base','127.0.0.1',?,'fixture')")
+        .bind(listener.local_addr().unwrap().port()).execute(server.db.pool()).await.unwrap();
+    let provider = tokio::spawn(async move {
+        let passive = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut control = BufReader::new(stream);
+        control.get_mut().write_all(b"220 Ready\r\n").await.unwrap();
+        for (expected, reply) in [
+            ("USER fixture", "230 Authorized".to_owned()),
+            ("TYPE I", "200 Binary".to_owned()),
+            (
+                "EPSV",
+                format!(
+                    "229 Entering (|||{}|)",
+                    passive.local_addr().unwrap().port()
+                ),
+            ),
+            ("MLSD /base/child", "150 Opening".to_owned()),
+        ] {
+            let mut command = String::new();
+            control.read_line(&mut command).await.unwrap();
+            assert!(command.trim_end() == expected);
+            control
+                .get_mut()
+                .write_all(format!("{reply}\r\n").as_bytes())
+                .await
+                .unwrap();
+        }
+        let (mut data, _) = passive.accept().await.unwrap();
+        data.write_all(b"type=file;size=7;modify=20240101000000; archive.tar\r\n")
+            .await
+            .unwrap();
+        drop(data);
+        control
+            .get_mut()
+            .write_all(b"226 Settled\r\n")
+            .await
+            .unwrap();
+        let mut command = String::new();
+        control.read_line(&mut command).await.unwrap();
+        assert_eq!(command.trim_end(), "QUIT");
+        control.get_mut().write_all(b"221 Bye\r\n").await.unwrap();
+    });
+    let (status, _, result) = server
+        .request(
+            "GET",
+            "/api/v1/storage/44/files?path=child",
+            &[("Cookie", cookie.as_str())],
+            None,
+        )
+        .await;
+    assert_eq!(
+        (status, result),
+        (
+            200,
+            json!({"path":"child","files":[{"name":"archive.tar","size":7,"is_dir":false,"modified":1704067200.0}]})
+        )
+    );
+    provider.await.unwrap();
+    server.close().await;
+}
+
+#[tokio::test]
 async fn configured_webdav_listing_reports_provider_failure_not_empty_success() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
