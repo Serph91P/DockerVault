@@ -230,6 +230,7 @@ pub async fn claim_next(
 pub enum DeleteOutcome {
     Succeeded,
     Failed,
+    InvalidPath,
     Unknown,
 }
 
@@ -246,6 +247,7 @@ pub async fn record_settled(
     let (state, message) = match outcome {
         DeleteOutcome::Succeeded => ("succeeded", None),
         DeleteOutcome::Failed => ("failed", Some("Delete failed")),
+        DeleteOutcome::InvalidPath => ("failed", Some("Invalid file path")),
         DeleteOutcome::Unknown => (
             "unknown",
             Some("Delete not confirmed; inspect the actual target"),
@@ -328,15 +330,18 @@ impl SftpDeleteWorker {
                 return Ok(false);
             };
             // Once claimed, do not relay caller cancellation to a physical mutation.
-            let outcome = match endpoint.delete(&processes, &transport, &item.path) {
-                Ok(effect) => match effect.wait().await {
-                    Ok(Ok(())) => DeleteOutcome::Succeeded,
-                    Ok(Err(SftpDownloadError::MutationUnverified)) | Err(_) => {
-                        DeleteOutcome::Unknown
-                    }
-                    Ok(Err(_)) => DeleteOutcome::Failed,
+            let outcome = match relative_path(&item.path, false) {
+                Some(path) => match endpoint.delete(&processes, &transport, &path) {
+                    Ok(effect) => match effect.wait().await {
+                        Ok(Ok(())) => DeleteOutcome::Succeeded,
+                        Ok(Err(SftpDownloadError::MutationUnverified)) | Err(_) => {
+                            DeleteOutcome::Unknown
+                        }
+                        Ok(Err(_)) => DeleteOutcome::Failed,
+                    },
+                    Err(_) => DeleteOutcome::Failed,
                 },
-                Err(_) => DeleteOutcome::Failed,
+                None => DeleteOutcome::InvalidPath,
             };
             record_settled(&pool, user_id, &operation_id, item.id, outcome).await
         })

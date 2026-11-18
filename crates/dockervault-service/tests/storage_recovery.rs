@@ -140,7 +140,7 @@ async fn restart_keeps_uncertain_effects_unknown_and_never_replays_unstarted_ite
     assert_eq!(row, ("failed".into(), "finished".into(), 2, 1, 1));
     sqlx::raw_sql("INSERT INTO storage_operations(id,user_id,request_id,payload,storage_identity,action,storage_id,path,state,stage,total,completed,succeeded,failed,skipped,unknown,cancel_requested,created_at,updated_at) VALUES
         ('invalid-path',1,'r4','{}','{}','storage_delete','local','','queued','queued',1,0,0,0,0,0,0,'2024-01-01','2024-01-01');
-        INSERT INTO storage_operation_items(operation_id,path,state) VALUES ('invalid-path','../outside','pending');")
+        INSERT INTO storage_operation_items(operation_id,path,state) VALUES ('invalid-path','/outside','pending');")
         .execute(db.pool()).await.unwrap();
     let processes = ProcessOwner::new(1, env!("CARGO_BIN_EXE_dockervault-process-guard")).unwrap();
     let transport = Owner::new(1).unwrap();
@@ -167,13 +167,13 @@ async fn restart_keeps_uncertain_effects_unknown_and_never_replays_unstarted_ite
         .unwrap()
         .unwrap();
     assert!(effect);
-    let state: String = sqlx::query_scalar(
-        "SELECT state FROM storage_operation_items WHERE operation_id='invalid-path'",
+    let state: (String, Option<String>) = sqlx::query_as(
+        "SELECT state,error FROM storage_operation_items WHERE operation_id='invalid-path'",
     )
     .fetch_one(db.pool())
     .await
     .unwrap();
-    assert_eq!(state, "failed");
+    assert_eq!(state, ("failed".into(), Some("Invalid file path".into())));
     assert_eq!(processes.active(), 0);
     let admission = DeleteAdmission {
         user_id: 1,
