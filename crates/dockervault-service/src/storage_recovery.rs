@@ -278,7 +278,7 @@ pub(crate) async fn replay_remote_delete(
         Some((true, kind))
             if matches!(
                 kind.as_str(),
-                "local" | "webdav" | "ftp" | "s3" | "ssh" | "sftp"
+                "local" | "webdav" | "ftp" | "s3" | "ssh" | "sftp" | "rclone"
             ) =>
         {
             return Ok(None);
@@ -413,7 +413,7 @@ pub async fn claim_next(
     operation_id: &str,
     current_identity: &serde_json::Value,
 ) -> Result<Option<ClaimedItem>, StorageRecoveryError> {
-    claim_delete(pool, user_id, operation_id, current_identity, None).await
+    claim_delete(pool, user_id, operation_id, current_identity, None, None).await
 }
 
 async fn claim_delete(
@@ -422,6 +422,7 @@ async fn claim_delete(
     operation_id: &str,
     current_identity: &serde_json::Value,
     remote_id: Option<i64>,
+    rclone_snapshot: Option<&Option<String>>,
 ) -> Result<Option<ClaimedItem>, StorageRecoveryError> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     if recovery_pending_in(&mut *tx)
@@ -452,8 +453,15 @@ async fn claim_delete(
         tx.rollback().await?;
         return Err(StorageRecoveryError::IdentityChanged);
     }
-    if let Some(id) = remote_id
-        && !matches_remote_configuration(&mut tx, id, current_identity).await?
+    let changed = match remote_id {
+        Some(id) => !matches_remote_configuration(&mut tx, id, current_identity).await?,
+        None => false,
+    };
+    if changed
+        || match rclone_snapshot {
+            Some(expected) => &rclone_state(&mut *tx).await? != expected,
+            None => false,
+        }
     {
         sqlx::query("UPDATE storage_operation_items SET state='failed',error='Storage identity changed or unavailable; target not deleted' WHERE operation_id=? AND state='pending'")
             .bind(operation_id).execute(&mut *tx).await?;
@@ -676,7 +684,8 @@ async fn delete_next_local(
 ) -> Result<bool, StorageRecoveryError> {
     let expected_root = serde_json::from_value::<(u64, u64)>(identity["root_inode"].clone())
         .map_err(|_| StorageRecoveryError::IdentityChanged)?;
-    let Some(item) = claim_delete(pool, user_id, operation_id, identity, remote_id).await? else {
+    let Some(item) = claim_delete(pool, user_id, operation_id, identity, remote_id, None).await?
+    else {
         return Ok(false);
     };
     let outcome = match relative_path(&item.path, false) {
@@ -722,6 +731,63 @@ enum DeleteTarget {
     Ftp(Ftp),
     S3(S3),
     Sftp(SftpEndpoint, ProcessOwner, Owner, Option<std::fs::File>),
+    Rclone(RcloneDelete),
+}
+
+async fn rclone_state(
+    executor: impl sqlx::SqliteExecutor<'_>,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT value FROM app_settings WHERE key='recovery_rclone'")
+        .fetch_optional(executor)
+        .await
+        .map(Option::flatten)
+}
+
+struct RcloneDelete {
+    prefix: String,
+    processes: ProcessOwner,
+    snapshot: Option<String>,
+    config: Arc<crate::config::Config>,
+}
+
+impl RcloneDelete {
+    async fn run(&self, path: String) -> DeleteOutcome {
+        let destination = format!("{}{path}", self.prefix);
+        let mut spec = crate::process::ProcessSpec::new(
+            "/usr/local/bin/rclone",
+            [
+                "--config",
+                self.config.rclone_config.as_str(),
+                "--ask-password=false",
+                "--timeout",
+                "300s",
+                "--contimeout",
+                "30s",
+                "--retries",
+                "1",
+                "--low-level-retries",
+                "1",
+                "deletefile",
+                "--",
+                &destination,
+            ],
+        );
+        spec.discard_output = true;
+        spec.timeout = Some(std::time::Duration::from_secs(360));
+        if !self.config.rclone_config_pass.expose().is_empty() {
+            spec.env.push((
+                "RCLONE_CONFIG_PASS".into(),
+                self.config.rclone_config_pass.expose().into(),
+            ));
+        }
+        match self.processes.start(spec) {
+            Ok(work) => match work.wait().await {
+                Ok(Ok(out)) if out.status.success() => DeleteOutcome::Succeeded,
+                _ => DeleteOutcome::Unknown,
+            },
+            Err(_) => DeleteOutcome::Failed,
+        }
+    }
 }
 
 impl DeleteTarget {
@@ -736,11 +802,18 @@ impl DeleteTarget {
         if let Self::Local(local) = self {
             return delete_next_local(pool, local, user, operation, identity, remote_id).await;
         }
-        let Some(item) = claim_delete(pool, user, operation, identity, remote_id).await? else {
+        let rclone_snapshot = match self {
+            Self::Rclone(target) => Some(&target.snapshot),
+            _ => None,
+        };
+        let Some(item) =
+            claim_delete(pool, user, operation, identity, remote_id, rclone_snapshot).await?
+        else {
             return Ok(false);
         };
         let outcome = if let Some(path) = relative_path(&item.path, false) {
             match self {
+                Self::Rclone(target) => target.run(path).await,
                 Self::Sftp(endpoint, processes, transport, _held_key) => {
                     settle_sftp_delete(endpoint, processes, transport, &path).await
                 }
@@ -917,6 +990,45 @@ impl LocalDeleteJobs {
                         let mut identity = remote_identity(&row)?;
                         let kind: String = row.try_get("storage_type")?;
                         let base: Option<String> = row.try_get("base_path")?;
+                        if kind == "rclone" {
+                            let remote: String = row
+                                .try_get::<Option<String>, _>("rclone_remote")?
+                                .filter(|name| dockervault_core::rclone_path::valid_name(name))
+                                .ok_or(Error::InvalidStorageConfiguration)?;
+                            let snapshot = rclone_state(&pool).await?;
+                            if let Some(raw) = snapshot.as_deref().filter(|raw| !raw.is_empty()) {
+                                let state: serde_json::Value = serde_json::from_str(raw)
+                                    .map_err(|_| Error::InvalidStorageConfiguration)?;
+                                let roots = state["roots"]
+                                    .as_array()
+                                    .ok_or(Error::InvalidStorageConfiguration)?;
+                                if roots
+                                    .iter()
+                                    .any(|root| root["storage_id"].as_i64() == Some(id))
+                                {
+                                    return Err(Error::UnsupportedProvider);
+                                }
+                            }
+                            let prefix = format!(
+                                "{remote}:{}/",
+                                base.unwrap_or_default().trim_end_matches('/')
+                            )
+                            .replace("//", "/");
+                            let processes = ProcessOwner::new(
+                                1,
+                                "/usr/local/libexec/dockervault-process-guard",
+                            )
+                            .map_err(|_| Error::InvalidStorageConfiguration)?;
+                            return Ok((
+                                Some(DeleteTarget::Rclone(RcloneDelete {
+                                    prefix,
+                                    processes,
+                                    snapshot,
+                                    config: config.clone(),
+                                })),
+                                identity,
+                            ));
+                        }
                         if matches!(kind.as_str(), "ssh" | "sftp") {
                             let key: Option<String> = row.try_get("ssh_key_path")?;
                             let mut password = None;
