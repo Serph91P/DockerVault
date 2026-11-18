@@ -74,6 +74,33 @@ fn standalone_service_migrates_serves_and_shuts_down_without_python() {
         }
         std::thread::sleep(Duration::from_millis(25));
     }
+    std::os::unix::fs::symlink(dir.join("state.sqlite"), dir.join("alias.sqlite")).unwrap();
+    let alias_status = Command::new(env!("CARGO_BIN_EXE_dockervault-service"))
+        .current_dir(&dir)
+        .env_clear()
+        .env("DATABASE_URL", "sqlite+aiosqlite:///./alias.sqlite")
+        .env("DOCKER_SOCKET", "./absent-docker.sock")
+        .arg(format!("127.0.0.1:{other_port}"))
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut alias_status = alias_status;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while alias_status.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = alias_status.kill();
+            let _ = alias_status.wait();
+            let _ = process.kill();
+            let _ = process.wait();
+            panic!("aliased database opened a second writer");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let alias_status = alias_status.wait_with_output().unwrap();
+    assert!(!alias_status.status.success());
+    assert!(
+        String::from_utf8_lossy(&alias_status.stderr).contains("unsafe database file identity")
+    );
     let db = rusqlite::Connection::open(dir.join("state.sqlite")).unwrap();
     assert_eq!(
         db.query_row("SELECT count(*) FROM schema_migrations", [], |row| row

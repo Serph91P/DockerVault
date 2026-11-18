@@ -12,7 +12,11 @@ use dockervault_service::{
 };
 use nix::fcntl::{Flock, FlockArg};
 use std::{
-    fs::OpenOptions, net::SocketAddr, os::unix::fs::OpenOptionsExt, path::PathBuf,
+    fs::{self, OpenOptions},
+    io::ErrorKind,
+    net::SocketAddr,
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    path::PathBuf,
     process::ExitCode,
 };
 use tokio::{
@@ -56,9 +60,18 @@ async fn run() -> Result<(), &'static str> {
         .or_else(|| config.database_url.strip_prefix("sqlite:///"))
         .filter(|path| !path.is_empty() && *path != ":memory:")
         .ok_or("database URL")?;
-    let database_path = std::path::absolute(path).map_err(|_| "database path")?;
-    let parent = database_path.parent().ok_or("database parent")?;
-    std::fs::create_dir_all(parent).map_err(|_| "database parent")?;
+    let path = std::path::absolute(path).map_err(|_| "database path")?;
+    let name = path.file_name().ok_or("database filename")?;
+    let parent = path.parent().ok_or("database parent")?;
+    fs::create_dir_all(parent).map_err(|_| "database parent")?;
+    let parent = parent.canonicalize().map_err(|_| "database parent")?;
+    let database_path = parent.join(name);
+    // SQLite sidecars and the writer lock require one name in a trusted state directory.
+    match fs::symlink_metadata(&database_path) {
+        Ok(meta) if meta.is_file() && meta.nlink() == 1 => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        _ => return Err("unsafe database file identity"),
+    }
     let mut lock = database_path.clone().into_os_string();
     lock.push(".native-writer.lock");
     let lock = OpenOptions::new()
