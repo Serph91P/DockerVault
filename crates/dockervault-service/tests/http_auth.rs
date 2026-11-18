@@ -401,6 +401,10 @@ async fn configured_webdav_delete_waits_for_the_provider_and_records_the_effect(
 #[tokio::test]
 async fn configured_ftp_delete_settles_after_the_control_session_closes() {
     use tokio::io::{AsyncBufReadExt, BufStream};
+    let username = dockervault_core::crypto::CredentialCipher::generate_key();
+    let password = dockervault_core::crypto::CredentialCipher::generate_key();
+    let user_command = format!("USER {}\r\n", username.as_str());
+    let pass_command = format!("PASS {}\r\n", password.as_str());
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -415,14 +419,14 @@ async fn configured_ftp_delete_settles_after_the_control_session_closes() {
         stream.flush().await.unwrap();
         let mut line = String::new();
         for (request, reply) in [
-            ("USER fixture\r\n", "331 password\r\n"),
-            ("PASS public\r\n", "230 logged in\r\n"),
+            (user_command.as_str(), "331 password\r\n"),
+            (pass_command.as_str(), "230 logged in\r\n"),
             ("DELE /backups/ftp-fixture.tar\r\n", "250 deleted\r\n"),
             ("QUIT\r\n", "221 bye\r\n"),
         ] {
             line.clear();
             stream.read_line(&mut line).await.unwrap();
-            assert_eq!(line, request);
+            assert!(line == request, "unexpected FTP command");
             if request.starts_with("DELE") {
                 std::fs::remove_file(&target).unwrap();
             }
@@ -430,8 +434,8 @@ async fn configured_ftp_delete_settles_after_the_control_session_closes() {
             stream.flush().await.unwrap();
         }
     });
-    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,host,port,username,password) VALUES (44,'fixture ftp','ftp',1,'/backups','127.0.0.1',?,'fixture','public')")
-        .bind(i64::from(port)).execute(server.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,host,port,username,password) VALUES (44,'fixture ftp','ftp',1,'/backups','127.0.0.1',?,?,?)")
+        .bind(i64::from(port)).bind(username.as_str()).bind(password.as_str()).execute(server.db.pool()).await.unwrap();
     let headers = [
         ("Cookie", cookie.as_str()),
         ("Origin", "http://localhost:3000"),
