@@ -2,6 +2,7 @@
 mod auth;
 mod operations;
 pub mod security;
+mod storage;
 pub mod ws;
 use crate::{auth::AuthService, config::Config, storage_recovery::LocalDeleteJobs};
 use axum::{
@@ -64,6 +65,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/operations/{id}", get(operations::detail))
         .route("/api/v1/operations/{id}/cancel", post(operations::cancel))
         .route("/api/v1/operations/{id}/retry", post(operations::retry))
+        .route("/api/v1/storage/types", get(storage::types))
         .route("/ws/updates", get(ws::updates))
         .fallback(|| async {
             (

@@ -1072,6 +1072,41 @@ async fn retry_links_only_failed_items_and_replay_does_not_touch_recreated_bytes
 }
 
 #[tokio::test]
+async fn storage_types_requires_session_and_returns_current_provider_contract() {
+    let server = Server::start("http://localhost:3000").await;
+    let path = "/api/v1/storage/types";
+    let (status, _, body) = server.request("GET", path, &[], None).await;
+    assert_eq!(
+        (status, body),
+        (
+            403,
+            json!({"detail":"Setup required","setup_required":true})
+        )
+    );
+    let cookie = server.setup().await;
+    let (status, _, _) = server.request("GET", path, &[], None).await;
+    assert_eq!(status, 401);
+    let (status, _, types) = server
+        .request("GET", path, &[("Cookie", cookie.as_str())], None)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(types.as_object().unwrap().len(), 6);
+    assert_eq!(
+        types["ftp"],
+        json!({"name":"FTP (unencrypted)","description":"Plain FTP server; use SSH/SFTP for secure transport. FTPS is not supported.","required":["host","username","password","base_path"],"optional":["port"]})
+    );
+    assert_eq!(
+        types["ssh"]["optional"],
+        json!(["port", "ssh_key_path", "password"])
+    );
+    assert_eq!(
+        types["s3"]["required"],
+        json!(["s3_bucket", "s3_access_key", "s3_secret_key"])
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn operation_detail_requires_authentication_and_ownership() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
