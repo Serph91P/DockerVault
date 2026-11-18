@@ -163,6 +163,20 @@ async fn local_delete_submit_commits_before_effect_and_replay_does_not_delete_ag
     let mut invalid = payload.clone();
     invalid["storage_id"] = json!(true);
     assert_eq!(post(&valid, invalid).await.0, 422);
+    let mut remote = payload.clone();
+    remote["storage_id"] = json!(41);
+    let missing = post(&valid, remote.clone()).await;
+    assert_eq!(
+        (missing.0, missing.2),
+        (404, json!({"detail":"Storage not found"}))
+    );
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled) VALUES (41,'disabled fixture','ssh',0)")
+        .execute(server.db.pool()).await.unwrap();
+    let disabled = post(&valid, remote).await;
+    assert_eq!(
+        (disabled.0, disabled.2),
+        (409, json!({"detail":"Storage is disabled"}))
+    );
     let mut over_limit = payload.clone();
     over_limit["paths"] = json!((0..1001).map(|i| format!("item-{i}")).collect::<Vec<_>>());
     assert_eq!(post(&valid, over_limit).await.0, 422);

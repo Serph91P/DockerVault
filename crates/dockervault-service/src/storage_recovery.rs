@@ -194,6 +194,16 @@ pub async fn storage_operation_detail(
     row.map(decode_snapshot).transpose()
 }
 
+pub(crate) async fn remote_enabled(
+    pool: &SqlitePool,
+    id: i64,
+) -> Result<Option<bool>, sqlx::Error> {
+    sqlx::query_scalar("SELECT COALESCE(enabled != 0, 0) FROM remote_storages WHERE id=?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+}
+
 pub async fn storage_operation_list(
     pool: &SqlitePool,
     user_id: i64,

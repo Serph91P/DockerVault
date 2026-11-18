@@ -31,16 +31,13 @@ pub(super) async fn submit(State(state): State<HttpState>, mut request: Request)
     if body["action"] != "storage_delete" {
         return invalid("body.action", "Input should be 'storage_delete'");
     }
-    if body["storage_id"] != "local" {
-        return if body["storage_id"].as_i64().is_some_and(|id| id > 0) {
-            failure(
-                StatusCode::NOT_IMPLEMENTED,
-                "Remote storage operations are unavailable",
-            )
-        } else {
-            invalid("body.storage_id", "Expected 'local' or a positive integer")
-        };
-    }
+    let remote_id = if body["storage_id"] == "local" {
+        None
+    } else if let Some(id) = body["storage_id"].as_i64().filter(|id| *id > 0) {
+        Some(id)
+    } else {
+        return invalid("body.storage_id", "Expected 'local' or a positive integer");
+    };
     let Some(path) = body["path"].as_str() else {
         return invalid("body.path", "Input should be a valid string");
     };
@@ -82,6 +79,17 @@ pub(super) async fn submit(State(state): State<HttpState>, mut request: Request)
     let Some(request_id) = canonical_uuid(&body["request_id"]) else {
         return invalid("body.request_id", "Input should be a valid UUID");
     };
+    if let Some(id) = remote_id {
+        use crate::storage_recovery::remote_enabled;
+        return match remote_enabled(state.auth.pool(), id).await {
+            Ok(None) => failure(StatusCode::NOT_FOUND, "Storage not found"),
+            Ok(Some(false)) => failure(StatusCode::CONFLICT, "Storage is disabled"),
+            Ok(Some(true)) => {
+                admission_response(Err(StorageRecoveryError::UnsupportedProvider), false)
+            }
+            Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+        };
+    }
     admit_local(
         &state,
         LocalSelection {
