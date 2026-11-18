@@ -11,7 +11,6 @@ use tokio::{
     sync::OwnedSemaphorePermit,
 };
 
-const MEDIA: &str = "application/octet-stream";
 const CHUNK: usize = 64 * 1024;
 
 pub(super) struct Validators {
@@ -50,6 +49,7 @@ pub(super) fn response(
     disposition: String,
     validators: Validators,
     request: &HeaderMap,
+    media: &'static str,
 ) -> Response {
     let if_range = request.get(header::IF_RANGE);
     let range = request.get(header::RANGE).filter(|_| {
@@ -77,7 +77,7 @@ pub(super) fn response(
     };
     let mut parts = VecDeque::new();
     let mut content_range = None;
-    let mut content_type = MEDIA.to_owned();
+    let mut content_type = media.to_owned();
     let (status, size) = match ranges.as_slice() {
         [] => {
             parts.push_back(Part::File {
@@ -102,7 +102,7 @@ pub(super) fn response(
             let mut size = footer.len() as u64;
             for (start, end) in ranges {
                 let prefix = format!(
-                    "--{boundary}\r\nContent-Type: {MEDIA}\r\nContent-Range: bytes {start}-{}/{length}\r\n\r\n",
+                    "--{boundary}\r\nContent-Type: {media}\r\nContent-Range: bytes {start}-{}/{length}\r\n\r\n",
                     end - 1
                 );
                 size += prefix.len() as u64 + (end - start) + 2;

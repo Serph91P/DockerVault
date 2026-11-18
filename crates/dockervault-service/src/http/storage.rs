@@ -740,22 +740,166 @@ async fn download_from(
     path: &str,
     headers: &axum::http::HeaderMap,
 ) -> Response {
-    use std::path::Path;
-
     let Some(path) = crate::storage::relative_path(path, false) else {
         return storage_error(StatusCode::BAD_REQUEST, "Invalid file path");
     };
-    let name = path.rsplit('/').next().unwrap_or_default();
+    let disposition = attachment(path.rsplit('/').next().unwrap_or_default());
+    let Ok(slot) = state.download_slots.clone().try_acquire_owned() else {
+        return storage_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Download capacity exhausted",
+        );
+    };
+    let result = snapshot_for_download(state, source, path, slot).await;
+    let Some((file, length, slot, validators)) = result else {
+        return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Download failed");
+    };
+    download::response(
+        file,
+        length,
+        slot,
+        disposition,
+        validators,
+        headers,
+        "application/octet-stream",
+    )
+}
+
+fn attachment(name: &str) -> String {
     const FILENAME_ENCODE: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
         .remove(b'-')
         .remove(b'_')
         .remove(b'.')
         .remove(b'~');
     let encoded = percent_encoding::utf8_percent_encode(name, FILENAME_ENCODE).to_string();
-    let disposition = if encoded == name {
+    if encoded == name {
         format!("attachment; filename=\"{name}\"")
     } else {
         format!("attachment; filename*=utf-8''{encoded}")
+    }
+}
+
+async fn snapshot_for_download(
+    state: &HttpState,
+    source: DownloadSource,
+    path: String,
+    slot: tokio::sync::OwnedSemaphorePermit,
+) -> Option<(
+    std::fs::File,
+    u64,
+    tokio::sync::OwnedSemaphorePermit,
+    download::Validators,
+)> {
+    let snapshot = match source {
+        DownloadSource::Local(root) => state
+            .auth
+            .blocking()
+            .submit_blocking(move |cancel| {
+                let (file, length) = crate::storage::local::snapshot_download(
+                    &root,
+                    std::path::Path::new(&path),
+                    &|| cancel.is_cancelled(),
+                )?;
+                Ok::<_, std::io::Error>((file, length, slot))
+            })
+            .ok()?
+            .wait()
+            .await
+            .ok()?
+            .ok()?,
+        DownloadSource::Rclone(config) => {
+            rclone::download_snapshot(state, config, path, slot).await?
+        }
+        DownloadSource::Sftp(endpoint, key) => endpoint
+            .download_snapshot(
+                state.probe_processes.as_ref()?,
+                &state.probe_jobs,
+                &path,
+                key,
+                slot,
+            )
+            .ok()?
+            .wait()
+            .await
+            .ok()?
+            .ok()?,
+        DownloadSource::Ftp(provider) => provider
+            .download_snapshot(path, state.auth.blocking(), slot)
+            .ok()?
+            .wait()
+            .await
+            .ok()?
+            .ok()?,
+        DownloadSource::S3(provider) => provider
+            .download_snapshot(path, slot)
+            .ok()?
+            .wait()
+            .await
+            .ok()?
+            .ok()?,
+        DownloadSource::Webdav(provider) => provider
+            .download_snapshot(path, slot)
+            .ok()?
+            .wait()
+            .await
+            .ok()?
+            .ok()?,
+    };
+    state
+        .auth
+        .blocking()
+        .submit_blocking(move |_| {
+            let (file, length, slot) = snapshot;
+            let validators = download::Validators::read(&file, length)?;
+            Ok::<_, std::io::Error>((file, length, slot, validators))
+        })
+        .ok()?
+        .wait()
+        .await
+        .ok()?
+        .ok()
+}
+
+pub(super) async fn bulk_local_download(
+    State(state): State<HttpState>,
+    mut request: axum::extract::Request,
+) -> Response {
+    use std::io::{Read, Seek, Write};
+    use std::path::{Path, PathBuf};
+
+    let body = match auth::json_body(&state, &mut request).await {
+        Ok(body) => body,
+        Err(response) => return *response,
+    };
+    let Some(paths) = body["paths"].as_array() else {
+        return *auth::validation(vec![
+            json!({"field":"body.paths","message":if body.get("paths").is_none() {"Field required"} else {"Input should be a valid list"}}),
+        ]);
+    };
+    if paths.is_empty() {
+        return storage_error(StatusCode::BAD_REQUEST, "No files specified");
+    }
+    let mut errors = Vec::new();
+    let mut selection = Vec::with_capacity(paths.len());
+    for (index, value) in paths.iter().enumerate() {
+        match value.as_str() {
+            Some(path) => selection.push(path),
+            None => errors.push(json!({"field":format!("body.paths.{index}"),"message":"Input should be a valid string"})),
+        }
+    }
+    if !errors.is_empty() {
+        return *auth::validation(errors);
+    }
+    let folder = selection[0]
+        .split_once('/')
+        .map_or("download", |(folder, _)| folder);
+    let disposition = attachment(&format!("{folder}.zip"));
+    let Some(paths) = selection
+        .into_iter()
+        .map(|path| crate::storage::relative_path(path, false))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return storage_error(StatusCode::BAD_REQUEST, "Invalid file path");
     };
     let Ok(slot) = state.download_slots.clone().try_acquire_owned() else {
         return storage_error(
@@ -763,68 +907,48 @@ async fn download_from(
             "Download capacity exhausted",
         );
     };
+    let root = PathBuf::from(&state.config.backup_base_path);
     let result = async {
-        let snapshot = match source {
-            DownloadSource::Local(root) => state
-                .auth
-                .blocking()
-                .submit_blocking(move |cancel| {
-                    let (file, length) =
-                        crate::storage::local::snapshot_download(&root, Path::new(&path), &|| {
-                            cancel.is_cancelled()
-                        })?;
-                    Ok::<_, std::io::Error>((file, length, slot))
-                })
-                .ok()?
-                .wait()
-                .await
-                .ok()?
-                .ok()?,
-            DownloadSource::Rclone(config) => {
-                rclone::download_snapshot(state, config, path, slot).await?
-            }
-            DownloadSource::Sftp(endpoint, key) => endpoint
-                .download_snapshot(
-                    state.probe_processes.as_ref()?,
-                    &state.probe_jobs,
-                    &path,
-                    key,
-                    slot,
-                )
-                .ok()?
-                .wait()
-                .await
-                .ok()?
-                .ok()?,
-            DownloadSource::Ftp(provider) => provider
-                .download_snapshot(path, state.auth.blocking(), slot)
-                .ok()?
-                .wait()
-                .await
-                .ok()?
-                .ok()?,
-            DownloadSource::S3(provider) => provider
-                .download_snapshot(path, slot)
-                .ok()?
-                .wait()
-                .await
-                .ok()?
-                .ok()?,
-            DownloadSource::Webdav(provider) => provider
-                .download_snapshot(path, slot)
-                .ok()?
-                .wait()
-                .await
-                .ok()?
-                .ok()?,
-        };
         state
             .auth
             .blocking()
-            .submit_blocking(move |_| {
-                let (file, length, slot) = snapshot;
+            .submit_blocking(move |cancel| -> std::io::Result<_> {
+                let stage = crate::storage::local::anonymous_download()?;
+                let mut archive = zip::ZipWriter::new(stage);
+                let mut buf = [0; 64 * 1024];
+                for path in paths {
+                    if cancel.is_cancelled() {
+                        return Err(std::io::ErrorKind::Interrupted.into());
+                    }
+                    let (mut input, length) = match crate::storage::local::snapshot_download(
+                        &root,
+                        Path::new(&path),
+                        &|| cancel.is_cancelled(),
+                    ) {
+                        Ok(item) => item,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(error) => return Err(error),
+                    };
+                    let opts = zip::write::SimpleFileOptions::default()
+                        .compression_method(zip::CompressionMethod::Deflated)
+                        .large_file(length >= u64::from(u32::MAX));
+                    archive.start_file(path.rsplit('/').next().unwrap_or_default(), opts)?;
+                    loop {
+                        if cancel.is_cancelled() {
+                            return Err(std::io::ErrorKind::Interrupted.into());
+                        }
+                        let count = input.read(&mut buf)?;
+                        if count == 0 {
+                            break;
+                        }
+                        archive.write_all(&buf[..count])?;
+                    }
+                }
+                let mut file = archive.finish()?;
+                let length = file.metadata()?.len();
+                file.rewind()?;
                 let validators = download::Validators::read(&file, length)?;
-                Ok::<_, std::io::Error>((file, length, slot, validators))
+                Ok((file, length, slot, validators))
             })
             .ok()?
             .wait()
@@ -834,9 +958,17 @@ async fn download_from(
     }
     .await;
     let Some((file, length, slot, validators)) = result else {
-        return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Download failed");
+        return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Bulk download failed");
     };
-    download::response(file, length, slot, disposition, validators, headers)
+    download::response(
+        file,
+        length,
+        slot,
+        disposition,
+        validators,
+        &axum::http::HeaderMap::new(),
+        "application/zip",
+    )
 }
 
 pub(super) async fn local_size(

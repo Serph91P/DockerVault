@@ -1443,6 +1443,61 @@ async fn configured_webdav_listing_reports_provider_failure_not_empty_success() 
 }
 
 #[tokio::test]
+async fn local_bulk_download_rejects_empty_selection() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let (status, _, body) = server
+        .request(
+            "POST",
+            "/api/v1/storage/local/files/bulk-download",
+            &[("Cookie", cookie.as_str())],
+            Some(json!({"paths": []})),
+        )
+        .await;
+    assert_eq!(
+        (status, body),
+        (400, json!({"detail":"No files specified"}))
+    );
+    server.close().await;
+}
+
+#[tokio::test]
+async fn local_bulk_download_contains_only_existing_selected_file_bytes() {
+    use std::io::{Cursor, Read};
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let dir = server.path.join("backups/folder");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("archive.tar"), b"\0archive\xff").unwrap();
+    let url = format!(
+        "http://{}/api/v1/storage/local/files/bulk-download",
+        server.address
+    );
+    let response = reqwest::Client::new()
+        .post(url)
+        .header("Cookie", cookie)
+        .header("Content-Type", "application/json")
+        .body(r#"{"paths":["folder/archive.tar","folder/missing.tar"]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.headers()["content-disposition"],
+        "attachment; filename=\"folder.zip\""
+    );
+    assert_eq!(response.headers()["content-type"], "application/zip");
+    let mut archive = zip::ZipArchive::new(Cursor::new(response.bytes().await.unwrap())).unwrap();
+    assert_eq!(archive.len(), 1);
+    let mut file = archive.by_name("archive.tar").unwrap();
+    assert_eq!(file.compression(), zip::CompressionMethod::Deflated);
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"\0archive\xff");
+    server.close().await;
+}
+
+#[tokio::test]
 async fn local_download_serves_attachment_bytes_and_rejects_symlinks() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
