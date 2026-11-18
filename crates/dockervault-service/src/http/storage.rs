@@ -22,6 +22,7 @@ macro_rules! select_storage {
 
 mod create;
 mod draft;
+mod rclone;
 pub(super) use create::{create, update};
 pub(super) use draft::test_config;
 
@@ -206,6 +207,7 @@ async fn probe_provider(state: &HttpState, config: Value, draft: bool) -> Respon
         Some("ftp") => probe_ftp(state, &config).await.is_some(),
         Some("s3") => probe_s3(state, &config).await.is_some(),
         Some("ssh" | "sftp") => return probe_ssh(state, &config, draft).await,
+        Some("rclone") => rclone::probe(state, &config).await.is_some(),
         _ => {
             return storage_error(
                 StatusCode::NOT_IMPLEMENTED,

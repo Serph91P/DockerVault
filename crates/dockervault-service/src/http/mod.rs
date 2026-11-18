@@ -21,6 +21,7 @@ pub struct HttpState {
     draining: tokio_util::sync::CancellationToken,
     local_delete: Arc<LocalDeleteJobs>,
     probe_processes: Option<crate::process::ProcessOwner>,
+    probe_jobs: crate::ownership::Owner,
 }
 impl HttpState {
     pub fn new(auth: AuthService, config: Config) -> Self {
@@ -36,6 +37,7 @@ impl HttpState {
                 "/usr/local/libexec/dockervault-process-guard",
             )
             .ok(),
+            probe_jobs: crate::ownership::Owner::new(4).expect("positive probe capacity"),
         }
     }
 
@@ -48,6 +50,7 @@ impl HttpState {
     ) -> Result<(), crate::storage_recovery::StorageRecoveryError> {
         self.begin_shutdown();
         self.local_delete.shutdown().await;
+        self.probe_jobs.shutdown(None).await;
         if let Some(processes) = &self.probe_processes {
             processes.shutdown(None).await;
         }

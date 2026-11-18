@@ -27,6 +27,10 @@ pub(in crate::http) async fn test_config(
             if !create::validate_create(&mut effective).is_empty() {
                 return bad_shape();
             }
+            effective
+                .as_object_mut()
+                .expect("validated object")
+                .remove("id");
             create::create_storage_errors(&effective)
         }
         Some("edit") if fields.len() == 1 => {
