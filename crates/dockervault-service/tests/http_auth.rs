@@ -1803,6 +1803,106 @@ async fn local_bulk_download_contains_only_existing_selected_file_bytes() {
 }
 
 #[tokio::test]
+async fn backup_archive_download_returns_exact_ciphertext_sidecar_and_ranges() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let auth = [("Cookie", cookie.as_str())];
+    let root = server.path.join("backups");
+    std::fs::write(root.join("old_name.tar"), b"synthetic archive").unwrap();
+    std::fs::write(root.join("archive.tar.enc"), b"ciphertext fixture").unwrap();
+    std::fs::write(root.join("custom.key"), b"wrapped key fixture").unwrap();
+    std::fs::write(server.path.join("outside.key"), b"outside root").unwrap();
+    std::os::unix::fs::symlink(server.path.join("outside.key"), root.join("unsafe.key")).unwrap();
+    sqlx::query("INSERT INTO backup_targets(id,name,target_type) VALUES(1,'fixture','path')")
+        .execute(server.db.pool())
+        .await
+        .unwrap();
+    for (id, status, name, encrypted, key) in [
+        (1, "COMPLETED", "old::name.tar", false, None),
+        (2, "COMPLETED", "archive.tar.enc", true, Some("custom.key")),
+        (3, "FAILED", "archive.tar.enc", true, None),
+        (4, "COMPLETED", "missing.tar", false, None),
+        (5, "COMPLETED", "archive.tar.enc", true, Some("unsafe.key")),
+    ] {
+        sqlx::query("INSERT INTO backups(id,target_id,backup_type,status,file_path,encrypted,encryption_key_path) VALUES(?,1,'FULL',?,?,?,?)")
+            .bind(id).bind(status).bind(root.join(name).to_string_lossy().into_owned()).bind(encrypted)
+            .bind(key.map(|path| root.join(path).to_string_lossy().into_owned())).execute(server.db.pool()).await.unwrap();
+    }
+    for (url, name, bytes) in [
+        ("1/download", "old_name.tar", "synthetic archive"),
+        ("2/download", "archive.tar.enc", "ciphertext fixture"),
+        (
+            "2/download?sidecar=true",
+            "custom.key",
+            "wrapped key fixture",
+        ),
+    ] {
+        let (status, headers, body) = server
+            .request("GET", &format!("/api/v1/backups/{url}"), &auth, None)
+            .await;
+        assert_eq!((status, body), (200, json!(bytes)));
+        for header in [
+            "content-type: application/octet-stream",
+            "cache-control: no-store",
+            "accept-ranges: bytes",
+            &format!("content-disposition: attachment; filename=\"{name}\""),
+        ] {
+            assert!(headers.contains(header), "missing {header}");
+        }
+    }
+    let (status, headers, body) = server
+        .request(
+            "GET",
+            "/api/v1/backups/2/download",
+            &[("Cookie", cookie.as_str()), ("Range", "bytes=0-5")],
+            None,
+        )
+        .await;
+    assert_eq!((status, body), (206, json!("cipher")));
+    assert!(headers.contains("content-range: bytes 0-5/18"));
+    for (url, status, detail) in [
+        (
+            "1/download?sidecar=true",
+            404,
+            "Archive has no encryption sidecar",
+        ),
+        ("3/download", 409, "Run has no completed archive"),
+        ("4/download", 404, "Archive content unavailable"),
+        (
+            "5/download?sidecar=true",
+            404,
+            "Archive content unavailable",
+        ),
+        ("999/download", 404, "Archive not found"),
+    ] {
+        let (actual, _, body) = server
+            .request("GET", &format!("/api/v1/backups/{url}"), &auth, None)
+            .await;
+        assert_eq!((actual, body), (status, json!({"detail":detail})));
+    }
+    assert_eq!(
+        server
+            .request(
+                "GET",
+                "/api/v1/backups/1/download?sidecar=invalid",
+                &auth,
+                None
+            )
+            .await
+            .0,
+        422
+    );
+    assert_eq!(
+        server
+            .request("GET", "/api/v1/backups/1/download", &[], None)
+            .await
+            .0,
+        401
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn local_download_serves_attachment_bytes_and_rejects_symlinks() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

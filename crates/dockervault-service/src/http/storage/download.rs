@@ -13,12 +13,12 @@ use tokio::{
 
 const CHUNK: usize = 64 * 1024;
 
-pub(super) struct Validators {
+pub(in crate::http) struct Validators {
     modified: String,
     etag: String,
 }
 impl Validators {
-    pub(super) fn read(file: &File, length: u64) -> io::Result<Self> {
+    pub(in crate::http) fn read(file: &File, length: u64) -> io::Result<Self> {
         let stat = file.metadata()?;
         let modified = time::OffsetDateTime::from_unix_timestamp(stat.mtime())
             .map_err(io::Error::other)?
@@ -42,7 +42,7 @@ enum Part {
     File { start: u64, end: u64 },
 }
 
-pub(super) fn response(
+pub(in crate::http) fn response(
     file: File,
     length: u64,
     slot: OwnedSemaphorePermit,

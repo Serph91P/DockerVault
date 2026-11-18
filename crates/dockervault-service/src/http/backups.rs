@@ -1,3 +1,7 @@
+#[path = "backup_archive_download.rs"]
+mod download;
+pub(super) use download::whole_archive as download;
+
 use super::{
     HttpState,
     auth::{required_user, validation},
@@ -516,13 +520,7 @@ fn local(path: Option<&str>) -> (bool, &'static str) {
     if first.0 {
         return first;
     }
-    let mut sanitized = String::new();
-    for c in path.chars() {
-        let c = if "<>:\"|?*".contains(c) { '_' } else { c };
-        if c != '_' || !sanitized.ends_with('_') {
-            sanitized.push(c);
-        }
-    }
+    let sanitized = sanitized_path(path);
     if sanitized != path {
         let fallback = state(&sanitized);
         if fallback.0 {
@@ -530,6 +528,17 @@ fn local(path: Option<&str>) -> (bool, &'static str) {
         }
     }
     first
+}
+
+fn sanitized_path(path: &str) -> String {
+    let mut sanitized = String::new();
+    for c in path.chars() {
+        let c = if "<>:\"|?*".contains(c) { '_' } else { c };
+        if c != '_' || !sanitized.ends_with('_') {
+            sanitized.push(c);
+        }
+    }
+    sanitized
 }
 fn stored_json<T: serde::de::DeserializeOwned>(
     row: &SqliteRow,

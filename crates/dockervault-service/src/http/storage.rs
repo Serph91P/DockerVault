@@ -21,7 +21,7 @@ macro_rules! select_storage {
 }
 
 mod create;
-mod download;
+pub(super) mod download;
 mod draft;
 mod rclone;
 pub(super) use create::{create, update};
@@ -765,7 +765,7 @@ async fn download_from(
     )
 }
 
-fn attachment(name: &str) -> String {
+pub(super) fn attachment(name: &str) -> String {
     const FILENAME_ENCODE: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
         .remove(b'-')
         .remove(b'_')

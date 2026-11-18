@@ -553,9 +553,20 @@ pub(crate) fn snapshot_download(
     cancelled: &dyn Fn() -> bool,
 ) -> io::Result<(File, u64)> {
     check(cancelled)?;
+    snapshot_download_source(open_download_source(root, path)?, cancelled)
+}
+
+pub(crate) fn open_download_source(root: &Path, path: &Path) -> io::Result<File> {
     let root = open_root(root)?;
     let (parent, name) = parent(&root, path, false)?;
-    let source = read_leaf(&parent, &name)?;
+    read_leaf(&parent, &name)
+}
+
+pub(crate) fn snapshot_download_source(
+    source: File,
+    cancelled: &dyn Fn() -> bool,
+) -> io::Result<(File, u64)> {
+    check(cancelled)?;
     let temp = open_root(&std::env::temp_dir())?;
     let mut snapshot = File::from(openat(
         &temp,
