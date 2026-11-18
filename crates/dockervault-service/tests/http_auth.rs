@@ -1443,6 +1443,22 @@ async fn configured_webdav_listing_reports_provider_failure_not_empty_success() 
 }
 
 #[tokio::test]
+async fn configured_local_bulk_download_reports_missing_storage() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let (status, _, body) = server
+        .request(
+            "POST",
+            "/api/v1/storage/45/files/bulk-download",
+            &[("Cookie", cookie.as_str())],
+            Some(json!({"paths": ["archive.tar"]})),
+        )
+        .await;
+    assert_eq!((status, body), (404, json!({"detail":"Storage not found"})));
+    server.close().await;
+}
+
+#[tokio::test]
 async fn local_bulk_download_rejects_empty_selection() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

@@ -97,6 +97,10 @@ pub fn router(state: HttpState) -> Router {
             post(storage::bulk_local_download),
         )
         .route(
+            "/api/v1/storage/{storage_id}/files/bulk-download",
+            post(storage::bulk_configured_download),
+        )
+        .route(
             "/api/v1/storage/{storage_id}/files",
             get(storage::list_configured_files),
         )

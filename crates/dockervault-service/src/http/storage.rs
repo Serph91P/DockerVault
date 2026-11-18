@@ -862,12 +862,28 @@ async fn snapshot_for_download(
 
 pub(super) async fn bulk_local_download(
     State(state): State<HttpState>,
+    request: axum::extract::Request,
+) -> Response {
+    bulk_download(&state, None, request).await
+}
+
+pub(super) async fn bulk_configured_download(
+    State(state): State<HttpState>,
+    Path(id): Path<String>,
+    request: axum::extract::Request,
+) -> Response {
+    bulk_download(&state, Some(id), request).await
+}
+
+async fn bulk_download(
+    state: &HttpState,
+    id: Option<String>,
     mut request: axum::extract::Request,
 ) -> Response {
     use std::io::{Read, Seek, Write};
     use std::path::{Path, PathBuf};
 
-    let body = match auth::json_body(&state, &mut request).await {
+    let body = match auth::json_body(state, &mut request).await {
         Ok(body) => body,
         Err(response) => return *response,
     };
@@ -890,6 +906,26 @@ pub(super) async fn bulk_local_download(
     if !errors.is_empty() {
         return *auth::validation(errors);
     }
+    let root = if let Some(id) = id {
+        let Some(id) = super::operations::query_integer(&id) else {
+            return invalid_id();
+        };
+        match configured_browse_root(state, id).await {
+            Ok(Some(root)) => root,
+            Ok(None) => {
+                return storage_error(
+                    StatusCode::NOT_IMPLEMENTED,
+                    "Remote storage operations are unavailable",
+                );
+            }
+            Err(response) => return *response,
+        }
+    } else {
+        state.config.backup_base_path.clone()
+    };
+    if root.is_empty() {
+        return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Bulk download failed");
+    }
     let folder = selection[0]
         .split_once('/')
         .map_or("download", |(folder, _)| folder);
@@ -907,7 +943,7 @@ pub(super) async fn bulk_local_download(
             "Download capacity exhausted",
         );
     };
-    let root = PathBuf::from(&state.config.backup_base_path);
+    let root = PathBuf::from(root);
     let result = async {
         state
             .auth
