@@ -387,7 +387,7 @@ async fn operation_detail_requires_authentication_and_ownership() {
     let cookie = server.setup().await;
     sqlx::raw_sql("INSERT INTO users(id,username,password_hash) VALUES(200,'other','synthetic');
         INSERT INTO storage_operations(id,user_id,request_id,payload,storage_identity,action,storage_id,path,state,stage,total,completed,succeeded,failed,skipped,unknown,cancel_requested,created_at,updated_at) VALUES
-        ('mine',1,'r1','{}','{}','storage_delete','local','','queued','queued',1,0,0,0,0,0,0,'2024-01-01 00:00:00','2024-01-01 00:00:00'),
+        ('mine',1,'r1','{}','{}','storage_delete','local','','queued','queued',1,0,0,0,0,0,0,'2024-01-01 00:00:00.120','2024-01-01 00:00:00.000000'),
         ('theirs',200,'r2','{}','{}','storage_delete','local','','queued','queued',1,0,0,0,0,0,0,'2024-01-01 00:00:00','2024-01-01 00:00:00');
         INSERT INTO storage_operation_items(operation_id,path,state) VALUES ('mine','fixture.tar','pending'),('theirs','other.tar','pending');")
         .execute(server.db.pool()).await.unwrap();
@@ -402,6 +402,9 @@ async fn operation_detail_requires_authentication_and_ownership() {
     assert_eq!(status, 200);
     assert_eq!(listing.as_array().unwrap().len(), 1);
     assert_eq!(listing[0]["id"], "mine");
+    assert_eq!(listing[0]["created_at"], "2024-01-01T00:00:00.120000Z");
+    assert_eq!(listing[0]["updated_at"], "2024-01-01T00:00:00Z");
+    assert_eq!(listing[0]["finished_at"], Value::Null);
     let (status, _, body) = server
         .request(
             "GET",

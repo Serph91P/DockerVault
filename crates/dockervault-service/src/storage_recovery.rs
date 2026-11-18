@@ -174,9 +174,7 @@ macro_rules! snapshot_sql {
             'cancel_requested',json(CASE WHEN op.cancel_requested THEN 'true' ELSE 'false' END),
             'parent_id',op.parent_id,
             'storage_id',CASE WHEN op.storage_id='local' THEN 'local' ELSE CAST(op.storage_id AS INTEGER) END,
-            'created_at',replace(op.created_at,' ','T')||'Z',
-            'updated_at',replace(op.updated_at,' ','T')||'Z',
-            'finished_at',replace(op.finished_at,' ','T')||'Z',
+            'created_at',op.created_at,'updated_at',op.updated_at,'finished_at',op.finished_at,
             'items',json((SELECT json_group_array(json_object('path',path,'state',state,'error',error))
                      FROM (SELECT path,state,error FROM storage_operation_items WHERE operation_id=op.id ORDER BY id))))
          FROM storage_operations AS op WHERE op.user_id=? AND op.action='storage_delete'", $suffix) };
@@ -219,7 +217,17 @@ pub async fn storage_operation_list(
 }
 
 fn decode_snapshot(row: String) -> Result<serde_json::Value, StorageRecoveryError> {
-    serde_json::from_str(&row).map_err(|_| StorageRecoveryError::InvalidRequest)
+    use dockervault_core::timestamp::Timestamp;
+    let mut snapshot: serde_json::Value =
+        serde_json::from_str(&row).map_err(|_| StorageRecoveryError::InvalidRequest)?;
+    for field in ["created_at", "updated_at", "finished_at"] {
+        if let Some(raw) = snapshot[field].as_str() {
+            let timestamp =
+                Timestamp::parse(raw).map_err(|_| StorageRecoveryError::InvalidRequest)?;
+            snapshot[field] = format!("{}Z", timestamp.api()).into();
+        }
+    }
+    Ok(snapshot)
 }
 
 #[derive(Debug)]
