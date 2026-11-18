@@ -318,7 +318,7 @@ pub(super) async fn list(
 }
 
 // Match the legacy coercion of query strings without rounding or changing JSON validation.
-fn query_integer(value: &str) -> Option<i64> {
+pub(super) fn query_integer(value: &str) -> Option<i64> {
     let value = value.trim();
     let integer = match value.split_once('.') {
         Some((integer, fraction))

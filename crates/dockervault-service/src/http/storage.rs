@@ -53,7 +53,7 @@ pub(super) async fn list(State(state): State<HttpState>) -> Response {
 }
 
 pub(super) async fn detail(State(state): State<HttpState>, Path(raw): Path<String>) -> Response {
-    let Ok(id) = raw.parse::<i64>() else {
+    let Some(id) = super::operations::query_integer(&raw) else {
         return *auth::validation(vec![
             json!({"field":"path.storage_id","message":"Input should be a valid integer, unable to parse string as an integer"}),
         ]);

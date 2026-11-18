@@ -1128,6 +1128,10 @@ async fn storage_inventory_and_detail_keep_legacy_repair_hints_without_credentia
             .all(|field| detail.get(field).is_none() && list[0].get(field).is_none())
     );
     assert_eq!(list[0], detail);
+    for path in ["/api/v1/storage/44.0", "/api/v1/storage/%2044%20"] {
+        let (status, _, equivalent) = server.request("GET", path, &headers, None).await;
+        assert_eq!((status, equivalent), (200, detail.clone()));
+    }
     assert_eq!(detail["id"], 44);
     assert_eq!(detail["enabled"], false);
     assert_eq!(detail["created_at"], "2024-02-01T01:02:03");
