@@ -48,13 +48,14 @@ pub async fn submit_delete(
     pool: &SqlitePool,
     request: DeleteAdmission<'_>,
 ) -> Result<String, StorageRecoveryError> {
-    Ok(admit_delete(pool, request, None).await?.0)
+    Ok(admit_delete(pool, request, None, None).await?.0)
 }
 
 async fn admit_delete(
     pool: &SqlitePool,
     request: DeleteAdmission<'_>,
     parent: Option<&RetryParent>,
+    remote_id: Option<i64>,
 ) -> Result<(String, bool), StorageRecoveryError> {
     use StorageRecoveryError as Error;
     let invalid = Error::InvalidRequest;
@@ -104,6 +105,11 @@ async fn admit_delete(
     }
     if !request.identity.is_object()
         || parent.is_some_and(|parent| &parent.identity != request.identity)
+    {
+        return Err(Error::IdentityChanged);
+    }
+    if let Some(id) = remote_id
+        && !matches_remote_configuration(&mut tx, id, request.identity).await?
     {
         return Err(Error::IdentityChanged);
     }
@@ -233,7 +239,7 @@ pub(crate) async fn replay_remote_delete(
     request_id: &str,
     path: &str,
     paths: &[String],
-) -> Result<String, StorageRecoveryError> {
+) -> Result<Option<String>, StorageRecoveryError> {
     use StorageRecoveryError as Error;
     let normalized = normalize_delete_selection(paths.iter().map(String::as_str))?;
     let path = relative_path(path, true).ok_or(Error::InvalidRequest)?;
@@ -246,17 +252,19 @@ pub(crate) async fn replay_remote_delete(
         return Err(Error::RecoveryPending);
     }
     if let Some(operation) = matching_delete(&mut tx, user_id, request_id, &payload).await? {
-        return Ok(operation);
+        return Ok(Some(operation));
     }
-    let supported: Option<bool> =
-        sqlx::query_scalar("SELECT COALESCE(enabled != 0, 0) FROM remote_storages WHERE id=?")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
+    let supported: Option<(bool, String)> = sqlx::query_as(
+        "SELECT COALESCE(enabled != 0, 0),storage_type FROM remote_storages WHERE id=?",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
     Err(match supported {
         None => Error::StorageNotFound,
-        Some(false) => Error::StorageDisabled,
-        Some(true) => Error::UnsupportedProvider,
+        Some((false, _)) => Error::StorageDisabled,
+        Some((true, kind)) if kind == "local" => return Ok(None),
+        Some((true, _)) => Error::UnsupportedProvider,
     })
 }
 
@@ -265,11 +273,43 @@ pub async fn remote_storage_identity(
     pool: &SqlitePool,
     id: i64,
 ) -> Result<Option<serde_json::Value>, StorageRecoveryError> {
+    remote_row(pool, id)
+        .await?
+        .as_ref()
+        .map(remote_identity)
+        .transpose()
+}
+
+async fn remote_row<'e>(
+    executor: impl sqlx::SqliteExecutor<'e>,
+    id: i64,
+) -> Result<Option<sqlx::sqlite::SqliteRow>, sqlx::Error> {
+    sqlx::query("SELECT base_path,created_at,enabled,host,id,name,password,port,rclone_remote,s3_access_key,s3_bucket,s3_endpoint_url,s3_region,s3_secret_key,ssh_key_path,storage_type,updated_at,username,webdav_url FROM remote_storages WHERE id=?")
+        .bind(id).fetch_optional(executor).await
+}
+
+async fn matches_remote_configuration(
+    connection: &mut sqlx::SqliteConnection,
+    id: i64,
+    expected: &serde_json::Value,
+) -> Result<bool, StorageRecoveryError> {
+    let Some(row) = remote_row(connection, id).await? else {
+        return Ok(false);
+    };
+    match remote_identity(&row) {
+        Ok(value) => Ok(value["config"] == expected["config"]),
+        Err(StorageRecoveryError::IdentityChanged) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn remote_identity(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<serde_json::Value, StorageRecoveryError> {
     use dockervault_core::{encoding::python_string, timestamp::Timestamp};
     use sha2::{Digest, Sha256};
     use sqlx::Row;
-    let Some(row) = sqlx::query("SELECT base_path,created_at,enabled,host,id,name,password,port,rclone_remote,s3_access_key,s3_bucket,s3_endpoint_url,s3_region,s3_secret_key,ssh_key_path,storage_type,updated_at,username,webdav_url FROM remote_storages WHERE id=?")
-        .bind(id).fetch_optional(pool).await? else { return Ok(None); };
+
     let mut entries = Vec::new();
     // The select list is sorted to match json.dumps(sort_keys=True).
     for column in row.columns() {
@@ -301,7 +341,7 @@ pub async fn remote_storage_identity(
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    Ok(Some(serde_json::json!({"config":digest})))
+    Ok(serde_json::json!({"config":digest}))
 }
 
 pub async fn storage_operation_list(
@@ -354,6 +394,16 @@ pub async fn claim_next(
     operation_id: &str,
     current_identity: &serde_json::Value,
 ) -> Result<Option<ClaimedItem>, StorageRecoveryError> {
+    claim_delete(pool, user_id, operation_id, current_identity, None).await
+}
+
+async fn claim_delete(
+    pool: &SqlitePool,
+    user_id: i64,
+    operation_id: &str,
+    current_identity: &serde_json::Value,
+    remote_id: Option<i64>,
+) -> Result<Option<ClaimedItem>, StorageRecoveryError> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     if recovery_pending_in(&mut *tx)
         .await
@@ -382,6 +432,15 @@ pub async fn claim_next(
     {
         tx.rollback().await?;
         return Err(StorageRecoveryError::IdentityChanged);
+    }
+    if let Some(id) = remote_id
+        && !matches_remote_configuration(&mut tx, id, current_identity).await?
+    {
+        sqlx::query("UPDATE storage_operation_items SET state='failed',error='Storage identity changed or unavailable; target not deleted' WHERE operation_id=? AND state='pending'")
+            .bind(operation_id).execute(&mut *tx).await?;
+        refresh_settled(&mut tx, operation_id).await?;
+        tx.commit().await?;
+        return Ok(None);
     }
     let item: Option<(i64, String)> = sqlx::query_as(
         "UPDATE storage_operation_items SET state='running'
@@ -577,7 +636,7 @@ pub fn start_local_delete(
         if cancel.is_cancelled() {
             return Ok(false);
         }
-        delete_next_local(&pool, &local, user_id, &operation_id, &identity).await
+        delete_next_local(&pool, &local, user_id, &operation_id, &identity, None).await
     })
 }
 
@@ -587,10 +646,11 @@ async fn delete_next_local(
     user_id: i64,
     operation_id: &str,
     identity: &serde_json::Value,
+    remote_id: Option<i64>,
 ) -> Result<bool, StorageRecoveryError> {
     let expected_root = serde_json::from_value::<(u64, u64)>(identity["root_inode"].clone())
         .map_err(|_| StorageRecoveryError::IdentityChanged)?;
-    let Some(item) = claim_next(pool, user_id, operation_id, identity).await? else {
+    let Some(item) = claim_delete(pool, user_id, operation_id, identity, remote_id).await? else {
         return Ok(false);
     };
     let outcome = match relative_path(&item.path, false) {
@@ -626,6 +686,7 @@ pub(crate) struct LocalSelection {
     pub request_id: String,
     pub path: String,
     pub paths: Vec<String>,
+    pub remote_id: Option<i64>,
     pub parent: Option<RetryParent>,
 }
 
@@ -665,6 +726,7 @@ impl LocalSelection {
             request_id,
             path,
             paths,
+            remote_id: None,
             parent: Some(RetryParent { id, identity }),
         })
     }
@@ -697,30 +759,63 @@ impl LocalDeleteJobs {
             .submit_async(move |_| async move {
                 let mut tail = this.tail.lock().await;
                 let io = this.io.clone();
-                let root_path = root.clone();
+                let prepared = async {
+                    use sqlx::Row;
+                    if let Some(id) = selection.remote_id {
+                        let row = remote_row(&pool, id).await?.ok_or(Error::StorageNotFound)?;
+                        if !row.try_get::<Option<bool>, _>("enabled")?.unwrap_or(false) {
+                            return Err(Error::StorageDisabled);
+                        }
+                        if row.try_get::<String, _>("storage_type")? != "local" {
+                            return Err(Error::UnsupportedProvider);
+                        }
+                        let root = row
+                            .try_get::<Option<String>, _>("base_path")?
+                            .ok_or(Error::IdentityChanged)?;
+                        if root.is_empty() {
+                            return Err(Error::IdentityChanged);
+                        }
+                        Ok((root, remote_identity(&row)?))
+                    } else {
+                        Ok((root.clone(), serde_json::json!({"root":root})))
+                    }
+                }
+                .await;
+                let (root_path, mut identity) = match prepared {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        let _ = accepted.send(Err(error));
+                        return;
+                    }
+                };
                 let pinned = match this.io.submit_blocking(move |_| {
                     LocalStorage::pin_configured(std::path::Path::new(&root_path), io)
                 }) {
                     Ok(work) => work.wait().await.ok().and_then(Result::ok),
                     Err(_) => None,
                 };
-                let identity = pinned.as_ref().map_or(
-                    serde_json::Value::Null,
-                    |(_, inode)| serde_json::json!({"root":root,"root_inode":inode}),
-                );
+                if let Some((_, inode)) = &pinned {
+                    identity["root_inode"] = serde_json::json!(inode);
+                } else {
+                    identity = serde_json::Value::Null;
+                }
+                let storage_id = selection
+                    .remote_id
+                    .map_or_else(|| "local".to_owned(), |id| id.to_string());
                 let paths: Vec<&str> = selection.paths.iter().map(String::as_str).collect();
                 let admission = admit_delete(
                     &pool,
                     DeleteAdmission {
                         user_id: selection.user_id,
                         request_id: &selection.request_id,
-                        storage_id: "local",
+                        storage_id: &storage_id,
                         path: &selection.path,
                         paths: &paths,
                         identity: &identity,
                         accepting: !this.stopped.is_cancelled() && !draining.is_cancelled(),
                     },
                     selection.parent.as_ref(),
+                    selection.remote_id,
                 )
                 .await;
                 let (id, local) = match (admission, pinned) {
@@ -758,7 +853,16 @@ impl LocalDeleteJobs {
                             request_cancel(&pool, user, &id).await?;
                             break;
                         }
-                        if !delete_next_local(&pool, &local, user, &id, &identity).await? {
+                        if !delete_next_local(
+                            &pool,
+                            &local,
+                            user,
+                            &id,
+                            &identity,
+                            selection.remote_id,
+                        )
+                        .await?
+                        {
                             break;
                         }
                         notify(user, &id);

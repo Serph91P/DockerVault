@@ -80,18 +80,20 @@ pub(super) async fn submit(State(state): State<HttpState>, mut request: Request)
         return invalid("body.request_id", "Input should be a valid UUID");
     };
     if let Some(id) = remote_id {
-        return admission_response(
-            crate::storage_recovery::replay_remote_delete(
-                state.auth.pool(),
-                user.id,
-                id,
-                &request_id,
-                path,
-                &targets,
-            )
-            .await,
-            false,
-        );
+        match crate::storage_recovery::replay_remote_delete(
+            state.auth.pool(),
+            user.id,
+            id,
+            &request_id,
+            path,
+            &targets,
+        )
+        .await
+        {
+            Ok(None) => {}
+            Ok(Some(receipt)) => return admission_response(Ok(receipt), false),
+            Err(error) => return admission_response(Err(error), false),
+        }
     }
     admit_local(
         &state,
@@ -100,6 +102,7 @@ pub(super) async fn submit(State(state): State<HttpState>, mut request: Request)
             request_id,
             path: path.to_owned(),
             paths: targets,
+            remote_id,
             parent: None,
         },
     )

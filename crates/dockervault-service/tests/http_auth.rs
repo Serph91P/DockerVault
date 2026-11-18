@@ -304,6 +304,107 @@ async fn local_delete_submit_commits_before_effect_and_replay_does_not_delete_ag
 }
 
 #[tokio::test]
+async fn configured_local_target_deletes_from_its_own_root() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let root = server.path.join("configured-local");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("same.tar"), b"selected").unwrap();
+    let builtin = server.path.join("backups/same.tar");
+    std::fs::write(&builtin, b"unselected").unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path) VALUES (41,'fixture','local',1,?)")
+        .bind(root.to_str().unwrap()).execute(server.db.pool()).await.unwrap();
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let (status, _, response) = server
+        .request(
+            "POST",
+            "/api/v1/operations",
+            &headers,
+            Some(json!({
+                "action":"storage_delete", "storage_id":41, "path":"", "paths":["same.tar"],
+                "request_id":"2943eea3-0dd6-48b5-8d76-a01c54e40f99"
+            })),
+        )
+        .await;
+    assert_eq!(status, 202);
+    let id = response["operation_id"].as_str().unwrap();
+    let detail = format!("/api/v1/operations/{id}");
+    let final_state = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let (status, _, snapshot) = server.request("GET", &detail, &headers, None).await;
+            assert_eq!(status, 200);
+            if snapshot["finished_at"].is_string() {
+                break snapshot;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(final_state["storage_id"], 41);
+    assert_eq!(final_state["state"], "completed");
+    assert_eq!(final_state["succeeded"], 1);
+    assert!(!root.join("same.tar").exists());
+    assert_eq!(std::fs::read(builtin).unwrap(), b"unselected");
+    let text: String =
+        sqlx::query_scalar("SELECT storage_identity FROM storage_operations WHERE id=?")
+            .bind(id)
+            .fetch_one(server.db.pool())
+            .await
+            .unwrap();
+    let identity: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(identity["config"].as_str().unwrap().len(), 64);
+    assert_eq!(identity["root_inode"].as_array().unwrap().len(), 2);
+    assert!(identity.get("root").is_none());
+
+    std::fs::write(root.join("same.tar"), b"must survive config drift").unwrap();
+    // Change identity inside the committed admission, before a worker can claim the item.
+    sqlx::query("CREATE TRIGGER drift_after_admission AFTER INSERT ON storage_operations WHEN NEW.storage_id='41' BEGIN UPDATE remote_storages SET name='reconfigured' WHERE id=41; END")
+        .execute(server.db.pool()).await.unwrap();
+    let (status, _, response) = server
+        .request(
+            "POST",
+            "/api/v1/operations",
+            &headers,
+            Some(json!({
+                "action":"storage_delete", "storage_id":41, "path":"", "paths":["same.tar"],
+                "request_id":"3943eea3-0dd6-48b5-8d76-a01c54e40f99"
+            })),
+        )
+        .await;
+    assert_eq!(status, 202);
+    let detail = format!(
+        "/api/v1/operations/{}",
+        response["operation_id"].as_str().unwrap()
+    );
+    let final_state = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let (status, _, snapshot) = server.request("GET", &detail, &headers, None).await;
+            assert_eq!(status, 200);
+            if snapshot["finished_at"].is_string() {
+                break snapshot;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(final_state["state"], "failed");
+    assert_eq!(
+        final_state["items"][0]["error"],
+        "Storage identity changed or unavailable; target not deleted"
+    );
+    assert_eq!(
+        std::fs::read(root.join("same.tar")).unwrap(),
+        b"must survive config drift"
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn python_remote_receipt_can_be_replayed_after_its_target_was_removed() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
