@@ -30,6 +30,7 @@ pub enum FtpError {
     Protocol,
     Reply(u16),
     AbortUnsettled,
+    DeleteUnsettled,
     Verification,
     PublicationUncertain,
 }
@@ -37,7 +38,8 @@ impl fmt::Display for FtpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Config => f.write_str("Invalid FTP configuration"),
-            Self::Cancelled => f.write_str("FTP operation cancelled"),
+            Self::Cancelled => f.write_str("FTP operation cancelled; remote effect may exist"),
+            Self::DeleteUnsettled => f.write_str("FTP delete effect is unconfirmed"),
             Self::Timeout => f.write_str("FTP operation timed out"),
             Self::Io => f.write_str("FTP socket I/O failed"),
             Self::Protocol => f.write_str("Invalid FTP reply"),
@@ -83,6 +85,39 @@ impl Ftp {
             tokio::select! { biased;
                 _ = cancel.cancelled() => Err(FtpError::Cancelled),
                 result = control.quit() => result,
+            }
+        })
+    }
+}
+
+impl Ftp {
+    /// Caller owns the durable delete intent, including an unconfirmed server reply.
+    pub fn delete(&self, remote: String) -> Result<Work<Result<(), FtpError>>, WorkError> {
+        let config = self.config.clone();
+        self.owner.submit_async(move |cancel| async move {
+            if !valid_argument(&remote)
+                || remote
+                    .split('/')
+                    .any(|part| matches!(part, "" | "." | ".."))
+            {
+                return Err(FtpError::Config);
+            }
+            let remote = format!("{}/{}", config.base_path.trim_end_matches('/'), remote);
+            if !valid_argument(&remote) {
+                return Err(FtpError::Config);
+            }
+            let mut control = Control::connect(&config, &cancel).await?;
+            if cancel.is_cancelled() {
+                return Err(FtpError::Cancelled);
+            }
+            // DELE cannot be recalled after the server receives it.
+            let result = control.command("DELE", Some(&remote)).await;
+            expect(result.map_err(|_| FtpError::DeleteUnsettled)?, &[250])?;
+            control.quit().await?;
+            if cancel.is_cancelled() {
+                Err(FtpError::Cancelled)
+            } else {
+                Ok(())
             }
         })
     }

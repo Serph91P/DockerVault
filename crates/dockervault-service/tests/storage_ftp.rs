@@ -349,6 +349,55 @@ async fn ftp_upload_requires_independent_full_readback_before_reporting_success(
     }
 }
 
+#[tokio::test]
+async fn ftp_delete_claim_survives_cancel_until_provider_acknowledges() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let owner = Owner::new(1).unwrap();
+    let ftp = backend(&listener, &owner, "owned", "synthetic");
+    let (seen, delete_received) = tokio::sync::oneshot::channel();
+    let (release, reply_allowed) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let mut control = BufReader::new(listener.accept().await.unwrap().0);
+        control.write_all(b"220 ready\r\n").await.unwrap();
+        assert_eq!(read_command(&mut control).await, "USER owned\r\n");
+        control.write_all(b"230 logged in\r\n").await.unwrap();
+        assert_eq!(
+            read_command(&mut control).await,
+            "DELE /backups/archive.tar\r\n"
+        );
+        seen.send(()).unwrap();
+        reply_allowed.await.unwrap();
+        control.write_all(b"250 deleted\r\n").await.unwrap();
+        assert_eq!(read_command(&mut control).await, "QUIT\r\n");
+        control.write_all(b"221 goodbye\r\n").await.unwrap();
+        assert!(read_command(&mut control).await.is_empty());
+    });
+    let work = ftp.delete("archive.tar".into()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), delete_received)
+        .await
+        .unwrap()
+        .unwrap();
+    work.cancel();
+    let mut result = std::pin::pin!(work.wait());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut result)
+            .await
+            .is_err()
+    );
+    assert_eq!(owner.active(), 1);
+    assert!(ftp.delete("archive.tar".into()).is_err());
+    release.send(()).unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), result)
+            .await
+            .unwrap()
+            .unwrap(),
+        Err(FtpError::Cancelled)
+    );
+    assert_eq!(owner.active(), 0);
+    server.await.unwrap();
+}
+
 fn backend(listener: &TcpListener, owner: &Owner, user: &str, password: &str) -> Ftp {
     let address = listener.local_addr().unwrap();
     Ftp::new(
