@@ -336,16 +336,41 @@ fn parent(root: &File, path: &Path, create: bool) -> io::Result<(File, OsString)
     Ok((current, name))
 }
 pub(crate) fn open_root(path: &Path) -> io::Result<File> {
-    let mut current = File::open("/")?;
-    for component in path
+    walk_root(path, false)
+}
+
+pub(crate) fn open_or_create_root(path: &Path) -> io::Result<File> {
+    walk_root(path, true)
+}
+
+fn walk_root(path: &Path, create: bool) -> io::Result<File> {
+    let parts = path
         .strip_prefix("/")
         .map_err(io::Error::other)?
-        .components()
+        .components();
+    // Reject traversal before the first mkdir, even if a preceding component is missing.
+    if parts
+        .clone()
+        .any(|part| !matches!(part, Component::Normal(_)))
     {
+        return Err(invalid("Storage root must not contain parent components"));
+    }
+    let mut current = File::open("/")?;
+    for component in parts {
         let Component::Normal(name) = component else {
             return Err(invalid("Storage root must not contain parent components"));
         };
-        current = open_directory(&current, name)?;
+        current = match open_directory(&current, name) {
+            Err(error) if create && error.kind() == io::ErrorKind::NotFound => {
+                match mkdirat(&current, name, Mode::from_bits_truncate(0o755)) {
+                    Ok(()) => current.sync_all()?,
+                    Err(nix::errno::Errno::EEXIST) => {}
+                    Err(error) => return Err(error.into()),
+                }
+                open_directory(&current, name)?
+            }
+            result => result?,
+        };
     }
     Ok(current)
 }

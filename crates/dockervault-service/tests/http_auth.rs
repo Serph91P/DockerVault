@@ -1282,6 +1282,52 @@ async fn saved_webdav_probe_waits_for_the_remote_propfind_result() {
 }
 
 #[tokio::test]
+async fn saved_local_storage_probe_creates_only_the_configured_directory() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let target = server.path.join("missing/nested");
+    let outside = server.path.join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    let link = server.path.join("link");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    for (id, path) in [
+        (44, target.clone()),
+        (45, link.join("untouched")),
+        (46, server.path.join("unchecked/../unexpected")),
+    ] {
+        sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path) VALUES(?,?,'local',1,?)")
+            .bind(id).bind(format!("local fixture {id}")).bind(path.to_str().unwrap()).execute(server.db.pool()).await.unwrap();
+    }
+    assert!(!target.exists());
+    for (id, success) in [(44, true), (44, true), (45, false), (46, false)] {
+        let (status, _, result) = server
+            .request(
+                "POST",
+                &format!("/api/v1/storage/{id}/test"),
+                &headers,
+                None,
+            )
+            .await;
+        assert_eq!(
+            (status, result),
+            (
+                200,
+                json!({"success":success,"message":if success {"Connection test succeeded"} else {"Connection test failed"}})
+            )
+        );
+    }
+    assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    assert!(!server.path.join("unchecked").exists());
+    assert!(!server.path.join("unexpected").exists());
+    server.close().await;
+}
+
+#[tokio::test]
 async fn saved_local_storage_probe_checks_writability_without_leaving_a_file() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

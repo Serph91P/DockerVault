@@ -180,7 +180,7 @@ async fn probe_webdav(
 fn local_writable(path: &std::path::Path) -> std::io::Result<()> {
     use nix::fcntl::{OFlag, openat};
     use std::io::Write;
-    let directory = crate::storage::local::open_root(path)?;
+    let directory = crate::storage::local::open_or_create_root(path)?;
     let probe = openat(
         &directory,
         ".",
