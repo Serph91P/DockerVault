@@ -12,6 +12,7 @@ use axum::{
 use serde_json::{Value, json};
 use sqlx::{Execute, QueryBuilder, Row, Sqlite, SqliteConnection, sqlite::SqliteRow};
 use std::{collections::HashMap, io::ErrorKind, path::Path as FsPath};
+use strum::EnumMessage;
 use time::{
     Date, OffsetDateTime, PrimitiveDateTime, UtcOffset, format_description::well_known::Rfc3339,
     macros::format_description,
@@ -67,17 +68,49 @@ impl Filters {
     }
     fn date(&mut self, field: &str) -> Option<String> {
         let raw = self.values.get(field)?;
-        match date(raw).and_then(|date| date.to_offset(UtcOffset::UTC).format(SQL_TIME).ok()) {
-            Some(value) => Some(value),
-            None => {
+        match history_boundary(raw) {
+            Ok(value) => Some(value),
+            Err(reason) => {
                 self.error(
                     field,
-                    "Input should be a valid datetime or date, invalid date or datetime",
+                    format!("Input should be a valid datetime or date, {reason}"),
                 );
                 None
             }
         }
     }
+}
+
+fn history_boundary(raw: &str) -> Result<String, &'static str> {
+    // Match the previous HTTP parser, including lax ISO and numeric timestamps.
+    use speedate::{
+        Date, DateTime, DateTimeConfig, MicrosecondsPrecisionOverflowBehavior, TimeConfig,
+        TimestampUnit,
+    };
+    let config = DateTimeConfig {
+        timestamp_unit: TimestampUnit::Infer,
+        time_config: TimeConfig {
+            microseconds_precision_overflow_behavior:
+                MicrosecondsPrecisionOverflowBehavior::Truncate,
+            unix_timestamp_offset: Some(0),
+        },
+    };
+    let (seconds, micros) = match DateTime::parse_bytes_with_config(raw.as_bytes(), &config) {
+        Ok(date) => (date.timestamp_tz(), date.time.microsecond),
+        Err(_) => {
+            let date = Date::parse_str(raw).map_err(|err| {
+                err.get_documentation()
+                    .unwrap_or("invalid date or datetime")
+            })?;
+            (date.timestamp(), 0)
+        }
+    };
+    let instant = i128::from(seconds) * 1_000_000_000 + i128::from(micros) * 1000;
+    OffsetDateTime::from_unix_timestamp_nanos(instant)
+        .ok()
+        .filter(|dt| (1..=9999).contains(&dt.year()))
+        .and_then(|dt| dt.format(SQL_TIME).ok())
+        .ok_or("date is outside the supported range")
 }
 
 fn date(value: &str) -> Option<OffsetDateTime> {

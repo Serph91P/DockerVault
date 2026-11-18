@@ -25,6 +25,8 @@ bcrypt.workspace = true
 getrandom.workspace = true
 sha2.workspace = true
 time = { workspace = true, features = ["macros"] }
+speedate = "=0.18.0"
+strum = { version = "=0.28.0", default-features = false }
 dotenvy.workspace = true
 axum.workspace = true
 nix.workspace = true

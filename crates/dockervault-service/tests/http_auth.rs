@@ -136,6 +136,35 @@ impl Server {
 }
 
 #[tokio::test]
+async fn backup_history_accepts_legacy_datetime_filters_and_returns_python_errors() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [("Cookie", cookie.as_str())];
+    for date in ["2026-01-02T10:00", "2026-01-02T11:00:00%2B0100"] {
+        let path = format!("/api/v1/backups/history?after={date}");
+        assert_eq!(
+            server.request("GET", &path, &headers, None).await.0,
+            200,
+            "{date}"
+        );
+    }
+    let (status, _, error) = server
+        .request(
+            "GET",
+            "/api/v1/backups/history?after=not-a-date",
+            &headers,
+            None,
+        )
+        .await;
+    assert_eq!(status, 422);
+    assert_eq!(
+        error["errors"],
+        json!([{"field":"query.after","message":"Input should be a valid datetime or date, invalid character in year"}])
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn backup_catalog_reads_records_and_validates_filters() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
