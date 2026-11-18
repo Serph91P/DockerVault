@@ -89,6 +89,111 @@ pub(in crate::http) async fn create(
         )
             .into_response();
     }
+    let data = match prepare(&state, data).await {
+        Ok(data) => data,
+        Err(response) => return *response,
+    };
+    persist_create(&state, data).await
+}
+
+pub(in crate::http) async fn update(
+    State(state): State<HttpState>,
+    Path(raw): Path<String>,
+    mut request: Request,
+) -> Response {
+    let Some(id) = super::super::operations::query_integer(&raw) else {
+        return invalid_id();
+    };
+    let mut data = match auth::json_body(&state, &mut request).await {
+        Ok(value) => value,
+        Err(response) => return *response,
+    };
+    let values = data.as_object_mut().expect("validated object");
+    values.retain(|key, value| {
+        (OPTIONAL.contains(&key.as_str())
+            || matches!(key.as_str(), "name" | "base_path" | "enabled" | "port"))
+            && !(SECRETS.contains(&key.as_str()) && value.as_str() == Some(""))
+    });
+    let mut errors = Vec::new();
+    for (field, value) in values.iter() {
+        let invalid = match field.as_str() {
+            "enabled" if !value.is_null() && !value.is_boolean() => {
+                Some("Input should be a valid boolean")
+            }
+            "port" if !value.is_null() => match value.as_i64() {
+                None => Some("Input should be a valid integer"),
+                Some(v) if v < 1 => Some("Input should be greater than or equal to 1"),
+                Some(v) if v > 65535 => Some("Input should be less than or equal to 65535"),
+                _ => None,
+            },
+            "port" | "enabled" => None,
+            "name" if value.as_str() == Some("") => Some("String should have at least 1 character"),
+            "name" if value.as_str().is_some_and(|v| v.chars().count() > 255) => {
+                Some("String should have at most 255 characters")
+            }
+            _ if !value.is_null() && !value.is_string() => Some("Input should be a valid string"),
+            _ => None,
+        };
+        if let Some(message) = invalid {
+            errors.push(json!({"field":format!("body.{field}"),"message":message}));
+        }
+    }
+    if !errors.is_empty() {
+        return *auth::validation(errors);
+    }
+    match persist_update(&state, id, data).await {
+        Ok(response) => response,
+        Err(_) => storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+    }
+}
+
+async fn persist_update(state: &HttpState, id: i64, data: Value) -> Result<Response, sqlx::Error> {
+    let mut tx = state.auth.pool().begin_with("BEGIN IMMEDIATE").await?;
+    let Some(row) = sqlx::query_scalar::<_, String>(select_storage!(" WHERE id=?"))
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+    else {
+        return Ok(storage_error(StatusCode::NOT_FOUND, "Storage not found"));
+    };
+    let original: serde_json::Map<String, Value> = serde_json::from_str(&row)
+        .map_err(|_| sqlx::Error::Protocol("Invalid storage record".into()))?;
+    let mut effective = original.clone();
+    for (key, value) in data.as_object().expect("validated object") {
+        effective.insert(key.clone(), value.clone());
+    }
+    let errors = storage_errors(&Value::Object(effective.clone()));
+    if !errors.is_empty() {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail":{"message":"Invalid storage configuration","errors":errors}})),
+        )
+            .into_response());
+    }
+    let encoded = match prepare(state, data).await {
+        Ok(value) => value,
+        Err(response) => return Ok(*response),
+    };
+    let mut changed = false;
+    for (key, value) in encoded.as_object().expect("validated object") {
+        changed |= original.get(key) != Some(value);
+        effective.insert(key.clone(), value.clone());
+    }
+    if changed {
+        let saved = Value::Object(effective).to_string();
+        sqlx::query("UPDATE remote_storages SET name=json_extract(?1,'$.name'),enabled=json_extract(?1,'$.enabled'),host=json_extract(?1,'$.host'),port=json_extract(?1,'$.port'),username=json_extract(?1,'$.username'),password=json_extract(?1,'$.password'),base_path=json_extract(?1,'$.base_path'),ssh_key_path=json_extract(?1,'$.ssh_key_path'),s3_bucket=json_extract(?1,'$.s3_bucket'),s3_region=json_extract(?1,'$.s3_region'),s3_access_key=json_extract(?1,'$.s3_access_key'),s3_secret_key=json_extract(?1,'$.s3_secret_key'),s3_endpoint_url=json_extract(?1,'$.s3_endpoint_url'),webdav_url=json_extract(?1,'$.webdav_url'),rclone_remote=json_extract(?1,'$.rclone_remote'),updated_at=strftime('%Y-%m-%d %H:%M:%f','now') WHERE id=?2")
+            .bind(saved).bind(id).execute(&mut *tx).await?;
+    }
+    let row = sqlx::query_scalar::<_, String>(select_storage!(" WHERE id=?"))
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let view = storage_view(row).ok_or(sqlx::Error::Protocol("Invalid storage record".into()))?;
+    tx.commit().await?;
+    Ok(Json(view).into_response())
+}
+
+async fn prepare(state: &HttpState, mut data: Value) -> Result<Value, Box<Response>> {
     let config = state.config.clone();
     let needs_key = SECRETS
         .iter()
@@ -144,15 +249,29 @@ pub(in crate::http) async fn create(
             Ok(work) => match work.wait().await {
                 Ok(Ok(data)) => data,
                 Ok(Err((status, detail))) => {
-                    return (status, Json(json!({"detail":detail}))).into_response();
+                    return Err(Box::new(
+                        (status, Json(json!({"detail":detail}))).into_response(),
+                    ));
                 }
                 Err(_) => {
-                    return storage_error(StatusCode::SERVICE_UNAVAILABLE, "Service unavailable");
+                    return Err(Box::new(storage_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "Service unavailable",
+                    )));
                 }
             },
-            Err(_) => return storage_error(StatusCode::SERVICE_UNAVAILABLE, "Service unavailable"),
+            Err(_) => {
+                return Err(Box::new(storage_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Service unavailable",
+                )));
+            }
         };
     }
+    Ok(data)
+}
+
+async fn persist_create(state: &HttpState, data: Value) -> Response {
     let result = async {
         let mut tx = state.auth.pool().begin_with("BEGIN IMMEDIATE").await?;
         let id = sqlx::query_scalar::<_, i64>("INSERT INTO remote_storages(name,storage_type,enabled,host,port,username,password,base_path,ssh_key_path,s3_bucket,s3_region,s3_access_key,s3_secret_key,s3_endpoint_url,webdav_url,rclone_remote,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,strftime('%Y-%m-%d %H:%M:%f','now'),strftime('%Y-%m-%d %H:%M:%f','now')) RETURNING id")

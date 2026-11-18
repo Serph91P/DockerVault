@@ -21,7 +21,7 @@ macro_rules! select_storage {
 }
 
 mod create;
-pub(super) use create::create;
+pub(super) use create::{create, update};
 
 fn storage_view(row: String) -> Option<Value> {
     let mut value: Value = serde_json::from_str(&row).ok()?;

@@ -69,7 +69,9 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/storage", get(storage::list).post(storage::create))
         .route(
             "/api/v1/storage/{storage_id}",
-            get(storage::detail).delete(storage::delete),
+            get(storage::detail)
+                .put(storage::update)
+                .delete(storage::delete),
         )
         .route("/ws/updates", get(ws::updates))
         .fallback(|| async {

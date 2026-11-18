@@ -1195,6 +1195,39 @@ async fn storage_create_persists_provider_fields_and_encrypts_credentials() {
     assert!(saved_access.starts_with("fernet:") && saved_secret.starts_with("fernet:"));
     assert!(cipher.decrypt_value(&saved_access).unwrap() == access.as_str());
     assert!(cipher.decrypt_value(&saved_secret).unwrap() == secret.as_str());
+    let endpoint = format!("/api/v1/storage/{}", view["id"].as_i64().unwrap());
+    let (status, _, changed) = server
+        .request(
+            "PUT",
+            &endpoint,
+            &headers,
+            Some(json!({"enabled":false,"s3_access_key":""})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(changed["enabled"], false);
+    let saved: String = sqlx::query_scalar("SELECT s3_access_key FROM remote_storages WHERE id=?")
+        .bind(view["id"].as_i64().unwrap())
+        .fetch_one(server.db.pool())
+        .await
+        .unwrap();
+    assert!(saved == saved_access);
+    let (status, _, _) = server
+        .request(
+            "PUT",
+            &endpoint,
+            &headers,
+            Some(json!({"s3_access_key":null})),
+        )
+        .await;
+    assert_eq!(status, 400);
+    let committed: String =
+        sqlx::query_scalar("SELECT s3_access_key FROM remote_storages WHERE id=?")
+            .bind(view["id"].as_i64().unwrap())
+            .fetch_one(server.db.pool())
+            .await
+            .unwrap();
+    assert!(committed == saved_access);
     server.close().await;
 }
 
