@@ -67,7 +67,10 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/operations/{id}/retry", post(operations::retry))
         .route("/api/v1/storage/types", get(storage::types))
         .route("/api/v1/storage", get(storage::list))
-        .route("/api/v1/storage/{storage_id}", get(storage::detail))
+        .route(
+            "/api/v1/storage/{storage_id}",
+            get(storage::detail).delete(storage::delete),
+        )
         .route("/ws/updates", get(ws::updates))
         .fallback(|| async {
             (

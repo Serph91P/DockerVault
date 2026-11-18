@@ -1151,6 +1151,50 @@ async fn storage_inventory_and_detail_keep_legacy_repair_hints_without_credentia
 }
 
 #[tokio::test]
+async fn storage_configuration_delete_preserves_catalog_references_and_archive_bytes() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let archive = server.path.join("backups/fixture.tar");
+    std::fs::write(&archive, b"retain these bytes").unwrap();
+    sqlx::raw_sql("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path) VALUES (44,'referenced','local',1,'/backups'),(45,'unused','local',1,'/backups');
+        INSERT INTO backup_targets(id,name,target_type,enabled,sync_to_remote) VALUES (41,'fixture target','path',0,0);
+        INSERT INTO backups(id,target_id,backup_type,status) VALUES (51,41,'FULL','COMPLETED');
+        INSERT INTO backup_storage_syncs(id,backup_id,storage_id,remote_path,sync_status) VALUES (61,51,44,'fixture.tar','completed');").execute(server.db.pool()).await.unwrap();
+    let (status, _, referenced) = server
+        .request("DELETE", "/api/v1/storage/44.0", &headers, None)
+        .await;
+    assert_eq!(
+        (status, referenced),
+        (
+            409,
+            json!({"detail":"Remove backup sync records before deleting their storage configuration"})
+        )
+    );
+    let (status, _, deleted) = server
+        .request("DELETE", "/api/v1/storage/45", &headers, None)
+        .await;
+    assert_eq!(
+        (status, deleted),
+        (200, json!({"message":"Storage deleted"}))
+    );
+    let (status, _, missing) = server
+        .request("DELETE", "/api/v1/storage/45", &headers, None)
+        .await;
+    assert_eq!(
+        (status, missing),
+        (404, json!({"detail":"Storage not found"}))
+    );
+    let linked: Vec<(i64, i64)> = sqlx::query_as("SELECT remote_storages.id, backup_storage_syncs.backup_id FROM remote_storages JOIN backup_storage_syncs ON storage_id=remote_storages.id").fetch_all(server.db.pool()).await.unwrap();
+    assert_eq!(linked, vec![(44, 51)]);
+    assert_eq!(std::fs::read(archive).unwrap(), b"retain these bytes");
+    server.close().await;
+}
+
+#[tokio::test]
 async fn operation_detail_requires_authentication_and_ownership() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

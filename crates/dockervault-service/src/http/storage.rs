@@ -54,9 +54,7 @@ pub(super) async fn list(State(state): State<HttpState>) -> Response {
 
 pub(super) async fn detail(State(state): State<HttpState>, Path(raw): Path<String>) -> Response {
     let Some(id) = super::operations::query_integer(&raw) else {
-        return *auth::validation(vec![
-            json!({"field":"path.storage_id","message":"Input should be a valid integer, unable to parse string as an integer"}),
-        ]);
+        return invalid_id();
     };
     match sqlx::query_scalar::<_, String>(select_storage!(" WHERE id=?"))
         .bind(id)
@@ -69,6 +67,35 @@ pub(super) async fn detail(State(state): State<HttpState>, Path(raw): Path<Strin
         },
         Ok(None) => storage_error(StatusCode::NOT_FOUND, "Storage not found"),
         Err(_) => storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+    }
+}
+
+fn invalid_id() -> Response {
+    *auth::validation(vec![
+        json!({"field":"path.storage_id","message":"Input should be a valid integer, unable to parse string as an integer"}),
+    ])
+}
+
+pub(super) async fn delete(State(state): State<HttpState>, Path(raw): Path<String>) -> Response {
+    let Some(id) = super::operations::query_integer(&raw) else {
+        return invalid_id();
+    };
+    const REFERENCED: &str =
+        "Remove backup sync records before deleting their storage configuration";
+    let result = async {
+        let mut tx = state.auth.pool().begin_with("BEGIN IMMEDIATE").await?;
+        let deleted = sqlx::query("DELETE FROM remote_storages WHERE id=?1 AND NOT EXISTS (SELECT 1 FROM backup_storage_syncs WHERE storage_id=?1)")
+            .bind(id).execute(&mut *tx).await?.rows_affected();
+        let exists: bool = deleted == 0 && sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM remote_storages WHERE id=?)")
+            .bind(id).fetch_one(&mut *tx).await?;
+        tx.commit().await?;
+        Ok::<_, sqlx::Error>((deleted, exists))
+    }.await;
+    match result {
+        Ok((1, _)) => Json(json!({"message":"Storage deleted"})).into_response(),
+        Ok((0, true)) => storage_error(StatusCode::CONFLICT, REFERENCED),
+        Ok((0, false)) => storage_error(StatusCode::NOT_FOUND, "Storage not found"),
+        _ => storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
     }
 }
 
