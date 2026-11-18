@@ -1417,6 +1417,97 @@ async fn webdav_draft_credentials_are_applied_only_to_the_probe() {
 }
 
 #[tokio::test]
+async fn s3_probe_uses_effective_signed_configuration_without_saving_a_draft() {
+    use dockervault_core::crypto::CredentialCipher;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    let config = Config::from_pairs([
+        ("COOKIE_SECURE", "false"),
+        ("CORS_ORIGINS", "http://localhost:3000"),
+        ("CREDENTIAL_ENCRYPTION_KEY", key),
+    ])
+    .unwrap();
+    let server = Server::configured(config).await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let cipher = CredentialCipher::new(key).unwrap();
+    let access = cipher.encrypt_value("FIXTURE_SAVED_ACCESS");
+    let secret = cipher.encrypt_value("fixture-saved-secret");
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,s3_bucket,s3_endpoint_url,s3_access_key,s3_secret_key) VALUES (44,'S3','s3',1,'prefix','fixture-bucket',?,?,?)")
+        .bind(endpoint).bind(&access).bind(&secret).execute(server.db.pool()).await.unwrap();
+    let provider = tokio::spawn(async move {
+        for (id, bucket, status) in [
+            ("FIXTURE_DRAFT_ACCESS", "draft-bucket", "200 OK"),
+            ("FIXTURE_SAVED_ACCESS", "fixture-bucket", "403 Forbidden"),
+        ] {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut line = String::new();
+            stream.read_line(&mut line).await.unwrap();
+            assert_eq!(line.trim_end(), format!("HEAD /{bucket}/ HTTP/1.1"));
+            let mut seen = false;
+            loop {
+                line.clear();
+                assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("authorization")
+                {
+                    assert!(value.contains(&format!("Credential={id}/")));
+                    assert!(value.contains("/us-east-1/s3/aws4_request"));
+                    seen = true;
+                }
+            }
+            assert!(seen);
+            stream
+                .get_mut()
+                .write_all(
+                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                        .as_bytes(),
+                )
+                .await
+                .unwrap();
+        }
+    });
+    let draft = json!({"mode":"edit","storage_id":44,"config":{"s3_bucket":"draft-bucket","s3_access_key":"FIXTURE_DRAFT_ACCESS","s3_secret_key":""}});
+    let (status, _, body) = server
+        .request("POST", "/api/v1/storage/test-config", &headers, Some(draft))
+        .await;
+    assert_eq!(
+        (status, body),
+        (
+            200,
+            json!({"success":true,"message":"Connection test succeeded"})
+        )
+    );
+    let (status, _, body) = server
+        .request("POST", "/api/v1/storage/44/test", &headers, None)
+        .await;
+    assert_eq!(
+        (status, body),
+        (
+            200,
+            json!({"success":false,"message":"Connection test failed"})
+        )
+    );
+    provider.await.unwrap();
+    let rows: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT s3_bucket,s3_access_key,s3_secret_key FROM remote_storages")
+            .fetch_all(server.db.pool())
+            .await
+            .unwrap();
+    assert!(rows == [("fixture-bucket".to_owned(), access, secret)]);
+    server.close().await;
+}
+
+#[tokio::test]
 async fn ftp_probe_reports_only_the_settled_login_and_quit_result() {
     use tokio::io::{AsyncBufReadExt, BufReader};
     let server = Server::start("http://localhost:3000").await;

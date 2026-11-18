@@ -56,7 +56,7 @@ pub(in crate::http) async fn test_config(
                 return db_error();
             };
             // Only inherited values are ciphertext. Draft replacements are literal secrets.
-            if !updates.contains_key("password") && !open_probe_password(&state, &mut saved).await {
+            if !open_probe_credentials(&state, &mut saved, Some(updates)).await {
                 return probe_response(false);
             }
             saved.append(updates);

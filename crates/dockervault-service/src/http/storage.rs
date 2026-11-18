@@ -151,25 +151,30 @@ pub(super) async fn test_saved(
     let Ok(mut saved) = serde_json::from_str::<serde_json::Map<String, Value>>(&raw) else {
         return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
     };
-    if !open_probe_password(&state, &mut saved).await {
+    if !open_probe_credentials(&state, &mut saved, None).await {
         return probe_response(false);
     }
     probe_provider(&state, Value::Object(saved)).await
 }
 
-async fn open_probe_password(
+async fn open_probe_credentials(
     state: &HttpState,
     config: &mut serde_json::Map<String, Value>,
+    overrides: Option<&serde_json::Map<String, Value>>,
 ) -> bool {
-    if !matches!(config["storage_type"].as_str(), Some("webdav" | "ftp")) {
-        return true;
+    let fields = match config["storage_type"].as_str() {
+        Some("webdav" | "ftp") => [Some("password"), None],
+        Some("s3") => [Some("s3_access_key"), Some("s3_secret_key")],
+        _ => return true,
     }
-    let password = config
-        .get("password")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    let Ok([password, _]) = crate::storage_recovery::open_delete_credentials(
-        [password, None],
+    .map(|field| field.filter(|field| !overrides.is_some_and(|data| data.contains_key(*field))));
+    let stored = fields.map(|field| {
+        field
+            .and_then(|field| config[field].as_str())
+            .map(str::to_owned)
+    });
+    let Ok(values) = crate::storage_recovery::open_delete_credentials(
+        stored,
         state.auth.blocking(),
         &state.config,
     )
@@ -177,7 +182,11 @@ async fn open_probe_password(
     else {
         return false;
     };
-    config.insert("password".into(), json!(password));
+    for (key, value) in fields.into_iter().zip(values) {
+        if let Some(key) = key {
+            config.insert(key.into(), json!(value));
+        }
+    }
     true
 }
 
@@ -195,6 +204,7 @@ async fn probe_provider(state: &HttpState, config: Value) -> Response {
         .await
         .is_some(),
         Some("ftp") => probe_ftp(state, &config).await.is_some(),
+        Some("s3") => probe_s3(state, &config).await.is_some(),
         _ => {
             return storage_error(
                 StatusCode::NOT_IMPLEMENTED,
@@ -203,6 +213,26 @@ async fn probe_provider(state: &HttpState, config: Value) -> Response {
         }
     };
     probe_response(success)
+}
+
+async fn probe_s3(state: &HttpState, config: &Value) -> Option<()> {
+    use crate::storage::s3::{S3, S3Config};
+    let field = |key: &str| config[key].as_str().map(str::to_owned);
+    let io = state.auth.blocking();
+    let provider = S3::new(
+        S3Config {
+            endpoint_url: field("s3_endpoint_url").filter(|url| !url.is_empty()),
+            region: field("s3_region").unwrap_or_default(),
+            bucket: field("s3_bucket")?,
+            base_path: field("base_path").unwrap_or_default(),
+            access_key: field("s3_access_key")?,
+            secret_key: field("s3_secret_key")?,
+        },
+        io.clone(),
+        io.clone(),
+    )
+    .ok()?;
+    provider.test_connection().ok()?.wait().await.ok()?.ok()
 }
 
 async fn probe_ftp(state: &HttpState, config: &Value) -> Option<()> {
