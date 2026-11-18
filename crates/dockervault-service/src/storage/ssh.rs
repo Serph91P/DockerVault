@@ -37,6 +37,7 @@ pub struct SftpEntry {
     pub modified: f64,
 }
 
+#[derive(Clone)]
 pub struct SftpEndpoint {
     pub host: String,
     pub username: String,
@@ -107,14 +108,37 @@ impl SftpEndpoint {
         source: Arc<VerifiedSource>,
         scratch: File,
     ) -> Result<Work<Result<(), SftpDownloadError>>, SftpDownloadError> {
+        self.upload_with(processes, workers, child, source, scratch, false)
+    }
+
+    pub fn upload_rsync(
+        &self,
+        processes: &ProcessOwner,
+        workers: &Owner,
+        child: &str,
+        source: Arc<VerifiedSource>,
+        scratch: File,
+    ) -> Result<Work<Result<(), SftpDownloadError>>, SftpDownloadError> {
+        self.upload_with(processes, workers, child, source, scratch, true)
+    }
+
+    fn upload_with(
+        &self,
+        processes: &ProcessOwner,
+        workers: &Owner,
+        child: &str,
+        source: Arc<VerifiedSource>,
+        scratch: File,
+        rsync: bool,
+    ) -> Result<Work<Result<(), SftpDownloadError>>, SftpDownloadError> {
         let invalid = || SftpDownloadError::Process(ProcessError::InvalidSpec);
         if child.trim_matches('/').is_empty() || child.ends_with('/') {
             return Err(invalid());
         }
         let path = remote_path(&self.host, self.port, &self.base, child).map_err(|_| invalid())?;
         let remote = batch_path(&path);
-        let mut put = self.batch_spec().map_err(SftpDownloadError::Process)?;
         let mut get = self.batch_spec().map_err(SftpDownloadError::Process)?;
+        let endpoint = self.clone();
         let processes = processes.clone();
         workers
             .submit_async(move |cancel| async move {
@@ -131,12 +155,16 @@ impl SftpEndpoint {
                 if cancel.is_cancelled() {
                     return Err(SftpDownloadError::Process(ProcessError::Cancelled));
                 }
-                put.input = format!(
-                    "@put /proc/{}/fd/{} {remote}\n@quit\n",
-                    std::process::id(),
-                    input.as_raw_fd()
-                )
-                .into_bytes();
+                let local = format!("/proc/{}/fd/{}", std::process::id(), input.as_raw_fd());
+                let put = if rsync {
+                    endpoint
+                        .rsync_put_spec(&path, &local)
+                        .map_err(SftpDownloadError::Process)?
+                } else {
+                    let mut spec = endpoint.batch_spec().map_err(SftpDownloadError::Process)?;
+                    spec.input = format!("@put {local} {remote}\n@quit\n").into_bytes();
+                    spec
+                };
                 run_batch(&processes, put, &cancel)
                     .await
                     .map_err(|_| SftpDownloadError::MutationUnverified)?;
@@ -207,6 +235,38 @@ impl SftpEndpoint {
     }
 
     fn batch_spec(&self) -> Result<ProcessSpec, ProcessError> {
+        let (mut args, destination) = self.connection_args("-P")?;
+        args.extend(["-b".into(), "-".into(), "--".into(), destination.into()]);
+        Ok(self.wrap_password("/usr/bin/sftp", args))
+    }
+
+    fn rsync_put_spec(&self, path: &str, local: &str) -> Result<ProcessSpec, ProcessError> {
+        let (ssh, destination) = self.connection_args("-p")?;
+        let mut command = "/usr/bin/ssh".to_owned();
+        for arg in ssh {
+            let arg = arg.to_str().ok_or(ProcessError::InvalidSpec)?;
+            // rsync parses -e itself; doubling its delimiter quotes a literal quote.
+            command.push_str(" '");
+            command.push_str(&arg.replace('\'', "''"));
+            command.push('\'');
+        }
+        Ok(self.wrap_password(
+            "/usr/bin/rsync",
+            vec![
+                "-tzL".into(),
+                "--ignore-times".into(),
+                "--secluded-args".into(),
+                "--mkpath".into(),
+                "-e".into(),
+                command.into(),
+                "--".into(),
+                local.into(),
+                format!("{destination}:{path}").into(),
+            ],
+        ))
+    }
+
+    fn connection_args(&self, port_flag: &str) -> Result<(Vec<OsString>, String), ProcessError> {
         let host = self
             .host
             .strip_prefix('[')
@@ -232,11 +292,7 @@ impl SftpEndpoint {
         if self.port == 0 || !valid_endpoint_atom(&self.username, b"-_.") {
             return Err(ProcessError::InvalidSpec);
         }
-        let password = if self.identity.is_none() {
-            self.password.as_deref().filter(|value| !value.is_empty())
-        } else {
-            None
-        };
+
         let mut args = vec![
             OsString::from("-F"),
             "/dev/null".into(),
@@ -244,7 +300,7 @@ impl SftpEndpoint {
             format!("-oUserKnownHostsFile={known_hosts}").into(),
             "-oConnectTimeout=30".into(),
             "-oServerAliveInterval=15".into(),
-            "-P".into(),
+            port_flag.into(),
             self.port.to_string().into(),
         ];
         if let Some(identity) = &self.identity {
@@ -254,23 +310,34 @@ impl SftpEndpoint {
                 identity.as_os_str().into(),
             ]);
         }
-        if password.is_some() {
+        if self.password_auth().is_some() {
             args.extend([
                 "-oBatchMode=no".into(),
                 "-oPreferredAuthentications=password".into(),
                 "-oPubkeyAuthentication=no".into(),
             ]);
         }
-        args.extend(["-b".into(), "-".into(), "--".into(), destination.into()]);
-        Ok(if let Some(password) = password {
-            let mut wrapped = vec![OsString::from("-e"), "/usr/bin/sftp".into()];
+        Ok((args, destination))
+    }
+
+    fn password_auth(&self) -> Option<&str> {
+        if self.identity.is_none() {
+            self.password.as_deref().filter(|value| !value.is_empty())
+        } else {
+            None
+        }
+    }
+
+    fn wrap_password(&self, program: &str, args: Vec<OsString>) -> ProcessSpec {
+        if let Some(password) = self.password_auth() {
+            let mut wrapped = vec![OsString::from("-e"), program.into()];
             wrapped.extend(args);
             let mut spec = ProcessSpec::new("/usr/bin/sshpass", wrapped);
             spec.env.push(("SSHPASS".into(), password.into()));
             spec
         } else {
-            ProcessSpec::new("/usr/bin/sftp", args)
-        })
+            ProcessSpec::new(program, args)
+        }
     }
 }
 
@@ -404,6 +471,30 @@ pub fn remote_path(host: &str, port: u16, base: &str, child: &str) -> io::Result
 #[cfg(test)]
 mod listing_tests {
     use super::*;
+
+    #[test]
+    fn rsync_upload_keeps_remote_path_as_one_protected_argument() {
+        let endpoint = SftpEndpoint {
+            host: "::1".into(),
+            username: "backup".into(),
+            port: 23,
+            base: "/backups".into(),
+            known_hosts: "/app/data/ssh_known_hosts".into(),
+            identity: Some("/app/data/keys/a key".into()),
+            password: Some("synthetic".into()),
+        };
+        let spec = endpoint
+            .rsync_put_spec("/backups/dir [1]/archive.tar.gz", "/proc/123/fd/4")
+            .unwrap();
+        assert_eq!(spec.program, PathBuf::from("/usr/bin/rsync"));
+        assert_eq!(
+            spec.args.last().unwrap(),
+            "backup@[::1]:/backups/dir [1]/archive.tar.gz"
+        );
+        assert!(spec.args.iter().any(|arg| arg == "--secluded-args"));
+        assert!(spec.args.iter().any(|arg| arg == "--mkpath"));
+        assert!(spec.env.is_empty());
+    }
 
     #[test]
     fn numeric_listing_keeps_literal_names_and_rejects_partial_inventory() {
