@@ -1,10 +1,23 @@
 //! Path handling shared by the SSH and SFTP transports.
-use super::local::{CliDownload, Downloaded, TransferError};
+use super::{
+    VerifiedSource,
+    local::{CliDownload, Downloaded, TransferError},
+};
 use crate::{
     ownership::{Owner, Work, WorkError},
     process::{ProcessError, ProcessOutput, ProcessOwner, ProcessSpec},
 };
-use std::{ffi::OsString, fs::File, io, net::Ipv6Addr, path::PathBuf, time::Duration};
+use std::{
+    ffi::OsString,
+    fs::File,
+    io,
+    net::Ipv6Addr,
+    os::fd::AsRawFd,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug)]
 pub enum SftpDownloadError {
@@ -12,6 +25,7 @@ pub enum SftpDownloadError {
     Process(ProcessError),
     Transfer(TransferError),
     ProviderRejected,
+    MutationUnverified,
 }
 
 pub struct SftpEndpoint {
@@ -67,26 +81,68 @@ impl SftpEndpoint {
                 }
                 spec.input =
                     format!("@get {remote} {}\n@quit\n", staging.descriptor_path()).into_bytes();
-                let process = processes.start(spec).map_err(SftpDownloadError::Process)?;
-                let process_cancel = process.cancellation_token();
-                let mut reply = std::pin::pin!(process.wait());
-                let settled = tokio::select! { biased;
-                    _ = cancel.cancelled() => {
-                        process_cancel.cancel();
-                        reply.await
-                    }
-                    result = &mut reply => result,
-                };
-                let output = settled
-                    .map_err(SftpDownloadError::Admission)?
-                    .map_err(SftpDownloadError::Process)?;
-                if !output.status.success() {
-                    return Err(SftpDownloadError::ProviderRejected);
-                }
+                run_batch(&processes, spec, &cancel).await?;
                 tokio::task::spawn_blocking(move || staging.finish(&|| cancel.is_cancelled()))
                     .await
                     .map_err(|_| SftpDownloadError::Admission(WorkError::WorkerFailed))?
                     .map_err(SftpDownloadError::Transfer)
+            })
+            .map_err(SftpDownloadError::Admission)
+    }
+
+    pub fn upload(
+        &self,
+        processes: &ProcessOwner,
+        workers: &Owner,
+        child: &str,
+        source: Arc<VerifiedSource>,
+        scratch: File,
+    ) -> Result<Work<Result<(), SftpDownloadError>>, SftpDownloadError> {
+        let invalid = || SftpDownloadError::Process(ProcessError::InvalidSpec);
+        if child.trim_matches('/').is_empty() || child.ends_with('/') {
+            return Err(invalid());
+        }
+        let path = remote_path(&self.host, self.port, &self.base, child).map_err(|_| invalid())?;
+        let remote = batch_path(&path);
+        let mut put = self.batch_spec().map_err(SftpDownloadError::Process)?;
+        let mut get = self.batch_spec().map_err(SftpDownloadError::Process)?;
+        let processes = processes.clone();
+        workers
+            .submit_async(move |cancel| async move {
+                let pinned = source.clone();
+                let (input, verification) = tokio::task::spawn_blocking(move || {
+                    Ok::<_, io::Error>((
+                        pinned.reopen()?,
+                        CliDownload::prepare(scratch, Path::new("unused"))?,
+                    ))
+                })
+                .await
+                .map_err(|_| SftpDownloadError::Admission(WorkError::WorkerFailed))?
+                .map_err(|error| SftpDownloadError::Transfer(error.into()))?;
+                if cancel.is_cancelled() {
+                    return Err(SftpDownloadError::Process(ProcessError::Cancelled));
+                }
+                put.input = format!(
+                    "@put /proc/{}/fd/{} {remote}\n@quit\n",
+                    std::process::id(),
+                    input.as_raw_fd()
+                )
+                .into_bytes();
+                run_batch(&processes, put, &cancel)
+                    .await
+                    .map_err(|_| SftpDownloadError::MutationUnverified)?;
+                drop(input);
+                get.input = format!("@get {remote} {}\n@quit\n", verification.descriptor_path())
+                    .into_bytes();
+                run_batch(&processes, get, &cancel)
+                    .await
+                    .map_err(|_| SftpDownloadError::MutationUnverified)?;
+                tokio::task::spawn_blocking(move || {
+                    verification.verify(&source, &|| cancel.is_cancelled())
+                })
+                .await
+                .map_err(|_| SftpDownloadError::MutationUnverified)?
+                .map_err(|_| SftpDownloadError::MutationUnverified)
             })
             .map_err(SftpDownloadError::Admission)
     }
@@ -157,6 +213,33 @@ impl SftpEndpoint {
             ProcessSpec::new("/usr/bin/sftp", args)
         })
     }
+}
+
+async fn run_batch(
+    processes: &ProcessOwner,
+    spec: ProcessSpec,
+    cancel: &CancellationToken,
+) -> Result<(), SftpDownloadError> {
+    if cancel.is_cancelled() {
+        return Err(SftpDownloadError::Process(ProcessError::Cancelled));
+    }
+    let process = processes.start(spec).map_err(SftpDownloadError::Process)?;
+    let process_cancel = process.cancellation_token();
+    let mut reply = std::pin::pin!(process.wait());
+    let settled = tokio::select! { biased;
+        _ = cancel.cancelled() => {
+            process_cancel.cancel();
+            reply.await
+        }
+        result = &mut reply => result,
+    };
+    let output = settled
+        .map_err(SftpDownloadError::Admission)?
+        .map_err(SftpDownloadError::Process)?;
+    if !output.status.success() {
+        return Err(SftpDownloadError::ProviderRejected);
+    }
+    Ok(())
 }
 
 fn batch_path(path: &str) -> String {

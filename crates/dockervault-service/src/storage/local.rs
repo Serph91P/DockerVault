@@ -271,6 +271,14 @@ impl CliDownload {
         )
     }
 
+    pub(super) fn verify(
+        mut self,
+        source: &VerifiedSource,
+        cancel: &dyn Fn() -> bool,
+    ) -> io::Result<()> {
+        source.verify_download(&mut self.staging.file, cancel)
+    }
+
     pub(super) fn finish(mut self, cancel: &dyn Fn() -> bool) -> Result<Downloaded, TransferError> {
         let file = &mut self.staging.file;
         let length = file.metadata()?.len();

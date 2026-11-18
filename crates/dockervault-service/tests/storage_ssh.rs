@@ -61,6 +61,33 @@ async fn unsafe_download_is_rejected_without_replacing_destination() {
     assert_eq!(untouched, b"previous archive");
 }
 
+#[tokio::test]
+async fn unsafe_upload_is_rejected_before_mutation_or_admission() {
+    use dockervault_service::storage::VerifiedSource;
+    use std::sync::Arc;
+
+    let processes = ProcessOwner::new(1, env!("CARGO_BIN_EXE_dockervault-process-guard")).unwrap();
+    let workers = Owner::new(1).unwrap();
+    let source_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let source = Arc::new(VerifiedSource::open(&source_path, &|| false).unwrap());
+    let endpoint = SftpEndpoint {
+        host: "127.0.0.1".into(),
+        username: "backup".into(),
+        port: 22,
+        base: "/backups".into(),
+        known_hosts: "/app/data/ssh_known_hosts".into(),
+        identity: None,
+        password: None,
+    };
+    let scratch = std::fs::File::open(std::env::temp_dir()).unwrap();
+    assert!(
+        endpoint
+            .upload(&processes, &workers, "sub/../a.key", source, scratch)
+            .is_err()
+    );
+    assert_eq!((processes.active(), workers.active()), (0, 0));
+}
+
 #[test]
 fn storage_box_maps_paths_only_on_port_23() {
     for (host, port, base, child, expected) in [
