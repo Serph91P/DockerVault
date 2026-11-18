@@ -37,6 +37,15 @@ jobs:
               cargo test --workspace --locked --offline
               cargo clippy --workspace --all-targets --locked --offline -- -D warnings
             '
+      - name: Build and start the opt-in native application image
+        run: |
+          sha=$(git rev-parse HEAD)
+          image=dockervault-native-candidate-ci
+          docker build --platform 'linux/${{ matrix.arch }}' --target native-candidate \
+            --build-arg "COMMIT_SHA=$sha" -t "$image" .
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = 'linux/${{ matrix.arch }}'
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$sha"
+          sh docker/test-native-candidate.sh "$image"
       - name: Native pinned rclone capabilities and encrypted preparation without network
         run: |
           docker build -f docker/rclone-test.Dockerfile -t dockervault-rclone-ci .
