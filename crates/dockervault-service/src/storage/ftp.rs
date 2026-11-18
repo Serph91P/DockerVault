@@ -1,5 +1,6 @@
 //! Plain FTP control sessions. No TLS, clear-text credential logging or detached session tasks.
 use crate::ownership::{Owner, Work, WorkError};
+mod download;
 use std::{fmt, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -27,6 +28,8 @@ pub enum FtpError {
     Io,
     Protocol,
     Reply(u16),
+    AbortUnsettled,
+    PublicationUncertain,
 }
 impl fmt::Display for FtpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -37,6 +40,10 @@ impl fmt::Display for FtpError {
             Self::Io => f.write_str("FTP socket I/O failed"),
             Self::Protocol => f.write_str("Invalid FTP reply"),
             Self::Reply(status) => write!(f, "FTP server returned status {status}"),
+            Self::AbortUnsettled => f.write_str("FTP transfer abort is unconfirmed"),
+            Self::PublicationUncertain => {
+                f.write_str("FTP download publication durability is uncertain")
+            }
         }
     }
 }
@@ -69,39 +76,10 @@ impl Ftp {
     pub fn test_connection(&self) -> Result<Work<Result<(), FtpError>>, WorkError> {
         let config = self.config.clone();
         self.owner.submit_async(move |cancel| async move {
-            if cancel.is_cancelled() {
-                return Err(FtpError::Cancelled);
-            }
-            let port = config.port.filter(|port| *port != 0).unwrap_or(21);
-            // Join hostname resolution before delivering cancellation: Tokio uses a blocking
-            // system resolver and dropping its waiter cannot settle a lookup already running.
-            let addresses = tokio::net::lookup_host((config.host.as_str(), port)).await;
-            if cancel.is_cancelled() {
-                return Err(FtpError::Cancelled);
-            }
-            let addresses = addresses.map_err(|_| FtpError::Io)?.collect::<Vec<_>>();
+            let mut control = Control::connect(&config, &cancel).await?;
             tokio::select! { biased;
                 _ = cancel.cancelled() => Err(FtpError::Cancelled),
-                result = async {
-                    let stream = timeout(CONNECT_TIMEOUT, TcpStream::connect(addresses.as_slice()))
-                        .await.map_err(|_| FtpError::Timeout)?.map_err(|_| FtpError::Io)?;
-                    let mut control = Control(BufReader::new(stream));
-                    let greeting = control.reply().await?;
-                    let greeting = if greeting == 120 { control.reply().await? } else { greeting };
-                    expect(greeting, &[220])?;
-                    let (user, password) = if config.username.is_empty() {
-                        ("anonymous", "anon@")
-                    } else {
-                        (config.username.as_str(), config.password.as_str())
-                    };
-                    let login = control.command("USER", Some(user)).await?;
-                    if login == 331 {
-                        expect(control.command("PASS", Some(password)).await?, &[230])?;
-                    } else {
-                        expect(login, &[230])?;
-                    }
-                    expect(control.command("QUIT", None).await?, &[221])
-                } => result,
+                result = control.quit() => result,
             }
         })
     }
@@ -120,11 +98,59 @@ fn expect(reply: u16, accepted: &[u16]) -> Result<(), FtpError> {
 
 struct Control(BufReader<TcpStream>);
 impl Control {
+    async fn connect(
+        config: &FtpConfig,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Self, FtpError> {
+        if cancel.is_cancelled() {
+            return Err(FtpError::Cancelled);
+        }
+        let port = config.port.filter(|port| *port != 0).unwrap_or(21);
+        // Dropping Tokio's waiter cannot settle a blocking system lookup already running.
+        let addresses = tokio::net::lookup_host((config.host.as_str(), port)).await;
+        if cancel.is_cancelled() {
+            return Err(FtpError::Cancelled);
+        }
+        let addresses = addresses.map_err(|_| FtpError::Io)?.collect::<Vec<_>>();
+        tokio::select! { biased;
+            _ = cancel.cancelled() => Err(FtpError::Cancelled),
+            result = async {
+                let stream = timeout(CONNECT_TIMEOUT, TcpStream::connect(addresses.as_slice()))
+                    .await.map_err(|_| FtpError::Timeout)?.map_err(|_| FtpError::Io)?;
+                let mut control = Control(BufReader::new(stream));
+                let greeting = control.reply().await?;
+                let greeting = if greeting == 120 { control.reply().await? } else { greeting };
+                expect(greeting, &[220])?;
+                let (user, password) = if config.username.is_empty() {
+                    ("anonymous", "anon@")
+                } else {
+                    (config.username.as_str(), config.password.as_str())
+                };
+                let login = control.command("USER", Some(user)).await?;
+                if login == 331 {
+                    expect(control.command("PASS", Some(password)).await?, &[230])?;
+                } else {
+                    expect(login, &[230])?;
+                }
+                Ok(control)
+            } => result,
+        }
+    }
+
+    async fn quit(&mut self) -> Result<(), FtpError> {
+        expect(self.command("QUIT", None).await?, &[221])
+    }
+
     async fn command(
         &mut self,
         verb: &'static str,
         argument: Option<&str>,
     ) -> Result<u16, FtpError> {
+        self.send(verb, argument).await?;
+        self.reply().await
+    }
+
+    async fn send(&mut self, verb: &'static str, argument: Option<&str>) -> Result<(), FtpError> {
         let line = match argument {
             Some(value) if valid_argument(value) => format!("{verb} {value}\r\n"),
             Some(_) => return Err(FtpError::Config),
@@ -133,10 +159,12 @@ impl Control {
         timeout(SOCKET_TIMEOUT, self.0.write_all(line.as_bytes()))
             .await
             .map_err(|_| FtpError::Timeout)?
-            .map_err(|_| FtpError::Io)?;
-        self.reply().await
+            .map_err(|_| FtpError::Io)
     }
     async fn reply(&mut self) -> Result<u16, FtpError> {
+        self.reply_line().await.map(|(status, _)| status)
+    }
+    async fn reply_line(&mut self) -> Result<(u16, Vec<u8>), FtpError> {
         timeout(SOCKET_TIMEOUT, async {
             let mut line = Vec::new();
             let mut budget = MAX_REPLY_BYTES;
@@ -159,9 +187,10 @@ impl Control {
                 },
                 _ => return Err(FtpError::Protocol),
             }
-            Ok(u16::from(prefix[0] - b'0') * 100
+            let status = u16::from(prefix[0] - b'0') * 100
                 + u16::from(prefix[1] - b'0') * 10
-                + u16::from(prefix[2] - b'0'))
+                + u16::from(prefix[2] - b'0');
+            Ok((status, line))
         })
         .await
         .map_err(|_| FtpError::Timeout)?

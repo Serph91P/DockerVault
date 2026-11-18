@@ -3,11 +3,250 @@ use dockervault_service::{
     ownership::Owner,
     storage::ftp::{Ftp, FtpConfig, FtpError},
 };
+use sha2::Digest;
 use std::time::Duration;
+use std::{
+    fs::{self, File},
+    path::PathBuf,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
 };
+static NEXT: AtomicUsize = AtomicUsize::new(0);
+struct Directory(PathBuf);
+impl Directory {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "dv-ftp-data-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+}
+impl Drop for Directory {
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+
+async fn ready_for_retr(control: &mut BufReader<TcpStream>, use_epsv: bool) -> TcpStream {
+    control.write_all(b"220 data fixture\r\n").await.unwrap();
+    assert_eq!(read_command(control).await, "USER owned\r\n");
+    control
+        .write_all(b"230 logged in without PASS\r\n")
+        .await
+        .unwrap();
+    assert_eq!(read_command(control).await, "TYPE I\r\n");
+    control.write_all(b"200 binary\r\n").await.unwrap();
+    assert_eq!(read_command(control).await, "EPSV\r\n");
+    let data = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = data.local_addr().unwrap().port();
+    if use_epsv {
+        control
+            .write_all(format!("229 entering (|||{port}|)\r\n").as_bytes())
+            .await
+            .unwrap();
+    } else {
+        control.write_all(b"502 unavailable\r\n").await.unwrap();
+        assert_eq!(read_command(control).await, "PASV\r\n");
+        // This address is syntactically valid but not the authorized control peer.
+        control
+            .write_all(
+                format!("227 entering (192,0,2,6,{},{})\r\n", port / 256, port % 256).as_bytes(),
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        read_command(control).await,
+        "RETR /backups/nested/archive.tar\r\n"
+    );
+    control
+        .write_all(b"150 open data connection\r\n")
+        .await
+        .unwrap();
+    data.accept().await.unwrap().0
+}
+
+#[tokio::test]
+async fn ftp_download_requires_the_terminal_reply_before_replacing_an_existing_file() {
+    let payload: Vec<u8> = (0..200_003).map(|i| (i % 251) as u8).collect();
+    let digest: String = sha2::Sha256::digest(&payload)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    for success in [true, false] {
+        let dir = Directory::new();
+        let path = dir.0.join("archive.tar");
+        fs::write(&path, b"existing recovery point").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let owner = Owner::new(1).unwrap();
+        let io = Owner::new(1).unwrap();
+        let ftp = backend(&listener, &owner, "owned", "synthetic");
+        let (body_sent, body_seen) = tokio::sync::oneshot::channel();
+        let (release, reply_allowed) = tokio::sync::oneshot::channel();
+        let data_bytes = payload.clone();
+        let server = tokio::spawn(async move {
+            let mut control = BufReader::new(listener.accept().await.unwrap().0);
+            let mut data = ready_for_retr(&mut control, success).await;
+            data.write_all(&data_bytes).await.unwrap();
+            drop(data);
+            body_sent.send(()).unwrap();
+            reply_allowed.await.unwrap();
+            if success {
+                control
+                    .write_all(b"226 transfer complete\r\n")
+                    .await
+                    .unwrap();
+                assert_eq!(read_command(&mut control).await, "QUIT\r\n");
+                control.write_all(b"221 goodbye\r\n").await.unwrap();
+            } else {
+                control
+                    .write_all(b"426 transfer interrupted\r\n")
+                    .await
+                    .unwrap();
+            }
+            assert!(read_command(&mut control).await.is_empty());
+        });
+        let work = ftp
+            .download(
+                "nested/archive.tar".into(),
+                File::open(&dir.0).unwrap(),
+                "archive.tar".into(),
+                &io,
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), body_seen)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"existing recovery point");
+        assert_eq!(owner.active(), 1);
+        release.send(()).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(2), work.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        if success {
+            let receipt = result.unwrap();
+            assert_eq!(receipt.len(), payload.len() as u64);
+            assert_eq!(receipt.sha256_hex(), digest);
+            assert_eq!(fs::read(&path).unwrap(), payload);
+        } else {
+            assert!(matches!(result, Err(FtpError::Reply(426))));
+            assert_eq!(fs::read(&path).unwrap(), b"existing recovery point");
+        }
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+        assert_eq!(owner.active(), 0);
+        assert_eq!(io.active(), 0);
+        server.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn ftp_download_cancel_joins_writer_and_preserves_abort_obligation_until_ack() {
+    use tokio::io::AsyncReadExt;
+    for acknowledged in [true, false] {
+        let dir = Directory::new();
+        let path = dir.0.join("archive.tar");
+        fs::write(&path, b"existing recovery point").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let owner = Owner::new(1).unwrap();
+        let io = Owner::new(1).unwrap();
+        let ftp = backend(&listener, &owner, "owned", "synthetic");
+        let (started, running) = tokio::sync::oneshot::channel();
+        let (abort_seen, abort_received) = tokio::sync::oneshot::channel();
+        let (release_abort, abort_allowed) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let mut control = BufReader::new(listener.accept().await.unwrap().0);
+            let mut data = ready_for_retr(&mut control, true).await;
+            data.write_all(&vec![0x71; 128 * 1024]).await.unwrap();
+            started.send(()).unwrap();
+            assert_eq!(read_command(&mut control).await, "ABOR\r\n");
+            match data.read(&mut [0; 1]).await {
+                Ok(0) => (),
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => (),
+                other => panic!("FTP data socket was not closed: {other:?}"),
+            }
+            if acknowledged {
+                control
+                    .write_all(b"426 transfer interrupted\r\n")
+                    .await
+                    .unwrap();
+            }
+            abort_seen.send(()).unwrap();
+            abort_allowed.await.unwrap();
+            if acknowledged {
+                control.write_all(b"226 abort complete\r\n").await.unwrap();
+                assert_eq!(read_command(&mut control).await, "QUIT\r\n");
+                control.write_all(b"221 goodbye\r\n").await.unwrap();
+            } else {
+                control.write_all(b"550 abort rejected\r\n").await.unwrap();
+            }
+            assert!(read_command(&mut control).await.is_empty());
+        });
+        let work = ftp
+            .download(
+                "nested/archive.tar".into(),
+                File::open(&dir.0).unwrap(),
+                "archive.tar".into(),
+                &io,
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), running)
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if fs::read_dir(&dir.0).unwrap().any(|entry| {
+                    let entry = entry.unwrap();
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".dockervault-transfer-")
+                        && entry.metadata().unwrap().len() != 0
+                }) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(owner.active(), 1);
+        assert_eq!(io.active(), 1);
+        work.cancel();
+        tokio::time::timeout(Duration::from_secs(2), abort_received)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(owner.active(), 1);
+        assert_eq!(io.active(), 0);
+        assert!(ftp.test_connection().is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"existing recovery point");
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+        release_abort.send(()).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(2), work.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            result.unwrap_err(),
+            if acknowledged {
+                FtpError::Cancelled
+            } else {
+                FtpError::AbortUnsettled
+            }
+        );
+        assert_eq!(owner.active(), 0);
+        server.await.unwrap();
+    }
+}
 
 fn backend(listener: &TcpListener, owner: &Owner, user: &str, password: &str) -> Ftp {
     let address = listener.local_addr().unwrap();
