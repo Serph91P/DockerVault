@@ -144,14 +144,8 @@ pub async fn submit_delete(
     Ok(id)
 }
 
-/// An owner-scoped snapshot; the headline counters and items are read together.
-pub async fn storage_operation_detail(
-    pool: &SqlitePool,
-    user_id: i64,
-    operation_id: &str,
-) -> Result<Option<serde_json::Value>, StorageRecoveryError> {
-    let row: Option<String> = sqlx::query_scalar(
-        "SELECT json_object(
+macro_rules! snapshot_sql {
+    ($suffix:literal) => { concat!("SELECT json_object(
             'id',op.id,'action',op.action,'path',op.path,'state',op.state,'stage',op.stage,
             'total',op.total,'completed',op.completed,'succeeded',op.succeeded,
             'failed',op.failed,'skipped',op.skipped,'unknown',op.unknown,
@@ -163,10 +157,47 @@ pub async fn storage_operation_detail(
             'finished_at',replace(op.finished_at,' ','T')||'Z',
             'items',json((SELECT json_group_array(json_object('path',path,'state',state,'error',error))
                      FROM (SELECT path,state,error FROM storage_operation_items WHERE operation_id=op.id ORDER BY id))))
-         FROM storage_operations AS op WHERE op.user_id=? AND op.id=? AND op.action='storage_delete'",
-    ).bind(user_id).bind(operation_id).fetch_optional(pool).await?;
-    row.map(|row| serde_json::from_str(&row).map_err(|_| StorageRecoveryError::InvalidRequest))
-        .transpose()
+         FROM storage_operations AS op WHERE op.user_id=? AND op.action='storage_delete'", $suffix) };
+}
+
+/// An owner-scoped snapshot; the headline counters and items are read together.
+pub async fn storage_operation_detail(
+    pool: &SqlitePool,
+    user_id: i64,
+    operation_id: &str,
+) -> Result<Option<serde_json::Value>, StorageRecoveryError> {
+    let row: Option<String> = sqlx::query_scalar(snapshot_sql!(" AND op.id=?"))
+        .bind(user_id)
+        .bind(operation_id)
+        .fetch_optional(pool)
+        .await?;
+    row.map(decode_snapshot).transpose()
+}
+
+pub async fn storage_operation_list(
+    pool: &SqlitePool,
+    user_id: i64,
+    storage: Option<&str>,
+    limit: i64,
+) -> Result<Vec<serde_json::Value>, StorageRecoveryError> {
+    if !(1..=100).contains(&limit) {
+        return Err(StorageRecoveryError::InvalidRequest);
+    }
+    let rows: Vec<String> = sqlx::query_scalar(snapshot_sql!(
+        " AND (? IS NULL OR op.storage_id=?)
+        ORDER BY (op.state IN ('queued','running')) DESC, op.created_at DESC, op.id DESC LIMIT ?"
+    ))
+    .bind(user_id)
+    .bind(storage)
+    .bind(storage)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter().map(decode_snapshot).collect()
+}
+
+fn decode_snapshot(row: String) -> Result<serde_json::Value, StorageRecoveryError> {
+    serde_json::from_str(&row).map_err(|_| StorageRecoveryError::InvalidRequest)
 }
 
 fn relative_path(path: &str, allow_root: bool) -> Option<String> {

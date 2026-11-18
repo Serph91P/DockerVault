@@ -141,6 +141,26 @@ async fn operation_detail_requires_authentication_and_ownership() {
         ('theirs',200,'r2','{}','{}','storage_delete','local','','queued','queued',1,0,0,0,0,0,0,'2024-01-01 00:00:00','2024-01-01 00:00:00');
         INSERT INTO storage_operation_items(operation_id,path,state) VALUES ('mine','fixture.tar','pending'),('theirs','other.tar','pending');")
         .execute(server.db.pool()).await.unwrap();
+    let (status, _, listing) = server
+        .request(
+            "GET",
+            "/api/v1/operations?storage_id=local&limit=1",
+            &[("Cookie", &cookie)],
+            None,
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(listing.as_array().unwrap().len(), 1);
+    assert_eq!(listing[0]["id"], "mine");
+    let (status, _, _) = server
+        .request(
+            "GET",
+            "/api/v1/operations?limit=101",
+            &[("Cookie", &cookie)],
+            None,
+        )
+        .await;
+    assert_eq!(status, 422);
     let (status, _, _) = server
         .request("GET", "/api/v1/operations/mine", &[], None)
         .await;

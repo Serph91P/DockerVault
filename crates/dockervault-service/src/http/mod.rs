@@ -40,6 +40,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/auth/change-password", post(auth::change_password))
+        .route("/api/v1/operations", get(operations::list))
         .route("/api/v1/operations/{id}", get(operations::detail))
         .route("/api/v1/operations/{id}/cancel", post(operations::cancel))
         .route("/ws/updates", get(ws::updates))
