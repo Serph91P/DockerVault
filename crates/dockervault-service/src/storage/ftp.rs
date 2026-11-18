@@ -1,7 +1,9 @@
 //! Plain FTP control sessions. No TLS, clear-text credential logging or detached session tasks.
 use crate::ownership::{Owner, Work, WorkError};
 mod download;
+mod listing;
 mod upload;
+pub use listing::FtpEntry;
 use std::{fmt, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},

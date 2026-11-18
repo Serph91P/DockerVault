@@ -398,6 +398,65 @@ async fn ftp_delete_claim_survives_cancel_until_provider_acknowledges() {
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn ftp_mlsd_requires_finished_control_exchange_and_keeps_exact_names() {
+    for final_status in [226, 426] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let owner = Owner::new(1).unwrap();
+        let ftp = backend(&listener, &owner, "owned", "synthetic");
+        let server = tokio::spawn(async move {
+            let mut control = BufReader::new(listener.accept().await.unwrap().0);
+            control.write_all(b"220 ready\r\n").await.unwrap();
+            assert_eq!(read_command(&mut control).await, "USER owned\r\n");
+            control.write_all(b"230 logged in\r\n").await.unwrap();
+            assert_eq!(read_command(&mut control).await, "TYPE I\r\n");
+            control.write_all(b"200 binary\r\n").await.unwrap();
+            assert_eq!(read_command(&mut control).await, "EPSV\r\n");
+            let data = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = data.local_addr().unwrap().port();
+            control
+                .write_all(format!("229 entering (|||{port}|)\r\n").as_bytes())
+                .await
+                .unwrap();
+            assert_eq!(read_command(&mut control).await, "MLSD /backups/nested\r\n");
+            control.write_all(b"150 listing\r\n").await.unwrap();
+            let mut data = data.accept().await.unwrap().0;
+            data.write_all(b"type=cdir; .\r\nType=pdir; ..\r\nType=file;Size=5;Modify=20240101000000.123; My archive.tar\r\ntype=dir; child\r\n").await.unwrap();
+            drop(data);
+            control
+                .write_all(format!("{final_status} listing result\r\n").as_bytes())
+                .await
+                .unwrap();
+            if final_status == 226 {
+                assert_eq!(read_command(&mut control).await, "QUIT\r\n");
+                control.write_all(b"221 goodbye\r\n").await.unwrap();
+            }
+            assert!(read_command(&mut control).await.is_empty());
+        });
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            ftp.list("nested".into()).unwrap().wait(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        if final_status == 226 {
+            let entries = result.unwrap();
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0].name, "My archive.tar");
+            assert_eq!(entries[0].size, 5);
+            assert_eq!(entries[0].modified, 1_704_067_200.0);
+            assert!(!entries[0].is_dir);
+            assert_eq!(entries[1].name, "child");
+            assert!(entries[1].is_dir);
+        } else {
+            assert!(matches!(result, Err(FtpError::Reply(426))));
+        }
+        assert_eq!(owner.active(), 0);
+        server.await.unwrap();
+    }
+}
+
 fn backend(listener: &TcpListener, owner: &Owner, user: &str, password: &str) -> Ftp {
     let address = listener.local_addr().unwrap();
     Ftp::new(
