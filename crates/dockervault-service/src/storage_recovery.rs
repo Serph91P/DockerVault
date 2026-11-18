@@ -275,7 +275,12 @@ pub(crate) async fn replay_remote_delete(
     Err(match supported {
         None => Error::StorageNotFound,
         Some((false, _)) => Error::StorageDisabled,
-        Some((true, kind)) if matches!(kind.as_str(), "local" | "webdav" | "ftp" | "s3") => {
+        Some((true, kind))
+            if matches!(
+                kind.as_str(),
+                "local" | "webdav" | "ftp" | "s3" | "ssh" | "sftp"
+            ) =>
+        {
             return Ok(None);
         }
         Some((true, _)) => Error::UnsupportedProvider,
@@ -620,20 +625,27 @@ impl SftpDeleteWorker {
             };
             // Once claimed, do not relay caller cancellation to a physical mutation.
             let outcome = match relative_path(&item.path, false) {
-                Some(path) => match endpoint.delete(&processes, &transport, &path) {
-                    Ok(effect) => match effect.wait().await {
-                        Ok(Ok(())) => DeleteOutcome::Succeeded,
-                        Ok(Err(SftpDownloadError::MutationUnverified)) | Err(_) => {
-                            DeleteOutcome::Unknown
-                        }
-                        Ok(Err(_)) => DeleteOutcome::Failed,
-                    },
-                    Err(_) => DeleteOutcome::Failed,
-                },
+                Some(path) => settle_sftp_delete(&endpoint, &processes, &transport, &path).await,
                 None => DeleteOutcome::InvalidPath,
             };
             record_settled(&pool, user_id, &operation_id, item.id, outcome).await
         })
+    }
+}
+
+async fn settle_sftp_delete(
+    endpoint: &SftpEndpoint,
+    processes: &ProcessOwner,
+    transport: &Owner,
+    path: &str,
+) -> DeleteOutcome {
+    match endpoint.delete(processes, transport, path) {
+        Ok(effect) => match effect.wait().await {
+            Ok(Ok(())) => DeleteOutcome::Succeeded,
+            Ok(Err(SftpDownloadError::MutationUnverified)) | Err(_) => DeleteOutcome::Unknown,
+            Ok(Err(_)) => DeleteOutcome::Failed,
+        },
+        Err(_) => DeleteOutcome::Failed,
     }
 }
 
@@ -709,6 +721,7 @@ enum DeleteTarget {
     Dav(WebDav),
     Ftp(Ftp),
     S3(S3),
+    Sftp(SftpEndpoint, ProcessOwner, Owner),
 }
 
 impl DeleteTarget {
@@ -728,6 +741,9 @@ impl DeleteTarget {
         };
         let outcome = if let Some(path) = relative_path(&item.path, false) {
             match self {
+                Self::Sftp(endpoint, processes, transport) => {
+                    settle_sftp_delete(endpoint, processes, transport, &path).await
+                }
                 Self::S3(s3) => match s3.delete(path) {
                     Ok(effect) => match effect.wait().await {
                         Ok(Ok(())) => DeleteOutcome::Succeeded,
@@ -901,6 +917,73 @@ impl LocalDeleteJobs {
                         let mut identity = remote_identity(&row)?;
                         let kind: String = row.try_get("storage_type")?;
                         let base: Option<String> = row.try_get("base_path")?;
+                        if matches!(kind.as_str(), "ssh" | "sftp") {
+                            let key: Option<String> = row.try_get("ssh_key_path")?;
+                            let mut password = None;
+                            let identity_path = if let Some(key) = key.filter(|key| !key.is_empty())
+                            {
+                                let dirs = config.allowed_ssh_key_dirs.clone();
+                                let work = io
+                                    .submit_blocking(move |_| {
+                                        let path = std::fs::canonicalize(key)
+                                            .map_err(|_| Error::InvalidStorageConfiguration)?;
+                                        if !path.is_file()
+                                            || !dirs
+                                                .split(',')
+                                                .map(str::trim)
+                                                .filter(|dir| !dir.is_empty())
+                                                .filter_map(|dir| std::fs::canonicalize(dir).ok())
+                                                .any(|dir| path.starts_with(dir))
+                                        {
+                                            return Err(Error::InvalidStorageConfiguration);
+                                        }
+                                        Ok(path)
+                                    })
+                                    .map_err(|_| Error::InvalidStorageConfiguration)?;
+                                Some(
+                                    work.wait()
+                                        .await
+                                        .map_err(|_| Error::InvalidStorageConfiguration)??,
+                                )
+                            } else {
+                                [password, _] = open_delete_credentials(
+                                    [row.try_get("password")?, None],
+                                    &io,
+                                    &config,
+                                )
+                                .await?;
+                                None
+                            };
+                            let host = row
+                                .try_get::<Option<String>, _>("host")?
+                                .ok_or(Error::InvalidStorageConfiguration)?;
+                            let username = row
+                                .try_get::<Option<String>, _>("username")?
+                                .ok_or(Error::InvalidStorageConfiguration)?;
+                            let port =
+                                u16::try_from(row.try_get::<Option<i64>, _>("port")?.unwrap_or(22))
+                                    .ok()
+                                    .filter(|port| *port > 0)
+                                    .ok_or(Error::InvalidStorageConfiguration)?;
+                            let endpoint = SftpEndpoint {
+                                host,
+                                username,
+                                port,
+                                base: base.unwrap_or_default(),
+                                known_hosts: "/app/data/ssh_known_hosts".into(),
+                                identity: identity_path,
+                                password,
+                            };
+                            let processes = ProcessOwner::new(
+                                1,
+                                "/usr/local/libexec/dockervault-process-guard",
+                            )
+                            .map_err(|_| Error::InvalidStorageConfiguration)?;
+                            return Ok((
+                                Some(DeleteTarget::Sftp(endpoint, processes, io.clone())),
+                                identity,
+                            ));
+                        }
                         if matches!(kind.as_str(), "webdav" | "ftp" | "s3") {
                             let password: Option<String> = row.try_get(if kind == "s3" {
                                 "s3_secret_key"
