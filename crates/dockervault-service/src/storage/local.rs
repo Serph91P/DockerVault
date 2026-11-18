@@ -587,7 +587,7 @@ fn copy_complete(
 }
 
 fn copy_stream(
-    reader: &mut impl Read,
+    reader: &mut (impl Read + ?Sized),
     output: &mut File,
     cancel: &dyn Fn() -> bool,
 ) -> io::Result<Downloaded> {
@@ -614,7 +614,7 @@ fn copy_stream(
 }
 
 pub(super) fn receive_snapshot(
-    reader: &mut impl Read,
+    reader: &mut (impl Read + ?Sized),
     expected: Option<u64>,
     cancel: &dyn Fn() -> bool,
 ) -> Result<(File, u64), TransferError> {
@@ -641,7 +641,7 @@ fn anonymous_download() -> io::Result<File> {
 pub(super) fn receive_download(
     root: File,
     path: &Path,
-    reader: &mut impl Read,
+    reader: &mut (impl Read + ?Sized),
     expected: Option<u64>,
     cancel: &dyn Fn() -> bool,
 ) -> Result<Downloaded, TransferError> {

@@ -10,6 +10,8 @@ use tokio_util::{
     sync::CancellationToken,
 };
 
+type Snapshot<T> = (File, u64, T);
+
 impl S3 {
     pub fn download(
         &self,
@@ -17,6 +19,30 @@ impl S3 {
         root: File,
         path: PathBuf,
     ) -> Result<Work<Result<Downloaded, S3Error>>, WorkError> {
+        self.download_with(remote, move |reader, expected, cancel| {
+            receive_download(root, &path, reader, Some(expected), cancel)
+        })
+    }
+
+    pub(crate) fn download_snapshot<T: Send + 'static>(
+        &self,
+        remote: String,
+        held: T,
+    ) -> Result<Work<Result<Snapshot<T>, S3Error>>, WorkError> {
+        self.download_with(remote, move |reader, expected, cancel| {
+            let (file, length) =
+                crate::storage::local::receive_snapshot(reader, Some(expected), cancel)?;
+            Ok((file, length, held))
+        })
+    }
+
+    fn download_with<T: Send + 'static>(
+        &self,
+        remote: String,
+        receive: impl FnOnce(&mut dyn std::io::Read, u64, &dyn Fn() -> bool) -> Result<T, TransferError>
+        + Send
+        + 'static,
+    ) -> Result<Work<Result<T, S3Error>>, WorkError> {
         let backend = self.clone();
         self.owner.submit_async(move |cancel| async move {
             if cancel.is_cancelled() {
@@ -45,13 +71,9 @@ impl S3 {
                 .io
                 .submit_blocking(move |cancel| {
                     let reader = body_reader(response.body, parent_cancel.clone(), cancel.clone());
-                    receive_download(
-                        root,
-                        &path,
-                        &mut SyncIoBridge::new(reader),
-                        Some(expected),
-                        &|| cancel.is_cancelled() || parent_cancel.is_cancelled(),
-                    )
+                    receive(&mut SyncIoBridge::new(reader), expected, &|| {
+                        cancel.is_cancelled() || parent_cancel.is_cancelled()
+                    })
                 })
                 .map_err(|_| S3Error::Capacity)?
                 .wait()

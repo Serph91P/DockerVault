@@ -1577,6 +1577,56 @@ async fn local_download_honors_ranges_and_file_validators() {
 }
 
 #[tokio::test]
+async fn configured_s3_download_verifies_complete_object_before_serving_ranges() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,s3_bucket,s3_endpoint_url,s3_access_key,s3_secret_key) VALUES(44,'fixture','s3',1,'base','fixture-bucket',?,'fixture-access','fixture-secret')")
+        .bind(endpoint).execute(server.db.pool()).await.unwrap();
+    let provider = tokio::spawn(async move {
+        for body in ["archive bytes", "incomplete"] {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut line = String::new();
+            stream.read_line(&mut line).await.unwrap();
+            assert_eq!(
+                line,
+                "GET /fixture-bucket/base/archive.tar?x-id=GetObject HTTP/1.1\r\n"
+            );
+            loop {
+                line.clear();
+                assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+                assert!(!line.to_ascii_lowercase().starts_with("range:"));
+            }
+            stream
+                .get_mut()
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\n{body}"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        }
+    });
+    let headers = [("Cookie", cookie.as_str()), ("Range", "bytes=8-12")];
+    let url = "/api/v1/storage/44/files/download?path=archive.tar";
+    let (status, response, body) = server.request("GET", url, &headers, None).await;
+    assert_eq!((status, body), (206, json!("bytes")));
+    assert!(response.contains("content-range: bytes 8-12/13"));
+    let (status, _, body) = server.request("GET", url, &headers, None).await;
+    assert_eq!((status, body), (500, json!({"detail":"Download failed"})));
+    provider.await.unwrap();
+    server.close().await;
+}
+
+#[tokio::test]
 async fn configured_webdav_download_does_not_publish_incomplete_bodies() {
     use tokio::io::{AsyncBufReadExt, BufReader};
     let server = Server::start("http://localhost:3000").await;
