@@ -82,18 +82,52 @@ pub(super) async fn submit(State(state): State<HttpState>, mut request: Request)
     let Some(request_id) = canonical_uuid(&body["request_id"]) else {
         return invalid("body.request_id", "Input should be a valid UUID");
     };
+    admit_local(
+        &state,
+        LocalSelection {
+            user_id: user.id,
+            request_id,
+            path: path.to_owned(),
+            paths: targets,
+            parent: None,
+        },
+    )
+    .await
+}
+
+pub(super) async fn retry(
+    State(state): State<HttpState>,
+    Path(id): Path<String>,
+    mut request: Request,
+) -> Response {
+    let user = match required_user(&state, request.headers()).await {
+        Ok(user) => user,
+        Err(response) => return *response,
+    };
+    let body = match json_body(&state, &mut request).await {
+        Ok(body) => body,
+        Err(response) => return *response,
+    };
+    let Some(request_id) = canonical_uuid(&body["request_id"]) else {
+        return *validation(vec![
+            json!({"field":"body.request_id","message":"Input should be a valid UUID"}),
+        ]);
+    };
+    match LocalSelection::retry(state.auth.pool(), user.id, id, request_id).await {
+        Ok(selection) => admit_local(&state, selection).await,
+        Err(error) => admission_response(Err(error), true),
+    }
+}
+
+async fn admit_local(state: &HttpState, selection: LocalSelection) -> Response {
+    let retry = selection.parent.is_some();
     let notifications = state.notifications.clone();
     let result = state
         .local_delete
         .submit(
             state.auth.pool().clone(),
             state.config.backup_base_path.clone(),
-            LocalSelection {
-                user_id: user.id,
-                request_id,
-                path: path.to_owned(),
-                paths: targets,
-            },
+            selection,
             state.draining.clone(),
             move |user, id| {
                 notifications
@@ -101,6 +135,10 @@ pub(super) async fn submit(State(state): State<HttpState>, mut request: Request)
             },
         )
         .await;
+    admission_response(result, retry)
+}
+
+fn admission_response(result: Result<String, StorageRecoveryError>, retry: bool) -> Response {
     use StorageRecoveryError as Error;
     match result {
         Ok(id) => (StatusCode::ACCEPTED, Json(json!({"operation_id":id}))).into_response(),
@@ -112,7 +150,26 @@ pub(super) async fn submit(State(state): State<HttpState>, mut request: Request)
             StatusCode::CONFLICT,
             "Request ID already used for another selection",
         ),
-        Err(Error::IdentityChanged) => failure(StatusCode::CONFLICT, "Storage root is unavailable"),
+        Err(Error::IdentityChanged) => failure(
+            StatusCode::CONFLICT,
+            if retry {
+                "Storage identity changed; inspect before starting a new operation"
+            } else {
+                "Storage root is unavailable"
+            },
+        ),
+        Err(Error::OperationNotFound) => failure(StatusCode::NOT_FOUND, "Operation not found"),
+        Err(Error::OperationActive) => {
+            failure(StatusCode::CONFLICT, "Wait for operation settlement")
+        }
+        Err(Error::NothingToRetry) => failure(
+            StatusCode::CONFLICT,
+            "No failed items to retry; inspect unknown outcomes manually",
+        ),
+        Err(Error::UnsupportedProvider) => failure(
+            StatusCode::NOT_IMPLEMENTED,
+            "Remote storage operations are unavailable",
+        ),
         Err(Error::ShuttingDown) => failure(
             StatusCode::SERVICE_UNAVAILABLE,
             "Storage worker is shutting down",

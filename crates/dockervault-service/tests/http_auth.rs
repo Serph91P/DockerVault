@@ -270,6 +270,118 @@ async fn local_delete_submit_commits_before_effect_and_replay_does_not_delete_ag
 }
 
 #[tokio::test]
+async fn retry_links_only_failed_items_and_replay_does_not_touch_recreated_bytes() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let root = server.path.join("backups");
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    use std::os::unix::fs::MetadataExt;
+    let info = std::fs::metadata(&root).unwrap();
+    let identity = json!({"root": root, "root_inode":[info.dev(),info.ino()]}).to_string();
+    sqlx::query("INSERT INTO storage_operations(id,user_id,request_id,payload,storage_identity,action,storage_id,path,state,stage,total,completed,succeeded,failed,skipped,unknown,cancel_requested,created_at,updated_at)
+        VALUES ('retry-parent',1,'original','{}',?,'storage_delete','local','','failed','finished',3,3,1,1,0,1,0,'2024-01-01','2024-01-01')")
+        .bind(identity).execute(server.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO storage_operation_items(operation_id,path,state) VALUES ('retry-parent','success.tar','succeeded'),('retry-parent','failed.tar','failed'),('retry-parent','uncertain.tar','unknown')")
+        .execute(server.db.pool()).await.unwrap();
+    for name in ["success.tar", "failed.tar", "uncertain.tar"] {
+        std::fs::write(root.join(name), name.as_bytes()).unwrap();
+    }
+    let body = json!({"request_id":"1a5124a4-55f0-46d5-b6ab-3251c8827a2f"});
+    let (status, _, missing) = server
+        .request(
+            "POST",
+            "/api/v1/operations/not-mine/retry",
+            &headers,
+            Some(body.clone()),
+        )
+        .await;
+    assert_eq!(
+        (status, missing),
+        (404, json!({"detail":"Operation not found"}))
+    );
+    let (status, _, result) = server
+        .request(
+            "POST",
+            "/api/v1/operations/retry-parent/retry",
+            &headers,
+            Some(body.clone()),
+        )
+        .await;
+    assert_eq!(status, 202);
+    let id = result["operation_id"].as_str().unwrap();
+    assert_ne!(id, "retry-parent");
+    let detail = format!("/api/v1/operations/{id}");
+    let settled = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let (status, _, snapshot) = server.request("GET", &detail, &headers, None).await;
+            assert_eq!(status, 200);
+            if snapshot["finished_at"].is_string() {
+                break snapshot;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(settled["parent_id"], "retry-parent");
+    assert_eq!(settled["state"], "completed");
+    assert_eq!(
+        settled["items"],
+        json!([{"path":"failed.tar","state":"succeeded","error":null}])
+    );
+    assert!(!root.join("failed.tar").exists());
+    std::fs::write(root.join("failed.tar"), b"recreated").unwrap();
+    let (status, _, replay) = server
+        .request(
+            "POST",
+            "/api/v1/operations/retry-parent/retry",
+            &headers,
+            Some(body),
+        )
+        .await;
+    assert_eq!(status, 202);
+    assert_eq!(replay, result);
+    assert_eq!(
+        std::fs::read(root.join("failed.tar")).unwrap(),
+        b"recreated"
+    );
+    for name in ["success.tar", "uncertain.tar"] {
+        assert_eq!(std::fs::read(root.join(name)).unwrap(), name.as_bytes());
+    }
+    let original = server.path.join("original-root");
+    std::fs::rename(&root, &original).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("failed.tar"), b"replacement root").unwrap();
+    let (status, _, rejected) = server
+        .request(
+            "POST",
+            "/api/v1/operations/retry-parent/retry",
+            &headers,
+            Some(json!({"request_id":"2a5124a4-55f0-46d5-b6ab-3251c8827a2f"})),
+        )
+        .await;
+    assert_eq!(
+        (status, rejected),
+        (
+            409,
+            json!({"detail":"Storage identity changed; inspect before starting a new operation"})
+        )
+    );
+    assert_eq!(
+        std::fs::read(root.join("failed.tar")).unwrap(),
+        b"replacement root"
+    );
+    assert_eq!(
+        std::fs::read(original.join("failed.tar")).unwrap(),
+        b"recreated"
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn operation_detail_requires_authentication_and_ownership() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

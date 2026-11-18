@@ -63,6 +63,7 @@ pub fn router(state: HttpState) -> Router {
         )
         .route("/api/v1/operations/{id}", get(operations::detail))
         .route("/api/v1/operations/{id}/cancel", post(operations::cancel))
+        .route("/api/v1/operations/{id}/retry", post(operations::retry))
         .route("/ws/updates", get(ws::updates))
         .fallback(|| async {
             (

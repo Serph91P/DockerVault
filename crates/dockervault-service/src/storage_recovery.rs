@@ -25,6 +25,10 @@ pub enum StorageRecoveryError {
     QueueFull,
     RecoveryPending,
     Randomness,
+    OperationNotFound,
+    OperationActive,
+    NothingToRetry,
+    UnsupportedProvider,
 }
 
 #[derive(Clone, Copy)]
@@ -42,12 +46,13 @@ pub async fn submit_delete(
     pool: &SqlitePool,
     request: DeleteAdmission<'_>,
 ) -> Result<String, StorageRecoveryError> {
-    Ok(admit_delete(pool, request).await?.0)
+    Ok(admit_delete(pool, request, None).await?.0)
 }
 
-pub(crate) async fn admit_delete(
+async fn admit_delete(
     pool: &SqlitePool,
     request: DeleteAdmission<'_>,
+    parent: Option<&RetryParent>,
 ) -> Result<(String, bool), StorageRecoveryError> {
     use StorageRecoveryError as Error;
     let invalid = Error::InvalidRequest;
@@ -87,7 +92,8 @@ pub(crate) async fn admit_delete(
     if paths.is_empty() {
         return Err(Error::InvalidRequest);
     }
-    let payload = serde_json::json!({"action":"storage_delete", "storage_id":request.storage_id, "path":path, "paths":paths, "parent_id":null});
+    let parent_id = parent.map(|parent| parent.id.as_str());
+    let payload = serde_json::json!({"action":"storage_delete", "storage_id":request.storage_id, "path":path, "paths":paths, "parent_id":parent_id});
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     if recovery_pending_in(&mut *tx)
         .await
@@ -125,7 +131,9 @@ pub(crate) async fn admit_delete(
     if active >= 32 {
         return Err(Error::QueueFull);
     }
-    if !request.identity.is_object() {
+    if !request.identity.is_object()
+        || parent.is_some_and(|parent| &parent.identity != request.identity)
+    {
         return Err(Error::IdentityChanged);
     }
     let mut nonce = [0u8; 16];
@@ -141,9 +149,9 @@ pub(crate) async fn admit_delete(
         &hex[16..20],
         &hex[20..]
     );
-    sqlx::query("INSERT INTO storage_operations(id,user_id,request_id,payload,storage_identity,action,storage_id,path,state,stage,total,completed,succeeded,failed,skipped,unknown,cancel_requested,created_at,updated_at)
-                 VALUES(?,?,?,?,?,'storage_delete',?,?,'queued','queued',?,0,0,0,0,0,0,strftime('%Y-%m-%d %H:%M:%f','now'),strftime('%Y-%m-%d %H:%M:%f','now'))")
-        .bind(&id).bind(request.user_id).bind(&request_id).bind(payload.to_string()).bind(request.identity.to_string())
+    sqlx::query("INSERT INTO storage_operations(id,user_id,request_id,payload,storage_identity,parent_id,action,storage_id,path,state,stage,total,completed,succeeded,failed,skipped,unknown,cancel_requested,created_at,updated_at)
+                 VALUES(?,?,?,?,?,?,'storage_delete',?,?,'queued','queued',?,0,0,0,0,0,0,strftime('%Y-%m-%d %H:%M:%f','now'),strftime('%Y-%m-%d %H:%M:%f','now'))")
+        .bind(&id).bind(request.user_id).bind(&request_id).bind(payload.to_string()).bind(request.identity.to_string()).bind(parent_id)
         .bind(request.storage_id).bind(&path).bind(paths.len() as i64).execute(&mut *tx).await?;
     for path in paths {
         sqlx::query(
@@ -500,6 +508,48 @@ pub(crate) struct LocalSelection {
     pub request_id: String,
     pub path: String,
     pub paths: Vec<String>,
+    pub parent: Option<RetryParent>,
+}
+
+pub(crate) struct RetryParent {
+    id: String,
+    identity: serde_json::Value,
+}
+
+impl LocalSelection {
+    pub async fn retry(
+        pool: &SqlitePool,
+        user_id: i64,
+        id: String,
+        request_id: String,
+    ) -> Result<Self, StorageRecoveryError> {
+        use StorageRecoveryError as Error;
+        let Some((storage, state, path, identity)) = sqlx::query_as::<_, (String, String, String, String)>(
+            "SELECT storage_id,state,path,storage_identity FROM storage_operations WHERE id=? AND user_id=? AND action='storage_delete'",
+        ).bind(&id).bind(user_id).fetch_optional(pool).await? else {
+            return Err(Error::OperationNotFound);
+        };
+        if matches!(state.as_str(), "queued" | "running") {
+            return Err(Error::OperationActive);
+        }
+        // Terminal items are immutable; an unknown outcome must never be retried.
+        let paths: Vec<String> = sqlx::query_scalar("SELECT path FROM storage_operation_items WHERE operation_id=? AND state='failed' ORDER BY id LIMIT 1001")
+            .bind(&id).fetch_all(pool).await?;
+        if paths.is_empty() {
+            return Err(Error::NothingToRetry);
+        }
+        if storage != "local" {
+            return Err(Error::UnsupportedProvider);
+        }
+        let identity = serde_json::from_str(&identity).map_err(|_| Error::IdentityChanged)?;
+        Ok(Self {
+            user_id,
+            request_id,
+            path,
+            paths,
+            parent: Some(RetryParent { id, identity }),
+        })
+    }
 }
 
 impl LocalDeleteJobs {
@@ -552,6 +602,7 @@ impl LocalDeleteJobs {
                         identity: &identity,
                         accepting: !this.stopped.is_cancelled() && !draining.is_cancelled(),
                     },
+                    selection.parent.as_ref(),
                 )
                 .await;
                 let (id, local) = match (admission, pinned) {
