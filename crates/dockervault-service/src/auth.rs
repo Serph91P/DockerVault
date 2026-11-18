@@ -228,6 +228,10 @@ struct Inner {
     registry: SessionRegistry,
 }
 impl AuthService {
+    pub(crate) fn pool(&self) -> &SqlitePool {
+        &self.inner.pool
+    }
+
     pub fn new(pool: SqlitePool) -> Self {
         let filename = pool.connect_options().get_filename().to_path_buf();
         let preparation = PreparationClaims::new(if filename == std::path::Path::new(":memory:") {

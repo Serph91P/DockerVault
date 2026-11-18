@@ -132,6 +132,65 @@ impl Server {
     }
 }
 #[tokio::test]
+async fn operation_detail_requires_authentication_and_ownership() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    sqlx::raw_sql("INSERT INTO users(id,username,password_hash) VALUES(200,'other','synthetic');
+        INSERT INTO storage_operations(id,user_id,request_id,payload,storage_identity,action,storage_id,path,state,stage,total,completed,succeeded,failed,skipped,unknown,cancel_requested,created_at,updated_at) VALUES
+        ('mine',1,'r1','{}','{}','storage_delete','local','','queued','queued',1,0,0,0,0,0,0,'2024-01-01 00:00:00','2024-01-01 00:00:00'),
+        ('theirs',200,'r2','{}','{}','storage_delete','local','','queued','queued',1,0,0,0,0,0,0,'2024-01-01 00:00:00','2024-01-01 00:00:00');
+        INSERT INTO storage_operation_items(operation_id,path,state) VALUES ('mine','fixture.tar','pending'),('theirs','other.tar','pending');")
+        .execute(server.db.pool()).await.unwrap();
+    let (status, _, _) = server
+        .request("GET", "/api/v1/operations/mine", &[], None)
+        .await;
+    assert_eq!(status, 401);
+    let (status, _, body) = server
+        .request(
+            "GET",
+            "/api/v1/operations/theirs",
+            &[("Cookie", &cookie)],
+            None,
+        )
+        .await;
+    assert_eq!(
+        (status, body),
+        (404, json!({"detail":"Operation not found"}))
+    );
+    let (status, _, detail) = server
+        .request(
+            "GET",
+            "/api/v1/operations/mine",
+            &[("Cookie", &cookie)],
+            None,
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        detail["items"],
+        json!([{"path":"fixture.tar","state":"pending","error":null}])
+    );
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let (status, _, body) = server
+        .request("POST", "/api/v1/operations/theirs/cancel", &headers, None)
+        .await;
+    assert_eq!(
+        (status, body),
+        (404, json!({"detail":"Operation not found"}))
+    );
+    let (status, _, body) = server
+        .request("POST", "/api/v1/operations/mine/cancel", &headers, None)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["cancel_requested"], true);
+    assert_eq!(body["items"][0]["state"], "skipped");
+    server.close().await;
+}
+
+#[tokio::test]
 async fn setup_http_honors_shared_claim_repairs_abandoned_generation_and_fences_invalid_journal() {
     use dockervault_service::recovery_activation::{ClaimKind, PreparationClaims};
     let server = Server::start("http://localhost").await;

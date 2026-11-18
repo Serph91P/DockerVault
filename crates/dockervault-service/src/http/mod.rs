@@ -1,5 +1,6 @@
 //! HTTP contracts; protocol state is shared, never retained in request-owned jobs.
 mod auth;
+mod operations;
 pub mod security;
 pub mod ws;
 use crate::{auth::AuthService, config::Config};
@@ -39,6 +40,8 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/auth/change-password", post(auth::change_password))
+        .route("/api/v1/operations/{id}", get(operations::detail))
+        .route("/api/v1/operations/{id}/cancel", post(operations::cancel))
         .route("/ws/updates", get(ws::updates))
         .fallback(|| async {
             (

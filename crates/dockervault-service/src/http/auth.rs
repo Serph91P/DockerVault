@@ -135,7 +135,10 @@ async fn body(
         Err(validation(errors))
     }
 }
-async fn required_user(state: &HttpState, headers: &HeaderMap) -> Result<User, Box<Response>> {
+pub(super) async fn required_user(
+    state: &HttpState,
+    headers: &HeaderMap,
+) -> Result<User, Box<Response>> {
     let token = security::bearer(headers, false).or_else(|| security::cookie(headers));
     let Some(token) = token else {
         return Err(Box::new(
