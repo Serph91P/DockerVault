@@ -1,0 +1,100 @@
+use nix::{
+    sys::signal::{Signal, kill},
+    unistd::Pid,
+};
+use std::{
+    net::TcpListener,
+    path::Path,
+    process::{Child, Command, Stdio},
+    time::{Duration, Instant},
+};
+
+fn run(root: &Path, port: u16) -> Child {
+    Command::new(env!("CARGO_BIN_EXE_dockervault-service"))
+        .current_dir(root)
+        .env_clear()
+        .env("DATABASE_URL", "sqlite+aiosqlite:///./state.sqlite")
+        .env("BACKUP_BASE_PATH", "./backups")
+        .env("SHUTDOWN_TIMEOUT", "0")
+        .env("DOCKER_SOCKET", "./absent-docker.sock")
+        .arg(format!("127.0.0.1:{port}"))
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap()
+}
+
+#[test]
+fn standalone_service_migrates_serves_and_shuts_down_without_python() {
+    let mut nonce = [0; 16];
+    getrandom::fill(&mut nonce).unwrap();
+    let dir = std::env::temp_dir().join(format!("dv-bootstrap-{nonce:02x?}"));
+    std::fs::create_dir(&dir).unwrap();
+    let socket = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = socket.local_addr().unwrap().port();
+    drop(socket);
+    let mut process = run(&dir, port);
+    let ready = || -> std::io::Result<bool> {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(Duration::from_secs(1)))?;
+        stream
+            .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")?;
+        let mut bytes = vec![];
+        stream.read_to_end(&mut bytes)?;
+        Ok(bytes.starts_with(b"HTTP/1.1 200 "))
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if ready().unwrap_or(false) {
+            break;
+        }
+        if process.try_wait().unwrap().is_some() || Instant::now() >= deadline {
+            let _ = process.kill();
+            let _ = process.wait();
+            panic!("native process never served health");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let other = TcpListener::bind("127.0.0.1:0").unwrap();
+    let other_port = other.local_addr().unwrap().port();
+    drop(other);
+    let mut duplicate = run(&dir, other_port);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = duplicate.try_wait().unwrap() {
+            assert!(!status.success());
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = duplicate.kill();
+            let _ = duplicate.wait();
+            let _ = process.kill();
+            let _ = process.wait();
+            panic!("second native writer was not refused");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let db = rusqlite::Connection::open(dir.join("state.sqlite")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM schema_migrations", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        7
+    );
+    kill(Pid::from_raw(process.id() as i32), Signal::SIGTERM).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = process.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = process.kill();
+            let _ = process.wait();
+            panic!("native process did not settle");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    drop(db);
+    std::fs::remove_dir_all(dir).unwrap();
+}
