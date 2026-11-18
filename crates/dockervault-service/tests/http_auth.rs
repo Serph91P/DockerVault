@@ -480,6 +480,15 @@ async fn configured_ftp_delete_settles_after_the_control_session_closes() {
 
 #[tokio::test]
 async fn configured_s3_delete_settles_after_signed_provider_response() {
+    configured_s3_delete(true).await;
+}
+
+#[tokio::test]
+async fn configured_s3_delete_lost_response_is_unknown_and_not_sent_again() {
+    configured_s3_delete(false).await;
+}
+
+async fn configured_s3_delete(acknowledge: bool) {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -514,11 +523,14 @@ async fn configured_s3_delete_settles_after_signed_provider_response() {
         }
         assert!(signed, "missing configured S3 signing identity");
         std::fs::remove_file(selected).unwrap();
-        stream
-            .get_mut()
-            .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
-            .await
-            .unwrap();
+        if acknowledge {
+            stream
+                .get_mut()
+                .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        }
+        listener
     });
     sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,s3_bucket,s3_endpoint_url,s3_access_key,s3_secret_key) VALUES (45,'fixture s3','s3',1,'backups','fixture-bucket',?,?,?)")
         .bind(url).bind(access.as_str()).bind(secret.as_str()).execute(server.db.pool()).await.unwrap();
@@ -538,7 +550,7 @@ async fn configured_s3_delete_settles_after_signed_provider_response() {
         )
         .await;
     assert_eq!(status, 202);
-    tokio::time::timeout(std::time::Duration::from_secs(5), provider)
+    let listener = tokio::time::timeout(std::time::Duration::from_secs(5), provider)
         .await
         .unwrap()
         .unwrap();
@@ -558,8 +570,19 @@ async fn configured_s3_delete_settles_after_signed_provider_response() {
     })
     .await
     .unwrap();
-    assert_eq!(snapshot["state"], "completed");
-    assert_eq!(snapshot["succeeded"], 1);
+    if acknowledge {
+        assert_eq!(snapshot["state"], "completed");
+        assert_eq!(snapshot["succeeded"], 1);
+    } else {
+        assert_eq!(snapshot["state"], "failed");
+        assert_eq!(snapshot["succeeded"], 0);
+        assert_eq!(snapshot["items"][0]["state"], "unknown");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+                .await
+                .is_err()
+        );
+    }
     assert!(!object.exists());
     server.close().await;
 }
