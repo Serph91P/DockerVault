@@ -613,6 +613,31 @@ fn copy_stream(
     })
 }
 
+pub(super) fn receive_snapshot(
+    reader: &mut impl Read,
+    expected: Option<u64>,
+    cancel: &dyn Fn() -> bool,
+) -> Result<(File, u64), TransferError> {
+    check(cancel)?;
+    let mut file = anonymous_download()?;
+    let receipt = copy_stream(reader, &mut file, cancel)?;
+    if expected.is_some_and(|length| length != receipt.length) {
+        return Err(invalid("Remote download length mismatch").into());
+    }
+    std::io::Seek::rewind(&mut file)?;
+    Ok((file, receipt.length))
+}
+
+fn anonymous_download() -> io::Result<File> {
+    let temp = open_root(&std::env::temp_dir())?;
+    Ok(File::from(openat(
+        &temp,
+        ".",
+        OFlag::O_TMPFILE | OFlag::O_RDWR | OFlag::O_CLOEXEC,
+        Mode::S_IRUSR | Mode::S_IWUSR,
+    )?))
+}
+
 pub(super) fn receive_download(
     root: File,
     path: &Path,

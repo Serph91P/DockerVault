@@ -462,14 +462,33 @@ pub(super) async fn configured_download(
         Ok(inputs) => inputs,
         Err(response) => return *response,
     };
-    match configured_browse_root(&state, id).await {
-        Ok(Some(root)) if !root.is_empty() => download_at(&state, root, path, &headers).await,
-        Ok(Some(_)) => storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Download failed"),
-        Ok(None) => storage_error(
+    let mut config = match configured_browse_config(&state, id).await {
+        Ok(config) => config,
+        Err(response) => return *response,
+    };
+    match config["storage_type"].as_str() {
+        Some("local") => {
+            download_at(
+                &state,
+                config["base_path"].as_str().unwrap_or_default().to_owned(),
+                path,
+                &headers,
+            )
+            .await
+        }
+        Some("webdav") => {
+            if !open_probe_credentials(&state, &mut config, None).await {
+                return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Download failed");
+            }
+            let Some(provider) = configured_webdav(&state, &config) else {
+                return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Download failed");
+            };
+            download_from(&state, DownloadSource::Webdav(provider), path, &headers).await
+        }
+        _ => storage_error(
             StatusCode::NOT_IMPLEMENTED,
             "Remote storage operations are unavailable",
         ),
-        Err(response) => *response,
     }
 }
 
@@ -481,19 +500,9 @@ pub(super) async fn list_configured_files(
     let Some(id) = super::operations::query_integer(&id) else {
         return invalid_id();
     };
-    let row = sqlx::query_scalar::<_, String>(select_storage!(" WHERE id=?"))
-        .bind(id)
-        .fetch_optional(state.auth.pool())
-        .await;
-    let mut config = match row {
-        Ok(Some(row)) => match serde_json::from_str::<serde_json::Map<String, Value>>(&row) {
-            Ok(config) => config,
-            Err(_) => {
-                return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
-            }
-        },
-        Ok(None) => return storage_error(StatusCode::NOT_FOUND, "Storage not found"),
-        Err(_) => return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+    let mut config = match configured_browse_config(&state, id).await {
+        Ok(config) => config,
+        Err(response) => return *response,
     };
     let raw = query.get("path").map_or("", String::as_str);
     match config["storage_type"].as_str() {
@@ -593,6 +602,26 @@ pub(super) async fn list_configured_files(
     }
 }
 
+async fn configured_browse_config(
+    state: &HttpState,
+    id: i64,
+) -> Result<serde_json::Map<String, Value>, Box<Response>> {
+    let internal = || {
+        Box::new(storage_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error",
+        ))
+    };
+    let row = sqlx::query_scalar::<_, String>(select_storage!(" WHERE id=?"))
+        .bind(id)
+        .fetch_optional(state.auth.pool())
+        .await
+        .map_err(|_| internal())?;
+    let row =
+        row.ok_or_else(|| Box::new(storage_error(StatusCode::NOT_FOUND, "Storage not found")))?;
+    serde_json::from_str(&row).map_err(|_| internal())
+}
+
 async fn list_webdav(
     state: &HttpState,
     config: &mut serde_json::Map<String, Value>,
@@ -601,15 +630,27 @@ async fn list_webdav(
     if !open_probe_credentials(state, config, None).await {
         return None;
     }
+    configured_webdav(state, config)?
+        .list(path)
+        .ok()?
+        .wait()
+        .await
+        .ok()?
+        .ok()
+}
+
+fn configured_webdav(
+    state: &HttpState,
+    config: &serde_json::Map<String, Value>,
+) -> Option<crate::storage::webdav::WebDav> {
     let field = |key: &str| config[key].as_str().map(str::to_owned);
-    let provider = webdav_provider(
+    webdav_provider(
         state,
         field("base_path"),
         field("webdav_url"),
         field("username"),
         field("password"),
-    )?;
-    provider.list(path).ok()?.wait().await.ok()?.ok()
+    )
 }
 
 fn unavailable_size(path: &str) -> Response {
@@ -647,7 +688,24 @@ async fn download_at(
     path: &str,
     headers: &axum::http::HeaderMap,
 ) -> Response {
-    use std::path::{Path, PathBuf};
+    if root.is_empty() {
+        return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Download failed");
+    }
+    download_from(state, DownloadSource::Local(root.into()), path, headers).await
+}
+
+enum DownloadSource {
+    Local(std::path::PathBuf),
+    Webdav(crate::storage::webdav::WebDav),
+}
+
+async fn download_from(
+    state: &HttpState,
+    source: DownloadSource,
+    path: &str,
+    headers: &axum::http::HeaderMap,
+) -> Response {
+    use std::path::Path;
 
     let Some(path) = crate::storage::relative_path(path, false) else {
         return storage_error(StatusCode::BAD_REQUEST, "Invalid file path");
@@ -670,16 +728,36 @@ async fn download_at(
             "Download capacity exhausted",
         );
     };
-    let root = PathBuf::from(root);
     let result = async {
+        let snapshot = match source {
+            DownloadSource::Local(root) => state
+                .auth
+                .blocking()
+                .submit_blocking(move |cancel| {
+                    let (file, length) =
+                        crate::storage::local::snapshot_download(&root, Path::new(&path), &|| {
+                            cancel.is_cancelled()
+                        })?;
+                    Ok::<_, std::io::Error>((file, length, slot))
+                })
+                .ok()?
+                .wait()
+                .await
+                .ok()?
+                .ok()?,
+            DownloadSource::Webdav(provider) => provider
+                .download_snapshot(path, slot)
+                .ok()?
+                .wait()
+                .await
+                .ok()?
+                .ok()?,
+        };
         state
             .auth
             .blocking()
-            .submit_blocking(move |cancel| {
-                let (file, length) =
-                    crate::storage::local::snapshot_download(&root, Path::new(&path), &|| {
-                        cancel.is_cancelled()
-                    })?;
+            .submit_blocking(move |_| {
+                let (file, length, slot) = snapshot;
                 let validators = download::Validators::read(&file, length)?;
                 Ok::<_, std::io::Error>((file, length, slot, validators))
             })

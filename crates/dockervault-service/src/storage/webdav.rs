@@ -63,6 +63,8 @@ pub struct WebDav {
     owner: Owner,
     io: Owner,
 }
+type Snapshot<T> = (std::fs::File, u64, T);
+
 impl WebDav {
     pub fn new(config: DavConfig, owner: Owner, io: Owner) -> Result<Self, DavError> {
         let mut endpoint = Url::parse(&config.url).map_err(|_| DavError::Config)?;
@@ -156,6 +158,33 @@ impl WebDav {
         root: std::fs::File,
         path: std::path::PathBuf,
     ) -> Result<Work<Result<super::local::Downloaded, DavError>>, WorkError> {
+        self.download_with(remote, move |reader, expected, cancel| {
+            super::local::receive_download(root, &path, reader, expected, cancel)
+        })
+    }
+
+    pub(crate) fn download_snapshot<T: Send + 'static>(
+        &self,
+        remote: String,
+        held: T,
+    ) -> Result<Work<Result<Snapshot<T>, DavError>>, WorkError> {
+        self.download_with(remote, move |reader, expected, cancel| {
+            let (file, length) = super::local::receive_snapshot(reader, expected, cancel)?;
+            Ok((file, length, held))
+        })
+    }
+
+    fn download_with<T: Send + 'static>(
+        &self,
+        remote: String,
+        receive: impl FnOnce(
+            &mut Readback,
+            Option<u64>,
+            &dyn Fn() -> bool,
+        ) -> Result<T, super::local::TransferError>
+        + Send
+        + 'static,
+    ) -> Result<Work<Result<T, DavError>>, WorkError> {
         let backend = self.clone();
         self.owner.submit_async(move |cancel| async move {
             let response = backend
@@ -183,9 +212,7 @@ impl WebDav {
             let writer = backend
                 .io
                 .submit_blocking(move |cancel| {
-                    super::local::receive_download(
-                        root,
-                        &path,
+                    receive(
                         &mut Readback {
                             rx,
                             part: std::io::Cursor::new(Vec::new()),
