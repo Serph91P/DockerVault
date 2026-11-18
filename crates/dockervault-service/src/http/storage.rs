@@ -323,9 +323,19 @@ async fn probe_webdav(
     username: Option<String>,
     password: Option<String>,
 ) -> Option<()> {
+    let provider = webdav_provider(state, base, url, username, password)?;
+    provider.test_connection().ok()?.wait().await.ok()?.ok()
+}
+
+fn webdav_provider(
+    state: &HttpState,
+    base: Option<String>,
+    url: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+) -> Option<crate::storage::webdav::WebDav> {
     use crate::storage::webdav::{DavConfig, WebDav};
-    let io = state.auth.blocking();
-    let provider = WebDav::new(
+    WebDav::new(
         DavConfig {
             url: url?,
             base_path: base.unwrap_or_default(),
@@ -334,11 +344,10 @@ async fn probe_webdav(
             max_attempts: 1,
             verify_head: false,
         },
-        io.clone(),
-        io.clone(),
+        state.probe_jobs.clone(),
+        state.auth.blocking().clone(),
     )
-    .ok()?;
-    provider.test_connection().ok()?.wait().await.ok()?.ok()
+    .ok()
 }
 
 fn local_writable(path: &std::path::Path) -> std::io::Result<()> {
@@ -405,14 +414,66 @@ pub(super) async fn list_configured_files(
     Path(id): Path<String>,
     axum::extract::Query(query): BrowseQuery,
 ) -> Response {
-    match configured_browse_root(&state, &id).await {
-        Ok(Some(root)) => list_at(&state, root, query.get("path").map_or("", String::as_str)).await,
-        Ok(None) => storage_error(
+    let Some(id) = super::operations::query_integer(&id) else {
+        return invalid_id();
+    };
+    let row = sqlx::query_scalar::<_, String>(select_storage!(" WHERE id=?"))
+        .bind(id)
+        .fetch_optional(state.auth.pool())
+        .await;
+    let mut config = match row {
+        Ok(Some(row)) => match serde_json::from_str::<serde_json::Map<String, Value>>(&row) {
+            Ok(config) => config,
+            Err(_) => {
+                return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
+            }
+        },
+        Ok(None) => return storage_error(StatusCode::NOT_FOUND, "Storage not found"),
+        Err(_) => return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+    };
+    let raw = query.get("path").map_or("", String::as_str);
+    match config["storage_type"].as_str() {
+        Some("local") => {
+            list_at(
+                &state,
+                config["base_path"].as_str().unwrap_or_default().to_owned(),
+                raw,
+            )
+            .await
+        }
+        Some("webdav") => {
+            let Some(path) = crate::storage::relative_path(raw, true) else {
+                return storage_error(StatusCode::BAD_REQUEST, "Invalid file path");
+            };
+            match list_webdav(&state, &mut config, path.clone()).await {
+                Some(files) => Json(json!({"files":files,"path":path})).into_response(),
+                None => storage_error(StatusCode::BAD_GATEWAY, "Remote listing failed"),
+            }
+        }
+        _ => storage_error(
             StatusCode::NOT_IMPLEMENTED,
             "Remote storage operations are unavailable",
         ),
-        Err(response) => *response,
     }
+}
+
+async fn list_webdav(
+    state: &HttpState,
+    config: &mut serde_json::Map<String, Value>,
+    path: String,
+) -> Option<Vec<crate::storage::webdav::StorageEntry>> {
+    if !open_probe_credentials(state, config, None).await {
+        return None;
+    }
+    let field = |key: &str| config[key].as_str().map(str::to_owned);
+    let provider = webdav_provider(
+        state,
+        field("base_path"),
+        field("webdav_url"),
+        field("username"),
+        field("password"),
+    )?;
+    provider.list(path).ok()?.wait().await.ok()?.ok()
 }
 
 fn unavailable_size(path: &str) -> Response {

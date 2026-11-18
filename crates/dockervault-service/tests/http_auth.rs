@@ -1232,6 +1232,56 @@ async fn storage_create_persists_provider_fields_and_encrypts_credentials() {
 }
 
 #[tokio::test]
+async fn configured_webdav_listing_reports_provider_failure_not_empty_success() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [("Cookie", cookie.as_str())];
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/dav", listener.local_addr().unwrap());
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,webdav_url) VALUES (44,'fixture','webdav',1,'base',?)")
+        .bind(url).execute(server.db.pool()).await.unwrap();
+    let provider = tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let document = r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/dav/base/folder/archive.tar</d:href><d:propstat><d:prop><d:getcontentlength>7</d:getcontentlength><d:resourcetype/></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#;
+        for (status, body) in [
+            ("207 Multi-Status", document),
+            ("403 Forbidden", "private fixture response"),
+        ] {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut line = String::new();
+            stream.read_line(&mut line).await.unwrap();
+            assert_eq!(line.trim_end(), "PROPFIND /dav/base/folder/ HTTP/1.1");
+            let mut depth = false;
+            loop {
+                line.clear();
+                assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+                depth |= line.trim_end().eq_ignore_ascii_case("depth: 1");
+            }
+            assert!(depth);
+            stream.get_mut().write_all(format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+        }
+    });
+    let path = "/api/v1/storage/44/files?path=folder";
+    let (status, _, result) = server.request("GET", path, &headers, None).await;
+    assert_eq!(status, 200);
+    assert_eq!(result["path"], "folder");
+    assert_eq!(result["files"].as_array().unwrap().len(), 1);
+    assert_eq!(result["files"][0]["name"], "archive.tar");
+    assert_eq!(result["files"][0]["size"], 7);
+    let (status, _, result) = server.request("GET", path, &headers, None).await;
+    assert_eq!(
+        (status, result),
+        (502, json!({"detail":"Remote listing failed"}))
+    );
+    provider.await.unwrap();
+    server.close().await;
+}
+
+#[tokio::test]
 async fn configured_storage_browsing_uses_only_the_persisted_root() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
