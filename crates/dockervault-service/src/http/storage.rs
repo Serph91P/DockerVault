@@ -965,6 +965,24 @@ async fn bulk_download(
                 };
                 DownloadSource::Ftp(provider)
             }
+            Some("ssh" | "sftp") => {
+                if !open_probe_credentials(state, &mut config, None).await {
+                    return storage_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Bulk download failed",
+                    );
+                }
+                let base = config["base_path"].as_str().unwrap_or_default().to_owned();
+                let Ok((endpoint, key)) =
+                    ssh_endpoint(state, &Value::Object(config), false, base).await
+                else {
+                    return storage_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Bulk download failed",
+                    );
+                };
+                DownloadSource::Sftp(endpoint, key)
+            }
             _ => {
                 return storage_error(
                     StatusCode::NOT_IMPLEMENTED,
@@ -997,6 +1015,8 @@ async fn bulk_download(
     };
     let result = async {
         let io_owner = state.auth.blocking().clone();
+        let processes = state.probe_processes.clone();
+        let probe_jobs = state.probe_jobs.clone();
         state
             .download_jobs
             .submit_async(move |cancel| async move {
@@ -1013,6 +1033,20 @@ async fn bulk_download(
                         return None;
                     }
                     let input = match &source {
+                        DownloadSource::Sftp(endpoint, _key) => {
+                            // The source retains the original identity FD until every child settles.
+                            let work = endpoint
+                                .download_snapshot(
+                                    processes.as_ref()?,
+                                    &probe_jobs,
+                                    &path,
+                                    None,
+                                    (),
+                                )
+                                .ok()?;
+                            let (file, _, ()) = rclone::settled(work, Some(&cancel)).await?.ok()?;
+                            file
+                        }
                         DownloadSource::Ftp(provider) => {
                             let work = provider
                                 .download_snapshot(path.clone(), &io_owner, ())

@@ -1808,6 +1808,33 @@ async fn configured_rclone_download_rejects_invalid_path() {
 }
 
 #[tokio::test]
+async fn configured_sftp_bulk_download_rejects_invalid_selection_before_contact() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,host,port,username) VALUES(44,'fixture','sftp',1,'/base','127.0.0.1',?,'fixture')")
+        .bind(listener.local_addr().unwrap().port()).execute(server.db.pool()).await.unwrap();
+    let result = server
+        .request(
+            "POST",
+            "/api/v1/storage/44/files/bulk-download",
+            &[("Cookie", cookie.as_str())],
+            Some(json!({"paths":["archive.tar","../outside"]})),
+        )
+        .await;
+    assert_eq!(
+        (result.0, result.2),
+        (400, json!({"detail":"Invalid file path"}))
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+            .await
+            .is_err()
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn configured_sftp_download_rejects_invalid_path_before_contact() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
