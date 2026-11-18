@@ -5,7 +5,7 @@ use dockervault_service::{
     storage::ssh::SftpEndpoint,
     storage_recovery::{
         DeleteAdmission, DeleteOutcome, SftpDeleteWorker, claim_next, record_settled,
-        settle_interrupted, submit_delete,
+        request_cancel, settle_interrupted, submit_delete,
     },
 };
 
@@ -214,6 +214,15 @@ async fn restart_keeps_uncertain_effects_unknown_and_never_replays_unstarted_ite
     .await
     .unwrap();
     assert_eq!(names, ["a/b", "../outside"]);
+    assert!(!request_cancel(db.pool(), 2, &id).await.unwrap());
+    assert!(request_cancel(db.pool(), 1, &id).await.unwrap());
+    let cancelled: (String, i64, i64) =
+        sqlx::query_as("SELECT state,cancel_requested,skipped FROM storage_operations WHERE id=?")
+            .bind(&id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(cancelled, ("cancelled".into(), 1, 2));
     let payload: String = sqlx::query_scalar("SELECT payload FROM storage_operations WHERE id=?")
         .bind(&id)
         .fetch_one(db.pool())

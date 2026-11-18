@@ -262,6 +262,43 @@ pub async fn record_settled(
         tx.rollback().await?;
         return Ok(false);
     }
+    refresh_settled(&mut tx, operation_id).await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+pub async fn request_cancel(
+    pool: &SqlitePool,
+    user_id: i64,
+    operation_id: &str,
+) -> Result<bool, StorageRecoveryError> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let state: Option<String> = sqlx::query_scalar(
+        "SELECT state FROM storage_operations WHERE id=? AND user_id=? AND action='storage_delete'",
+    )
+    .bind(operation_id)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some(state) = &state
+        && matches!(state.as_str(), "queued" | "running")
+    {
+        sqlx::query("UPDATE storage_operations SET cancel_requested=1,updated_at=strftime('%Y-%m-%d %H:%M:%f','now') WHERE id=?")
+            .bind(operation_id).execute(&mut *tx).await?;
+        let running: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM storage_operation_items WHERE operation_id=? AND state='running')")
+            .bind(operation_id).fetch_one(&mut *tx).await?;
+        if !running {
+            refresh_settled(&mut tx, operation_id).await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(state.is_some())
+}
+
+async fn refresh_settled(
+    tx: &mut sqlx::SqliteConnection,
+    operation_id: &str,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE storage_operation_items SET state='skipped',error='Not started; cancellation requested'
          WHERE operation_id=? AND state='pending'
@@ -289,8 +326,7 @@ pub async fn record_settled(
            updated_at=strftime('%Y-%m-%d %H:%M:%f','now') WHERE id=?",
     ).bind(succeeded).bind(failed).bind(skipped).bind(unknown).bind(succeeded+failed+skipped+unknown)
         .bind(next).bind(next).bind(next).bind(operation_id).execute(&mut *tx).await?;
-    tx.commit().await?;
-    Ok(true)
+    Ok(())
 }
 
 /// Binds a durable claim to a supervised SFTP effect. Caller supplies the
