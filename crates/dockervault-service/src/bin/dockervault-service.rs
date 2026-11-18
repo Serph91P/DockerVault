@@ -117,13 +117,15 @@ async fn run() -> Result<(), &'static str> {
     }
     let listener = TcpListener::bind(address).await.map_err(|_| "listener")?;
     let auth = AuthService::new(db.pool().clone());
-    let router = http::router(HttpState::new(auth.clone(), config));
+    let state = HttpState::new(auth.clone(), config);
+    let router = http::router(state.clone());
     let result = axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
         tokio::select! { _ = terminate.recv() => {}, _ = interrupt.recv() => {} }
+        state.begin_shutdown();
     })
     .await;
     auth.shutdown(grace).await;

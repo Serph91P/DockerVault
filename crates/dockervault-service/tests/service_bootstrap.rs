@@ -145,6 +145,16 @@ fn standalone_service_migrates_serves_and_shuts_down_without_python() {
         std::fs::read(neighbor).unwrap(),
         b"fixture must not be replayed"
     );
+    // Hold an incomplete login body after the server starts polling it.
+    use std::io::{Read, Write};
+    let mut incomplete = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    incomplete
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    incomplete.write_all(b"POST /api/v1/auth/login HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 100\r\nExpect: 100-continue\r\n\r\n").unwrap();
+    let mut provisional = [0; 25];
+    incomplete.read_exact(&mut provisional).unwrap();
+    assert_eq!(&provisional, b"HTTP/1.1 100 Continue\r\n\r\n");
     kill(Pid::from_raw(process.id() as i32), Signal::SIGTERM).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {

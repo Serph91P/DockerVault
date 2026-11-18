@@ -56,11 +56,18 @@ pub(super) fn validation(errors: Vec<Value>) -> Box<Response> {
     )
 }
 async fn body(
+    state: &HttpState,
     request: &mut Request,
     fields: &[(&str, usize, usize)],
 ) -> Result<Vec<String>, Box<Response>> {
-    let raw = to_bytes(std::mem::take(request.body_mut()), 2 * 1024 * 1024)
-        .await
+    // A partially uploaded body owns no mutation and need not delay shutdown.
+    let raw = tokio::select! {
+        biased;
+        _ = state.draining.cancelled() => return Err(Box::new(
+            (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"detail":"Service shutting down"}))).into_response()
+        )),
+        result = to_bytes(std::mem::take(request.body_mut()), 2 * 1024 * 1024) => result,
+    }
         .map_err(|_| {
             Box::new(
                 (
@@ -212,6 +219,7 @@ pub(super) async fn status(State(state): State<HttpState>, request: Request) -> 
 }
 pub(super) async fn setup(State(state): State<HttpState>, mut request: Request) -> Response {
     let values = match body(
+        &state,
         &mut request,
         &[
             ("username", 3, 255),
@@ -233,7 +241,13 @@ pub(super) async fn setup(State(state): State<HttpState>, mut request: Request) 
     }
 }
 pub(super) async fn login(State(state): State<HttpState>, mut request: Request) -> Response {
-    let values = match body(&mut request, &[("username", 3, 255), ("password", 8, 128)]).await {
+    let values = match body(
+        &state,
+        &mut request,
+        &[("username", 3, 255), ("password", 8, 128)],
+    )
+    .await
+    {
         Ok(values) => values,
         Err(error) => return *error,
     };
@@ -284,6 +298,7 @@ pub(super) async fn change_password(
         Err(response) => return *response,
     };
     let values = match body(
+        &state,
         &mut request,
         &[
             ("current_password", 1, 128),

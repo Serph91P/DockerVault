@@ -17,6 +17,7 @@ pub struct HttpState {
     pub config: Arc<Config>,
     limits: Arc<security::RateLimits>,
     pub notifications: Arc<ws::Notifications>,
+    draining: tokio_util::sync::CancellationToken,
 }
 impl HttpState {
     pub fn new(auth: AuthService, config: Config) -> Self {
@@ -25,7 +26,12 @@ impl HttpState {
             config: Arc::new(config),
             limits: Arc::new(security::RateLimits::default()),
             notifications: Arc::new(ws::Notifications::default()),
+            draining: tokio_util::sync::CancellationToken::new(),
         }
+    }
+
+    pub fn begin_shutdown(&self) {
+        self.draining.cancel();
     }
 }
 pub fn router(state: HttpState) -> Router {
