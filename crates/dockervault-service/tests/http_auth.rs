@@ -1417,6 +1417,42 @@ async fn webdav_draft_credentials_are_applied_only_to_the_probe() {
 }
 
 #[tokio::test]
+async fn ssh_draft_rejects_a_key_outside_the_configured_roots_before_connecting() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let key = server.path.join("outside.key");
+    std::fs::write(&key, b"synthetic fixture outside allowed directories").unwrap();
+    let payload = json!({"mode":"create","config":{"name":"Draft","storage_type":"sftp","host":"127.0.0.1","port":listener.local_addr().unwrap().port(),"username":"fixture","ssh_key_path":key}});
+    let (status, _, body) = server
+        .request(
+            "POST",
+            "/api/v1/storage/test-config",
+            &headers,
+            Some(payload),
+        )
+        .await;
+    assert_eq!(status, 400);
+    assert!(
+        body["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("SSH key path must be within allowed directories:")
+    );
+    assert!(!body.to_string().contains("outside.key"));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+            .await
+            .is_err()
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn s3_probe_uses_effective_signed_configuration_without_saving_a_draft() {
     use dockervault_core::crypto::CredentialCipher;
     use tokio::io::{AsyncBufReadExt, BufReader};

@@ -154,7 +154,7 @@ pub(super) async fn test_saved(
     if !open_probe_credentials(&state, &mut saved, None).await {
         return probe_response(false);
     }
-    probe_provider(&state, Value::Object(saved)).await
+    probe_provider(&state, Value::Object(saved), false).await
 }
 
 async fn open_probe_credentials(
@@ -163,7 +163,7 @@ async fn open_probe_credentials(
     overrides: Option<&serde_json::Map<String, Value>>,
 ) -> bool {
     let fields = match config["storage_type"].as_str() {
-        Some("webdav" | "ftp") => [Some("password"), None],
+        Some("webdav" | "ftp" | "ssh" | "sftp") => [Some("password"), None],
         Some("s3") => [Some("s3_access_key"), Some("s3_secret_key")],
         _ => return true,
     }
@@ -190,7 +190,7 @@ async fn open_probe_credentials(
     true
 }
 
-async fn probe_provider(state: &HttpState, config: Value) -> Response {
+async fn probe_provider(state: &HttpState, config: Value, draft: bool) -> Response {
     let field = |key: &str| config[key].as_str().map(str::to_owned);
     let success = match config["storage_type"].as_str() {
         Some("local") => probe_local(state, field("base_path")).await,
@@ -205,6 +205,7 @@ async fn probe_provider(state: &HttpState, config: Value) -> Response {
         .is_some(),
         Some("ftp") => probe_ftp(state, &config).await.is_some(),
         Some("s3") => probe_s3(state, &config).await.is_some(),
+        Some("ssh" | "sftp") => return probe_ssh(state, &config, draft).await,
         _ => {
             return storage_error(
                 StatusCode::NOT_IMPLEMENTED,
@@ -213,6 +214,62 @@ async fn probe_provider(state: &HttpState, config: Value) -> Response {
         }
     };
     probe_response(success)
+}
+
+async fn probe_ssh(state: &HttpState, config: &Value, draft: bool) -> Response {
+    use crate::storage::ssh::{SftpEndpoint, key_file};
+    use std::{os::fd::AsRawFd, path::PathBuf};
+    let field = |key: &str| config[key].as_str().map(str::to_owned);
+    let held = if let Some(path) = field("ssh_key_path").filter(|path| !path.is_empty()) {
+        let dirs: Vec<String> = state
+            .config
+            .allowed_ssh_key_dirs
+            .split(',')
+            .map(str::trim)
+            .filter(|root| !root.is_empty())
+            .map(str::to_owned)
+            .collect();
+        let allowed: Vec<PathBuf> = dirs.iter().map(PathBuf::from).collect();
+        let Ok(work) = state.auth.blocking().submit_blocking(move |cancel| {
+            if cancel.is_cancelled() {
+                return None;
+            }
+            key_file(std::path::Path::new(&path), &allowed)
+        }) else {
+            return probe_response(false);
+        };
+        match work.wait().await {
+            Ok(Some(file)) => Some(file),
+            Ok(None) if draft => return (StatusCode::BAD_REQUEST, Json(json!({"detail":format!("SSH key path must be within allowed directories: {dirs:?}")}))).into_response(),
+            _ => return probe_response(false),
+        }
+    } else {
+        None
+    };
+    let port = config["port"].as_i64().unwrap_or(22);
+    let (Some(host), Some(username), Ok(port), Some(processes)) = (
+        field("host"),
+        field("username"),
+        u16::try_from(port),
+        state.probe_processes.as_ref(),
+    ) else {
+        return probe_response(false);
+    };
+    let endpoint = SftpEndpoint {
+        host,
+        username,
+        port,
+        base: String::new(),
+        known_hosts: "/app/data/ssh_known_hosts".into(),
+        identity: held
+            .as_ref()
+            .map(|file| format!("/proc/{}/fd/{}", std::process::id(), file.as_raw_fd()).into()),
+        password: field("password"),
+    };
+    let Ok(work) = endpoint.probe_handshake(processes, held) else {
+        return probe_response(false);
+    };
+    probe_response(matches!(work.wait().await, Ok(Ok(output)) if output.status.success()))
 }
 
 async fn probe_s3(state: &HttpState, config: &Value) -> Option<()> {

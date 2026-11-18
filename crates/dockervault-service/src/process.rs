@@ -128,6 +128,14 @@ impl ProcessOwner {
     }
 
     pub fn start(&self, spec: ProcessSpec) -> Result<ProcessWork, ProcessError> {
+        self.start_holding(spec, None)
+    }
+
+    pub(crate) fn start_holding(
+        &self,
+        spec: ProcessSpec,
+        held_file: Option<std::fs::File>,
+    ) -> Result<ProcessWork, ProcessError> {
         if (!spec.program.is_absolute() && !spec.allow_relative_program)
             || spec.input.len() > INPUT_LIMIT
             || spec.stdout_limit == 0
@@ -141,7 +149,11 @@ impl ProcessOwner {
         }
         let parent_guard = self.parent_guard.clone();
         self.owner
-            .submit_async(move |cancel| run(spec, cancel, parent_guard))
+            .submit_async(move |cancel| async move {
+                let result = run(spec, cancel, parent_guard).await;
+                drop(held_file);
+                result
+            })
             .map_err(ProcessError::Admission)
     }
 

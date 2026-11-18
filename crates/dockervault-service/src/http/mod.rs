@@ -20,6 +20,7 @@ pub struct HttpState {
     pub notifications: Arc<ws::Notifications>,
     draining: tokio_util::sync::CancellationToken,
     local_delete: Arc<LocalDeleteJobs>,
+    probe_processes: Option<crate::process::ProcessOwner>,
 }
 impl HttpState {
     pub fn new(auth: AuthService, config: Config) -> Self {
@@ -30,6 +31,11 @@ impl HttpState {
             notifications: Arc::new(ws::Notifications::default()),
             draining: tokio_util::sync::CancellationToken::new(),
             local_delete: Arc::new(LocalDeleteJobs::new()),
+            probe_processes: crate::process::ProcessOwner::new(
+                4,
+                "/usr/local/libexec/dockervault-process-guard",
+            )
+            .ok(),
         }
     }
 
@@ -42,6 +48,9 @@ impl HttpState {
     ) -> Result<(), crate::storage_recovery::StorageRecoveryError> {
         self.begin_shutdown();
         self.local_delete.shutdown().await;
+        if let Some(processes) = &self.probe_processes {
+            processes.shutdown(None).await;
+        }
         crate::storage_recovery::settle_interrupted(self.auth.pool()).await?;
         Ok(())
     }

@@ -96,6 +96,19 @@ impl SftpEndpoint {
         processes.start(spec)
     }
 
+    /// API connection test: authenticate and enter the SFTP subsystem without changing directories.
+    pub(crate) fn probe_handshake(
+        &self,
+        processes: &ProcessOwner,
+        held_key: Option<File>,
+    ) -> Result<Work<Result<ProcessOutput, ProcessError>>, ProcessError> {
+        let mut spec = self.batch_spec()?;
+        spec.input = b"@quit\n".to_vec();
+        spec.timeout = Some(Duration::from_secs(45));
+        spec.discard_output = true;
+        processes.start_holding(spec, held_key)
+    }
+
     pub fn download(
         &self,
         processes: &ProcessOwner,

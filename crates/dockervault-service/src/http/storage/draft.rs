@@ -68,7 +68,7 @@ pub(in crate::http) async fn test_config(
     if !errors.is_empty() {
         return invalid_storage(errors);
     }
-    probe_provider(&state, effective).await
+    probe_provider(&state, effective, true).await
 }
 
 fn draft_id(value: &Value) -> Option<i64> {
