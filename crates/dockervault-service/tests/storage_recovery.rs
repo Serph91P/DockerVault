@@ -4,7 +4,8 @@ use dockervault_service::{
     process::ProcessOwner,
     storage::ssh::SftpEndpoint,
     storage_recovery::{
-        DeleteOutcome, SftpDeleteWorker, claim_next, record_settled, settle_interrupted,
+        DeleteAdmission, DeleteOutcome, SftpDeleteWorker, claim_next, record_settled,
+        settle_interrupted, submit_delete,
     },
 };
 
@@ -174,6 +175,56 @@ async fn restart_keeps_uncertain_effects_unknown_and_never_replays_unstarted_ite
     .unwrap();
     assert_eq!(state, "failed");
     assert_eq!(processes.active(), 0);
+    let admission = DeleteAdmission {
+        user_id: 1,
+        request_id: "00112233-4455-6677-8899-aabbccddeeff",
+        storage_id: "local",
+        path: "./",
+        paths: &["a//b", "a/b", "../outside"],
+        identity: &identity,
+        accepting: true,
+    };
+    let id = submit_delete(db.pool(), admission).await.unwrap();
+    let replay = submit_delete(
+        db.pool(),
+        DeleteAdmission {
+            accepting: false,
+            ..admission
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(replay, id);
+    assert!(
+        submit_delete(
+            db.pool(),
+            DeleteAdmission {
+                paths: &["changed"],
+                ..admission
+            }
+        )
+        .await
+        .is_err()
+    );
+    let names: Vec<String> = sqlx::query_scalar(
+        "SELECT path FROM storage_operation_items WHERE operation_id=? ORDER BY id",
+    )
+    .bind(&id)
+    .fetch_all(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(names, ["a/b", "../outside"]);
+    let payload: String = sqlx::query_scalar("SELECT payload FROM storage_operations WHERE id=?")
+        .bind(&id)
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&payload).unwrap(),
+        serde_json::json!({
+            "action":"storage_delete","storage_id":"local","path":"","paths":["a/b","../outside"],"parent_id":null
+        })
+    );
     db.close().await;
     owner.shutdown(None).await;
     std::fs::remove_dir_all(dir).unwrap();

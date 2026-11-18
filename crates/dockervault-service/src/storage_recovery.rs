@@ -12,6 +12,156 @@ pub enum StorageRecoveryError {
     Activation(JournalError),
     Database(sqlx::Error),
     IdentityChanged,
+    InvalidRequest,
+    RequestConflict,
+    ShuttingDown,
+    QueueFull,
+    RecoveryPending,
+    Randomness,
+}
+
+#[derive(Clone, Copy)]
+pub struct DeleteAdmission<'a> {
+    pub user_id: i64,
+    pub request_id: &'a str,
+    pub storage_id: &'a str,
+    pub path: &'a str,
+    pub paths: &'a [&'a str],
+    pub identity: &'a serde_json::Value,
+    pub accepting: bool,
+}
+
+pub async fn submit_delete(
+    pool: &SqlitePool,
+    request: DeleteAdmission<'_>,
+) -> Result<String, StorageRecoveryError> {
+    use StorageRecoveryError as Error;
+    let invalid = Error::InvalidRequest;
+    let id_shape = request.request_id.as_bytes();
+    if id_shape.len() != 36
+        || !id_shape.iter().enumerate().all(|(i, b)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                *b == b'-'
+            } else {
+                b.is_ascii_hexdigit()
+            }
+        })
+        || (request.storage_id != "local"
+            && !request
+                .storage_id
+                .parse::<u64>()
+                .is_ok_and(|n| n > 0 && n.to_string() == request.storage_id))
+    {
+        return Err(invalid);
+    }
+    let request_id = request.request_id.to_ascii_lowercase();
+    let path = relative_path(request.path, true).ok_or(Error::InvalidRequest)?;
+    let mut paths = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for &candidate in request.paths {
+        if candidate.trim().is_empty() || candidate.chars().count() > 1024 {
+            return Err(Error::InvalidRequest);
+        }
+        let candidate = relative_path(candidate, false).unwrap_or_else(|| candidate.to_owned());
+        if seen.insert(candidate.clone()) {
+            paths.push(candidate);
+        }
+        if paths.len() > 1000 {
+            return Err(Error::InvalidRequest);
+        }
+    }
+    if paths.is_empty() {
+        return Err(Error::InvalidRequest);
+    }
+    let payload = serde_json::json!({"action":"storage_delete", "storage_id":request.storage_id, "path":path, "paths":paths, "parent_id":null});
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    if recovery_pending_in(&mut *tx)
+        .await
+        .map_err(Error::Activation)?
+    {
+        return Err(Error::RecoveryPending);
+    }
+    let existing: Option<(String, String)> = sqlx::query_as(
+        "SELECT id,payload FROM storage_operations WHERE user_id=? AND request_id=?",
+    )
+    .bind(request.user_id)
+    .bind(&request_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some((id, saved)) = existing {
+        tx.rollback().await?;
+        return if serde_json::from_str::<serde_json::Value>(&saved)
+            .as_ref()
+            .ok()
+            == Some(&payload)
+        {
+            Ok(id)
+        } else {
+            Err(Error::RequestConflict)
+        };
+    }
+    if !request.accepting {
+        return Err(Error::ShuttingDown);
+    }
+    if !request.identity.is_object() {
+        return Err(Error::IdentityChanged);
+    }
+    let active: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM storage_operations WHERE state IN ('queued','running')",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if active >= 32 {
+        return Err(Error::QueueFull);
+    }
+    let mut nonce = [0u8; 16];
+    getrandom::fill(&mut nonce).map_err(|_| Error::Randomness)?;
+    nonce[6] = (nonce[6] & 0x0f) | 0x40;
+    nonce[8] = (nonce[8] & 0x3f) | 0x80;
+    let hex: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
+    let id = format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    );
+    sqlx::query("INSERT INTO storage_operations(id,user_id,request_id,payload,storage_identity,action,storage_id,path,state,stage,total,completed,succeeded,failed,skipped,unknown,cancel_requested,created_at,updated_at)
+                 VALUES(?,?,?,?,?,'storage_delete',?,?,'queued','queued',?,0,0,0,0,0,0,strftime('%Y-%m-%d %H:%M:%f','now'),strftime('%Y-%m-%d %H:%M:%f','now'))")
+        .bind(&id).bind(request.user_id).bind(&request_id).bind(payload.to_string()).bind(request.identity.to_string())
+        .bind(request.storage_id).bind(&path).bind(paths.len() as i64).execute(&mut *tx).await?;
+    for path in paths {
+        sqlx::query(
+            "INSERT INTO storage_operation_items(operation_id,path,state) VALUES(?,?,'pending')",
+        )
+        .bind(&id)
+        .bind(path)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(id)
+}
+
+fn relative_path(path: &str, allow_root: bool) -> Option<String> {
+    if path.chars().count() > 1024
+        || path.contains(['\0', '\\'])
+        || path.starts_with('/')
+        || path
+            .as_bytes()
+            .get(..2)
+            .is_some_and(|p| p[0].is_ascii_alphabetic() && p[1] == b':')
+        || path.split('/').any(|part| part == "..")
+    {
+        return None;
+    }
+    let normalized = path
+        .split('/')
+        .filter(|part| !matches!(*part, "" | "."))
+        .collect::<Vec<_>>()
+        .join("/");
+    (allow_root || !normalized.is_empty()).then_some(normalized)
 }
 
 #[derive(Debug)]
