@@ -150,6 +150,70 @@ async fn respond(socket: &mut tokio::net::TcpStream, body: &[u8], extra: &str) {
     socket.write_all(body).await.unwrap();
 }
 #[tokio::test]
+async fn s3_single_put_cancel_keeps_the_owner_until_the_non_abortable_request_replies() {
+    let fixture = Fixture::new();
+    let bytes = b"public single-put fixture";
+    let source = fixture.source(bytes);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let owner = Owner::new(1).unwrap();
+    let io = Owner::new(1).unwrap();
+    let backend = configured(listener.local_addr().unwrap(), owner.clone(), io.clone());
+    let (stored, stored_seen) = tokio::sync::oneshot::channel();
+    let (ack, ack_allowed) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let (headers, body) = request(&mut socket).await;
+        let mut request_line = headers.lines().next().unwrap().split_ascii_whitespace();
+        assert_eq!(request_line.next(), Some("PUT"));
+        let target = request_line.next().unwrap();
+        assert_eq!(
+            target.split('?').next(),
+            Some("/public-bucket/PUBLIC-prefix/archive")
+        );
+        assert_eq!(body, bytes);
+        stored.send(()).unwrap();
+        ack_allowed.await.unwrap();
+        respond(&mut socket, &[], "").await;
+        drop(socket);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+                .await
+                .is_err(),
+            "cancelled PUT must not replay, delete or verify"
+        );
+    });
+    let work = backend
+        .upload(source, "archive".into(), S3UploadPolicy::default())
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), stored_seen)
+        .await
+        .unwrap()
+        .unwrap();
+    work.cancel();
+    let mut result = std::pin::pin!(work.wait());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut result)
+            .await
+            .is_err(),
+        "cancellation returned while the provider still held the PUT reply"
+    );
+    assert_eq!(owner.active(), 1);
+    assert!(backend.test_connection().is_err());
+    ack.send(()).unwrap();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), result)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        Err(dockervault_service::storage::s3::S3Error::Cancelled)
+    ));
+    assert_eq!(owner.active(), 0);
+    assert_eq!(io.active(), 0);
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn s3_put_is_not_success_until_full_independent_get_hash_matches() {
     for corrupt in [false, true] {
         let fixture = Fixture::new();
