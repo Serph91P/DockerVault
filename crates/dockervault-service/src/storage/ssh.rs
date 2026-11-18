@@ -25,7 +25,16 @@ pub enum SftpDownloadError {
     Process(ProcessError),
     Transfer(TransferError),
     ProviderRejected,
+    InvalidListing,
     MutationUnverified,
+}
+
+#[derive(Debug)]
+pub struct SftpEntry {
+    pub name: String,
+    pub size: u64,
+    pub is_dir: bool,
+    pub modified: f64,
 }
 
 pub struct SftpEndpoint {
@@ -169,7 +178,30 @@ impl SftpEndpoint {
                 }
                 run_batch(&processes, spec, &cancel)
                     .await
+                    .map(|_| ())
                     .map_err(|_| SftpDownloadError::MutationUnverified)
+            })
+            .map_err(SftpDownloadError::Admission)
+    }
+
+    pub fn list(
+        &self,
+        processes: &ProcessOwner,
+        workers: &Owner,
+        child: &str,
+    ) -> Result<Work<Result<Vec<SftpEntry>, SftpDownloadError>>, SftpDownloadError> {
+        let remote = remote_path(&self.host, self.port, &self.base, child)
+            .map_err(|_| SftpDownloadError::Process(ProcessError::InvalidSpec))?;
+        let mut spec = self.batch_spec().map_err(SftpDownloadError::Process)?;
+        spec.input = format!("@cd {}\n@ls -lan\n@quit\n", batch_path(&remote)).into_bytes();
+        spec.stdout_limit = 8 * 1024 * 1024;
+        spec.timeout = Some(Duration::from_secs(45));
+        spec.env.push(("TZ".into(), "UTC".into()));
+        let processes = processes.clone();
+        workers
+            .submit_async(move |cancel| async move {
+                let output = run_batch(&processes, spec, &cancel).await?;
+                parse_listing(&output.stdout)
             })
             .map_err(SftpDownloadError::Admission)
     }
@@ -246,7 +278,7 @@ async fn run_batch(
     processes: &ProcessOwner,
     spec: ProcessSpec,
     cancel: &CancellationToken,
-) -> Result<(), SftpDownloadError> {
+) -> Result<ProcessOutput, SftpDownloadError> {
     if cancel.is_cancelled() {
         return Err(SftpDownloadError::Process(ProcessError::Cancelled));
     }
@@ -266,7 +298,7 @@ async fn run_batch(
     if !output.status.success() {
         return Err(SftpDownloadError::ProviderRejected);
     }
-    Ok(())
+    Ok(output)
 }
 
 fn batch_path(path: &str) -> String {
@@ -284,6 +316,49 @@ fn batch_path(path: &str) -> String {
     }
     quoted.push('"');
     quoted
+}
+
+fn parse_listing(bytes: &[u8]) -> Result<Vec<SftpEntry>, SftpDownloadError> {
+    use super::ftp::listing::unix_listing_time;
+    let invalid = || SftpDownloadError::InvalidListing;
+    let text = std::str::from_utf8(bytes).map_err(|_| invalid())?;
+    let mut entries = Vec::new();
+    for line in text.split_inclusive('\n') {
+        let mut rest = line.strip_suffix('\n').ok_or_else(invalid)?;
+        let mut next = || {
+            let (token, tail) = rest
+                .trim_start_matches(' ')
+                .split_once(' ')
+                .ok_or_else(invalid)?;
+            rest = tail;
+            Ok::<_, SftpDownloadError>(token)
+        };
+        let kind = next()?.as_bytes();
+        if kind.len() != 10 || !matches!(kind[0], b'-' | b'd' | b'l' | b'b' | b'c' | b'p' | b's') {
+            return Err(invalid());
+        }
+        for _ in 0..3 {
+            next()?;
+        }
+        let size = next()?.parse().map_err(|_| invalid())?;
+        let month = next()?;
+        let day = next()?.parse().map_err(|_| invalid())?;
+        let clock = next()?;
+        let modified = unix_listing_time(month, day, clock).map_err(|_| invalid())? as f64;
+        if matches!(rest, "." | "..") {
+            continue;
+        }
+        if rest.is_empty() || rest.contains('/') || rest.chars().any(char::is_control) {
+            return Err(invalid());
+        }
+        entries.push(SftpEntry {
+            name: rest.into(),
+            size,
+            is_dir: kind[0] == b'd',
+            modified,
+        });
+    }
+    Ok(entries)
 }
 
 fn valid_endpoint_atom(value: &str, punctuation: &[u8]) -> bool {
@@ -323,5 +398,23 @@ pub fn remote_path(host: &str, port: u16, base: &str, child: &str) -> io::Result
         (_, "") => Ok(base.into()),
         ("" | ".", _) => Ok(child.into()),
         _ => Ok(format!("{}/{child}", base.trim_end_matches('/'))),
+    }
+}
+
+#[cfg(test)]
+mod listing_tests {
+    use super::*;
+
+    #[test]
+    fn numeric_listing_keeps_literal_names_and_rejects_partial_inventory() {
+        let bytes = b"drwxr-xr-x    ? root root 4096 Nov 18 2020 .\n-rw-r--r--    ? root root 17 Nov 18 2020  archive [1].key \nlrwxrwxrwx    ? root root 4 Nov 18 2020 link\n";
+        let entries = parse_listing(bytes).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, " archive [1].key ");
+        assert_eq!(entries[0].size, 17);
+        assert_eq!(entries[0].modified, 1_605_657_600.0);
+        assert_eq!(entries[1].name, "link");
+        assert!(parse_listing(&bytes[..bytes.len() - 1]).is_err());
+        assert!(parse_listing(b"unrecognized provider text\n").is_err());
     }
 }

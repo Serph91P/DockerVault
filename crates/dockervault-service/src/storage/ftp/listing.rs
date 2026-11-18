@@ -127,18 +127,11 @@ fn legacy(line: &str) -> Result<Option<FtpEntry>, FtpError> {
             .parse()
             .map_err(|_| FtpError::Protocol)?;
         let label = field(&mut fields)?;
-        let month = [
-            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-        ]
-        .iter()
-        .position(|m| *m == label)
-        .ok_or(FtpError::Protocol)?;
-        let month = Month::try_from(month as u8 + 1).map_err(|_| FtpError::Protocol)?;
         let day = field(&mut fields)?
             .parse()
             .map_err(|_| FtpError::Protocol)?;
         let year_or_time = field(&mut fields)?;
-        let modified = ls_date(month, day, year_or_time)?;
+        let modified = unix_listing_time(label, day, year_or_time)?;
         (size, first.starts_with('d'), modified, fields.trim())
     };
     if first.starts_with('l') {
@@ -160,7 +153,18 @@ fn legacy(line: &str) -> Result<Option<FtpEntry>, FtpError> {
     }))
 }
 
-fn ls_date(month: Month, day: u8, year_or_time: &str) -> Result<i64, FtpError> {
+pub(in crate::storage) fn unix_listing_time(
+    label: &str,
+    day: u8,
+    year_or_time: &str,
+) -> Result<i64, FtpError> {
+    let month = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ]
+    .iter()
+    .position(|m| *m == label)
+    .ok_or(FtpError::Protocol)?;
+    let month = Month::try_from(month as u8 + 1).map_err(|_| FtpError::Protocol)?;
     let date = |year, time| {
         Date::from_calendar_date(year, month, day)
             .map(|d| d.with_time(time).as_utc().unix_timestamp())
