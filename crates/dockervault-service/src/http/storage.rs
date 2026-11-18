@@ -113,14 +113,14 @@ pub(super) async fn test_saved(
     let Some(id) = super::operations::query_integer(&raw) else {
         return invalid_id();
     };
-    let row = sqlx::query_as::<_, (String, Option<String>)>(
-        "SELECT storage_type,base_path FROM remote_storages WHERE id=?",
+    let row = sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>, Option<String>)>(
+        "SELECT storage_type,base_path,webdav_url,username,password FROM remote_storages WHERE id=?",
     )
     .bind(id)
     .fetch_optional(state.auth.pool())
     .await;
     match row {
-        Ok(Some((kind, path))) if kind == "local" => {
+        Ok(Some((kind, path, _, _, _))) if kind == "local" => {
             let success = if let Some(path) = path.filter(|path| !path.is_empty()) {
                 match state.auth.blocking().submit_blocking(move |cancel| {
                     !cancel.is_cancelled() && local_writable(std::path::Path::new(&path)).is_ok()
@@ -133,6 +133,12 @@ pub(super) async fn test_saved(
             };
             Json(json!({"success": success, "message": if success { "Connection test succeeded" } else { "Connection test failed" }})).into_response()
         }
+        Ok(Some((kind, path, url, username, password))) if kind == "webdav" => {
+            let success = probe_webdav(&state, path, url, username, password)
+                .await
+                .is_some();
+            Json(json!({"success": success, "message": if success { "Connection test succeeded" } else { "Connection test failed" }})).into_response()
+        }
         Ok(Some(_)) => storage_error(
             StatusCode::NOT_IMPLEMENTED,
             "Remote storage operations are unavailable",
@@ -140,6 +146,35 @@ pub(super) async fn test_saved(
         Ok(None) => storage_error(StatusCode::NOT_FOUND, "Storage not found"),
         Err(_) => storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
     }
+}
+
+async fn probe_webdav(
+    state: &HttpState,
+    base: Option<String>,
+    url: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+) -> Option<()> {
+    use crate::storage::webdav::{DavConfig, WebDav};
+    let io = state.auth.blocking();
+    let [password, _] =
+        crate::storage_recovery::open_delete_credentials([password, None], io, &state.config)
+            .await
+            .ok()?;
+    let provider = WebDav::new(
+        DavConfig {
+            url: url?,
+            base_path: base.unwrap_or_default(),
+            username,
+            password,
+            max_attempts: 1,
+            verify_head: false,
+        },
+        io.clone(),
+        io.clone(),
+    )
+    .ok()?;
+    provider.test_connection().ok()?.wait().await.ok()?.ok()
 }
 
 fn local_writable(path: &std::path::Path) -> std::io::Result<()> {

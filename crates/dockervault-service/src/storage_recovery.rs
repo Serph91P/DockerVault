@@ -1376,7 +1376,7 @@ impl LocalDeleteJobs {
     }
 }
 
-async fn open_delete_credentials(
+pub(crate) async fn open_delete_credentials(
     mut values: [Option<String>; 2],
     io: &Owner,
     config: &Arc<crate::config::Config>,

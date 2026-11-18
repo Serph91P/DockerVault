@@ -1232,6 +1232,56 @@ async fn storage_create_persists_provider_fields_and_encrypts_credentials() {
 }
 
 #[tokio::test]
+async fn saved_webdav_probe_waits_for_the_remote_propfind_result() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/dav", listener.local_addr().unwrap());
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,webdav_url) VALUES (44,'fixture','webdav',1,'backups',?)")
+        .bind(url).execute(server.db.pool()).await.unwrap();
+    let provider = tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        for status in [
+            b"HTTP/1.1 207 Multi-Status\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .as_slice(),
+            b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".as_slice(),
+        ] {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut line = String::new();
+            stream.read_line(&mut line).await.unwrap();
+            assert!(line.starts_with("PROPFIND /dav/backups"));
+            loop {
+                line.clear();
+                assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            stream.get_mut().write_all(status).await.unwrap();
+        }
+    });
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    for success in [true, false] {
+        let (status, _, result) = server
+            .request("POST", "/api/v1/storage/44/test", &headers, None)
+            .await;
+        assert_eq!(
+            (status, result),
+            (
+                200,
+                json!({"success":success,"message":if success {"Connection test succeeded"} else {"Connection test failed"}})
+            )
+        );
+    }
+    provider.await.unwrap();
+    server.close().await;
+}
+
+#[tokio::test]
 async fn saved_local_storage_probe_checks_writability_without_leaving_a_file() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
