@@ -23,6 +23,7 @@ pub struct HttpState {
     probe_processes: Option<crate::process::ProcessOwner>,
     probe_jobs: crate::ownership::Owner,
     download_slots: Arc<tokio::sync::Semaphore>,
+    download_jobs: crate::ownership::Owner,
 }
 impl HttpState {
     pub fn new(auth: AuthService, config: Config) -> Self {
@@ -40,6 +41,7 @@ impl HttpState {
             .ok(),
             probe_jobs: crate::ownership::Owner::new(4).expect("positive probe capacity"),
             download_slots: Arc::new(tokio::sync::Semaphore::new(4)),
+            download_jobs: crate::ownership::Owner::new(4).expect("positive download capacity"),
         }
     }
 
@@ -52,6 +54,7 @@ impl HttpState {
     ) -> Result<(), crate::storage_recovery::StorageRecoveryError> {
         self.begin_shutdown();
         self.local_delete.shutdown().await;
+        self.download_jobs.shutdown(None).await;
         self.probe_jobs.shutdown(None).await;
         if let Some(processes) = &self.probe_processes {
             processes.shutdown(None).await;

@@ -476,6 +476,15 @@ pub(super) async fn configured_download(
             )
             .await
         }
+        Some("rclone") => {
+            download_from(
+                &state,
+                DownloadSource::Rclone(Value::Object(config)),
+                path,
+                &headers,
+            )
+            .await
+        }
         Some("ssh" | "sftp") => {
             if crate::storage::relative_path(path, false).is_none() {
                 return storage_error(StatusCode::BAD_REQUEST, "Invalid file path");
@@ -722,6 +731,7 @@ enum DownloadSource {
     S3(crate::storage::s3::S3),
     Ftp(crate::storage::ftp::Ftp),
     Sftp(crate::storage::ssh::SftpEndpoint, Option<std::fs::File>),
+    Rclone(Value),
 }
 
 async fn download_from(
@@ -770,6 +780,9 @@ async fn download_from(
                 .await
                 .ok()?
                 .ok()?,
+            DownloadSource::Rclone(config) => {
+                rclone::download_snapshot(state, config, path, slot).await?
+            }
             DownloadSource::Sftp(endpoint, key) => endpoint
                 .download_snapshot(
                     state.probe_processes.as_ref()?,

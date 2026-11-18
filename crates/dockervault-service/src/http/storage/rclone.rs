@@ -1,11 +1,12 @@
 use super::*;
 use crate::{process::ProcessSpec, rclone::ManagedConfigBuilder};
 use std::{path::Path, sync::Arc, time::Duration};
+use tokio_util::sync::CancellationToken;
 
 pub(super) async fn probe(state: &HttpState, config: &Value) -> Option<()> {
     let remote = remote_name(config)?;
     let target = format!("{remote}:");
-    run(state, config, remote, ["lsd", "--", &target], false).await?;
+    run(state, config, remote, ["lsd", "--", &target], false, None).await?;
     Some(())
 }
 
@@ -14,7 +15,7 @@ pub(super) async fn list(state: &HttpState, config: &Value, child: &str) -> Opti
     let base = config["base_path"].as_str().unwrap_or_default();
     let path = format!("{base}/{child}").replace("//", "/");
     let target = format!("{remote}:{path}");
-    let output = run(state, config, remote, ["lsjson", "--", &target], true).await?;
+    let output = run(state, config, remote, ["lsjson", "--", &target], true, None).await?;
     let items: Vec<Value> = serde_json::from_slice(&output).ok()?;
     items.into_iter().map(|item| {
         let modified = item["ModTime"].as_str().and_then(|value| {
@@ -30,13 +31,86 @@ fn remote_name(config: &Value) -> Option<&str> {
         .filter(|name| dockervault_core::rclone_path::valid_name(name))
 }
 
-async fn run(
+pub(super) async fn download_snapshot(
+    state: &HttpState,
+    config: Value,
+    child: String,
+    slot: tokio::sync::OwnedSemaphorePermit,
+) -> Option<(std::fs::File, u64, tokio::sync::OwnedSemaphorePermit)> {
+    use std::os::fd::AsRawFd;
+    let shared = state.clone();
+    state
+        .download_jobs
+        .submit_async(move |cancel| async move {
+            let remote = remote_name(&config)?;
+            let base = config["base_path"].as_str().unwrap_or_default();
+            let path = format!("{base}/{child}").replace("//", "/");
+            let source = format!("{remote}:{path}");
+            let file = tokio::task::spawn_blocking(crate::storage::local::anonymous_download)
+                .await
+                .ok()?
+                .ok()?;
+            // Follow the local destination descriptor, not links on the source.
+            let destination = format!(
+                ":local,copy_links=true:/proc/{}/fd/{}",
+                std::process::id(),
+                file.as_raw_fd()
+            );
+            run(
+                &shared,
+                &config,
+                remote,
+                [
+                    "copyto",
+                    "--inplace",
+                    "--ignore-times",
+                    "--",
+                    &source,
+                    &destination,
+                ],
+                false,
+                Some(&cancel),
+            )
+            .await?;
+            tokio::task::spawn_blocking(move || {
+                let length = file.metadata().ok()?.len();
+                Some((file, length, slot))
+            })
+            .await
+            .ok()?
+        })
+        .ok()?
+        .wait()
+        .await
+        .ok()?
+}
+
+async fn settled<T>(
+    work: crate::ownership::Work<T>,
+    cancel: Option<&CancellationToken>,
+) -> Option<T> {
+    let Some(cancel) = cancel else {
+        return work.wait().await.ok();
+    };
+    let child = work.cancellation_token();
+    let mut reply = std::pin::pin!(work.wait());
+    tokio::select! { biased;
+        _ = cancel.cancelled() => { child.cancel(); let _ = reply.await; None }
+        result = &mut reply => result.ok(),
+    }
+}
+
+async fn run<const N: usize>(
     state: &HttpState,
     config: &Value,
     remote: &str,
-    args: [&str; 3],
+    args: [&str; N],
     capture: bool,
+    cancel: Option<&CancellationToken>,
 ) -> Option<Vec<u8>> {
+    if cancel.is_some_and(CancellationToken::is_cancelled) {
+        return None;
+    }
     let processes = state.probe_processes.as_ref()?;
     let timeout = Some(Duration::from_secs(360));
     if let Some(id) = config["id"].as_i64() {
@@ -86,7 +160,7 @@ async fn run(
                     state.probe_jobs.clone(),
                     "/usr/local/bin/rclone".into(),
                 );
-                let output = runner
+                let work = runner
                     .start_run_managed(
                         generation,
                         Arc::new(cipher),
@@ -95,11 +169,8 @@ async fn run(
                         timeout,
                         dirs,
                     )
-                    .ok()?
-                    .wait()
-                    .await
-                    .ok()?
                     .ok()?;
+                let output = settled(work, cancel).await?.ok()?;
                 return (output.code == 0).then(|| output.stdout.into_bytes());
             }
         }
@@ -129,6 +200,6 @@ async fn run(
             state.config.rclone_config_pass.expose().into(),
         ));
     }
-    let output = processes.start(spec).ok()?.wait().await.ok()?.ok()?;
+    let output = settled(processes.start(spec).ok()?, cancel).await?.ok()?;
     output.status.success().then_some(output.stdout)
 }
