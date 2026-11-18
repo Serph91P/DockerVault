@@ -1577,6 +1577,33 @@ async fn local_download_honors_ranges_and_file_validators() {
 }
 
 #[tokio::test]
+async fn configured_sftp_download_rejects_invalid_path_before_contact() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,host,port,username) VALUES(44,'fixture','sftp',1,'/base','127.0.0.1',?,'fixture')")
+        .bind(listener.local_addr().unwrap().port()).execute(server.db.pool()).await.unwrap();
+    let result = server
+        .request(
+            "GET",
+            "/api/v1/storage/44/files/download?path=..%2Foutside",
+            &[("Cookie", cookie.as_str())],
+            None,
+        )
+        .await;
+    assert_eq!(
+        (result.0, result.2),
+        (400, json!({"detail":"Invalid file path"}))
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), listener.accept())
+            .await
+            .is_err()
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn configured_ftp_download_requires_successful_quit_after_data_eof() {
     use tokio::io::{AsyncBufReadExt, BufReader};
     let server = Server::start("http://localhost:3000").await;

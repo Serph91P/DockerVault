@@ -628,7 +628,7 @@ pub(super) fn receive_snapshot(
     Ok((file, receipt.length))
 }
 
-fn anonymous_download() -> io::Result<File> {
+pub(super) fn anonymous_download() -> io::Result<File> {
     let temp = open_root(&std::env::temp_dir())?;
     Ok(File::from(openat(
         &temp,

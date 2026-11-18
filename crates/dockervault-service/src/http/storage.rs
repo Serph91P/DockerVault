@@ -476,6 +476,21 @@ pub(super) async fn configured_download(
             )
             .await
         }
+        Some("ssh" | "sftp") => {
+            if crate::storage::relative_path(path, false).is_none() {
+                return storage_error(StatusCode::BAD_REQUEST, "Invalid file path");
+            }
+            if !open_probe_credentials(&state, &mut config, None).await {
+                return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Download failed");
+            }
+            let base = config["base_path"].as_str().unwrap_or_default().to_owned();
+            let Ok((endpoint, key)) =
+                ssh_endpoint(&state, &Value::Object(config), false, base).await
+            else {
+                return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Download failed");
+            };
+            download_from(&state, DownloadSource::Sftp(endpoint, key), path, &headers).await
+        }
         Some("webdav" | "s3" | "ftp") => {
             if !open_probe_credentials(&state, &mut config, None).await {
                 return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Download failed");
@@ -706,6 +721,7 @@ enum DownloadSource {
     Webdav(crate::storage::webdav::WebDav),
     S3(crate::storage::s3::S3),
     Ftp(crate::storage::ftp::Ftp),
+    Sftp(crate::storage::ssh::SftpEndpoint, Option<std::fs::File>),
 }
 
 async fn download_from(
@@ -749,6 +765,19 @@ async fn download_from(
                         })?;
                     Ok::<_, std::io::Error>((file, length, slot))
                 })
+                .ok()?
+                .wait()
+                .await
+                .ok()?
+                .ok()?,
+            DownloadSource::Sftp(endpoint, key) => endpoint
+                .download_snapshot(
+                    state.probe_processes.as_ref()?,
+                    &state.probe_jobs,
+                    &path,
+                    key,
+                    slot,
+                )
                 .ok()?
                 .wait()
                 .await

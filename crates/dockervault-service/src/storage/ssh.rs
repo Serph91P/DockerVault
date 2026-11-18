@@ -120,6 +120,50 @@ impl SftpEndpoint {
         self.download_with(processes, workers, child, root, destination, false)
     }
 
+    pub(crate) fn download_snapshot<T: Send + 'static>(
+        &self,
+        processes: &ProcessOwner,
+        workers: &Owner,
+        child: &str,
+        held_key: Option<File>,
+        held: T,
+    ) -> Result<Work<Result<Snapshot<T>, SftpDownloadError>>, SftpDownloadError> {
+        use std::os::fd::AsRawFd;
+        let remote = remote_path(&self.host, self.port, &self.base, child)
+            .map_err(|_| SftpDownloadError::Process(ProcessError::InvalidSpec))?;
+        let remote = batch_path(&remote);
+        let mut spec = self.batch_spec().map_err(SftpDownloadError::Process)?;
+        spec.timeout = Some(Duration::from_secs(600));
+        let processes = processes.clone();
+        workers
+            .submit_async(move |cancel| async move {
+                let file = tokio::task::spawn_blocking(super::local::anonymous_download)
+                    .await
+                    .map_err(|_| SftpDownloadError::Admission(WorkError::WorkerFailed))?
+                    .map_err(|error| SftpDownloadError::Transfer(error.into()))?;
+                spec.input = format!(
+                    "@get {remote} /proc/{}/fd/{}\n@quit\n",
+                    std::process::id(),
+                    file.as_raw_fd()
+                )
+                .into_bytes();
+                run_batch_holding(&processes, spec, &cancel, held_key).await?;
+                tokio::task::spawn_blocking(move || {
+                    if cancel.is_cancelled() {
+                        return Err(SftpDownloadError::Process(ProcessError::Cancelled));
+                    }
+                    let length = file
+                        .metadata()
+                        .map_err(|error| SftpDownloadError::Transfer(error.into()))?
+                        .len();
+                    Ok((file, length, held))
+                })
+                .await
+                .map_err(|_| SftpDownloadError::Admission(WorkError::WorkerFailed))?
+            })
+            .map_err(SftpDownloadError::Admission)
+    }
+
     pub fn download_rsync(
         &self,
         processes: &ProcessOwner,
@@ -459,6 +503,8 @@ impl SftpEndpoint {
         }
     }
 }
+
+type Snapshot<T> = (File, u64, T);
 
 async fn run_batch(
     processes: &ProcessOwner,
