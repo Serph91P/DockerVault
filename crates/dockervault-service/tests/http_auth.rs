@@ -1577,6 +1577,69 @@ async fn local_download_honors_ranges_and_file_validators() {
 }
 
 #[tokio::test]
+async fn configured_ftp_download_requires_successful_quit_after_data_eof() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,host,port,username) VALUES (44,'fixture','ftp',1,'/base','127.0.0.1',?,'fixture')")
+        .bind(listener.local_addr().unwrap().port()).execute(server.db.pool()).await.unwrap();
+    let provider = tokio::spawn(async move {
+        for quit in ["221 Bye", "500 Rejected"] {
+            let passive = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut control = BufReader::new(stream);
+            control.get_mut().write_all(b"220 Ready\r\n").await.unwrap();
+            for (expected, reply) in [
+                ("USER fixture", "230 Authorized".to_owned()),
+                ("TYPE I", "200 Binary".to_owned()),
+                (
+                    "EPSV",
+                    format!(
+                        "229 Entering (|||{}|)",
+                        passive.local_addr().unwrap().port()
+                    ),
+                ),
+                ("RETR /base/archive.tar", "150 Opening".to_owned()),
+            ] {
+                let mut command = String::new();
+                control.read_line(&mut command).await.unwrap();
+                assert_eq!(command.trim_end(), expected);
+                control
+                    .get_mut()
+                    .write_all(format!("{reply}\r\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+            let (mut data, _) = passive.accept().await.unwrap();
+            data.write_all(b"archive bytes").await.unwrap();
+            drop(data);
+            control
+                .get_mut()
+                .write_all(b"226 Settled\r\n")
+                .await
+                .unwrap();
+            let mut command = String::new();
+            control.read_line(&mut command).await.unwrap();
+            assert_eq!(command.trim_end(), "QUIT");
+            control
+                .get_mut()
+                .write_all(format!("{quit}\r\n").as_bytes())
+                .await
+                .unwrap();
+        }
+    });
+    let headers = [("Cookie", cookie.as_str())];
+    let url = "/api/v1/storage/44/files/download?path=archive.tar";
+    let (status, _, body) = server.request("GET", url, &headers, None).await;
+    assert_eq!((status, body), (200, json!("archive bytes")));
+    let (status, _, body) = server.request("GET", url, &headers, None).await;
+    assert_eq!((status, body), (500, json!({"detail":"Download failed"})));
+    provider.await.unwrap();
+    server.close().await;
+}
+
+#[tokio::test]
 async fn configured_s3_download_verifies_complete_object_before_serving_ranges() {
     use tokio::io::{AsyncBufReadExt, BufReader};
     let server = Server::start("http://localhost:3000").await;

@@ -476,14 +476,16 @@ pub(super) async fn configured_download(
             )
             .await
         }
-        Some("webdav" | "s3") => {
+        Some("webdav" | "s3" | "ftp") => {
             if !open_probe_credentials(&state, &mut config, None).await {
                 return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Download failed");
             }
-            let source = if config["storage_type"] == "s3" {
-                s3_provider(&state, &Value::Object(config)).map(DownloadSource::S3)
-            } else {
-                configured_webdav(&state, &config).map(DownloadSource::Webdav)
+            let source = match config["storage_type"].as_str() {
+                Some("s3") => s3_provider(&state, &Value::Object(config)).map(DownloadSource::S3),
+                Some("ftp") => {
+                    ftp_provider(&state, &Value::Object(config)).map(DownloadSource::Ftp)
+                }
+                _ => configured_webdav(&state, &config).map(DownloadSource::Webdav),
             };
             let Some(source) = source else {
                 return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Download failed");
@@ -703,6 +705,7 @@ enum DownloadSource {
     Local(std::path::PathBuf),
     Webdav(crate::storage::webdav::WebDav),
     S3(crate::storage::s3::S3),
+    Ftp(crate::storage::ftp::Ftp),
 }
 
 async fn download_from(
@@ -746,6 +749,13 @@ async fn download_from(
                         })?;
                     Ok::<_, std::io::Error>((file, length, slot))
                 })
+                .ok()?
+                .wait()
+                .await
+                .ok()?
+                .ok()?,
+            DownloadSource::Ftp(provider) => provider
+                .download_snapshot(path, state.auth.blocking(), slot)
                 .ok()?
                 .wait()
                 .await

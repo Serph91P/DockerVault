@@ -10,6 +10,8 @@ use tokio_util::{
     io::{StreamReader, SyncIoBridge},
 };
 
+type Snapshot<T> = (File, u64, T);
+
 impl Ftp {
     pub fn download(
         &self,
@@ -18,6 +20,31 @@ impl Ftp {
         path: PathBuf,
         io_owner: &Owner,
     ) -> Result<Work<Result<Downloaded, FtpError>>, WorkError> {
+        self.download_with(remote, io_owner, move |reader, cancel| {
+            receive_download(root, &path, reader, None, cancel)
+        })
+    }
+
+    pub(crate) fn download_snapshot<T: Send + 'static>(
+        &self,
+        remote: String,
+        io_owner: &Owner,
+        held: T,
+    ) -> Result<Work<Result<Snapshot<T>, FtpError>>, WorkError> {
+        self.download_with(remote, io_owner, move |reader, cancel| {
+            let (file, length) = crate::storage::local::receive_snapshot(reader, None, cancel)?;
+            Ok((file, length, held))
+        })
+    }
+
+    fn download_with<T: Send + 'static>(
+        &self,
+        remote: String,
+        io_owner: &Owner,
+        receive_body: impl FnOnce(&mut dyn io::Read, &dyn Fn() -> bool) -> Result<T, TransferError>
+        + Send
+        + 'static,
+    ) -> Result<Work<Result<T, FtpError>>, WorkError> {
         let config = self.config.clone();
         let io_owner = io_owner.clone();
         self.owner.submit_async(move |cancel| async move {
@@ -59,7 +86,7 @@ impl Ftp {
                     }
                 });
                 let mut reader = SyncIoBridge::new(StreamReader::new(Box::pin(stream)));
-                receive_download(root, &path, &mut reader, None, &|| {
+                receive_body(&mut reader, &|| {
                     parent_cancel.is_cancelled() || io_cancel.is_cancelled()
                 })
             }) {
