@@ -22,8 +22,8 @@ async fn restart_keeps_uncertain_effects_unknown_and_never_replays_unstarted_ite
         .unwrap();
     sqlx::raw_sql("INSERT INTO users(id,username,password_hash) VALUES(1,'fixture','synthetic');
         INSERT INTO storage_operations(id,user_id,request_id,payload,storage_identity,action,storage_id,path,state,stage,total,completed,succeeded,failed,skipped,unknown,cancel_requested,created_at,updated_at) VALUES
-        ('interrupted',1,'r1','{}','{}','delete','local','','queued','queued',4,2,1,1,0,0,0,'2024-01-01','2024-01-01'),
-        ('finished',1,'r2','{}','{}','delete','local','','completed','done',1,1,1,0,0,0,0,'2024-01-01','2024-01-01');
+        ('interrupted',1,'r1','{}','{}','storage_delete','local','','queued','queued',4,2,1,1,0,0,0,'2024-01-01','2024-01-01'),
+        ('finished',1,'r2','{}','{}','storage_delete','local','','completed','done',1,1,1,0,0,0,0,'2024-01-01','2024-01-01');
         INSERT INTO storage_operation_items(operation_id,path,state,error) VALUES
         ('interrupted','a','succeeded',NULL),('interrupted','b','pending',NULL),
         ('interrupted','c','pending',NULL),('interrupted','d','failed','retained'),('finished','e','succeeded',NULL);")
@@ -104,7 +104,7 @@ async fn restart_keeps_uncertain_effects_unknown_and_never_replays_unstarted_ite
             .unwrap();
     assert_eq!(untouched, ("completed".into(), "done".into()));
     sqlx::raw_sql("INSERT INTO storage_operations(id,user_id,request_id,payload,storage_identity,action,storage_id,path,state,stage,total,completed,succeeded,failed,skipped,unknown,cancel_requested,created_at,updated_at) VALUES
-        ('settled',1,'r3','{}','{}','delete','local','','queued','queued',2,0,0,0,0,0,0,'2024-01-01','2024-01-01');
+        ('settled',1,'r3','{}','{}','storage_delete','local','','queued','queued',2,0,0,0,0,0,0,'2024-01-01','2024-01-01');
         INSERT INTO storage_operation_items(operation_id,path,state) VALUES ('settled','first','pending'),('settled','next','pending');")
         .execute(db.pool()).await.unwrap();
     let claim = claim_next(db.pool(), 1, "settled", &identity)
@@ -138,7 +138,7 @@ async fn restart_keeps_uncertain_effects_unknown_and_never_replays_unstarted_ite
     .unwrap();
     assert_eq!(row, ("failed".into(), "finished".into(), 2, 1, 1));
     sqlx::raw_sql("INSERT INTO storage_operations(id,user_id,request_id,payload,storage_identity,action,storage_id,path,state,stage,total,completed,succeeded,failed,skipped,unknown,cancel_requested,created_at,updated_at) VALUES
-        ('invalid-path',1,'r4','{}','{}','delete','local','','queued','queued',1,0,0,0,0,0,0,'2024-01-01','2024-01-01');
+        ('invalid-path',1,'r4','{}','{}','storage_delete','local','','queued','queued',1,0,0,0,0,0,0,'2024-01-01','2024-01-01');
         INSERT INTO storage_operation_items(operation_id,path,state) VALUES ('invalid-path','../outside','pending');")
         .execute(db.pool()).await.unwrap();
     let processes = ProcessOwner::new(1, env!("CARGO_BIN_EXE_dockervault-process-guard")).unwrap();

@@ -38,7 +38,7 @@ pub async fn claim_next(
     }
     let identity: Option<String> = sqlx::query_scalar(
         "SELECT storage_identity FROM storage_operations WHERE id=? AND user_id=?
-         AND action='delete' AND state IN ('queued','running') AND cancel_requested=0",
+         AND action='storage_delete' AND state IN ('queued','running') AND cancel_requested=0",
     )
     .bind(operation_id)
     .bind(user_id)
@@ -103,7 +103,7 @@ pub async fn record_settled(
     };
     let updated = sqlx::query(
         "UPDATE storage_operation_items SET state=?,error=? WHERE id=? AND operation_id=? AND state='running'
-         AND EXISTS(SELECT 1 FROM storage_operations WHERE id=? AND user_id=? AND action='delete' AND state='running')",
+         AND EXISTS(SELECT 1 FROM storage_operations WHERE id=? AND user_id=? AND action='storage_delete' AND state='running')",
     ).bind(state).bind(message).bind(item_id).bind(operation_id).bind(operation_id).bind(user_id)
         .execute(&mut *tx).await?.rows_affected();
     if updated == 0 {
