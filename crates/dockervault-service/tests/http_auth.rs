@@ -29,13 +29,16 @@ impl Server {
         )
         .await
     }
-    async fn configured(config: Config) -> Self {
+    async fn configured(mut config: Config) -> Self {
         let path = std::env::temp_dir().join(format!(
             "dv-http-auth-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&path).unwrap();
+        let backups = path.join("backups");
+        std::fs::create_dir(&backups).unwrap();
+        config.backup_base_path = backups.to_str().unwrap().into();
         let owner = Owner::new(1).unwrap();
         let db = Database::open(path.join("db.sqlite"), path.join("snapshots"), &owner)
             .await
@@ -131,6 +134,123 @@ impl Server {
         std::fs::remove_dir_all(self.path).unwrap();
     }
 }
+
+#[tokio::test]
+async fn local_delete_submit_commits_before_effect_and_replay_does_not_delete_again() {
+    const ROUTE: &str = "/api/v1/operations";
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let root = server.path.join("backups");
+    std::fs::write(root.join("z.tar"), b"selected").unwrap();
+    std::fs::write(root.join("a.tar"), b"also selected").unwrap();
+    std::fs::write(root.join("keep.tar"), b"untouched").unwrap();
+    let payload = json!({
+        "action":"storage_delete", "storage_id":"local", "path":"",
+        "paths":["z.tar", "a.tar", "z.tar", "missing.tar"],
+        "request_id":"c8f37f38-8195-4d6e-9b23-166930276666"
+    });
+    let valid = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let foreign = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "https://unrelated.invalid"),
+    ];
+    let post = |headers, body| server.request("POST", ROUTE, headers, Some(body));
+    assert_eq!(post(&[], payload.clone()).await.0, 401);
+    assert_eq!(post(&foreign, payload.clone()).await.0, 403);
+    let mut invalid = payload.clone();
+    invalid["storage_id"] = json!(true);
+    assert_eq!(post(&valid, invalid).await.0, 422);
+    let mut over_limit = payload.clone();
+    over_limit["paths"] = json!((0..1001).map(|i| format!("item-{i}")).collect::<Vec<_>>());
+    assert_eq!(post(&valid, over_limit).await.0, 422);
+    assert_eq!(std::fs::read(root.join("z.tar")).unwrap(), b"selected");
+
+    // A rejected transaction must leave no operation/items and do no deletion.
+    let pool = server.db.pool();
+    sqlx::query("CREATE TRIGGER reject_admission BEFORE INSERT ON storage_operation_items BEGIN SELECT RAISE(ABORT, 'fixture rejects item commit'); END")
+        .execute(pool).await.unwrap();
+    assert_eq!(post(&valid, payload.clone()).await.0, 500);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM storage_operations")
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(std::fs::read(root.join("a.tar")).unwrap(), b"also selected");
+    sqlx::query("DROP TRIGGER reject_admission")
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let (first, second) =
+        tokio::join!(post(&valid, payload.clone()), post(&valid, payload.clone()));
+    assert_eq!(first.0, 202);
+    assert_eq!(second.0, 202);
+    assert_eq!(first.2, second.2);
+    let id = first.2["operation_id"].as_str().unwrap();
+    let detail = format!("{ROUTE}/{id}");
+    let stored: (i64, i64) =
+        sqlx::query_as("SELECT user_id,total FROM storage_operations WHERE id=?")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, (1, 3));
+    let settled = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let (status, _, snapshot) = server.request("GET", &detail, &valid, None).await;
+            assert_eq!(status, 200);
+            if snapshot["finished_at"].is_string() {
+                break snapshot;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(settled["state"], "failed");
+    assert_eq!(settled["stage"], "finished");
+    for (key, value) in [
+        ("total", 3),
+        ("completed", 3),
+        ("succeeded", 2),
+        ("failed", 1),
+        ("skipped", 0),
+        ("unknown", 0),
+    ] {
+        assert_eq!(settled[key], value, "{key}");
+    }
+    assert_eq!(
+        settled["items"],
+        json!([
+            {"path":"z.tar","state":"succeeded","error":null},
+            {"path":"a.tar","state":"succeeded","error":null},
+            {"path":"missing.tar","state":"failed","error":"Target not found"}
+        ])
+    );
+    assert!(!root.join("z.tar").exists());
+    assert!(!root.join("a.tar").exists());
+    assert_eq!(std::fs::read(root.join("keep.tar")).unwrap(), b"untouched");
+    std::fs::write(root.join("z.tar"), b"recreated").unwrap();
+    assert_eq!(post(&valid, payload.clone()).await.2, first.2);
+    let mut conflict = payload;
+    conflict["paths"] = json!(["z.tar"]);
+    assert_eq!(post(&valid, conflict).await.0, 409);
+    assert_eq!(std::fs::read(root.join("z.tar")).unwrap(), b"recreated");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM storage_operations")
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        1
+    );
+    server.close().await;
+}
+
 #[tokio::test]
 async fn operation_detail_requires_authentication_and_ownership() {
     let server = Server::start("http://localhost:3000").await;

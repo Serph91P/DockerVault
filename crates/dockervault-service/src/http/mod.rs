@@ -3,7 +3,7 @@ mod auth;
 mod operations;
 pub mod security;
 pub mod ws;
-use crate::{auth::AuthService, config::Config};
+use crate::{auth::AuthService, config::Config, storage_recovery::LocalDeleteJobs};
 use axum::{
     Json, Router, middleware,
     response::IntoResponse,
@@ -18,6 +18,7 @@ pub struct HttpState {
     limits: Arc<security::RateLimits>,
     pub notifications: Arc<ws::Notifications>,
     draining: tokio_util::sync::CancellationToken,
+    local_delete: Arc<LocalDeleteJobs>,
 }
 impl HttpState {
     pub fn new(auth: AuthService, config: Config) -> Self {
@@ -27,11 +28,21 @@ impl HttpState {
             limits: Arc::new(security::RateLimits::default()),
             notifications: Arc::new(ws::Notifications::default()),
             draining: tokio_util::sync::CancellationToken::new(),
+            local_delete: Arc::new(LocalDeleteJobs::new()),
         }
     }
 
     pub fn begin_shutdown(&self) {
         self.draining.cancel();
+    }
+
+    pub async fn settle_storage(
+        &self,
+    ) -> Result<(), crate::storage_recovery::StorageRecoveryError> {
+        self.begin_shutdown();
+        self.local_delete.shutdown().await;
+        crate::storage_recovery::settle_interrupted(self.auth.pool()).await?;
+        Ok(())
     }
 }
 pub fn router(state: HttpState) -> Router {
@@ -46,7 +57,10 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/auth/change-password", post(auth::change_password))
-        .route("/api/v1/operations", get(operations::list))
+        .route(
+            "/api/v1/operations",
+            get(operations::list).post(operations::submit),
+        )
         .route("/api/v1/operations/{id}", get(operations::detail))
         .route("/api/v1/operations/{id}/cancel", post(operations::cancel))
         .route("/ws/updates", get(ws::updates))

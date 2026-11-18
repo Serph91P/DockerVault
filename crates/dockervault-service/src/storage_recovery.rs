@@ -10,6 +10,9 @@ use crate::{
     },
 };
 use sqlx::SqlitePool;
+use std::sync::Arc;
+use tokio::sync::{Mutex, oneshot};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug)]
 pub enum StorageRecoveryError {
@@ -39,6 +42,13 @@ pub async fn submit_delete(
     pool: &SqlitePool,
     request: DeleteAdmission<'_>,
 ) -> Result<String, StorageRecoveryError> {
+    Ok(admit_delete(pool, request).await?.0)
+}
+
+pub(crate) async fn admit_delete(
+    pool: &SqlitePool,
+    request: DeleteAdmission<'_>,
+) -> Result<(String, bool), StorageRecoveryError> {
     use StorageRecoveryError as Error;
     let invalid = Error::InvalidRequest;
     let id_shape = request.request_id.as_bytes();
@@ -99,16 +109,13 @@ pub async fn submit_delete(
             .ok()
             == Some(&payload)
         {
-            Ok(id)
+            Ok((id, false))
         } else {
             Err(Error::RequestConflict)
         };
     }
     if !request.accepting {
         return Err(Error::ShuttingDown);
-    }
-    if !request.identity.is_object() {
-        return Err(Error::IdentityChanged);
     }
     let active: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM storage_operations WHERE state IN ('queued','running')",
@@ -117,6 +124,9 @@ pub async fn submit_delete(
     .await?;
     if active >= 32 {
         return Err(Error::QueueFull);
+    }
+    if !request.identity.is_object() {
+        return Err(Error::IdentityChanged);
     }
     let mut nonce = [0u8; 16];
     getrandom::fill(&mut nonce).map_err(|_| Error::Randomness)?;
@@ -145,7 +155,7 @@ pub async fn submit_delete(
         .await?;
     }
     tx.commit().await?;
-    Ok(id)
+    Ok((id, true))
 }
 
 macro_rules! snapshot_sql {
@@ -271,6 +281,8 @@ pub enum DeleteOutcome {
     Succeeded,
     Failed,
     InvalidPath,
+    NotFound,
+    PermissionDenied,
     Unknown,
 }
 
@@ -288,6 +300,8 @@ pub async fn record_settled(
         DeleteOutcome::Succeeded => ("succeeded", None),
         DeleteOutcome::Failed => ("failed", Some("Delete failed")),
         DeleteOutcome::InvalidPath => ("failed", Some("Invalid file path")),
+        DeleteOutcome::NotFound => ("failed", Some("Target not found")),
+        DeleteOutcome::PermissionDenied => ("failed", Some("Permission denied")),
         DeleteOutcome::Unknown => (
             "unknown",
             Some("Delete not confirmed; inspect the actual target"),
@@ -437,26 +451,171 @@ pub fn start_local_delete(
         if cancel.is_cancelled() {
             return Ok(false);
         }
-        let expected_root = serde_json::from_value::<(u64, u64)>(identity["root_inode"].clone())
-            .map_err(|_| StorageRecoveryError::IdentityChanged)?;
-        let Some(item) = claim_next(&pool, user_id, &operation_id, &identity).await? else {
-            return Ok(false);
-        };
-        let outcome = match relative_path(&item.path, false) {
-            Some(path) => match local.delete_leaf(path.into(), expected_root) {
-                Ok(effect) => match effect.wait().await {
-                    Ok(Ok(())) => DeleteOutcome::Succeeded,
-                    Ok(Err(TransferError::PublicationUncertain(_))) | Err(_) => {
-                        DeleteOutcome::Unknown
-                    }
-                    Ok(Err(_)) => DeleteOutcome::Failed,
-                },
-                Err(_) => DeleteOutcome::Failed,
-            },
-            None => DeleteOutcome::InvalidPath,
-        };
-        record_settled(&pool, user_id, &operation_id, item.id, outcome).await
+        delete_next_local(&pool, &local, user_id, &operation_id, &identity).await
     })
+}
+
+async fn delete_next_local(
+    pool: &SqlitePool,
+    local: &LocalStorage,
+    user_id: i64,
+    operation_id: &str,
+    identity: &serde_json::Value,
+) -> Result<bool, StorageRecoveryError> {
+    let expected_root = serde_json::from_value::<(u64, u64)>(identity["root_inode"].clone())
+        .map_err(|_| StorageRecoveryError::IdentityChanged)?;
+    let Some(item) = claim_next(pool, user_id, operation_id, identity).await? else {
+        return Ok(false);
+    };
+    let outcome = match relative_path(&item.path, false) {
+        Some(path) => match local.delete_leaf(path.into(), expected_root) {
+            Ok(effect) => match effect.wait().await {
+                Ok(Ok(())) => DeleteOutcome::Succeeded,
+                Ok(Err(TransferError::PublicationUncertain(_))) | Err(_) => DeleteOutcome::Unknown,
+                Ok(Err(TransferError::Io(error))) => match error.kind() {
+                    std::io::ErrorKind::NotFound => DeleteOutcome::NotFound,
+                    std::io::ErrorKind::PermissionDenied => DeleteOutcome::PermissionDenied,
+                    std::io::ErrorKind::InvalidInput | std::io::ErrorKind::NotADirectory => {
+                        DeleteOutcome::InvalidPath
+                    }
+                    _ => DeleteOutcome::Failed,
+                },
+            },
+            Err(_) => DeleteOutcome::Failed,
+        },
+        None => DeleteOutcome::InvalidPath,
+    };
+    record_settled(pool, user_id, operation_id, item.id, outcome).await
+}
+
+pub(crate) struct LocalDeleteJobs {
+    jobs: Owner,
+    io: Owner,
+    tail: Mutex<Option<oneshot::Receiver<()>>>,
+    stopped: CancellationToken,
+}
+
+pub(crate) struct LocalSelection {
+    pub user_id: i64,
+    pub request_id: String,
+    pub path: String,
+    pub paths: Vec<String>,
+}
+
+impl LocalDeleteJobs {
+    pub fn new() -> Self {
+        Self {
+            jobs: Owner::new(64).expect("bounded storage admission"),
+            io: Owner::new(2).expect("one root check and one effect"),
+            tail: Mutex::new(None),
+            stopped: CancellationToken::new(),
+        }
+    }
+
+    pub async fn submit(
+        self: &Arc<Self>,
+        pool: SqlitePool,
+        root: String,
+        selection: LocalSelection,
+        draining: CancellationToken,
+        notify: impl Fn(i64, &str) + Send + Sync + 'static,
+    ) -> Result<String, StorageRecoveryError> {
+        use StorageRecoveryError as Error;
+        let this = self.clone();
+        let (accepted, response) = oneshot::channel();
+        // Once admitted, neither a lost HTTP reply nor a retry owns the job.
+        let worker = self
+            .jobs
+            .submit_async(move |_| async move {
+                let mut tail = this.tail.lock().await;
+                let io = this.io.clone();
+                let root_path = root.clone();
+                let pinned = match this.io.submit_blocking(move |_| {
+                    LocalStorage::pin_configured(std::path::Path::new(&root_path), io)
+                }) {
+                    Ok(work) => work.wait().await.ok().and_then(Result::ok),
+                    Err(_) => None,
+                };
+                let identity = pinned.as_ref().map_or(
+                    serde_json::Value::Null,
+                    |(_, inode)| serde_json::json!({"root":root,"root_inode":inode}),
+                );
+                let paths: Vec<&str> = selection.paths.iter().map(String::as_str).collect();
+                let admission = admit_delete(
+                    &pool,
+                    DeleteAdmission {
+                        user_id: selection.user_id,
+                        request_id: &selection.request_id,
+                        storage_id: "local",
+                        path: &selection.path,
+                        paths: &paths,
+                        identity: &identity,
+                        accepting: !this.stopped.is_cancelled() && !draining.is_cancelled(),
+                    },
+                )
+                .await;
+                let (id, local) = match (admission, pinned) {
+                    (Ok((id, true)), Some((local, _))) => (id, local),
+                    (Ok((id, false)), _) => {
+                        let _ = accepted.send(Ok(id));
+                        return;
+                    }
+                    (Err(error), _) => {
+                        let _ = accepted.send(Err(error));
+                        return;
+                    }
+                    _ => {
+                        let _ = accepted.send(Err(Error::IdentityChanged));
+                        return;
+                    }
+                };
+                // Link the next turn while under the admission lock: commit order is wire order.
+                let (done, turn) = oneshot::channel();
+                let previous = tail.replace(turn);
+                drop(tail);
+                let _ = accepted.send(Ok(id.clone()));
+                if let Some(previous) = previous
+                    && previous.await.is_err()
+                {
+                    this.stopped.cancel();
+                }
+                let result = async {
+                    let user = selection.user_id;
+                    loop {
+                        if this.stopped.is_cancelled() {
+                            break;
+                        }
+                        if draining.is_cancelled() {
+                            request_cancel(&pool, user, &id).await?;
+                            break;
+                        }
+                        if !delete_next_local(&pool, &local, user, &id, &identity).await? {
+                            break;
+                        }
+                        notify(user, &id);
+                    }
+                    Result::<(), Error>::Ok(())
+                }
+                .await;
+                if result.is_err() {
+                    this.stopped.cancel();
+                    eprintln!("Storage worker settlement failed; new deletion admission disabled");
+                }
+                let _ = done.send(());
+            })
+            .map_err(|error| match error {
+                WorkError::Busy => Error::QueueFull,
+                _ => Error::ShuttingDown,
+            })?;
+        let result = response.await.map_err(|_| Error::ShuttingDown)?;
+        drop(worker);
+        result
+    }
+
+    pub async fn shutdown(&self) {
+        self.jobs.shutdown(None).await;
+        self.io.shutdown(None).await;
+    }
 }
 
 impl From<sqlx::Error> for StorageRecoveryError {

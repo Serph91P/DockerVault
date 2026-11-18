@@ -1,13 +1,154 @@
-use super::{HttpState, auth::required_user};
-use crate::storage_recovery::{storage_operation_detail, storage_operation_list};
+use super::{
+    HttpState,
+    auth::{json_body, required_user, validation},
+};
+use crate::{
+    storage::relative_path,
+    storage_recovery::{
+        LocalSelection, StorageRecoveryError, storage_operation_detail, storage_operation_list,
+    },
+};
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Request, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::collections::HashMap;
+
+pub(super) async fn submit(State(state): State<HttpState>, mut request: Request) -> Response {
+    let user = match required_user(&state, request.headers()).await {
+        Ok(user) => user,
+        Err(response) => return *response,
+    };
+    let body = match json_body(&state, &mut request).await {
+        Ok(body) => body,
+        Err(response) => return *response,
+    };
+    let invalid =
+        |field: &str, message: &str| *validation(vec![json!({"field":field,"message":message})]);
+    if body["action"] != "storage_delete" {
+        return invalid("body.action", "Input should be 'storage_delete'");
+    }
+    if body["storage_id"] != "local" {
+        return if body["storage_id"].as_i64().is_some_and(|id| id > 0) {
+            failure(
+                StatusCode::NOT_IMPLEMENTED,
+                "Remote storage operations are unavailable",
+            )
+        } else {
+            invalid("body.storage_id", "Expected 'local' or a positive integer")
+        };
+    }
+    let Some(path) = body["path"].as_str() else {
+        return invalid("body.path", "Input should be a valid string");
+    };
+    if path.chars().count() > 1024 {
+        return invalid("body.path", "String should have at most 1024 characters");
+    }
+    if relative_path(path, true).is_none() {
+        return failure(StatusCode::UNPROCESSABLE_ENTITY, "Invalid browser path");
+    }
+    let Some(paths) = body["paths"].as_array() else {
+        return invalid("body.paths", "Input should be a valid list");
+    };
+    let mut targets = Vec::with_capacity(paths.len());
+    for (index, item) in paths.iter().enumerate() {
+        let Some(path) = item.as_str() else {
+            return invalid(
+                &format!("body.paths.{index}"),
+                "Input should be a valid string",
+            );
+        };
+        if path.chars().count() > 1024 {
+            return invalid(
+                &format!("body.paths.{index}"),
+                "String should have at most 1024 characters",
+            );
+        }
+        targets.push(path.to_owned());
+    }
+    let Some(request_id) = canonical_uuid(&body["request_id"]) else {
+        return invalid("body.request_id", "Input should be a valid UUID");
+    };
+    let notifications = state.notifications.clone();
+    let result = state
+        .local_delete
+        .submit(
+            state.auth.pool().clone(),
+            state.config.backup_base_path.clone(),
+            LocalSelection {
+                user_id: user.id,
+                request_id,
+                path: path.to_owned(),
+                paths: targets,
+            },
+            state.draining.clone(),
+            move |user, id| {
+                notifications
+                    .send_to_user(user, &json!({"type":"operation_update","operation_id":id}))
+            },
+        )
+        .await;
+    use StorageRecoveryError as Error;
+    match result {
+        Ok(id) => (StatusCode::ACCEPTED, Json(json!({"operation_id":id}))).into_response(),
+        Err(Error::InvalidRequest) => failure(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Select between 1 and 1000 nonempty paths",
+        ),
+        Err(Error::RequestConflict) => failure(
+            StatusCode::CONFLICT,
+            "Request ID already used for another selection",
+        ),
+        Err(Error::IdentityChanged) => failure(StatusCode::CONFLICT, "Storage root is unavailable"),
+        Err(Error::ShuttingDown) => failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Storage worker is shutting down",
+        ),
+        Err(Error::QueueFull) => failure(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Storage operation queue is full",
+        ),
+        Err(Error::RecoveryPending) => {
+            failure(StatusCode::CONFLICT, "System recovery setup is in progress")
+        }
+        Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+    }
+}
+
+fn canonical_uuid(value: &Value) -> Option<String> {
+    let value = value.as_str()?;
+    let value = value.strip_prefix("urn:uuid:").unwrap_or(value);
+    let value = value
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .unwrap_or(value);
+    let hex = if value.len() == 36 {
+        if ![8, 13, 18, 23]
+            .into_iter()
+            .all(|position| value.as_bytes()[position] == b'-')
+        {
+            return None;
+        }
+        value.replace('-', "")
+    } else {
+        value.to_owned()
+    };
+    if hex.len() != 32 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let hex = hex.to_ascii_lowercase();
+    Some(format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    ))
+}
 
 pub(super) async fn detail(
     State(state): State<HttpState>,

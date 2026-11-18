@@ -64,6 +64,7 @@ impl Downloaded {
 pub struct LocalStorage {
     root: Arc<File>,
     workers: Owner,
+    configured_root: Option<Arc<Path>>,
 }
 impl LocalStorage {
     pub fn new(root: File, workers: Owner) -> io::Result<Self> {
@@ -73,7 +74,16 @@ impl LocalStorage {
         Ok(Self {
             root: Arc::new(root),
             workers,
+            configured_root: None,
         })
+    }
+    pub(crate) fn pin_configured(root: &Path, workers: Owner) -> io::Result<(Self, (u64, u64))> {
+        let path = std::path::absolute(root)?;
+        let file = open_root(&path)?;
+        let info = file.metadata()?;
+        let mut storage = Self::new(file, workers)?;
+        storage.configured_root = Some(Arc::from(path));
+        Ok((storage, (info.dev(), info.ino())))
     }
     pub fn upload(
         &self,
@@ -117,6 +127,7 @@ impl LocalStorage {
         expected_root: (u64, u64),
     ) -> Result<Work<Result<(), TransferError>>, WorkError> {
         let root = self.root.clone();
+        let configured = self.configured_root.clone();
         self.workers.submit_blocking(move |cancel| {
             let path = path
                 .to_str()
@@ -125,6 +136,12 @@ impl LocalStorage {
             let actual = root.metadata()?;
             if (actual.dev(), actual.ino()) != expected_root {
                 return Err(invalid("Storage root changed").into());
+            }
+            if let Some(path) = configured {
+                let current = open_root(&path)?.metadata()?;
+                if (current.dev(), current.ino()) != expected_root {
+                    return Err(invalid("Storage root changed").into());
+                }
             }
             let (parent, name) = parent(&root, Path::new(&path), false)?;
             check(&|| cancel.is_cancelled())?;
@@ -187,14 +204,31 @@ fn parent(root: &File, path: &Path, create: bool) -> io::Result<(File, OsString)
                 Err(error) => return Err(error.into()),
             }
         }
-        current = File::from(openat(
-            &current,
-            part.as_os_str(),
-            OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
-            Mode::empty(),
-        )?);
+        current = open_directory(&current, part.as_os_str())?;
     }
     Ok((current, name))
+}
+fn open_root(path: &Path) -> io::Result<File> {
+    let mut current = File::open("/")?;
+    for component in path
+        .strip_prefix("/")
+        .map_err(io::Error::other)?
+        .components()
+    {
+        let Component::Normal(name) = component else {
+            return Err(invalid("Storage root must not contain parent components"));
+        };
+        current = open_directory(&current, name)?;
+    }
+    Ok(current)
+}
+fn open_directory(parent: &File, name: &OsStr) -> io::Result<File> {
+    Ok(File::from(openat(
+        parent,
+        name,
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )?))
 }
 fn read_leaf(parent: &File, name: &OsStr) -> io::Result<File> {
     let file = File::from(openat(

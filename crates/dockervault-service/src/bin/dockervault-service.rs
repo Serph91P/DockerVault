@@ -119,18 +119,21 @@ async fn run() -> Result<(), &'static str> {
     let auth = AuthService::new(db.pool().clone());
     let state = HttpState::new(auth.clone(), config);
     let router = http::router(state.clone());
+    let shutdown = state.clone();
     let result = axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
         tokio::select! { _ = terminate.recv() => {}, _ = interrupt.recv() => {} }
-        state.begin_shutdown();
+        shutdown.begin_shutdown();
     })
     .await;
+    let storage = state.settle_storage().await;
     auth.shutdown(grace).await;
     journal.shutdown(grace).await;
     owner.shutdown(grace).await;
     db.close().await;
+    storage.map_err(|_| "storage settlement")?;
     result.map_err(|_| "serving HTTP")
 }

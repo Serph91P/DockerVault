@@ -55,11 +55,10 @@ pub(super) fn validation(errors: Vec<Value>) -> Box<Response> {
             .into_response(),
     )
 }
-async fn body(
+pub(super) async fn json_body(
     state: &HttpState,
     request: &mut Request,
-    fields: &[(&str, usize, usize)],
-) -> Result<Vec<String>, Box<Response>> {
+) -> Result<Value, Box<Response>> {
     // A partially uploaded body owns no mutation and need not delay shutdown.
     let raw = tokio::select! {
         biased;
@@ -106,11 +105,20 @@ async fn body(
             json!({"field":format!("body.{position}"),"message":"JSON decode error"}),
         ])
     })?;
-    let Some(object) = value.as_object() else {
+    if !value.is_object() {
         return Err(validation(vec![
             json!({"field":"body","message":if value.is_null() {"Field required"}else{"Input should be a valid dictionary or object to extract fields from"}}),
         ]));
-    };
+    }
+    Ok(value)
+}
+async fn body(
+    state: &HttpState,
+    request: &mut Request,
+    fields: &[(&str, usize, usize)],
+) -> Result<Vec<String>, Box<Response>> {
+    let value = json_body(state, request).await?;
+    let object = value.as_object().expect("JSON body is an object");
     let mut errors = Vec::new();
     let mut values = Vec::new();
     for &(field, min, max) in fields {
