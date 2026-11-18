@@ -32,6 +32,37 @@ COPY frontend/ .
 ENV NODE_ENV=${BUILD_ENV}
 RUN npm run build
 
+# Opt-in local candidate only. Keep production as the default final stage.
+FROM rust@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS native-builder
+WORKDIR /src
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates ./crates
+RUN cargo fetch --locked && cargo build --release --locked --offline --bins \
+    -p dockervault-service -p dockervault-tools
+
+FROM debian@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS native-candidate
+ARG COMMIT_SHA=unknown
+LABEL org.opencontainers.image.revision="${COMMIT_SHA}"
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl nginx openssh-client rsync s6 sshpass libssl3t64 \
+    && rm -rf /var/lib/apt/lists/* /etc/nginx/sites-enabled/default \
+    && groupadd -g 1000 dockervault \
+    && useradd -u 1000 -g 1000 -m dockervault
+COPY --from=native-builder /src/target/release/dockervault-service /src/target/release/dockervault-recover /usr/local/bin/
+COPY --from=native-builder /src/target/release/dockervault-process-guard /src/target/release/dockervault-archive-worker /usr/local/libexec/
+COPY --from=frontend-builder /app/dist /usr/share/nginx/html
+COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
+RUN sed -i '/^    location \/ {/i\    location = /recover_backup.py { return 404; }' /etc/nginx/conf.d/default.conf
+COPY --chmod=755 docker/native-entrypoint.sh /usr/local/sbin/dockervault-init
+COPY --chmod=755 docker/native-services/ /etc/dockervault/services/
+WORKDIR /app
+ENV DATABASE_URL=sqlite:////app/data/backup.db BACKUP_BASE_PATH=/backups TZ=UTC
+EXPOSE 80
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -sf http://127.0.0.1/health || exit 1
+VOLUME ["/app/data", "/backups"]
+ENTRYPOINT ["/usr/local/sbin/dockervault-init"]
+
 # =============================================================================
 # Stage 3: Python Dependencies Builder
 # =============================================================================
