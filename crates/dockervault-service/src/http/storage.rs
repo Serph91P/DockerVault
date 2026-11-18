@@ -21,7 +21,9 @@ macro_rules! select_storage {
 }
 
 mod create;
+mod draft;
 pub(super) use create::{create, update};
+pub(super) use draft::test_config;
 
 fn storage_view(row: String) -> Option<Value> {
     let mut value: Value = serde_json::from_str(&row).ok()?;
@@ -106,6 +108,30 @@ fn storage_error(status: StatusCode, detail: &'static str) -> Response {
     (status, Json(json!({"detail":detail}))).into_response()
 }
 
+fn invalid_storage(errors: Vec<String>) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({"detail":{"message":"Invalid storage configuration","errors":errors}})),
+    )
+        .into_response()
+}
+
+fn probe_response(success: bool) -> Response {
+    Json(json!({"success": success, "message": if success { "Connection test succeeded" } else { "Connection test failed" }})).into_response()
+}
+
+async fn probe_local(state: &HttpState, path: Option<String>) -> bool {
+    let Some(path) = path.filter(|path| !path.is_empty()) else {
+        return false;
+    };
+    match state.auth.blocking().submit_blocking(move |cancel| {
+        !cancel.is_cancelled() && local_writable(std::path::Path::new(&path)).is_ok()
+    }) {
+        Ok(work) => work.wait().await.unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
 pub(super) async fn test_saved(
     State(state): State<HttpState>,
     Path(raw): Path<String>,
@@ -121,17 +147,7 @@ pub(super) async fn test_saved(
     .await;
     match row {
         Ok(Some((kind, path, _, _, _))) if kind == "local" => {
-            let success = if let Some(path) = path.filter(|path| !path.is_empty()) {
-                match state.auth.blocking().submit_blocking(move |cancel| {
-                    !cancel.is_cancelled() && local_writable(std::path::Path::new(&path)).is_ok()
-                }) {
-                    Ok(work) => work.wait().await.unwrap_or(false),
-                    Err(_) => false,
-                }
-            } else {
-                false
-            };
-            Json(json!({"success": success, "message": if success { "Connection test succeeded" } else { "Connection test failed" }})).into_response()
+            probe_response(probe_local(&state, path).await)
         }
         Ok(Some((kind, path, url, username, password))) if kind == "webdav" => {
             let success = probe_webdav(&state, path, url, username, password)

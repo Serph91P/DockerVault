@@ -1232,6 +1232,88 @@ async fn storage_create_persists_provider_fields_and_encrypts_credentials() {
 }
 
 #[tokio::test]
+async fn local_storage_drafts_probe_without_persisting_configuration() {
+    const URL: &str = "/api/v1/storage/test-config";
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let stored = server.path.join("backups");
+    let target = server.path.join("draft/nested");
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path) VALUES (44,'Stored','local',1,?)")
+        .bind(stored.to_str().unwrap()).execute(server.db.pool()).await.unwrap();
+    let before: String = sqlx::query_scalar(
+        "SELECT json_array(id,name,enabled,base_path,password,updated_at) FROM remote_storages",
+    )
+    .fetch_one(server.db.pool())
+    .await
+    .unwrap();
+
+    for body in [
+        json!({"mode":"create","config":{"name":"Draft","storage_type":"local","base_path":target,"password":"not-persisted"}}),
+        json!({"mode":"edit","storage_id":44,"config":{"name":"Edited draft","base_path":target,"enabled":false}}),
+    ] {
+        let (status, _, body) = server.request("POST", URL, &headers, Some(body)).await;
+        assert_eq!(
+            (status, body),
+            (
+                200,
+                json!({"success":true,"message":"Connection test succeeded"})
+            )
+        );
+    }
+    for body in [
+        json!({"mode":"private-fixture-value","config":{}}),
+        json!({"mode":"create","storage_id":44,"config":{"name":"Draft","storage_type":"local"}}),
+        json!({"mode":"edit","storage_id":44,"config":{"storage_type":"s3"}}),
+        json!({"mode":"edit","storage_id":0,"config":{}}),
+        json!({"mode":"edit","storage_id":44,"config":{"port":65536}}),
+    ] {
+        let (status, _, body) = server.request("POST", URL, &headers, Some(body)).await;
+        assert_eq!(
+            (status, body),
+            (422, json!({"detail":"Invalid storage draft configuration"}))
+        );
+    }
+    let (status, _, body) = server
+        .request(
+            "POST",
+            URL,
+            &headers,
+            Some(json!({"mode":"edit","storage_id":999,"config":{}})),
+        )
+        .await;
+    assert_eq!((status, body), (404, json!({"detail":"Storage not found"})));
+    let (status, _, body) = server
+        .request(
+            "POST",
+            URL,
+            &headers,
+            Some(json!({"mode":"edit","storage_id":44,"config":{"base_path":null}})),
+        )
+        .await;
+    assert_eq!(
+        (status, body),
+        (
+            400,
+            json!({"detail":{"message":"Invalid storage configuration","errors":["base_path is required for local; edit this storage to repair it"]}})
+        )
+    );
+    assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+    assert_eq!(std::fs::read_dir(&stored).unwrap().count(), 0);
+    let after: Vec<String> = sqlx::query_scalar(
+        "SELECT json_array(id,name,enabled,base_path,password,updated_at) FROM remote_storages",
+    )
+    .fetch_all(server.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(after, [before]);
+    server.close().await;
+}
+
+#[tokio::test]
 async fn saved_webdav_probe_waits_for_the_remote_propfind_result() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

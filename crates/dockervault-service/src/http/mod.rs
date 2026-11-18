@@ -66,6 +66,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/operations/{id}/cancel", post(operations::cancel))
         .route("/api/v1/operations/{id}/retry", post(operations::retry))
         .route("/api/v1/storage/types", get(storage::types))
+        .route("/api/v1/storage/test-config", post(storage::test_config))
         .route(
             "/api/v1/storage/{storage_id}/test",
             post(storage::test_saved),

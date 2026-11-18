@@ -24,6 +24,18 @@ pub(in crate::http) async fn create(
         Ok(value) => value,
         Err(response) => return *response,
     };
+    let errors = validate_create(&mut data);
+    if !errors.is_empty() {
+        return *auth::validation(errors);
+    }
+    let errors = create_storage_errors(&data);
+    if !errors.is_empty() {
+        return super::invalid_storage(errors);
+    }
+    persist_create(&state, data).await
+}
+
+pub(super) fn validate_create(data: &mut Value) -> Vec<Value> {
     let body = data.as_object_mut().expect("validated object");
     body.entry("enabled").or_insert(json!(true));
     body.entry("base_path").or_insert(json!("/backups"));
@@ -79,10 +91,11 @@ pub(in crate::http) async fn create(
             invalid(field, "Input should be a valid string");
         }
     }
-    if !errors.is_empty() {
-        return *auth::validation(errors);
-    }
-    let mut errors = storage_errors(&data);
+    errors
+}
+
+pub(super) fn create_storage_errors(data: &Value) -> Vec<String> {
+    let mut errors = storage_errors(data);
     if let Some(kind) = data["storage_type"].as_str() {
         let marker = format!(" is required for {kind};");
         let enum_marker = format!(
@@ -93,14 +106,7 @@ pub(in crate::http) async fn create(
             *error = error.replace(&marker, &enum_marker);
         }
     }
-    if !errors.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"detail":{"message":"Invalid storage configuration","errors":errors}})),
-        )
-            .into_response();
-    }
-    persist_create(&state, data).await
+    errors
 }
 
 pub(in crate::http) async fn update(
@@ -115,12 +121,29 @@ pub(in crate::http) async fn update(
         Ok(value) => value,
         Err(response) => return *response,
     };
-    let values = data.as_object_mut().expect("validated object");
+    let errors = validate_update(data.as_object_mut().expect("validated object"), false);
+    if !errors.is_empty() {
+        return *auth::validation(errors);
+    }
+    match persist_update(&state, id, data).await {
+        Ok(response) => response,
+        Err(_) => storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+    }
+}
+
+pub(super) fn validate_update(
+    values: &mut serde_json::Map<String, Value>,
+    strict: bool,
+) -> Vec<Value> {
     coerce_storage_scalars(values);
+    let allowed = |field: &str| {
+        OPTIONAL.contains(&field) || matches!(field, "name" | "base_path" | "enabled" | "port")
+    };
+    if strict && values.keys().any(|key| !allowed(key)) {
+        return vec![json!({"message":"Extra inputs are not permitted"})];
+    }
     values.retain(|key, value| {
-        (OPTIONAL.contains(&key.as_str())
-            || matches!(key.as_str(), "name" | "base_path" | "enabled" | "port"))
-            && !(SECRETS.contains(&key.as_str()) && value.as_str() == Some(""))
+        allowed(key) && !(SECRETS.contains(&key.as_str()) && value.as_str() == Some(""))
     });
     let mut errors = Vec::new();
     for (field, value) in values.iter() {
@@ -146,13 +169,7 @@ pub(in crate::http) async fn update(
             errors.push(json!({"field":format!("body.{field}"),"message":message}));
         }
     }
-    if !errors.is_empty() {
-        return *auth::validation(errors);
-    }
-    match persist_update(&state, id, data).await {
-        Ok(response) => response,
-        Err(_) => storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
-    }
+    errors
 }
 
 async fn persist_update(state: &HttpState, id: i64, data: Value) -> Result<Response, sqlx::Error> {
