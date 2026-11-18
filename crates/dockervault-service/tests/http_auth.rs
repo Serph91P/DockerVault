@@ -165,6 +165,16 @@ async fn operation_detail_requires_authentication_and_ownership() {
         body,
         json!({"detail":"Validation error","errors":[{"field":"query.limit","message":"Input should be less than or equal to 100"}]})
     );
+    let (status, _, body) = server
+        .request(
+            "GET",
+            "/api/v1/operations?limit=101&limit=1",
+            &[("Cookie", &cookie)],
+            None,
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(body.as_array().unwrap().len(), 1);
     let (status, _, _) = server
         .request("GET", "/api/v1/operations/mine", &[], None)
         .await;

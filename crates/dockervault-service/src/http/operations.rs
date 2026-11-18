@@ -7,6 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde_json::json;
+use std::collections::HashMap;
 
 pub(super) async fn detail(
     State(state): State<HttpState>,
@@ -36,16 +37,13 @@ pub(super) async fn cancel(
     }
 }
 
-#[derive(serde::Deserialize)]
-pub(super) struct ListQuery {
-    storage_id: Option<String>,
-    limit: Option<String>,
-}
-
 pub(super) async fn list(
     State(state): State<HttpState>,
     headers: HeaderMap,
-    query: Result<axum::extract::Query<ListQuery>, axum::extract::rejection::QueryRejection>,
+    query: Result<
+        axum::extract::Query<HashMap<String, String>>,
+        axum::extract::rejection::QueryRejection,
+    >,
 ) -> Response {
     let user = match required_user(&state, &headers).await {
         Ok(user) => user,
@@ -56,7 +54,8 @@ pub(super) async fn list(
     };
     const INTEGER: &str = "Input should be a valid integer, unable to parse string as an integer";
     let mut errors = Vec::new();
-    let storage = match query.storage_id.as_deref() {
+    // FastAPI uses the final value of repeated scalar query parameters.
+    let storage = match query.get("storage_id").map(String::as_str) {
         None => None,
         Some("local") => Some("local".into()),
         Some(value) => match value.parse::<i64>() {
@@ -68,7 +67,9 @@ pub(super) async fn list(
             }
         },
     };
-    let limit = query.limit.as_deref().map_or(Ok(20), str::parse::<i64>);
+    let limit = query
+        .get("limit")
+        .map_or(Ok(20), |value| value.parse::<i64>());
     let message = match limit {
         Err(_) => Some(INTEGER),
         Ok(n) if n < 1 => Some("Input should be greater than or equal to 1"),
