@@ -10,6 +10,43 @@ use dockervault_service::{
 };
 
 #[tokio::test]
+async fn remote_storage_identity_matches_the_python_orm_digest() {
+    use dockervault_service::storage_recovery::remote_storage_identity;
+    let mut nonce = [0u8; 16];
+    getrandom::fill(&mut nonce).unwrap();
+    let root = std::env::temp_dir().join(format!("dv-remote-identity-{nonce:02x?}"));
+    std::fs::create_dir(&root).unwrap();
+    let owner = Owner::new(1).unwrap();
+    let db = Database::open(root.join("db"), root.join("backups"), &owner)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,host,port,username,password,base_path,created_at,updated_at) VALUES(41,?,'ssh',1,'example.invalid',22,'fixture','ciphertext-fixture','./remote','2024-01-01 01:02:03.120','2024-01-01 01:02:03')")
+        .bind("Föö 🚀").execute(db.pool()).await.unwrap();
+    let matched = remote_storage_identity(db.pool(), 41)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        matched,
+        serde_json::json!({"config":"0c9afada890a8ceb2f8d5aac525c98daddd24d0471ca8528f0fd11a412fec486"})
+    );
+    assert_eq!(remote_storage_identity(db.pool(), 42).await.unwrap(), None);
+    sqlx::query("UPDATE remote_storages SET created_at='2024-01-02 01:02:03.120' WHERE id=41")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    assert_ne!(
+        remote_storage_identity(db.pool(), 41)
+            .await
+            .unwrap()
+            .unwrap(),
+        matched
+    );
+    db.close().await;
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn local_worker_settles_exactly_one_claim_and_does_not_replay_after_cancel() {
     use dockervault_service::{storage::local::LocalStorage, storage_recovery::start_local_delete};
     use std::{fs, os::unix::fs::MetadataExt};

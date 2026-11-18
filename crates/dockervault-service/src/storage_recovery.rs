@@ -204,6 +204,50 @@ pub(crate) async fn remote_enabled(
         .await
 }
 
+/// Produce the published Python storage configuration digest before provider dispatch.
+pub async fn remote_storage_identity(
+    pool: &SqlitePool,
+    id: i64,
+) -> Result<Option<serde_json::Value>, StorageRecoveryError> {
+    use dockervault_core::{encoding::python_string, timestamp::Timestamp};
+    use sha2::{Digest, Sha256};
+    use sqlx::Row;
+    let Some(row) = sqlx::query("SELECT base_path,created_at,enabled,host,id,name,password,port,rclone_remote,s3_access_key,s3_bucket,s3_endpoint_url,s3_region,s3_secret_key,ssh_key_path,storage_type,updated_at,username,webdav_url FROM remote_storages WHERE id=?")
+        .bind(id).fetch_optional(pool).await? else { return Ok(None); };
+    let mut entries = Vec::new();
+    // The select list is sorted to match json.dumps(sort_keys=True).
+    for column in row.columns() {
+        use sqlx::Column;
+        let name = column.name();
+        let value = match name {
+            "enabled" => row
+                .try_get::<Option<bool>, _>(name)?
+                .map(|b| if b { "True" } else { "False" }.to_owned()),
+            "port" | "id" => row.try_get::<Option<i64>, _>(name)?.map(|v| v.to_string()),
+            "created_at" | "updated_at" => row
+                .try_get::<Option<String>, _>(name)?
+                .map(|raw| {
+                    Timestamp::parse(&raw)
+                        .map(|timestamp| timestamp.api().replacen('T', " ", 1))
+                        .map_err(|_| StorageRecoveryError::IdentityChanged)
+                })
+                .transpose()?,
+            _ => row.try_get::<Option<String>, _>(name)?,
+        };
+        entries.push(format!(
+            "{}: {}",
+            python_string(name),
+            python_string(value.as_deref().unwrap_or("None"))
+        ));
+    }
+    let encoded = format!("{{{}}}", entries.join(", "));
+    let digest: String = Sha256::digest(encoded)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Ok(Some(serde_json::json!({"config":digest})))
+}
+
 pub async fn storage_operation_list(
     pool: &SqlitePool,
     user_id: i64,
