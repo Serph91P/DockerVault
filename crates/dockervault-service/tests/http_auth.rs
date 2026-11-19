@@ -447,6 +447,56 @@ async fn sync_to_remote_sqlite_faults_preserve_custody() {
                 "wrong ciphertext must not be recopied"
             );
             std::fs::write(archive, bytes).unwrap();
+            // A reserved SQLite writer lets the retry read the old config and
+            // publish the pair, but prevents its success write until we repoint it.
+            let replacement = server.path.join("replacement");
+            std::fs::create_dir(&replacement).unwrap();
+            let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+            let (recovered, ()) = tokio::join!(
+                dockervault_service::storage::reconcile_backup_storage(
+                    pool,
+                    backups.to_str().unwrap(),
+                    &owner
+                ),
+                async {
+                    tokio::time::timeout(std::time::Duration::from_secs(4), async {
+                        loop {
+                            if std::fs::read_dir(remote.join("Source"))
+                                .is_ok_and(|files| files.count() == 2)
+                            {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        }
+                    })
+                    .await
+                    .unwrap();
+                    sqlx::query("UPDATE remote_storages SET base_path=? WHERE id=7")
+                        .bind(replacement.to_str().unwrap())
+                        .execute(&mut *tx)
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                }
+            );
+            recovered.unwrap();
+            let pending: String = sqlx::query_scalar(
+                "SELECT sync_status FROM backup_storage_syncs WHERE backup_id=?",
+            )
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                pending, "running",
+                "a copy to the old destination cannot complete the new destination"
+            );
+            assert_eq!(std::fs::read_dir(&replacement).unwrap().count(), 0);
+            sqlx::query("UPDATE remote_storages SET base_path=? WHERE id=7")
+                .bind(remote.to_str().unwrap())
+                .execute(pool)
+                .await
+                .unwrap();
         }
         for _ in 0..2 {
             dockervault_service::storage::reconcile_backup_storage(

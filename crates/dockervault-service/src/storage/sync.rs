@@ -144,10 +144,16 @@ pub(crate) async fn settle_local_copies(
             tracing::warn!(backup_id=id, storage_id, %error, "LOCAL copy remains unsettled");
             continue;
         }
-        let update = sqlx::query("UPDATE backup_storage_syncs SET sync_status='completed',error_message=NULL,synced_at=strftime('%Y-%m-%d %H:%M:%f000','now') WHERE id=? AND backup_id=? AND storage_id=? AND remote_path=? AND sync_status='running'")
-            .bind(pending).bind(id).bind(storage_id).bind(path).execute(pool).await?;
+        let update = sqlx::query("UPDATE backup_storage_syncs SET sync_status='completed',error_message=NULL,synced_at=strftime('%Y-%m-%d %H:%M:%f000','now')
+            WHERE id=? AND backup_id=? AND storage_id=? AND remote_path=? AND sync_status='running'
+            AND EXISTS (SELECT 1 FROM remote_storages r WHERE r.id=backup_storage_syncs.storage_id AND r.enabled=1 AND r.storage_type='local' AND r.base_path=?)")
+            .bind(pending).bind(id).bind(storage_id).bind(path).bind(current).execute(pool).await?;
         if update.rows_affected() != 1 {
-            return Err(Error::RowNotFound);
+            tracing::warn!(
+                backup_id = id,
+                storage_id,
+                "LOCAL copy could not settle: its intent or destination changed"
+            );
         }
     }
     // A copy receipt is not a local cleanup receipt. Keep the obligation until
