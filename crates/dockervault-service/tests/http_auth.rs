@@ -474,6 +474,78 @@ async fn schedule_target_trigger_admits_only_an_enabled_non_removed_plan() {
 }
 
 #[tokio::test]
+async fn schedule_batch_runs_enabled_targets_sequentially() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let db = server.db.pool();
+    let source = server.path.join("batch-source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("data.txt"), b"batch fixture").unwrap();
+    sqlx::raw_sql("INSERT INTO schedules (id,name,cron_expression,enabled) VALUES(31,'Manual','@daily',0);
+        INSERT INTO backup_targets(id,name,target_type,schedule_id,enabled,removed_at) VALUES
+        (21,'First','path',31,1,NULL),(22,'Disabled','path',31,0,NULL),
+        (23,'Removed','path',31,1,'2025-01-01 00:00:00.000000'),(24,'Second','path',31,1,NULL);
+        CREATE TRIGGER no_batch_overlap BEFORE UPDATE OF status ON backups
+        WHEN NEW.status='RUNNING' AND NEW.target_id=24 AND NOT EXISTS (SELECT 1 FROM backups WHERE target_id=21 AND status='COMPLETED')
+        BEGIN SELECT RAISE(ABORT, 'batch overlap'); END;")
+        .execute(db).await.unwrap();
+    sqlx::query("UPDATE backup_targets SET host_path=? WHERE schedule_id=31")
+        .bind(source.to_str().unwrap())
+        .execute(db)
+        .await
+        .unwrap();
+    let headers = [("cookie", cookie.as_str())];
+    let endpoint = "/api/v1/schedules/31/trigger-all";
+    assert_eq!(server.request("POST", endpoint, &[], None).await.0, 401);
+    let (status, _, body) = server
+        .request("POST", "/api/v1/schedules/99/trigger-all", &headers, None)
+        .await;
+    assert_eq!(
+        (status, body),
+        (404, json!({"detail":"Schedule not found"}))
+    );
+    let (status, _, body) = server.request("POST", endpoint, &headers, None).await;
+    assert_eq!(
+        (status, body),
+        (
+            200,
+            json!({"status":"triggered","schedule_id":31,"triggered_targets":[21,24],"skipped_targets":[22]})
+        )
+    );
+    let results = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let rows: Vec<(i64, String, Option<String>)> =
+                sqlx::query_as("SELECT target_id,status,file_path FROM backups ORDER BY id")
+                    .fetch_all(db)
+                    .await
+                    .unwrap();
+            if rows
+                .iter()
+                .all(|(_, state, _)| !matches!(state.as_str(), "RUNNING" | "PENDING"))
+            {
+                break rows;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        results
+            .iter()
+            .map(|(id, status, _)| (*id, status.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(21, "COMPLETED"), (24, "COMPLETED")]
+    );
+    assert!(
+        results
+            .iter()
+            .all(|(_, _, path)| std::path::Path::new(path.as_ref().unwrap()).is_file())
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn submitted_path_backup_publishes_a_verified_archive_before_completion() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

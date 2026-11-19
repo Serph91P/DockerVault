@@ -363,6 +363,36 @@ pub(super) async fn trigger_target(
     super::backup_submit::trigger_full(&state, id).await
 }
 
+pub(super) async fn trigger_all(
+    State(state): State<HttpState>,
+    Path(id): Path<String>,
+) -> Result<Response, Failure> {
+    let Ok(id) = id.trim().parse::<i64>() else {
+        return Err(Failure(auth::validation(vec![
+            json!({"field":"path.schedule_id","message":"Input should be a valid integer, unable to parse string as an integer"}),
+        ])));
+    };
+    let rows: Vec<(Option<i64>, Option<bool>)> = sqlx::query_as("SELECT t.id,t.enabled FROM schedules s LEFT JOIN backup_targets t ON t.schedule_id=s.id AND t.removed_at IS NULL WHERE s.id=? ORDER BY t.id")
+        .bind(id).fetch_all(state.auth.pool()).await.map_err(db_error)?;
+    if rows.is_empty() {
+        return Err(failure(StatusCode::NOT_FOUND, "Schedule not found"));
+    }
+    let (mut enabled, mut skipped) = (Vec::new(), Vec::new());
+    for (target, active) in rows {
+        if let Some(target) = target {
+            if active == Some(true) {
+                enabled.push(target);
+            } else {
+                skipped.push(target);
+            }
+        }
+    }
+    if enabled.is_empty() {
+        return Ok(Json(json!({"status":"triggered","schedule_id":id,"triggered_targets":[],"skipped_targets":skipped})).into_response());
+    }
+    Ok(super::backup_submit::trigger_batch(&state, id, enabled, skipped).await)
+}
+
 pub(super) async fn help(State(state): State<HttpState>) -> Json<Value> {
     Json(
         json!({"format":"minute hour day month weekday","contract":CONTRACT,"timezone":state.config.tz,

@@ -116,6 +116,10 @@ pub fn router(state: HttpState) -> Router {
             post(schedules::trigger_target),
         )
         .route(
+            "/api/v1/schedules/{id}/trigger-all",
+            post(schedules::trigger_all),
+        )
+        .route(
             "/api/v1/backups",
             get(backups::list).post(backup_submit::submit),
         )

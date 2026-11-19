@@ -103,46 +103,81 @@ async fn enqueue(state: &HttpState, input: Submit) -> Result<Value, Failure> {
             }
         };
         let _ = admitted.send(Ok(response));
-        let started = std::time::Instant::now();
-        if execute(&worker, id, input.target_id, &cancel)
-            .await
-            .is_err()
-        {
-            let result = record_failure(worker.auth.pool(), id).await;
-            if result.is_err() {
-                tracing::error!(backup_id = id, "Failed to record interrupted backup state");
-            }
-        }
-        match sqlx::query_as::<_, (String, Option<i64>)>(
-            "SELECT status,file_size FROM backups WHERE id=?",
-        )
-        .bind(id)
-        .fetch_optional(worker.auth.pool())
-        .await
-        {
-            Ok(Some((status, size))) if status == "COMPLETED" || status == "FAILED" => {
-                worker.backup_metrics.lock().unwrap().record(
-                    input.target_id,
-                    started.elapsed().as_secs_f64(),
-                    if status == "COMPLETED" {
-                        Some(size.unwrap_or_default())
-                    } else {
-                        None
-                    },
-                )
-            }
-            Ok(_) => {}
-            Err(_) => tracing::warn!(
-                backup_id = id,
-                "Could not read backup settlement for metrics"
-            ),
-        }
+        run_accepted(&worker, id, input.target_id, &cancel).await;
     });
     let Ok(work) = result else {
         return Err((StatusCode::SERVICE_UNAVAILABLE, "Backup capacity exhausted"));
     };
     work.detach();
     reply.await.unwrap_or(Err(INTERNAL))
+}
+
+pub(super) async fn trigger_batch(
+    state: &HttpState,
+    schedule_id: i64,
+    targets: Vec<i64>,
+    mut skipped: Vec<i64>,
+) -> Response {
+    let worker = state.clone();
+    let (admitted, reply) = tokio::sync::oneshot::channel();
+    let result = state.backup_jobs.submit_async(move |cancel| async move {
+        let mut batch = Vec::new();
+        for target in targets {
+            if cancel.is_cancelled() {
+                skipped.push(target);
+                continue;
+            }
+            match admit(&worker, target, RunType::Full).await {
+                Ok((id, _)) => batch.push((id, target)),
+                Err((status, detail)) => {
+                    tracing::warn!(target_id = target, %status, detail, "Schedule batch admission skipped");
+                    skipped.push(target);
+                }
+            }
+        }
+        let triggered: Vec<_> = batch.iter().map(|&(_, target)| target).collect();
+        let _ = admitted.send(json!({"status":"triggered","schedule_id":schedule_id,"triggered_targets":triggered,"skipped_targets":skipped}));
+        for (id, target) in batch {
+            run_accepted(&worker, id, target, &cancel).await;
+        }
+    });
+    let Ok(work) = result else {
+        return error((StatusCode::SERVICE_UNAVAILABLE, "Backup capacity exhausted"));
+    };
+    work.detach();
+    match reply.await {
+        Ok(response) => Json(response).into_response(),
+        Err(_) => error(INTERNAL),
+    }
+}
+
+async fn run_accepted(worker: &HttpState, id: i64, target_id: i64, cancel: &CancellationToken) {
+    let started = std::time::Instant::now();
+    if execute(worker, id, target_id, cancel).await.is_err()
+        && record_failure(worker.auth.pool(), id).await.is_err()
+    {
+        tracing::error!(backup_id = id, "Failed to record interrupted backup state");
+    }
+    match sqlx::query_as::<_, (String, Option<i64>)>(
+        "SELECT status,file_size FROM backups WHERE id=?",
+    )
+    .bind(id)
+    .fetch_optional(worker.auth.pool())
+    .await
+    {
+        Ok(Some((status, size))) if status == "COMPLETED" || status == "FAILED" => {
+            worker.backup_metrics.lock().unwrap().record(
+                target_id,
+                started.elapsed().as_secs_f64(),
+                (status == "COMPLETED").then(|| size.unwrap_or_default()),
+            );
+        }
+        Ok(_) => {}
+        Err(_) => tracing::warn!(
+            backup_id = id,
+            "Could not read backup settlement for metrics"
+        ),
+    }
 }
 
 type Failure = (StatusCode, &'static str);
