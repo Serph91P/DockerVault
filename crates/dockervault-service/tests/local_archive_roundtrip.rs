@@ -117,7 +117,15 @@ async fn pinned_path_archive_reads_the_claimed_directory_not_its_replacement() {
     .unwrap();
     let backup_dir = root.0.join("backups");
     let backups = fs::File::open(&backup_dir).unwrap();
-    let anonymous = archive_private(&request, &pinned, &backups, &|| false).unwrap();
+    let anonymous = archive_private(&request, &pinned, &backups, &|| {
+        assert_eq!(
+            fs::read_dir(&backup_dir).unwrap().count(),
+            0,
+            "archive work exposed a named stage"
+        );
+        false
+    })
+    .unwrap();
     assert_eq!(anonymous.metadata().unwrap().nlink(), 0);
     assert_eq!(fs::read_dir(&backup_dir).unwrap().count(), 0);
     assert!(

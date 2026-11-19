@@ -7,6 +7,7 @@ use nix::{
     unistd::{UnlinkatFlags, linkat, unlinkat},
 };
 use std::{
+    cell::OnceCell,
     fs::File,
     io::{self, Read, Seek, Write},
     os::unix::{
@@ -122,18 +123,19 @@ pub fn archive_private(
         return Err(invalid("Source is not a directory"));
     }
     check(cancel)?;
-    let stage = Stage::new(spool)?;
-    let mut output = File::from(openat(
-        spool,
-        ".",
-        OFlag::O_TMPFILE | OFlag::O_RDWR | OFlag::O_CLOEXEC,
-        Mode::S_IRUSR | Mode::S_IWUSR,
-    )?);
+    let mut output = anonymous(spool)?;
+    let links = OnceCell::new();
     let filters = request.filters_for(name).map_err(invalid)?;
     let report = pack(
         request.compress,
         &[(name, source.try_clone()?, path, filters)],
-        &stage,
+        &|| {
+            if links.get().is_none() {
+                let _ = links.set(Stage::new(spool)?);
+            }
+            Ok(links.get().expect("link stage initialized"))
+        },
+        anonymous(spool)?,
         &mut output,
         cancel,
     )?;
@@ -142,6 +144,15 @@ pub fn archive_private(
     }
     output.rewind()?;
     Ok(output)
+}
+
+fn anonymous(directory: &File) -> io::Result<File> {
+    Ok(File::from(openat(
+        directory,
+        ".",
+        OFlag::O_TMPFILE | OFlag::O_RDWR | OFlag::O_CLOEXEC,
+        Mode::S_IRUSR | Mode::S_IWUSR,
+    )?))
 }
 
 fn write_archive(
@@ -167,7 +178,14 @@ fn write_archive(
     }
     let stage = Stage::new(&parent)?;
     let mut output = stage.file("archive.partial", true)?;
-    let report = pack(request.compress, sources, &stage, &mut output, cancel)?;
+    let report = pack(
+        request.compress,
+        sources,
+        &|| Ok(&stage),
+        stage.file("skipped.report", true)?,
+        &mut output,
+        cancel,
+    )?;
     if nix::unistd::geteuid().is_root()
         && let (Ok(uid), Ok(gid)) = (std::env::var("SUDO_UID"), std::env::var("SUDO_GID"))
     {
@@ -197,17 +215,15 @@ fn write_archive(
     Ok(report)
 }
 
-fn pack(
+fn pack<'a>(
     compress: bool,
-    sources: &[(&str, File, &Path, Filters)],
-    stage: &Stage,
+    sources: &'a [(&'a str, File, &'a Path, Filters)],
+    links: &'a dyn Fn() -> io::Result<&'a Stage>,
+    skipped: File,
     output: &mut File,
-    cancel: &dyn Fn() -> bool,
+    cancel: &'a dyn Fn() -> bool,
 ) -> io::Result<Report> {
-    let mut report = Report {
-        skipped: stage.file("skipped.report", true)?,
-        count: 0,
-    };
+    let mut report = Report { skipped, count: 0 };
     if compress {
         let gzip = flate2::write::GzEncoder::new(output, flate2::Compression::new(6));
         let mut archive = tar::Builder::new(gzip);
@@ -221,7 +237,7 @@ fn pack(
                 Path::new(name),
                 Path::new(""),
                 &WalkOptions {
-                    stage,
+                    links,
                     filters,
                     cancel,
                 },
@@ -241,7 +257,7 @@ fn pack(
                 Path::new(name),
                 Path::new(""),
                 &WalkOptions {
-                    stage,
+                    links,
                     filters,
                     cancel,
                 },
@@ -379,7 +395,7 @@ impl Read for CancelReader<'_> {
 }
 
 struct WalkOptions<'a> {
-    stage: &'a Stage,
+    links: &'a dyn Fn() -> io::Result<&'a Stage>,
     filters: &'a Filters,
     cancel: &'a dyn Fn() -> bool,
 }
@@ -392,7 +408,6 @@ fn walk<W: Write>(
     options: &WalkOptions<'_>,
     report: &mut Report,
 ) -> io::Result<()> {
-    let stage = options.stage;
     let filters = options.filters;
     let cancel = options.cancel;
     check(cancel)?;
@@ -483,7 +498,12 @@ fn walk<W: Write>(
                     report.push(&original)?;
                     continue;
                 }
-                if let Some(target) = stage.known_link(&metadata)? {
+                let stage = (metadata.nlink() >= 2).then(options.links).transpose()?;
+                let target = stage
+                    .map(|stage| stage.known_link(&metadata))
+                    .transpose()?
+                    .flatten();
+                if let Some(target) = target {
                     append(
                         archive,
                         &archive_path,
@@ -504,7 +524,9 @@ fn walk<W: Write>(
                             cancel,
                         },
                     )?;
-                    stage.remember_link(&metadata, &archive_path)?;
+                    if let Some(stage) = stage {
+                        stage.remember_link(&metadata, &archive_path)?;
+                    }
                 }
             } else {
                 return Err(invalid("Unsupported archive source file type"));
