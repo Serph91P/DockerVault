@@ -31,6 +31,21 @@ impl S3 {
         remote: String,
         policy: S3UploadPolicy,
     ) -> Result<Work<Result<(), S3Error>>, WorkError> {
+        self.upload_checkpointed(source, remote, policy, |_| async { Ok(()) })
+    }
+
+    /// The caller's durable checkpoint must acknowledge the provider upload ID before any part.
+    pub fn upload_checkpointed<F, Fut>(
+        &self,
+        source: Arc<VerifiedSource>,
+        remote: String,
+        policy: S3UploadPolicy,
+        checkpoint: F,
+    ) -> Result<Work<Result<(), S3Error>>, WorkError>
+    where
+        F: FnOnce(String) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), S3Error>> + Send + 'static,
+    {
         let backend = self.clone();
         self.owner.submit_async(move |cancel| async move {
             if cancel.is_cancelled() {
@@ -102,9 +117,10 @@ impl S3 {
                     .upload_id()
                     .filter(|id| !id.is_empty())
                     .ok_or_else(|| S3Error::CreationUnsettled { primary: Box::new(S3Error::Request) })?;
-                let uploaded = backend
-                    .upload_parts(source.clone(), chunk, &key, upload_id, &cancel)
-                    .await;
+                let uploaded = match checkpoint(upload_id.to_owned()).await {
+                    Ok(()) => backend.upload_parts(source.clone(), chunk, &key, upload_id, &cancel).await,
+                    Err(error) => Err(error),
+                };
                 if let Err(primary) = uploaded {
                     // Retain the ID for the durable caller if provider cleanup is not confirmed.
                     if !matches!(

@@ -368,6 +368,56 @@ async fn s3_retry_replays_from_zero_and_rejects_a_replaced_source_before_another
 }
 
 #[tokio::test]
+async fn s3_failed_multipart_checkpoint_aborts_without_a_part() {
+    use dockervault_service::storage::s3::S3Error;
+    let fixture = Fixture::new();
+    let source = fixture.source(&vec![0; 5 * 1024 * 1024]);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let owner = Owner::new(1).unwrap();
+    let io = Owner::new(1).unwrap();
+    let backend = configured(listener.local_addr().unwrap(), owner.clone(), io.clone());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        assert!(request(&mut socket).await.0.starts_with("POST "));
+        respond(&mut socket, b"<InitiateMultipartUploadResult><UploadId>PUBLIC-checkpoint</UploadId></InitiateMultipartUploadResult>", "Content-Type: application/xml\r\n").await;
+        drop(socket);
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let headers = request(&mut socket).await.0;
+        assert!(headers.starts_with("DELETE ") && headers.contains("uploadId=PUBLIC-checkpoint"));
+        respond(&mut socket, &[], "").await;
+    });
+    let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+    let copy = pool.clone();
+    let result = backend
+        .upload_checkpointed(
+            source,
+            "archive".to_owned(),
+            S3UploadPolicy {
+                multipart_threshold_bytes: 5 * 1024 * 1024,
+                multipart_chunk_size: 5 * 1024 * 1024,
+            },
+            move |id| async move {
+                assert_eq!(id, "PUBLIC-checkpoint");
+                sqlx::query("INSERT INTO absent_checkpoint_table VALUES(?)")
+                    .bind(id)
+                    .execute(&copy)
+                    .await
+                    .map(|_| ())
+                    .map_err(|_| S3Error::Io)
+            },
+        )
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    assert!(matches!(result, Err(S3Error::Io)));
+    server.await.unwrap();
+    owner.shutdown(None).await;
+    io.shutdown(None).await;
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn s3_failed_abort_returns_the_exact_obligation_but_never_logs_provider_tokens() {
     use dockervault_service::storage::s3::S3Error;
     let fixture = Fixture::new();
