@@ -337,8 +337,9 @@ pub(super) async fn finalize_copies(
     let proof: Publication =
         serde_json::from_str(&receipt).map_err(|e| Error::Decode(Box::new(e)))?;
     let mut verified = false;
-    if proof.delete_local_after_sync && !proof.s3_copies.is_empty() {
-        verified = verify_cleanup_destinations(state, id, &proof, cancel).await?;
+    if proof.delete_local_after_sync {
+        verified = verify_cleanup_destinations(state, id, &proof, cancel).await?
+            && super::webdav_sync::verify_cleanup_destinations(state, id, &proof, cancel).await?;
     }
     crate::storage::settle_verified_copies(
         pool,

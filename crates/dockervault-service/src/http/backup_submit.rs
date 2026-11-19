@@ -364,7 +364,7 @@ async fn execute(
             if cancelled() {
                 return Err(io::ErrorKind::Interrupted.into());
             }
-            let delete_local_after_sync = plan.delete_local_after_sync && !(local_copies.is_empty() && destinations.s3.is_empty());
+            let delete_local_after_sync = plan.delete_local_after_sync && !(local_copies.is_empty() && destinations.s3.is_empty() && destinations.webdav.is_empty());
             let proof = Publication { token, checksum, artifacts, local_copies, s3_copies: destinations.s3, webdav_copies: destinations.webdav, delete_local_after_sync };
             let serialized = serde_json::to_string(&proof)?;
             let staged = runtime.block_on(sqlx::query("UPDATE backups SET backup_metadata=json_set(backup_metadata,'$.native_publication',json(?)) WHERE id=? AND status='RUNNING'")

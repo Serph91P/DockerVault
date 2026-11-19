@@ -110,7 +110,7 @@ pub(crate) async fn settle_verified_copies(
     owner: &Owner,
     id: i64,
     cancel: &CancellationToken,
-    verified_s3_receipt: Option<&str>,
+    verified_remote_receipt: Option<&str>,
 ) -> Result<(), Error> {
     let receipt: Option<String> = sqlx::query_scalar("SELECT json_extract(backup_metadata,'$.native_local_sync') FROM backups WHERE id=? AND status='COMPLETED'")
         .bind(id).fetch_optional(pool).await?.flatten();
@@ -193,10 +193,9 @@ pub(crate) async fn settle_verified_copies(
             );
         }
     }
-    let cleanup = proof.webdav_copies.is_empty()
-        && proof.delete_local_after_sync
-        && !(proof.s3_copies.is_empty() && proof.local_copies.is_empty());
-    if cleanup && !proof.s3_copies.is_empty() && verified_s3_receipt != Some(receipt.as_str()) {
+    let remote = !proof.s3_copies.is_empty() || !proof.webdav_copies.is_empty();
+    let cleanup = proof.delete_local_after_sync && (remote || !proof.local_copies.is_empty());
+    if cleanup && remote && verified_remote_receipt != Some(receipt.as_str()) {
         return Ok(());
     }
     let checked = if cleanup {

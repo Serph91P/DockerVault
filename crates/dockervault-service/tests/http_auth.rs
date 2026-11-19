@@ -872,11 +872,7 @@ async fn encrypted_remote_copy_recovers_rejected_ack(dav: bool) {
             .unwrap();
     assert_eq!(status, "completed");
     assert_eq!(*files.lock().unwrap(), before);
-    if dav {
-        // Only the fixture discards WebDAV-backed originals until cleanup is verified for this provider.
-        std::fs::remove_file(&archive).unwrap();
-        std::fs::remove_file(&key).unwrap();
-    }
+
     assert!(!std::path::Path::new(&archive).exists());
     assert!(!std::path::Path::new(&key).exists());
     std::fs::write(origin.join("data"), b"mutated fixture").unwrap();

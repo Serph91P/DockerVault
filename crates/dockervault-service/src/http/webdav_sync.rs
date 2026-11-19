@@ -42,6 +42,52 @@ pub(super) async fn destination(state: &HttpState, id: i64, archive: String) -> 
     )
 }
 
+pub(super) async fn verify_cleanup_destinations(
+    state: &HttpState,
+    id: i64,
+    proof: &Publication,
+    cancel: &CancellationToken,
+) -> Result<bool, Error> {
+    if !(1..=2).contains(&proof.artifacts.len()) {
+        return Ok(false);
+    }
+    for copy in &proof.webdav_copies {
+        let completed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM backup_storage_syncs WHERE backup_id=? AND storage_id=? AND remote_path=? AND sync_status='completed')")
+            .bind(id).bind(copy.storage_id).bind(&copy.archive).fetch_one(state.auth.pool()).await?;
+        if !completed || cancel.is_cancelled() {
+            return Ok(false);
+        }
+        let Ok(mut cfg) = configured_browse_config(state, copy.storage_id).await else {
+            return Ok(false);
+        };
+        if from_config(&cfg, copy.storage_id, copy.archive.clone()).as_ref() != Some(copy)
+            || !open_probe_credentials(state, &mut cfg, None).await
+        {
+            return Ok(false);
+        }
+        let Some(provider) = configured_webdav(state, &cfg) else {
+            return Ok(false);
+        };
+        for (index, artifact) in proof.artifacts.iter().enumerate() {
+            if cancel.is_cancelled() {
+                return Ok(false);
+            }
+            let path = if index == 0 {
+                copy.archive.clone()
+            } else {
+                dockervault_core::crypto::key_sidecar_path(&copy.archive)
+            };
+            let work = provider
+                .verify_object(path, artifact.length, parse_digest(&artifact.digest)?)
+                .map_err(work_error)?;
+            if !matches!(wait(work, cancel).await?, Ok(true)) {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(!cancel.is_cancelled())
+}
+
 pub(super) async fn settle(
     state: &HttpState,
     id: i64,
