@@ -31,31 +31,66 @@ impl S3 {
     ) -> Result<Work<Result<(), S3Error>>, WorkError> {
         let backend = self.clone();
         self.owner.submit_async(move |_| async move {
-            let result = tokio::time::timeout(
-                CLEANUP_TIMEOUT,
-                backend
-                    .client
-                    .abort_multipart_upload()
-                    .bucket(&backend.bucket)
-                    .key(backend.key(&remote))
-                    .upload_id(upload_id)
-                    .send(),
-            )
-            .await
-            .map_err(|_| S3Error::Request)?;
-            match result {
-                Ok(_) => Ok(()),
-                Err(error)
-                    if error
-                        .raw_response()
-                        .is_some_and(|r| r.status().as_u16() == 404)
-                        && aws_sdk_s3::error::ProvideErrorMetadata::code(&error)
-                            == Some("NoSuchUpload") =>
-                {
-                    Ok(())
+            use aws_sdk_s3::error::ProvideErrorMetadata;
+            let key = backend.key(&remote);
+            tokio::time::timeout(CLEANUP_TIMEOUT, async {
+                for _ in 0..2 {
+                    match backend
+                        .client
+                        .abort_multipart_upload()
+                        .bucket(&backend.bucket)
+                        .key(&key)
+                        .upload_id(&upload_id)
+                        .customize()
+                        .config_override(single_attempt())
+                        .send()
+                        .await
+                    {
+                        Ok(_) => (),
+                        Err(error)
+                            if error
+                                .raw_response()
+                                .is_some_and(|r| r.status().as_u16() == 404)
+                                && error.code() == Some("NoSuchUpload") =>
+                        {
+                            return Ok(());
+                        }
+                        Err(error) => return Err(request_error(error)),
+                    }
+                    // An in-flight PUT can finish despite a successful abort. Verify the ID before acknowledging cleanup.
+                    match backend
+                        .client
+                        .list_parts()
+                        .bucket(&backend.bucket)
+                        .key(&key)
+                        .upload_id(&upload_id)
+                        .max_parts(1)
+                        .customize()
+                        .config_override(single_attempt())
+                        .send()
+                        .await
+                    {
+                        Ok(parts)
+                            if parts.parts().is_empty() && parts.is_truncated() != Some(true) =>
+                        {
+                            return Ok(());
+                        }
+                        Ok(_) => (),
+                        Err(error)
+                            if error
+                                .raw_response()
+                                .is_some_and(|r| r.status().as_u16() == 404)
+                                && error.code() == Some("NoSuchUpload") =>
+                        {
+                            return Ok(());
+                        }
+                        Err(error) => return Err(request_error(error)),
+                    }
                 }
-                Err(error) => Err(request_error(error)),
-            }
+                Err(S3Error::Verification)
+            })
+            .await
+            .map_err(|_| S3Error::Request)?
         })
     }
 
