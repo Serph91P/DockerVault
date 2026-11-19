@@ -268,6 +268,46 @@ async fn s3_put_is_not_success_until_full_independent_get_hash_matches() {
     }
 }
 #[tokio::test]
+async fn s3_rejected_create_never_retries_against_occupied_backup_key() {
+    let fixture = Fixture::new();
+    let source = fixture.source(b"public replacement must not be stored");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let owner = Owner::new(1).unwrap();
+    let io = Owner::new(1).unwrap();
+    let backend = configured(listener.local_addr().unwrap(), owner.clone(), io.clone());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let (headers, _) = request(&mut socket).await;
+        assert!(headers.starts_with("PUT "));
+        assert!(
+            headers
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("if-none-match: *"))
+        );
+        let payload = b"<Error><Code>PreconditionFailed</Code></Error>";
+        socket.write_all(format!("HTTP/1.1 412 Precondition Failed\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", payload.len()).as_bytes()).await.unwrap();
+        socket.write_all(payload).await.unwrap();
+        drop(socket);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(250), listener.accept())
+                .await
+                .is_err()
+        );
+    });
+    let error = backend
+        .upload(source, "archive".into(), S3UploadPolicy::default())
+        .unwrap()
+        .wait()
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.http_status(), Some(412));
+    server.await.unwrap();
+    owner.shutdown(None).await;
+    io.shutdown(None).await;
+}
+
+#[tokio::test]
 async fn s3_retry_replays_from_zero_and_rejects_a_replaced_source_before_another_effect() {
     for replaced in [false, true] {
         let fixture = Fixture::new();
