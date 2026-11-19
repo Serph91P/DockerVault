@@ -618,6 +618,29 @@ async fn s3_backup_submission_accepts_only_after_configured_native_admission() {
     );
     drop(socket);
     drop(listener);
+    let endpoint = format!("/api/v1/backups/{id}/retry-sync");
+    let denied = server
+        .request(
+            "POST",
+            &endpoint,
+            &[("Origin", "http://localhost:3000")],
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(denied.0, 401);
+    let authenticated = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let unknown = server
+        .request("POST", &endpoint, &authenticated, Some(json!({})))
+        .await;
+    assert_eq!(unknown.0, 409);
+    assert_eq!(
+        unknown.2["detail"],
+        "Remote sync has an unsettled provider effect"
+    );
+    assert_eq!(sqlx::query_scalar::<_,String>("SELECT json_type(backup_metadata,'$.native_s3_effects.destination_7.artifact_0') FROM backups WHERE id=?").bind(id).fetch_one(pool).await.unwrap(), "object");
     server.state.settle_storage().await.unwrap();
     let (state, archive): (String, String) = sqlx::query_as("SELECT s.sync_status,b.file_path FROM backup_storage_syncs s JOIN backups b ON b.id=s.backup_id WHERE s.backup_id=? AND s.storage_id=7").bind(id).fetch_one(pool).await.unwrap();
     assert_eq!(
