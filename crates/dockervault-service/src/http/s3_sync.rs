@@ -282,10 +282,29 @@ async fn retry_owned(
     let pending: Vec<_> = proof
         .s3_copies
         .iter()
-        .filter(|copy| {
+        .map(|copy| (copy.storage_id, copy.archive.as_str()))
+        .chain(
+            proof
+                .webdav_copies
+                .iter()
+                .map(|copy| (copy.storage_id, copy.archive.as_str())),
+        )
+        .chain(
+            proof
+                .sftp_copies
+                .iter()
+                .map(|copy| (copy.storage_id, copy.archive.as_str())),
+        )
+        .chain(
+            proof
+                .ftp_copies
+                .iter()
+                .map(|copy| (copy.storage_id, copy.archive.as_str())),
+        )
+        .filter(|&(storage_id, archive)| {
             before.iter().any(|row| {
-                row["storage_id"] == copy.storage_id
-                    && row["remote_path"] == copy.archive
+                row["storage_id"] == storage_id
+                    && row["remote_path"] == archive
                     && row["status"] == "running"
             })
         })
@@ -297,13 +316,16 @@ async fn retry_owned(
         ));
     }
     settle_mode(state, id, cancel, true).await?;
+    super::webdav_sync::settle(state, id, cancel).await?;
+    super::sftp_sync::settle(state, id, cancel).await?;
+    super::ftp_sync::settle(state, id, cancel).await?;
     let after = super::backups::sync_details(state, id).await?;
     let succeeded = pending
         .iter()
-        .filter(|copy| {
+        .filter(|&&(storage_id, archive)| {
             after.iter().any(|row| {
-                row["storage_id"] == copy.storage_id
-                    && row["remote_path"] == copy.archive
+                row["storage_id"] == storage_id
+                    && row["remote_path"] == archive
                     && row["status"] == "completed"
             })
         })
