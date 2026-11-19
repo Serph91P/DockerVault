@@ -7,6 +7,7 @@ use dockervault_service::{
     http::{self, HttpState},
     journal::Journal,
     ownership::Owner,
+    recovery_activation::recovery_pending,
     storage_recovery::settle_interrupted,
     workload_recovery::Recovery,
 };
@@ -99,6 +100,9 @@ async fn run() -> Result<(), &'static str> {
         .map_err(|_| "storage recovery")?;
     let journal = Journal::new(db.pool().clone()).map_err(|_| "workload journal")?;
     let grace = config.shutdown_limit();
+    let activation_pending = recovery_pending(db.pool())
+        .await
+        .map_err(|_| "recovery activation")?;
     if !journal
         .unfinished_after(0)
         .await
@@ -115,9 +119,9 @@ async fn run() -> Result<(), &'static str> {
             .map_err(|_| "workload recovery")?;
         recovery.shutdown(grace).await;
     }
-    // Journal-backed interruptions get their specific recovery result first.
-    // Legacy queued/running rows have no resumable job or proven workload state.
-    sqlx::query(
+    // Preserve staged activation and any specific result from journal reconciliation.
+    if !activation_pending {
+        sqlx::query(
         "UPDATE backups SET status='FAILED', error_message=?,
          completed_at=strftime('%Y-%m-%d %H:%M:%f000','now')
          WHERE status IN ('PENDING','RUNNING')",
@@ -126,6 +130,7 @@ async fn run() -> Result<(), &'static str> {
     .execute(db.pool())
     .await
     .map_err(|_| "interrupted backup recovery")?;
+    }
     let listener = TcpListener::bind(address).await.map_err(|_| "listener")?;
     let auth = AuthService::new(db.pool().clone());
     let state = HttpState::new(auth.clone(), config);

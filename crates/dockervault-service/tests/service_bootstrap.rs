@@ -179,8 +179,34 @@ fn standalone_service_migrates_serves_and_shuts_down_without_python() {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
+    db.execute_batch(
+        "INSERT INTO app_settings(key,value) VALUES('recovery_activation','{}');
+        INSERT INTO backups(id,target_id,status) VALUES(4,1,'PENDING');",
+    )
+    .unwrap();
+    let mut process = run(&dir, port);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ready().unwrap_or(false) {
+        if process.try_wait().unwrap().is_some() || Instant::now() >= deadline {
+            let _ = process.kill();
+            let _ = process.wait();
+            panic!("native process never served health with a pending recovery marker");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let pending: String = db
+        .query_row("SELECT status FROM backups WHERE id=4", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    process.kill().unwrap();
+    process.wait().unwrap();
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
+    assert_eq!(
+        pending, "PENDING",
+        "startup must not change backups during staged recovery activation"
+    );
     for row in &states[..2] {
         assert_eq!(row.0, "FAILED");
         assert!(row.1.is_some());
