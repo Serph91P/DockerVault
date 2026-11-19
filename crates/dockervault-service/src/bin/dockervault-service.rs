@@ -115,6 +115,17 @@ async fn run() -> Result<(), &'static str> {
             .map_err(|_| "workload recovery")?;
         recovery.shutdown(grace).await;
     }
+    // Journal-backed interruptions get their specific recovery result first.
+    // Legacy queued/running rows have no resumable job or proven workload state.
+    sqlx::query(
+        "UPDATE backups SET status='FAILED', error_message=?,
+         completed_at=strftime('%Y-%m-%d %H:%M:%f000','now')
+         WHERE status IN ('PENDING','RUNNING')",
+    )
+    .bind("Interrupted by restart; accepted job terminally failed. Legacy workload state may be unknown: verify workloads manually and retry.")
+    .execute(db.pool())
+    .await
+    .map_err(|_| "interrupted backup recovery")?;
     let listener = TcpListener::bind(address).await.map_err(|_| "listener")?;
     let auth = AuthService::new(db.pool().clone());
     let state = HttpState::new(auth.clone(), config);

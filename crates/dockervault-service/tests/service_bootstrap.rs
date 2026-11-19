@@ -109,6 +109,8 @@ fn standalone_service_migrates_serves_and_shuts_down_without_python() {
         7
     );
     db.execute_batch("INSERT INTO users(id,username,password_hash) VALUES(1,'fixture','synthetic');
+      INSERT INTO backup_targets(id,name,target_type) VALUES(1,'fixture','path');
+      INSERT INTO backups(id,target_id,status,file_path) VALUES (1,1,'PENDING',NULL),(2,1,'RUNNING',NULL),(3,1,'COMPLETED','completed.tar');
       INSERT INTO storage_operations(id,user_id,request_id,payload,storage_identity,action,storage_id,path,state,stage,total,completed,succeeded,failed,skipped,unknown,cancel_requested,created_at,updated_at) VALUES
       ('interrupted',1,'fixture-request','{}','{}','storage_delete','local','','running','deleting',2,0,0,0,0,0,0,'2024-01-01','2024-01-01');
       INSERT INTO storage_operation_items(operation_id,path,state) VALUES ('interrupted','possibly removed','running'),('interrupted','not started','pending');").unwrap();
@@ -169,6 +171,29 @@ fn standalone_service_migrates_serves_and_shuts_down_without_python() {
         }
         std::thread::sleep(Duration::from_millis(25));
     }
+    type BackupState = (String, Option<String>, Option<String>, Option<String>);
+    let states: Vec<BackupState> = db
+        .prepare("SELECT status,completed_at,error_message,file_path FROM backups ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
+    for row in &states[..2] {
+        assert_eq!(row.0, "FAILED");
+        assert!(row.1.is_some());
+        assert_eq!(
+            row.2.as_deref(),
+            Some(
+                "Interrupted by restart; accepted job terminally failed. Legacy workload state may be unknown: verify workloads manually and retry."
+            )
+        );
+        assert_eq!(row.3, None);
+    }
+    assert_eq!(
+        states[2],
+        ("COMPLETED".into(), None, None, Some("completed.tar".into()))
+    );
 }
