@@ -8,6 +8,7 @@ mod copy_removal;
 pub use copy_removal::recover_copy_removals;
 mod ftp_sync;
 mod operations;
+mod retention;
 mod s3_sync;
 mod schedules;
 pub mod security;
@@ -98,6 +99,9 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/auth/change-password", post(auth::change_password))
+        .route("/api/v1/retention", get(retention::list))
+        .route("/api/v1/retention/{id}", get(retention::detail))
+        .route("/api/v1/retention/{id}/stats", get(retention::stats))
         .route("/api/v1/schedules", get(schedules::list))
         .route("/api/v1/schedules/{id}", get(schedules::detail))
         .route("/api/v1/schedules/preview", post(schedules::preview))

@@ -359,6 +359,63 @@ async fn schedule_preview_count_matches_python_integer_coercion() {
 }
 
 #[tokio::test]
+async fn retention_reads_preserve_policy_and_catalog_wire_contracts() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let db = server.db.pool();
+    sqlx::raw_sql("INSERT INTO retention_policies (id,name,keep_last,keep_daily,keep_weekly,keep_monthly,keep_yearly,max_age_days,created_at,updated_at) VALUES
+        (71,'fixture',3,7,0,6,2,365,'2025-01-01 00:00:00.123456','2025-01-02 00:00:00.000000');
+        INSERT INTO backup_targets(id,name,target_type,retention_policy_id) VALUES (72,'fixture','path',71),(73,'other','path',71);
+        INSERT INTO backups(id,target_id,backup_type,status,file_size,created_at) VALUES
+        (81,72,'FULL','COMPLETED',1536,'2025-01-02 00:00:00.000000'),
+        (82,72,'FULL','COMPLETED',NULL,'2025-01-01 00:00:00.123456'),
+        (83,72,'FULL','FAILED',99999,'2025-01-03 00:00:00.000000'),
+        (84,73,'FULL','COMPLETED',99999,'2025-01-03 00:00:00.000000');")
+        .execute(db).await.unwrap();
+    let headers = [("cookie", cookie.as_str())];
+    let expected = json!({"id":71,"name":"fixture","keep_last":3,"keep_daily":7,"keep_weekly":0,"keep_monthly":6,"keep_yearly":2,"max_age_days":365,"created_at":"2025-01-01T00:00:00.123456","updated_at":"2025-01-02T00:00:00"});
+    for (path, code, expected_body) in [
+        ("/api/v1/retention/71", 200, expected.clone()),
+        (
+            "/api/v1/retention/99",
+            404,
+            json!({"detail":"Policy not found"}),
+        ),
+        (
+            "/api/v1/retention/72/stats",
+            200,
+            json!({"total_backups":2,"total_size_bytes":1536,"total_size_human":"1.50 KB","oldest_backup":"2025-01-01T00:00:00.123456","newest_backup":"2025-01-02T00:00:00"}),
+        ),
+        (
+            "/api/v1/retention/99/stats",
+            200,
+            json!({"total_backups":0,"total_size_bytes":0,"oldest_backup":null,"newest_backup":null}),
+        ),
+    ] {
+        assert_eq!(
+            server.request("GET", path, &[], None).await.0,
+            401,
+            "{path}"
+        );
+        let (status, _, body) = server.request("GET", path, &headers, None).await;
+        assert_eq!((status, body), (code, expected_body), "{path}");
+    }
+    let (status, _, list) = server
+        .request("GET", "/api/v1/retention", &headers, None)
+        .await;
+    assert_eq!(status, 200);
+    assert!(list.as_array().unwrap().contains(&expected));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM backups")
+            .fetch_one(db)
+            .await
+            .unwrap(),
+        4
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn submitted_path_backup_publishes_a_verified_archive_before_completion() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
