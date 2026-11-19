@@ -54,8 +54,10 @@ jobs:
           git fetch --no-tags --depth=1 origin "$ref"
           git archive "$ref" | docker build --platform 'linux/${{ matrix.arch }}' --target production \
             --build-arg "COMMIT_SHA=$ref" -t dockervault-r14-python-ref:39124ea -
+          preflight=dockervault-rollback-preflight-ci
+          docker build --platform 'linux/${{ matrix.arch }}' --target rollback-preflight -t "$preflight" .
           docker build --platform 'linux/${{ matrix.arch }}' -f docker/python-rollback.Dockerfile \
-            --target python-rollback -t dockervault-python-rollback-ci .
+            --build-arg "ROLLBACK_PREFLIGHT=$preflight" --target python-rollback -t dockervault-python-rollback-ci .
           test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' dockervault-python-rollback-ci)" = 'linux/${{ matrix.arch }}'
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' dockervault-python-rollback-ci)" = "$ref"
           sh docker/test-writer-fence.sh dockervault-native-candidate-ci dockervault-python-rollback-ci
