@@ -151,6 +151,7 @@ async fn run() -> Result<(), &'static str> {
         "storage recovery"
     })?;
     let router = http::router(state.clone());
+    state.start_scheduler().await;
     let shutdown = state.clone();
     let result = axum::serve(
         listener,

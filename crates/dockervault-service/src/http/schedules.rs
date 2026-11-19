@@ -11,11 +11,199 @@ use dockervault_core::{
 };
 use serde_json::{Value, json};
 use sqlx::{Row, sqlite::SqliteRow};
-use std::path::Path as FsPath;
+use std::{collections::BTreeMap, path::Path as FsPath, time::Duration};
 use strum::EnumMessage;
 use time::{UtcDateTime, format_description::well_known::Rfc3339};
 
 const CONTRACT: &str = "Five fields: minute hour day month weekday. Monday=0, Sunday=6; prefer mon..sun. Day-of-month AND weekday must both match. Times use the server timezone and native APScheduler wall-clock/DST behavior; macros are not supported.";
+
+#[derive(Default)]
+pub(super) struct LiveScheduler {
+    jobs: tokio::sync::Mutex<BTreeMap<i64, LiveJob>>,
+    worker: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+struct LiveJob {
+    name: String,
+    expression: String,
+    schedule: Schedule,
+    next: dockervault_core::cron::FireTime,
+}
+
+const EFFECTIVE: &str = "SELECT t.id,t.name,CASE WHEN s.id IS NULL THEN t.schedule_cron WHEN s.enabled=1 THEN s.cron_expression END
+    FROM backup_targets t LEFT JOIN schedules s ON s.id=t.schedule_id
+    WHERE t.enabled=1 AND t.removed_at IS NULL AND (?1 IS NULL OR t.id=?1) ORDER BY t.id";
+
+async fn projected(
+    state: &HttpState,
+    target: Option<i64>,
+) -> Result<Vec<(i64, String, Option<String>)>, Failure> {
+    let pool = state.auth.pool();
+    let mut tx = pool.begin().await.map_err(db_error)?;
+    let rows = if crate::recovery_activation::recovery_pending_in(&mut *tx)
+        .await
+        .map_err(|_| internal())?
+    {
+        Vec::new()
+    } else {
+        sqlx::query_as(EFFECTIVE)
+            .bind(target)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(db_error)?
+    };
+    tx.commit().await.map_err(db_error)?;
+    Ok(rows)
+}
+
+async fn reconcile(state: &HttpState) -> Result<(), Failure> {
+    let failed = || {
+        failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Configuration saved; scheduler reconciliation failed. Retry POST /api/v1/schedules/reload.",
+        )
+    };
+    // Serialize projection and dispatch. Read the committed snapshot only after
+    // acquiring this lock so a slower reload cannot reinstall stale jobs.
+    let mut jobs = state.scheduler.jobs.lock().await;
+    let rows = projected(state, None).await.map_err(|_| failed())?;
+    let state_for_cron = state.clone();
+    let (next, errors) = tokio::task::spawn_blocking(move || {
+        let cron = Cron::load(&state_for_cron)?;
+        let mut next = BTreeMap::new();
+        let mut errors = false;
+        for (id, name, expression) in rows {
+            let Some(expression) = expression.filter(|v| !v.is_empty()) else {
+                continue;
+            };
+            let job = Schedule::parse(&expression).and_then(|schedule| {
+                let run = schedule.next(cron.now, &cron.zone, &|| cron.cancel.is_cancelled())?;
+                Ok(LiveJob {
+                    name,
+                    expression,
+                    schedule,
+                    next: run,
+                })
+            });
+            match job {
+                Ok(job) => {
+                    next.insert(id, job);
+                }
+                Err(error) => {
+                    tracing::warn!(target_id=id,%error,"Could not reconcile scheduled job");
+                    errors = true;
+                }
+            }
+        }
+        Ok::<_, Failure>((next, errors))
+    })
+    .await
+    .map_err(|_| failed())?
+    .map_err(|_| failed())?;
+    let mut next = next;
+    for (id, job) in &mut next {
+        if let Some(old) = jobs.get(id).filter(|old| old.expression == job.expression) {
+            job.next = old.next;
+        }
+    }
+    *jobs = next;
+    if errors { Err(failed()) } else { Ok(()) }
+}
+
+pub(super) async fn start(state: &HttpState) {
+    let mut worker = state.scheduler.worker.lock().await;
+    if worker.is_some() || state.draining.is_cancelled() {
+        return;
+    }
+    if reconcile(state).await.is_err() {
+        tracing::warn!(
+            "Startup schedule reconciliation incomplete; retry POST /api/v1/schedules/reload"
+        );
+    }
+    let state = state.clone();
+    *worker = Some(tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                biased;
+                _ = state.draining.cancelled() => break,
+                _ = interval.tick() => dispatch_due(&state).await,
+            }
+        }
+    }));
+}
+
+pub(super) async fn stop(state: &HttpState) {
+    if let Some(worker) = state.scheduler.worker.lock().await.take() {
+        let _ = worker.await;
+    }
+}
+
+async fn dispatch_due(state: &HttpState) {
+    let mut jobs = state.scheduler.jobs.lock().await;
+    let now = now().unix_micros().expect("UTC timestamp");
+    if !jobs.values().any(|job| {
+        job.next
+            .timestamp
+            .unix_micros()
+            .is_some_and(|run| run <= now)
+    }) {
+        return;
+    }
+    let Ok(cron) = Cron::load(state) else {
+        return;
+    };
+    let mut due = Vec::new();
+    jobs.retain(|id, job| {
+        let Some(run) = job.next.timestamp.unix_micros() else {
+            return false;
+        };
+        if run > now {
+            return true;
+        }
+        // APScheduler's default misfire grace is one second.
+        if now - run <= 1_000_000 {
+            due.push((*id, job.expression.clone()));
+        }
+        match job
+            .schedule
+            .next(cron.now, &cron.zone, &|| cron.cancel.is_cancelled())
+        {
+            Ok(next) => {
+                job.next = next;
+                true
+            }
+            Err(_) => false,
+        }
+    });
+    for (id, expression) in due {
+        if state.draining.is_cancelled() {
+            break;
+        }
+        if let Ok(target) = projected(state, Some(id)).await
+            && target.first().and_then(|(_, _, value)| value.as_deref())
+                == Some(expression.as_str())
+        {
+            let response = super::backup_submit::trigger_full(state, id).await;
+            if !response.status().is_success() {
+                tracing::warn!(target_id=id,status=%response.status(),"Scheduled backup was not admitted");
+            }
+        }
+    }
+}
+
+pub(super) async fn jobs(State(state): State<HttpState>) -> Json<Value> {
+    let jobs = state.scheduler.jobs.lock().await;
+    let mut jobs: Vec<_> = jobs.iter().collect();
+    jobs.sort_by_key(|(id, job)| (job.next.timestamp.unix_micros(), **id));
+    Json(Value::Array(jobs.into_iter().map(|(id,job)| json!({"id":format!("backup_target_{id}"),"name":format!("Backup: {}",job.name),"next_run":job.next.timestamp})).collect()))
+}
+
+pub(super) async fn reload(State(state): State<HttpState>) -> Result<Json<Value>, Failure> {
+    reconcile(&state).await?;
+    Ok(Json(json!({"status":"reloaded"})))
+}
 
 pub(super) struct Failure(Box<Response>);
 

@@ -38,6 +38,7 @@ pub struct HttpState {
     download_slots: Arc<tokio::sync::Semaphore>,
     download_jobs: crate::ownership::Owner,
     backup_jobs: crate::ownership::Owner,
+    scheduler: Arc<schedules::LiveScheduler>,
     backup_metrics: Arc<std::sync::Mutex<backup_metrics::Metrics>>,
     removal_previews: Arc<std::sync::Mutex<copy_removal::Previews>>,
     backup_claims: crate::jobs::Claims,
@@ -60,6 +61,7 @@ impl HttpState {
             download_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             download_jobs: crate::ownership::Owner::new(4).expect("positive download capacity"),
             backup_jobs: crate::ownership::Owner::new(4).expect("positive backup capacity"),
+            scheduler: Arc::default(),
             backup_metrics: Arc::default(),
             removal_previews: Arc::default(),
             backup_claims: crate::jobs::Claims::default(),
@@ -70,10 +72,15 @@ impl HttpState {
         self.draining.cancel();
     }
 
+    pub async fn start_scheduler(&self) {
+        schedules::start(self).await;
+    }
+
     pub async fn settle_storage(
         &self,
     ) -> Result<(), crate::storage_recovery::StorageRecoveryError> {
         self.begin_shutdown();
+        schedules::stop(self).await;
         self.backup_jobs
             .shutdown(self.config.shutdown_limit())
             .await;
@@ -119,6 +126,8 @@ pub fn router(state: HttpState) -> Router {
         )
         .route("/api/v1/schedules/legacy/by-target", get(schedules::legacy))
         .route("/api/v1/schedules/cron-help", get(schedules::help))
+        .route("/api/v1/schedules/jobs", get(schedules::jobs))
+        .route("/api/v1/schedules/reload", post(schedules::reload))
         .route(
             "/api/v1/schedules/target/{id}/trigger",
             post(schedules::trigger_target),

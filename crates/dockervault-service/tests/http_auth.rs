@@ -359,6 +359,110 @@ async fn schedule_preview_count_matches_python_integer_coercion() {
 }
 
 #[tokio::test]
+async fn live_schedule_reload_exposes_only_installed_jobs_and_repairs_failures() {
+    let server = Server::configured(Config::from_pairs([("TZ", "UTC")]).unwrap()).await;
+    let cookie = server.setup().await;
+    let db = server.db.pool();
+    sqlx::raw_sql("INSERT INTO schedules (id,name,cron_expression,enabled) VALUES (7,'Disabled','0 3 * * *',0);
+        INSERT INTO backup_targets(id,name,target_type,schedule_id,schedule_cron,enabled,removed_at) VALUES
+        (20,'Legacy','path',NULL,'0 3 * * *',1,NULL),(21,'Invalid','path',NULL,'@daily',1,NULL),
+        (22,'Disabled shared','path',7,'0 3 * * *',1,NULL),(23,'Removed','path',NULL,'0 3 * * *',1,'2025-01-01 00:00:00.000000');")
+        .execute(db).await.unwrap();
+    let headers = [("cookie", cookie.as_str())];
+    let reload = "/api/v1/schedules/reload";
+    let jobs = "/api/v1/schedules/jobs";
+    assert_eq!(server.request("GET", jobs, &[], None).await.0, 401);
+    assert_eq!(server.request("POST", reload, &[], None).await.0, 401);
+    let (status, _, error) = server.request("POST", reload, &headers, None).await;
+    assert_eq!(
+        (status, error),
+        (
+            503,
+            json!({"detail":"Configuration saved; scheduler reconciliation failed. Retry POST /api/v1/schedules/reload."})
+        )
+    );
+    let (status, _, initial) = server.request("GET", jobs, &headers, None).await;
+    assert_eq!(status, 200);
+    assert_eq!(initial.as_array().unwrap().len(), 1);
+    assert_eq!(initial[0]["id"], "backup_target_20");
+    assert_eq!(initial[0]["name"], "Backup: Legacy");
+    assert!(initial[0]["next_run"].as_str().unwrap().ends_with("+00:00"));
+    sqlx::raw_sql("UPDATE backup_targets SET enabled=0 WHERE id=20; UPDATE backup_targets SET schedule_cron='0 3 * * mon' WHERE id=21;").execute(db).await.unwrap();
+    for _ in 0..2 {
+        let (status, _, body) = server.request("POST", reload, &headers, None).await;
+        assert_eq!((status, body), (200, json!({"status":"reloaded"})));
+        let (status, _, body) = server.request("GET", jobs, &headers, None).await;
+        assert_eq!(status, 200);
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        assert_eq!(body[0]["id"], "backup_target_21");
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM backups")
+            .fetch_one(db)
+            .await
+            .unwrap(),
+        0
+    );
+    server.close().await;
+}
+
+#[tokio::test]
+async fn started_scheduler_dispatches_and_rechecks_targets_before_admission() {
+    let server = Server::configured(Config::from_pairs([("TZ", "UTC")]).unwrap()).await;
+    let cookie = server.setup().await;
+    let source = server.path.join("scheduled-source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("data.txt"), b"automatic backup fixture").unwrap();
+    let db = server.db.pool();
+    sqlx::query(
+        "INSERT INTO backup_targets(id,name,target_type,host_path,schedule_cron,enabled) VALUES
+        (61,'Active','path',?1,'* * * * *',1),(62,'Stale','path',?1,'* * * * *',1)",
+    )
+    .bind(source.to_str().unwrap())
+    .execute(db)
+    .await
+    .unwrap();
+    server.state.start_scheduler().await;
+    let headers = [("cookie", cookie.as_str())];
+    let (status, _, jobs) = server
+        .request("GET", "/api/v1/schedules/jobs", &headers, None)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(jobs.as_array().unwrap().len(), 2);
+    sqlx::query("UPDATE backup_targets SET enabled=0 WHERE id=62")
+        .execute(db)
+        .await
+        .unwrap();
+    let (completed, archive): (i64, String) =
+        tokio::time::timeout(std::time::Duration::from_secs(75), async {
+            loop {
+                if let Some(row) = sqlx::query_as(
+                    "SELECT target_id,file_path FROM backups WHERE status='COMPLETED'",
+                )
+                .fetch_optional(db)
+                .await
+                .unwrap()
+                {
+                    break row;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(completed, 61);
+    assert!(std::path::Path::new(&archive).is_file());
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM backups WHERE target_id=62")
+            .fetch_one(db)
+            .await
+            .unwrap(),
+        0
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn retention_reads_preserve_policy_and_catalog_wire_contracts() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

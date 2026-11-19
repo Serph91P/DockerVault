@@ -28,6 +28,12 @@ impl<'de> serde::Deserialize<'de> for Timestamp {
     }
 }
 impl Timestamp {
+    pub fn unix_micros(self) -> Option<i64> {
+        let offset = self.offset?;
+        i64::try_from(self.naive.as_utc().unix_timestamp_nanos() / 1000)
+            .ok()?
+            .checked_sub(offset)
+    }
     pub fn parse(value: &str) -> Result<Self, InvalidTimestamp> {
         let (naive, offset) = iso::parse(value)?;
         Ok(Self { naive, offset })
