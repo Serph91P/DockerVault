@@ -40,6 +40,9 @@ COPY crates ./crates
 RUN cargo fetch --locked && cargo build --release --locked --offline --bins \
     -p dockervault-service -p dockervault-tools
 
+FROM scratch AS rollback-preflight
+COPY --from=native-builder /src/target/release/dockervault-rollback-preflight /
+
 FROM debian@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS native-candidate
 ARG COMMIT_SHA=unknown
 LABEL org.opencontainers.image.revision="${COMMIT_SHA}"
