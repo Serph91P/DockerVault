@@ -294,8 +294,11 @@ async fn remove_replica(
         replica: replica.clone(),
     };
     let raw = serde_json::to_string(&intent).map_err(|_| INCOMPLETE)?;
-    sqlx::query("UPDATE backups SET backup_metadata=json_set(coalesce(nullif(backup_metadata,'null'),'{}'),'$.native_copy_removal',json(?)) WHERE id=?")
+    let created = sqlx::query("UPDATE backups SET backup_metadata=json_set(coalesce(nullif(backup_metadata,'null'),'{}'),'$.native_copy_removal',json(?)) WHERE id=? AND json_type(backup_metadata,'$.native_copy_removal') IS NULL")
         .bind(&raw).bind(item.backup_id).execute(&mut *tx).await.map_err(|_| INCOMPLETE)?;
+    if created.rows_affected() != 1 {
+        return Err(INCOMPLETE);
+    }
     tx.commit().await.map_err(|_| INCOMPLETE)?;
     settle_replica(state, item.backup_id, &intent, &raw, cancel).await
 }
@@ -377,15 +380,29 @@ async fn settle_replica(
         }
         Ok(())
     }).map_err(|_| INCOMPLETE)?.wait().await.map_err(|_| INCOMPLETE)??;
-    sqlx::query("DELETE FROM backup_storage_syncs WHERE id=?")
+    let removed_sync = sqlx::query("DELETE FROM backup_storage_syncs WHERE id=?")
         .bind(replica.sync_id)
         .execute(&mut *tx)
         .await
         .map_err(|_| INCOMPLETE)?;
-    let removed = sqlx::query("DELETE FROM backups WHERE id=? AND coalesce(file_path,'')='' AND coalesce(encryption_key_path,'')='' AND NOT EXISTS(SELECT 1 FROM backup_storage_syncs WHERE backup_id=?)")
-        .bind(backup).bind(backup).execute(&mut *tx).await.map_err(|_| INCOMPLETE)?;
-    if removed.rows_affected() == 0 {
-        sqlx::query("UPDATE backups SET backup_metadata=json_remove(backup_metadata,'$.native_copy_removal') WHERE id=?").bind(backup).execute(&mut *tx).await.map_err(|_| INCOMPLETE)?;
+    if removed_sync.rows_affected() != 1 {
+        return Err(INCOMPLETE);
+    }
+    let empty: bool = sqlx::query_scalar("SELECT coalesce(file_path,'')='' AND coalesce(encryption_key_path,'')='' AND NOT EXISTS(SELECT 1 FROM backup_storage_syncs WHERE backup_id=?) FROM backups WHERE id=?")
+        .bind(backup).bind(backup).fetch_one(&mut *tx).await.map_err(|_| INCOMPLETE)?;
+    let ack = if empty {
+        "DELETE FROM backups WHERE id=? AND json_extract(backup_metadata,'$.native_copy_removal')=?"
+    } else {
+        "UPDATE backups SET backup_metadata=json_remove(backup_metadata,'$.native_copy_removal') WHERE id=? AND json_extract(backup_metadata,'$.native_copy_removal')=?"
+    };
+    let acknowledged = sqlx::query(ack)
+        .bind(backup)
+        .bind(raw)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| INCOMPLETE)?;
+    if acknowledged.rows_affected() != 1 {
+        return Err(INCOMPLETE);
     }
     tx.commit().await.map_err(|_| INCOMPLETE)
 }

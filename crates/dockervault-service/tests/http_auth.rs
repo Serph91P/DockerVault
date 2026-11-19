@@ -1069,6 +1069,33 @@ async fn replica_removal(drift: ReplicaDrift) {
 
 #[tokio::test]
 async fn encrypted_local_replica_removal_settles_files_before_catalog_ack() {
+    replica_removal_with_catalog_rejection(
+        "CREATE TRIGGER reject_ack BEFORE DELETE ON backup_storage_syncs BEGIN SELECT RAISE(ABORT,'fixture'); END",
+        true,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn encrypted_local_replica_removal_requires_a_deleted_sync_row() {
+    replica_removal_with_catalog_rejection(
+        "CREATE TRIGGER reject_ack BEFORE DELETE ON backup_storage_syncs BEGIN SELECT RAISE(IGNORE); END",
+        true,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn encrypted_local_replica_removal_requires_a_cleared_intent() {
+    replica_removal_with_catalog_rejection("CREATE TRIGGER reject_ack BEFORE UPDATE OF backup_metadata ON backups WHEN json_type(OLD.backup_metadata,'$.native_copy_removal')='object' BEGIN SELECT RAISE(IGNORE); END", true).await;
+}
+
+#[tokio::test]
+async fn encrypted_local_replica_removal_requires_a_durable_intent_before_unlink() {
+    replica_removal_with_catalog_rejection("CREATE TRIGGER reject_ack BEFORE UPDATE OF backup_metadata ON backups WHEN json_type(NEW.backup_metadata,'$.native_copy_removal')='object' BEGIN SELECT RAISE(IGNORE); END", false).await;
+}
+
+async fn replica_removal_with_catalog_rejection(trigger: &'static str, unlinked: bool) {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
     let headers = [
@@ -1093,7 +1120,8 @@ async fn encrypted_local_replica_removal_settles_files_before_catalog_ack() {
     sqlx::query("INSERT INTO backups(id,target_id,backup_type,status,encrypted,file_path,encryption_key_path) VALUES(1,1,'FULL','COMPLETED',1,?,?)")
         .bind(primary.join("fixture.tar.enc").to_str().unwrap()).bind(primary.join("fixture.tar.key").to_str().unwrap()).execute(db).await.unwrap();
     sqlx::query("INSERT INTO remote_storages(id,name,storage_type,base_path,enabled) VALUES(1,'Replica','local',?,1)").bind(replica.to_str().unwrap()).execute(db).await.unwrap();
-    sqlx::raw_sql("INSERT INTO backup_storage_syncs(id,backup_id,storage_id,remote_path,sync_status) VALUES(1,1,1,'fixture.tar.enc','completed'); CREATE TRIGGER reject_ack BEFORE DELETE ON backup_storage_syncs BEGIN SELECT RAISE(ABORT,'fixture'); END;").execute(db).await.unwrap();
+    sqlx::query("INSERT INTO backup_storage_syncs(id,backup_id,storage_id,remote_path,sync_status) VALUES(1,1,1,'fixture.tar.enc','completed')").execute(db).await.unwrap();
+    sqlx::query(trigger).execute(db).await.unwrap();
     let (status, _, preview) = server
         .request(
             "POST",
@@ -1116,15 +1144,18 @@ async fn encrypted_local_replica_removal_settles_files_before_catalog_ack() {
     assert_eq!(result["status"], "incomplete");
     assert_eq!(result["succeeded"], 0);
     for name in ["fixture.tar.enc", "fixture.tar.key"] {
-        assert!(
+        assert_eq!(
             !replica.join(name).exists(),
-            "replica member {name} not removed"
+            unlinked,
+            "replica member {name}"
         );
         assert_eq!(std::fs::read(primary.join(name)).unwrap(), b"primary");
     }
     let count =
         || sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM backup_storage_syncs").fetch_one(db);
     assert_eq!(count().await.unwrap(), 1);
+    let pending: bool = sqlx::query_scalar("SELECT coalesce(json_type(backup_metadata,'$.native_copy_removal')='object',0) FROM backups WHERE id=1").fetch_one(db).await.unwrap();
+    assert_eq!(pending, unlinked);
     assert!(result["retry_token"].is_string());
     sqlx::query("DROP TRIGGER reject_ack")
         .execute(db)
