@@ -609,6 +609,44 @@ async fn sftp_backup_durably_admits_the_copy_before_provider_io() {
 }
 
 #[tokio::test]
+async fn backup_logs_and_stats_preserve_legacy_catalog_contract() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let db = server.db.pool();
+    sqlx::raw_sql("INSERT INTO backup_targets(id,name,target_type,enabled) VALUES(1,'Fixture','path',1); INSERT INTO backups(id,target_id,backup_type,status,file_size,duration_seconds) VALUES(3,1,'FULL','COMPLETED',2048,2),(4,1,'FULL','PENDING',NULL,NULL); INSERT INTO backup_logs(id,backup_id,level,step,message,details,created_at) VALUES(10,3,'WARNING','upload','second',NULL,'2026-01-02 10:05:00'),(11,3,'INFO','archive','first','{\"count\":2}','2026-01-02 10:00:00');").execute(db).await.unwrap();
+    let headers = [("Cookie", cookie.as_str())];
+    let (status, _, _) = server
+        .request("GET", "/api/v1/backups/3/logs", &[], None)
+        .await;
+    assert_eq!(status, 401);
+    let (status, _, logs) = server
+        .request("GET", "/api/v1/backups/3/logs", &headers, None)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        logs,
+        json!([{"id":11,"level":"info","step":"archive","message":"first","details":{"count":2},"created_at":"2026-01-02T10:00:00"},{"id":10,"level":"warning","step":"upload","message":"second","details":null,"created_at":"2026-01-02T10:05:00"}])
+    );
+    let (status, _, stats) = server
+        .request("GET", "/api/v1/backups/3/stats", &headers, None)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        stats,
+        json!({"backup_id":3,"file_size":2048,"file_size_human":"2.00 KB","duration_seconds":2,"status":"completed"})
+    );
+    let (status, _, logs) = server
+        .request("GET", "/api/v1/backups/4/logs", &headers, None)
+        .await;
+    assert_eq!((status, logs), (200, json!([])));
+    for path in ["/api/v1/backups/99/stats", "/api/v1/backups/99/logs"] {
+        let (status, _, body) = server.request("GET", path, &headers, None).await;
+        assert_eq!((status, body), (404, json!({"detail":"Backup not found"})));
+    }
+    server.close().await;
+}
+
+#[tokio::test]
 async fn ftp_backup_durably_admits_unique_catalog_path_before_provider_io() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

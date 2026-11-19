@@ -303,6 +303,63 @@ pub(super) async fn get(
 ) -> Response {
     one(state, headers, id, false, false).await
 }
+pub(super) async fn logs(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(error) = required_user(&state, &headers).await {
+        return *error;
+    }
+    let Some(id) = query_integer(&id) else {
+        return *validation(vec![json!({"field":"path.backup_id","message":INTEGER})]);
+    };
+    let result = async {
+        let rows = sqlx::query("SELECT l.id,l.level,l.step,l.message,l.details,l.created_at FROM backups b LEFT JOIN backup_logs l ON l.backup_id=b.id WHERE b.id=? ORDER BY l.created_at,l.id")
+            .bind(id).fetch_all(state.auth.pool()).await?;
+        if rows.is_empty() { return Ok::<_, sqlx::Error>(None); }
+        let mut logs = Vec::new();
+        for row in rows {
+            let Some(id) = row.try_get::<Option<i64>, _>("id")? else { continue; };
+            let level: String = row.try_get("level")?;
+            let details = row.try_get::<Option<String>, _>("details")?.map(|raw| serde_json::from_str::<Value>(&raw)).transpose().map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+            // The legacy log DTO serializes SQLite's naive timestamps without a UTC suffix.
+            let created_at = timestamp(&row,"created_at")?.map(|value| value.trim_end_matches('Z').to_owned());
+            logs.push(json!({"id":id,"level":level.to_ascii_lowercase(),"step":row.try_get::<String,_>("step")?,"message":row.try_get::<String,_>("message")?,"details":details,"created_at":created_at}));
+        }
+        Ok(Some(logs))
+    }.await;
+    match result {
+        Ok(Some(rows)) => Json(rows).into_response(),
+        Ok(None) => detail(StatusCode::NOT_FOUND, "Backup not found"),
+        Err(_) => internal(),
+    }
+}
+
+pub(super) async fn stats(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(error) = required_user(&state, &headers).await {
+        return *error;
+    }
+    let Some(id) = query_integer(&id) else {
+        return *validation(vec![json!({"field":"path.backup_id","message":INTEGER})]);
+    };
+    let result = sqlx::query_as::<_, (Option<i64>, Option<i64>, String)>(
+        "SELECT file_size,duration_seconds,status FROM backups WHERE id=?",
+    )
+    .bind(id)
+    .fetch_optional(state.auth.pool())
+    .await;
+    match result {
+        Ok(Some((size, duration, status))) => Json(json!({"backup_id":id,"file_size":size,"file_size_human":size.map(format_size),"duration_seconds":duration,"status":status.to_ascii_lowercase()})).into_response(),
+        Ok(None) => detail(StatusCode::NOT_FOUND,"Backup not found"),
+        Err(_) => internal(),
+    }
+}
+
 pub(super) async fn history_detail(
     State(state): State<HttpState>,
     headers: HeaderMap,
