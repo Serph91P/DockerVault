@@ -32,7 +32,8 @@ fn check() -> Result<(), &'static str> {
                CASE WHEN backup_metadata IS NULL THEN 0 WHEN NOT json_valid(backup_metadata) THEN 1
                ELSE json_type(backup_metadata,'$.native_ephemeral_archive') IS NOT NULL
                  OR json_type(backup_metadata,'$.native_publication') IS NOT NULL
-                 OR json_type(backup_metadata,'$.native_local_sync') IS NOT NULL END)",
+                 OR json_type(backup_metadata,'$.native_local_sync') IS NOT NULL
+                 OR json_type(backup_metadata,'$.native_copy_removal') IS NOT NULL END)",
             "backup work or archive publication is unsettled",
         ),
         (

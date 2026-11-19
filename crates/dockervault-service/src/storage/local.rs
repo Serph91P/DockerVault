@@ -705,6 +705,109 @@ pub(crate) fn open_download_source(root: &Path, path: &Path) -> io::Result<File>
     read_leaf(&parent, &name)
 }
 
+/// Remove a reviewed archive leaf without following symlinks or deleting a replacement.
+pub(crate) fn delete_reviewed_leaf(
+    root: &Path,
+    path: &Path,
+    expected: FileIdentity,
+    stage: &str,
+) -> io::Result<()> {
+    use nix::fcntl::{RenameFlags, renameat2};
+    let root = open_root(root)?;
+    let (parent, leaf) = parent(&root, path, false)?;
+    if !stage.starts_with(".dv-removal-")
+        || !stage
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
+    {
+        return Err(invalid("Invalid removal stage"));
+    }
+    let public = match read_leaf(&parent, &leaf) {
+        Ok(file) => Some(file),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let private = match open_directory(&parent, OsStr::new(stage)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let Some(file) = &public else {
+                return parent.sync_all();
+            };
+            if FileIdentity::read(&file.metadata()?)? != expected {
+                return Err(invalid("Reviewed file changed"));
+            }
+            mkdirat(&parent, stage, Mode::S_IRWXU)?;
+            parent.sync_all()?;
+            open_directory(&parent, OsStr::new(stage))?
+        }
+        Err(error) => return Err(error),
+    };
+    let meta = private.metadata()?;
+    if meta.uid() != nix::unistd::geteuid().as_raw() || meta.mode() & 0o777 != 0o700 {
+        return Err(invalid("Removal stage is not service-private"));
+    }
+    let temporary = OsStr::new("reviewed");
+    let actual = match read_leaf(&private, temporary) {
+        Ok(file) => {
+            if public.is_some() {
+                return Err(invalid("Reviewed name was reused during removal"));
+            }
+            Some(FileIdentity::read(&file.metadata()?)?)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if let Some(file) = public {
+                if FileIdentity::read(&file.metadata()?)? != expected {
+                    return Err(invalid("Reviewed file changed"));
+                }
+                renameat2(
+                    &parent,
+                    leaf.as_os_str(),
+                    &private,
+                    temporary,
+                    RenameFlags::RENAME_NOREPLACE,
+                )?;
+                let moved =
+                    read_leaf(&private, temporary).and_then(|f| FileIdentity::read(&f.metadata()?));
+                if !moved.as_ref().is_ok_and(|actual| {
+                    FileIdentity {
+                        changed: expected.changed,
+                        ..*actual
+                    } == expected
+                }) {
+                    renameat2(
+                        &private,
+                        temporary,
+                        &parent,
+                        leaf.as_os_str(),
+                        RenameFlags::RENAME_NOREPLACE,
+                    )?;
+                    parent.sync_all()?;
+                    return Err(invalid("Reviewed file changed"));
+                }
+                parent.sync_all()?;
+                private.sync_all()?;
+                Some(moved?)
+            } else {
+                None
+            }
+        }
+        Err(error) => return Err(error),
+    };
+    if let Some(actual) = actual {
+        if (FileIdentity {
+            changed: expected.changed,
+            ..actual
+        }) != expected
+        {
+            return Err(invalid("Staged file does not belong to this removal"));
+        }
+        unlinkat(&private, temporary, UnlinkatFlags::NoRemoveDir)?;
+        private.sync_all()?;
+    }
+    unlinkat(&parent, stage, UnlinkatFlags::RemoveDir)?;
+    parent.sync_all()
+}
+
 pub(crate) fn snapshot_download_source(
     source: File,
     cancelled: &dyn Fn() -> bool,

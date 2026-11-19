@@ -53,6 +53,7 @@ impl Server {
         let address = listener.local_addr().unwrap();
         let (stop, receiver) = oneshot::channel();
         let state = http::HttpState::new(auth.clone(), config);
+        http::recover_copy_removals(&state).await.unwrap();
         http::recover_s3_copies(&state).await.unwrap();
         let notifications = state.notifications.clone();
         let app = http::router(state.clone());
@@ -765,6 +766,238 @@ async fn sftp_backup_durably_admits_the_copy_before_provider_io() {
     assert_eq!(intent, "running");
     drop(socket);
     drop(listener);
+    server.close().await;
+}
+
+#[tokio::test]
+async fn removal_preview_selects_all_matching_copies_without_writing() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    sqlx::query(
+        "INSERT INTO backup_targets(id,name,target_type,enabled) VALUES(1,'Fixture','path',1)",
+    )
+    .execute(server.db.pool())
+    .await
+    .unwrap();
+    let backup_root = server.path.join("backups");
+    let insert = |id| {
+        let path = backup_root.join(format!("item-{id}.tar"));
+        std::fs::write(&path, b"owned fixture").unwrap();
+        sqlx::query("INSERT INTO backups(id,target_id,backup_type,status,file_path) VALUES(?,1,'FULL','COMPLETED',?)").bind(id).bind(path.to_str().unwrap().to_owned()).execute(server.db.pool())
+    };
+    for id in 1..=505 {
+        insert(id).await.unwrap();
+    }
+    let route = "/api/v1/backups/removal/preview";
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let selection = json!({"scope":"local","target_id":1,"status":"completed"});
+    assert_eq!(
+        server
+            .request("POST", route, &[], Some(selection.clone()))
+            .await
+            .0,
+        401
+    );
+    let (status, _, value) = server
+        .request("POST", route, &headers, Some(selection))
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(value["archive_count"], 505);
+    assert_eq!(value["copy_count"], 505);
+    assert_eq!(value["expires_in_seconds"], 900);
+    assert_eq!(value["items"].as_array().unwrap().len(), 505);
+    assert_eq!(value["items"][504]["backup_id"], 505);
+    assert_eq!(
+        server
+            .request(
+                "POST",
+                route,
+                &headers,
+                Some(json!({"scope":"local","target_id":1,"backup_ids":[1]}))
+            )
+            .await
+            .0,
+        422
+    );
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM backups WHERE file_path IS NOT NULL")
+            .fetch_one(server.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(remaining, 505);
+    insert(506).await.unwrap();
+    let body = json!({"token":value["token"]});
+    let execute = "/api/v1/backups/removal/execute";
+    let (status, _, result) = server
+        .request("POST", execute, &headers, Some(body.clone()))
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(result["status"], "completed");
+    assert_eq!(result["succeeded"], 505);
+    assert_eq!(
+        server
+            .request("POST", execute, &headers, Some(body))
+            .await
+            .2,
+        result
+    );
+    let remaining: Vec<i64> = sqlx::query_scalar("SELECT id FROM backups ORDER BY id")
+        .fetch_all(server.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(remaining, vec![506]);
+    assert_eq!(
+        std::fs::read(backup_root.join("item-506.tar")).unwrap(),
+        b"owned fixture"
+    );
+    assert_eq!(std::fs::read_dir(backup_root).unwrap().count(), 1);
+    server.close().await;
+}
+
+#[tokio::test]
+async fn removal_keeps_durable_intent_when_catalog_acknowledgment_fails() {
+    removal_acknowledgment_failure(true).await;
+}
+
+#[tokio::test]
+async fn removal_retry_resumes_durable_intent_once() {
+    removal_acknowledgment_failure(false).await;
+}
+
+async fn removal_acknowledgment_failure(restart: bool) {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let path = server.path.join("backups/disposable.tar");
+    std::fs::write(&path, b"discardable fixture").unwrap();
+    sqlx::raw_sql("INSERT INTO backup_targets(id,name,target_type,enabled) VALUES(1,'Fixture','path',1); CREATE TRIGGER refuse_removal BEFORE DELETE ON backups BEGIN SELECT RAISE(ABORT,'fixture refused catalog acknowledgment'); END;").execute(server.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO backups(id,target_id,backup_type,status,file_path) VALUES(1,1,'FULL','COMPLETED',?)").bind(path.to_str().unwrap()).execute(server.db.pool()).await.unwrap();
+    let (status, _, preview) = server
+        .request(
+            "POST",
+            "/api/v1/backups/removal/preview",
+            &headers,
+            Some(json!({"scope":"local","backup_ids":[1]})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let (status, _, result) = server
+        .request(
+            "POST",
+            "/api/v1/backups/removal/execute",
+            &headers,
+            Some(json!({"token":preview["token"]})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(result["failed"], 1);
+    assert!(result["retry_token"].is_string());
+    let pending: bool=sqlx::query_scalar("SELECT json_type(backup_metadata,'$.native_copy_removal')='object' FROM backups WHERE id=1").fetch_one(server.db.pool()).await.unwrap();
+    assert!(pending);
+    assert!(!path.exists());
+    sqlx::query("DROP TRIGGER refuse_removal")
+        .execute(server.db.pool())
+        .await
+        .unwrap();
+    let reopened = if restart {
+        let config = (*server.state.config).clone();
+        let dir = server.stop_preserving_files().await;
+        Server::open_at(config, dir).await
+    } else {
+        let execute = "/api/v1/backups/removal/execute";
+        let retry = json!({"token":result["retry_token"]});
+        let (status, _, settled) = server
+            .request("POST", execute, &headers, Some(retry.clone()))
+            .await;
+        assert_eq!(status, 200);
+        assert_eq!(settled["succeeded"], 1);
+        assert_eq!(
+            server
+                .request("POST", execute, &headers, Some(retry))
+                .await
+                .2,
+            settled
+        );
+        assert_eq!(
+            server
+                .request(
+                    "POST",
+                    execute,
+                    &headers,
+                    Some(json!({"token":preview["token"]}))
+                )
+                .await
+                .2,
+            result
+        );
+        server
+    };
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM backups")
+        .fetch_one(reopened.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+    assert!(!path.exists());
+    reopened.close().await;
+}
+
+#[tokio::test]
+async fn removal_does_not_unlink_replaced_or_shared_archives() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let root = server.path.join("backups");
+    let changed = root.join("changed.tar");
+    let shared = root.join("shared.tar");
+    std::fs::write(&changed, b"old").unwrap();
+    std::fs::write(&shared, b"both").unwrap();
+    sqlx::query(
+        "INSERT INTO backup_targets(id,name,target_type,enabled) VALUES(1,'Fixture','path',1)",
+    )
+    .execute(server.db.pool())
+    .await
+    .unwrap();
+    for (id, path) in [(1, &changed), (2, &shared), (3, &shared)] {
+        sqlx::query("INSERT INTO backups(id,target_id,backup_type,status,file_path) VALUES(?,1,'FULL','COMPLETED',?)").bind(id).bind(path.to_str().unwrap()).execute(server.db.pool()).await.unwrap();
+    }
+    let (status, _, preview) = server
+        .request(
+            "POST",
+            "/api/v1/backups/removal/preview",
+            &headers,
+            Some(json!({"scope":"local","backup_ids":[1,2]})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    std::fs::write(root.join("replacement"), b"new").unwrap();
+    std::fs::rename(root.join("replacement"), &changed).unwrap();
+    let (status, _, result) = server
+        .request(
+            "POST",
+            "/api/v1/backups/removal/execute",
+            &headers,
+            Some(json!({"token":preview["token"]})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(result["status"], "incomplete");
+    assert_eq!(result["skipped"], 2);
+    assert_eq!(std::fs::read(changed).unwrap(), b"new");
+    assert_eq!(std::fs::read(shared).unwrap(), b"both");
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM backups")
+        .fetch_one(server.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 3);
     server.close().await;
 }
 

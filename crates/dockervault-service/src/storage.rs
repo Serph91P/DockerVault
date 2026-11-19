@@ -228,8 +228,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct FileIdentity {
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct FileIdentity {
     device: u64,
     inode: u64,
     length: u64,
@@ -237,7 +237,7 @@ struct FileIdentity {
     changed: (i64, i64),
 }
 impl FileIdentity {
-    fn read(metadata: &Metadata) -> io::Result<Self> {
+    pub(crate) fn read(metadata: &Metadata) -> io::Result<Self> {
         if !metadata.is_file() {
             return Err(invalid("Transfer source is not a regular file"));
         }

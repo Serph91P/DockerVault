@@ -4,6 +4,8 @@ mod backup_metrics;
 mod backup_restore;
 mod backup_submit;
 mod backups;
+mod copy_removal;
+pub use copy_removal::recover_copy_removals;
 mod ftp_sync;
 mod operations;
 mod s3_sync;
@@ -35,6 +37,7 @@ pub struct HttpState {
     download_jobs: crate::ownership::Owner,
     backup_jobs: crate::ownership::Owner,
     backup_metrics: Arc<std::sync::Mutex<backup_metrics::Metrics>>,
+    removal_previews: Arc<std::sync::Mutex<copy_removal::Previews>>,
     backup_claims: crate::jobs::Claims,
 }
 impl HttpState {
@@ -56,6 +59,7 @@ impl HttpState {
             download_jobs: crate::ownership::Owner::new(4).expect("positive download capacity"),
             backup_jobs: crate::ownership::Owner::new(4).expect("positive backup capacity"),
             backup_metrics: Arc::default(),
+            removal_previews: Arc::default(),
             backup_claims: crate::jobs::Claims::default(),
         }
     }
@@ -102,6 +106,14 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/backups/history/{id}", get(backups::history_detail))
         .route("/api/v1/backups/{id}", get(backups::get))
         .route("/api/v1/backups/{id}/logs", get(backups::logs))
+        .route(
+            "/api/v1/backups/removal/preview",
+            post(copy_removal::preview),
+        )
+        .route(
+            "/api/v1/backups/removal/execute",
+            post(copy_removal::execute),
+        )
         .route(
             "/api/v1/backups/{id}/files",
             get(backups::files).post(backups::encrypted_files),

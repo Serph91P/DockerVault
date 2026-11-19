@@ -141,6 +141,11 @@ async fn run() -> Result<(), &'static str> {
     let listener = TcpListener::bind(address).await.map_err(|_| "listener")?;
     let auth = AuthService::new(db.pool().clone());
     let state = HttpState::new(auth.clone(), config);
+    if !activation_pending {
+        http::recover_copy_removals(&state)
+            .await
+            .map_err(|_| "copy removal recovery")?;
+    }
     http::recover_s3_copies(&state).await.map_err(|error| {
         tracing::error!(%error, "S3 sync journal recovery failed");
         "storage recovery"
