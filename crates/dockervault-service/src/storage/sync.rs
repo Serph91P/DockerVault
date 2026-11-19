@@ -10,7 +10,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct LocalCopy {
     pub storage_id: i64,
     pub root: PathBuf,
@@ -72,7 +72,7 @@ pub(crate) async fn settle_local_copies(
     };
     let proof: Publication =
         serde_json::from_str(&receipt).map_err(|e| Error::Decode(Box::new(e)))?;
-    for copy in proof.local_copies {
+    for copy in &proof.local_copies {
         let pending: Option<i64> = sqlx::query_scalar("SELECT id FROM backup_storage_syncs WHERE backup_id=? AND storage_id=? AND remote_path=? AND sync_status='running'")
             .bind(id).bind(copy.storage_id).bind(&copy.archive).fetch_optional(pool).await?;
         let Some(pending) = pending else {
@@ -96,6 +96,7 @@ pub(crate) async fn settle_local_copies(
         let job_cancel = cancel.clone();
         let (storage_id, path) = (copy.storage_id, copy.archive.clone());
         let artifacts = proof.artifacts.clone();
+        let copy = copy.clone();
         let result = owner
             .submit_blocking(move |worker_cancel| {
                 let cancelled = || job_cancel.is_cancelled() || worker_cancel.is_cancelled();
@@ -156,14 +157,123 @@ pub(crate) async fn settle_local_copies(
             );
         }
     }
-    // A copy receipt is not a local cleanup receipt. Keep the obligation until
-    // catalog recovery and crash-safe deletion of both local artifacts can settle it.
-    if !proof.delete_local_after_sync {
-        sqlx::query("UPDATE backups SET backup_metadata=json_remove(backup_metadata,'$.native_local_sync')
-            WHERE id=? AND NOT EXISTS(SELECT 1 FROM backup_storage_syncs WHERE backup_id=? AND sync_status='running')")
-            .bind(id).bind(id).execute(pool).await?;
+    let cleanup = proof.delete_local_after_sync && !proof.local_copies.is_empty();
+    let checked = if cleanup {
+        let proof = proof.clone();
+        let cancel = cancel.clone();
+        match owner
+            .submit_blocking(move |worker| {
+                verify_cleanup_copies(&proof, &|| cancel.is_cancelled() || worker.is_cancelled())
+            })
+            .map_err(work_error)?
+            .wait()
+            .await
+            .map_err(work_error)?
+        {
+            Ok(identities) => identities,
+            Err(error) => {
+                tracing::warn!(backup_id=id, %error, "LOCAL cleanup remains unsettled");
+                return Ok(());
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    for copy in &proof.local_copies {
+        let current: Option<String> = sqlx::query_scalar("SELECT r.base_path FROM remote_storages r JOIN backup_storage_syncs s ON s.storage_id=r.id WHERE r.id=? AND r.enabled=1 AND r.storage_type='local' AND r.base_path IS NOT NULL AND s.backup_id=? AND s.remote_path=? AND s.sync_status='completed'")
+            .bind(copy.storage_id).bind(id).bind(&copy.archive).fetch_optional(&mut *tx).await?;
+        if current
+            .as_deref()
+            .and_then(|base| std::path::absolute(base).ok())
+            .as_ref()
+            != Some(&copy.root)
+        {
+            return Ok(());
+        }
     }
-    Ok(())
+    if cleanup {
+        let cancel = cancel.clone();
+        let result = owner
+            .submit_blocking(move |worker| {
+                let cancelled = || cancel.is_cancelled() || worker.is_cancelled();
+                for copy in &checked {
+                    check(&cancelled)?;
+                    if FileIdentity::read(&copy.file.metadata()?)? != copy.identity
+                        || FileIdentity::read(
+                            &local::open_download_source(&copy.root, &copy.path)?.metadata()?,
+                        )? != copy.identity
+                    {
+                        return Err(invalid("LOCAL copy changed after cleanup readback"));
+                    }
+                }
+                // Remove the archive first so that reads in the intermediate state can use the copy pair.
+                for (index, artifact) in proof.artifacts.iter().enumerate() {
+                    check(&cancelled)?;
+                    local::remove_owned_publication(artifact, &proof.token, index)?;
+                }
+                Ok::<_, io::Error>(())
+            })
+            .map_err(work_error)?
+            .wait()
+            .await
+            .map_err(work_error)?;
+        if let Err(error) = result {
+            tracing::warn!(backup_id=id, %error, "LOCAL cleanup remains unsettled");
+            return Ok(());
+        }
+    }
+    sqlx::query("UPDATE backups SET backup_metadata=json_remove(backup_metadata,'$.native_local_sync') WHERE id=? AND json_extract(backup_metadata,'$.native_local_sync')=json(?)")
+        .bind(id).bind(receipt).execute(&mut *tx).await?;
+    tx.commit().await
+}
+
+struct CheckedCopy {
+    root: PathBuf,
+    path: PathBuf,
+    identity: FileIdentity,
+    file: std::fs::File,
+}
+
+fn verify_cleanup_copies(
+    proof: &Publication,
+    cancelled: &dyn Fn() -> bool,
+) -> io::Result<Vec<CheckedCopy>> {
+    if proof.token.len() != 32
+        || !proof.token.bytes().all(|b| b.is_ascii_hexdigit())
+        || !(1..=2).contains(&proof.artifacts.len())
+    {
+        return Err(invalid("Invalid LOCAL cleanup proof"));
+    }
+    let mut checked = Vec::new();
+    for copy in &proof.local_copies {
+        let meta = local::open_root(&copy.root)?.metadata()?;
+        if (meta.dev(), meta.ino()) != (copy.device, copy.inode) {
+            return Err(invalid("LOCAL copy destination changed before cleanup"));
+        }
+        for (index, artifact) in proof.artifacts.iter().enumerate() {
+            let path = PathBuf::from(if index == 0 {
+                copy.archive.clone()
+            } else {
+                dockervault_core::crypto::key_sidecar_path(&copy.archive)
+            });
+            let mut file = local::open_download_source(&copy.root, &path)?;
+            let identity = FileIdentity::read(&file.metadata()?)?;
+            if identity.length != artifact.length
+                || (identity.device, identity.inode) == (artifact.device, artifact.inode)
+                || super::digest_hex(&super::hash_reader(&mut file, cancelled)?) != artifact.digest
+            {
+                return Err(invalid("LOCAL copy failed cleanup readback"));
+            }
+            checked.push(CheckedCopy {
+                root: copy.root.clone(),
+                path,
+                identity,
+                file,
+            });
+        }
+    }
+    Ok(checked)
 }
 
 pub(super) async fn reconcile_local_copies(pool: &SqlitePool, owner: &Owner) -> Result<(), Error> {

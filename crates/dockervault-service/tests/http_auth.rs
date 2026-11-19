@@ -498,6 +498,34 @@ async fn sync_to_remote_sqlite_faults_preserve_custody() {
                 .await
                 .unwrap();
         }
+        sqlx::query("CREATE TRIGGER deny_cleanup_receipt BEFORE UPDATE OF backup_metadata ON backups WHEN json_type(OLD.backup_metadata,'$.native_local_sync')='object' AND json_type(NEW.backup_metadata,'$.native_local_sync') IS NULL BEGIN SELECT RAISE(ABORT,'cleanup settlement unavailable'); END")
+            .execute(pool).await.unwrap();
+        let result = dockervault_service::storage::reconcile_backup_storage(
+            pool,
+            backups.to_str().unwrap(),
+            &owner,
+        )
+        .await;
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("cleanup settlement unavailable")
+        );
+        assert_eq!(
+            std::fs::read_dir(backups.join("Source")).unwrap().count(),
+            0
+        );
+        let retained: bool = sqlx::query_scalar("SELECT json_type(backup_metadata,'$.native_local_sync')='object' FROM backups WHERE id=?")
+            .bind(id).fetch_one(pool).await.unwrap();
+        assert!(
+            retained,
+            "cleanup cannot lose its obligation when SQLite rejects settlement"
+        );
+        sqlx::query("DROP TRIGGER deny_cleanup_receipt")
+            .execute(pool)
+            .await
+            .unwrap();
         for _ in 0..2 {
             dockervault_service::storage::reconcile_backup_storage(
                 pool,
@@ -516,11 +544,15 @@ async fn sync_to_remote_sqlite_faults_preserve_custody() {
             assert_eq!(rows, [(7, "completed".into())]);
         }
         assert_eq!(std::fs::read_dir(remote.join("Source")).unwrap().count(), 2);
-        let retained: bool = sqlx::query_scalar("SELECT json_extract(backup_metadata,'$.native_local_sync.delete_local_after_sync') FROM backups WHERE id=?")
+        let retained: bool = sqlx::query_scalar("SELECT json_type(backup_metadata,'$.native_local_sync') IS NOT NULL FROM backups WHERE id=?")
             .bind(id).fetch_one(pool).await.unwrap();
         assert!(
-            retained,
-            "a completed copy must not erase the unimplemented cleanup obligation"
+            !retained,
+            "verified cleanup and SQLite settlement clear the obligation"
+        );
+        assert_eq!(
+            std::fs::read_dir(backups.join("Source")).unwrap().count(),
+            0
         );
         owner.shutdown(None).await;
         server.close().await;

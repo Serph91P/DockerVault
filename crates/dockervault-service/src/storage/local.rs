@@ -601,6 +601,95 @@ pub(super) fn ensure_copy(
     Ok(())
 }
 
+pub(super) fn remove_owned_publication(
+    artifact: &super::PublishedArtifact,
+    token: &str,
+    index: usize,
+) -> io::Result<()> {
+    use nix::fcntl::{RenameFlags, renameat2};
+
+    let directory = open_root(
+        artifact
+            .path
+            .parent()
+            .ok_or_else(|| invalid("Missing publication parent"))?,
+    )?;
+    let leaf = artifact
+        .path
+        .file_name()
+        .ok_or_else(|| invalid("Missing publication leaf"))?;
+    let staging = format!(".dv-cleanup-{token}-{index}");
+    match mkdirat(&directory, staging.as_str(), Mode::S_IRWXU) {
+        Ok(()) => directory.sync_all()?,
+        Err(nix::errno::Errno::EEXIST) => {}
+        Err(error) => return Err(error.into()),
+    }
+    let private = open_directory(&directory, OsStr::new(&staging))?;
+    let meta = private.metadata()?;
+    if meta.mode() & 0o777 != 0o700 || meta.uid() != nix::unistd::geteuid().as_raw() {
+        return Err(invalid("Cleanup directory is not private to the service"));
+    }
+    let staged = OsStr::new("artifact");
+    let finish = || -> io::Result<()> {
+        unlinkat(&directory, staging.as_str(), UnlinkatFlags::RemoveDir)?;
+        directory.sync_all()
+    };
+    let owned = |file: &File| -> io::Result<()> {
+        let identity = FileIdentity::read(&file.metadata()?)?;
+        let mut attr = [0u8; 32];
+        if identity.device != artifact.device
+            || identity.inode != artifact.inode
+            || identity.length != artifact.length
+            || rustix::fs::fgetxattr(file, super::PUBLICATION_ATTR, &mut attr[..])? != attr.len()
+            || attr != token.as_bytes()
+        {
+            return Err(invalid(
+                "Local publication no longer belongs to this backup",
+            ));
+        }
+        Ok(())
+    };
+    let file = match read_leaf(&private, staged) {
+        Ok(staged) => staged,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let existing = match read_leaf(&directory, leaf) {
+                Ok(file) => file,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return finish(),
+                Err(error) => return Err(error),
+            };
+            owned(&existing)?;
+            renameat2(
+                &directory,
+                leaf,
+                &private,
+                staged,
+                RenameFlags::RENAME_NOREPLACE,
+            )?;
+            let moved = read_leaf(&private, staged)?;
+            if let Err(error) = owned(&moved) {
+                renameat2(
+                    &private,
+                    staged,
+                    &directory,
+                    leaf,
+                    RenameFlags::RENAME_NOREPLACE,
+                )?;
+                private.sync_all()?;
+                directory.sync_all()?;
+                return Err(error);
+            }
+            private.sync_all()?;
+            directory.sync_all()?;
+            moved
+        }
+        Err(error) => return Err(error),
+    };
+    owned(&file)?;
+    unlinkat(&private, staged, UnlinkatFlags::NoRemoveDir)?;
+    private.sync_all()?;
+    finish()
+}
+
 pub(crate) fn snapshot_download(
     root: &Path,
     path: &Path,

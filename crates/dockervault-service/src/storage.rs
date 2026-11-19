@@ -31,7 +31,7 @@ use sha2::{Digest, Sha256};
 
 const PUBLICATION_ATTR: &str = "user.dockervault.publication";
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Publication {
     pub token: String,
     pub checksum: String,
