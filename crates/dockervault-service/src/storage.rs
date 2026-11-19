@@ -74,6 +74,12 @@ pub async fn settle_unpublished_archives(
             if confirmed_absent {
                 sqlx::query("UPDATE backups SET backup_metadata=json_remove(backup_metadata,'$.active_artifacts','$.native_ephemeral_archive') WHERE id=? AND backup_metadata=? AND status IN ('PENDING','RUNNING','FAILED')")
                     .bind(id).bind(metadata).execute(pool).await?;
+            } else {
+                sqlx::query("UPDATE backups SET status='FAILED', error_message=?,
+                    completed_at=coalesce(completed_at,strftime('%Y-%m-%d %H:%M:%f000','now'))
+                    WHERE id=? AND backup_metadata=? AND status IN ('PENDING','RUNNING')")
+                    .bind("Interrupted backup: publication ownership unconfirmed. Reserved paths were preserved; verify them before recovery.")
+                    .bind(id).bind(metadata).execute(pool).await?;
             }
         }
     }

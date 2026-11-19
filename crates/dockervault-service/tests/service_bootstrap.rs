@@ -163,6 +163,15 @@ fn standalone_service_migrates_serves_and_shuts_down_without_python() {
         std::fs::read(survivor).unwrap(),
         b"unknown artifact must not be deleted"
     );
+    let error: String = db
+        .query_row("SELECT error_message FROM backups WHERE id=2", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(
+        error.contains("publication ownership unconfirmed"),
+        "{error}"
+    );
     assert_eq!(
         std::fs::read(neighbor).unwrap(),
         b"fixture must not be replayed"
@@ -230,14 +239,14 @@ fn standalone_service_migrates_serves_and_shuts_down_without_python() {
     for row in &states[..2] {
         assert_eq!(row.0, "FAILED");
         assert!(row.1.is_some());
-        assert_eq!(
-            row.2.as_deref(),
-            Some(
-                "Interrupted by restart; accepted job terminally failed. Legacy workload state may be unknown: verify workloads manually and retry."
-            )
-        );
         assert_eq!(row.3, None);
     }
+    assert_eq!(
+        states[0].2.as_deref(),
+        Some(
+            "Interrupted by restart; accepted job terminally failed. Legacy workload state may be unknown: verify workloads manually and retry."
+        )
+    );
     assert_eq!(
         states[2],
         ("COMPLETED".into(), None, None, Some("completed.tar".into()))
