@@ -547,6 +547,60 @@ fn read_leaf(parent: &File, name: &OsStr) -> io::Result<File> {
     Ok(file)
 }
 
+pub(super) fn ensure_copy(
+    root: &File,
+    path: &Path,
+    source: &VerifiedSource,
+    cancelled: &dyn Fn() -> bool,
+) -> io::Result<()> {
+    use nix::{fcntl::AT_FDCWD, unistd::linkat};
+    use std::os::fd::AsRawFd;
+    check(cancelled)?;
+    let (dir, name) = parent(root, path, true)?;
+    match read_leaf(&dir, &name) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let mut stage = File::from(openat(
+                &dir,
+                ".",
+                OFlag::O_TMPFILE | OFlag::O_RDWR | OFlag::O_CLOEXEC,
+                Mode::S_IRUSR | Mode::S_IWUSR,
+            )?);
+            copy_complete(source.reopen()?, &mut stage, cancelled)?;
+            source.check_unchanged()?;
+            stage.sync_all()?;
+            check(cancelled)?;
+            let fd = format!("/proc/self/fd/{}", stage.as_raw_fd());
+            // Never overwrite an occupant, including during recovery of a previous copy.
+            linkat(
+                AT_FDCWD,
+                fd.as_str(),
+                &dir,
+                name.as_os_str(),
+                AtFlags::AT_SYMLINK_FOLLOW,
+            )?;
+        }
+        Err(error) => return Err(error),
+    }
+    let mut copy = read_leaf(&dir, &name)?;
+    let identity = FileIdentity::read(&copy.metadata()?)?;
+    if (identity.device, identity.inode) == (source.identity.device, source.identity.inode)
+        || identity.length != source.len()
+    {
+        return Err(invalid("Destination is not a separate recovery copy"));
+    }
+    source.verify_download(&mut copy, cancelled)?;
+    copy.sync_all()?;
+    dir.sync_all()?;
+    let (again, leaf) = parent(root, path, false)?;
+    if identity != FileIdentity::read(&copy.metadata()?)?
+        || identity != FileIdentity::read(&read_leaf(&again, &leaf)?.metadata()?)?
+    {
+        return Err(invalid("LOCAL copy changed during verification"));
+    }
+    Ok(())
+}
+
 pub(crate) fn snapshot_download(
     root: &Path,
     path: &Path,

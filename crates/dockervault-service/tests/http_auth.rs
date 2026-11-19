@@ -14,6 +14,7 @@ use tokio::{
 };
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Server {
+    state: http::HttpState,
     path: PathBuf,
     address: std::net::SocketAddr,
     stop: oneshot::Sender<()>,
@@ -50,7 +51,7 @@ impl Server {
         let (stop, receiver) = oneshot::channel();
         let state = http::HttpState::new(auth.clone(), config);
         let notifications = state.notifications.clone();
-        let app = http::router(state);
+        let app = http::router(state.clone());
         let task = tokio::spawn(async move {
             axum::serve(
                 listener,
@@ -63,6 +64,7 @@ impl Server {
             .unwrap();
         });
         Self {
+            state,
             path,
             address,
             stop,
@@ -249,6 +251,230 @@ async fn submitted_path_backup_publishes_a_verified_archive_before_completion() 
         b"preserve me"
     );
     server.close().await;
+}
+
+#[tokio::test]
+async fn sync_to_remote_publishes_a_verified_local_copy_and_records_it() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let source = server.path.join("source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("data.txt"), b"owned backup bytes").unwrap();
+    let remote = server.path.join("remote-copies");
+    std::fs::create_dir(&remote).unwrap();
+    sqlx::query(
+        "INSERT INTO remote_storages(id,name,storage_type,enabled,base_path) VALUES(7,'LocalCopy','local',1,?)",
+    )
+    .bind(remote.to_str().unwrap())
+    .execute(server.db.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO backup_targets(id,name,target_type,host_path,enabled,compression_enabled,sync_to_remote,remote_storage_ids) VALUES(1,'Source','path',?,1,0,1,'[7]')",
+    )
+    .bind(source.to_str().unwrap())
+    .execute(server.db.pool())
+    .await
+    .unwrap();
+    let (status, _, accepted) = server
+        .request(
+            "POST",
+            "/api/v1/backups",
+            &[("Cookie", &cookie), ("Origin", "http://localhost:3000")],
+            Some(json!({"target_id":1})),
+        )
+        .await;
+    assert_eq!(status, 200, "{accepted}");
+    let id = accepted["id"].as_i64().unwrap();
+    let (archive, remote_path) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let row: (String, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+                "SELECT b.status, b.file_path, s.sync_status, s.remote_path FROM backups b LEFT JOIN backup_storage_syncs s ON s.backup_id=b.id WHERE b.id=?",
+            )
+            .bind(id)
+            .fetch_one(server.db.pool())
+            .await
+            .unwrap();
+            if let (state, Some(file), Some(sync), Some(path)) = row
+                && state == "COMPLETED" && sync == "completed"
+            {
+                break (file, path);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let local_bytes = std::fs::read(&archive).unwrap();
+    let copied = std::fs::read(remote.join(&remote_path)).unwrap();
+    assert_eq!(copied, local_bytes);
+    let rows: Vec<(i64, i64, String)> = sqlx::query_as(
+        "SELECT backup_id,storage_id,sync_status FROM backup_storage_syncs WHERE backup_id=?",
+    )
+    .bind(id)
+    .fetch_all(server.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(rows, vec![(id, 7, "completed".to_owned())]);
+    server.close().await;
+}
+
+#[tokio::test]
+async fn sync_to_remote_sqlite_faults_preserve_custody() {
+    for reject_intent in [true, false] {
+        let server = Server::start("http://localhost:3000").await;
+        let cookie = server.setup().await;
+        let source = server.path.join("source");
+        let remote = server.path.join("remote-copies");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&remote).unwrap();
+        std::fs::write(source.join("data.txt"), b"synthetic encrypted sync payload").unwrap();
+        let pool = server.db.pool();
+        let recipient = age::x25519::Identity::generate().to_public().to_string();
+        sqlx::query("INSERT INTO encryption_config(id,public_key,encryption_enabled,setup_completed) VALUES(1,?,1,1)")
+            .bind(recipient).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path) VALUES(7,'LocalCopy','local',1,?)")
+            .bind(remote.to_str().unwrap()).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO backup_targets(id,name,target_type,host_path,enabled,compression_enabled,sync_to_remote,remote_storage_ids,delete_local_after_sync) VALUES(1,'Source','path',?,1,1,1,'[7]',1)")
+            .bind(source.to_str().unwrap()).execute(pool).await.unwrap();
+        let trigger = if reject_intent {
+            "CREATE TRIGGER deny_sync BEFORE INSERT ON backup_storage_syncs BEGIN SELECT RAISE(ABORT,'intent unavailable'); END"
+        } else {
+            sqlx::query("CREATE TABLE sync_settlement_attempts (id INTEGER)")
+                .execute(pool)
+                .await
+                .unwrap();
+            "CREATE TRIGGER deny_sync BEFORE UPDATE ON backup_storage_syncs WHEN NEW.sync_status='completed' BEGIN INSERT INTO sync_settlement_attempts VALUES(NEW.backup_id); SELECT RAISE(FAIL,'settlement unavailable'); END"
+        };
+        sqlx::query(trigger).execute(pool).await.unwrap();
+        let (status, _, result) = server
+            .request(
+                "POST",
+                "/api/v1/backups",
+                &[("Cookie", &cookie), ("Origin", "http://localhost:3000")],
+                Some(json!({"target_id":1})),
+            )
+            .await;
+        assert_eq!(status, 200, "{result}");
+        let id = result["id"].as_i64().unwrap();
+        let backups = server.path.join("backups");
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let published = if reject_intent {
+                    std::fs::read_dir(backups.join("Source"))
+                        .is_ok_and(|entries| entries.count() == 2)
+                } else {
+                    sqlx::query_scalar(
+                        "SELECT EXISTS(SELECT 1 FROM sync_settlement_attempts WHERE id=?)",
+                    )
+                    .bind(id)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap()
+                };
+                if published {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("archive and sidecar publication must precede the injected SQLite fault");
+        server.state.settle_storage().await.unwrap();
+        let sync: Option<String> =
+            sqlx::query_scalar("SELECT sync_status FROM backup_storage_syncs WHERE backup_id=?")
+                .bind(id)
+                .fetch_optional(pool)
+                .await
+                .unwrap();
+        if reject_intent {
+            assert_eq!(sync, None);
+            assert_eq!(std::fs::read_dir(&remote).unwrap().count(), 0);
+        } else {
+            assert_eq!(sync.as_deref(), Some("running"));
+            for file in std::fs::read_dir(backups.join("Source"))
+                .unwrap()
+                .map(Result::unwrap)
+            {
+                assert_eq!(
+                    std::fs::read(file.path()).unwrap(),
+                    std::fs::read(remote.join("Source").join(file.file_name())).unwrap()
+                );
+            }
+        }
+        assert_eq!(
+            std::fs::read_dir(backups.join("Source")).unwrap().count(),
+            2
+        );
+        sqlx::query("DROP TRIGGER deny_sync")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE backup_targets SET remote_storage_ids='[]' WHERE id=1")
+            .execute(pool)
+            .await
+            .unwrap();
+        let owner = Owner::new(1).unwrap();
+        if !reject_intent {
+            let archive: String = sqlx::query_scalar("SELECT file_path FROM backups WHERE id=?")
+                .bind(id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+            let bytes = std::fs::read(&archive).unwrap();
+            let mut wrong = bytes.clone();
+            wrong[0] ^= 1;
+            std::fs::write(&archive, wrong).unwrap();
+            std::fs::remove_dir_all(remote.join("Source")).unwrap();
+            dockervault_service::storage::reconcile_backup_storage(
+                pool,
+                backups.to_str().unwrap(),
+                &owner,
+            )
+            .await
+            .unwrap();
+            let pending: String = sqlx::query_scalar(
+                "SELECT sync_status FROM backup_storage_syncs WHERE backup_id=?",
+            )
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            assert_eq!(pending, "running");
+            assert_eq!(
+                std::fs::read_dir(&remote).unwrap().count(),
+                0,
+                "wrong ciphertext must not be recopied"
+            );
+            std::fs::write(archive, bytes).unwrap();
+        }
+        for _ in 0..2 {
+            dockervault_service::storage::reconcile_backup_storage(
+                pool,
+                backups.to_str().unwrap(),
+                &owner,
+            )
+            .await
+            .unwrap();
+            let rows: Vec<(i64, String)> = sqlx::query_as(
+                "SELECT storage_id,sync_status FROM backup_storage_syncs WHERE backup_id=?",
+            )
+            .bind(id)
+            .fetch_all(pool)
+            .await
+            .unwrap();
+            assert_eq!(rows, [(7, "completed".into())]);
+        }
+        assert_eq!(std::fs::read_dir(remote.join("Source")).unwrap().count(), 2);
+        let retained: bool = sqlx::query_scalar("SELECT json_extract(backup_metadata,'$.native_local_sync.delete_local_after_sync') FROM backups WHERE id=?")
+            .bind(id).fetch_one(pool).await.unwrap();
+        assert!(
+            retained,
+            "a completed copy must not erase the unimplemented cleanup obligation"
+        );
+        owner.shutdown(None).await;
+        server.close().await;
+    }
 }
 
 #[tokio::test]

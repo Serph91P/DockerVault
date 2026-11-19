@@ -2,7 +2,10 @@ use super::{HttpState, auth::required_user};
 use crate::{
     jobs::Resource,
     journal::{BackupKind, Journal, JournalError},
-    storage::{Publication, PublishedArtifact, local, mark_publication},
+    storage::{
+        LocalCopy, Publication, PublishedArtifact, complete_publication, local, mark_publication,
+        settle_local_copies,
+    },
 };
 use axum::{
     Json,
@@ -48,6 +51,10 @@ struct Plan {
     compression_enabled: Option<bool>,
     include_paths: Option<String>,
     exclude_paths: Option<String>,
+    sync_to_remote: bool,
+    delete_local_after_sync: bool,
+
+    remote_storage_ids: Vec<i64>,
     unsupported: bool,
     recipient: Option<String>,
 }
@@ -72,7 +79,7 @@ pub(super) async fn submit(
         };
         let _ = admitted.send(Ok(response));
         if execute(&worker, id, input.target_id, &cancel).await.is_err() {
-            let result = sqlx::query("UPDATE backups SET status='FAILED',error_message='Archive job did not complete',completed_at=strftime('%Y-%m-%d %H:%M:%f000','now') WHERE id=? AND status IN ('PENDING','RUNNING')")
+            let result = sqlx::query("UPDATE backups SET status='FAILED',error_message='Archive job did not complete',completed_at=strftime('%Y-%m-%d %H:%M:%f000','now') WHERE id=? AND status IN ('PENDING','RUNNING') AND json_extract(backup_metadata,'$.native_publication') IS NULL")
                 .bind(id).execute(worker.auth.pool()).await;
             if result.is_err() { tracing::error!(backup_id=id, "Failed to record interrupted backup state"); }
         }
@@ -100,7 +107,10 @@ fn error((status, message): Failure) -> Response {
 
 async fn plan(state: &HttpState, id: i64) -> Result<Plan, Failure> {
     let row = sqlx::query("SELECT name,host_path,target_type,enabled,compression_enabled,include_paths,exclude_paths,
-          coalesce(sync_to_remote,0) OR coalesce(delete_local_after_sync,0) OR retention_policy_id IS NOT NULL
+          coalesce(sync_to_remote,0) AS sync_to_remote,
+          coalesce(delete_local_after_sync,0) AS delete_local_after_sync,
+          coalesce(remote_storage_ids,'[]') AS remote_storage_ids,
+          retention_policy_id IS NOT NULL
           OR coalesce(pre_backup_command,'')<>'' OR coalesce(post_backup_command,'')<>''
           OR coalesce(dependencies,'[]') NOT IN ('[]','null') AS unsupported,
           (SELECT public_key FROM encryption_config WHERE encryption_enabled=1 ORDER BY id LIMIT 1) AS recipient
@@ -108,6 +118,7 @@ async fn plan(state: &HttpState, id: i64) -> Result<Plan, Failure> {
         .bind(id).fetch_optional(state.auth.pool()).await.map_err(|_| INTERNAL)?
         .ok_or((StatusCode::NOT_FOUND,"Target not found"))?;
     let plan = (|| -> Result<_, sqlx::Error> {
+        let remote: String = row.try_get("remote_storage_ids")?;
         Ok(Plan {
             name: row.try_get("name")?,
             host_path: row.try_get("host_path")?,
@@ -116,6 +127,11 @@ async fn plan(state: &HttpState, id: i64) -> Result<Plan, Failure> {
             compression_enabled: row.try_get("compression_enabled")?,
             include_paths: row.try_get("include_paths")?,
             exclude_paths: row.try_get("exclude_paths")?,
+            sync_to_remote: row.try_get("sync_to_remote")?,
+            delete_local_after_sync: row.try_get("delete_local_after_sync")?,
+            remote_storage_ids: serde_json::from_str::<Option<Vec<i64>>>(&remote)
+                .map_err(|error| sqlx::Error::Decode(Box::new(error)))?
+                .unwrap_or_default(),
             unsupported: row.try_get("unsupported")?,
             recipient: row.try_get("recipient")?,
         })
@@ -134,7 +150,8 @@ async fn plan(state: &HttpState, id: i64) -> Result<Plan, Failure> {
 }
 
 async fn admit(state: &HttpState, target_id: i64, kind: RunType) -> Result<(i64, Value), Failure> {
-    plan(state, target_id).await?;
+    let plan = plan(state, target_id).await?;
+    local_destinations(state, &plan).await?;
     if !matches!(kind, RunType::Full) {
         return Err(UNSUPPORTED);
     }
@@ -170,6 +187,27 @@ async fn admit(state: &HttpState, target_id: i64, kind: RunType) -> Result<(i64,
     ))
 }
 
+async fn local_destinations(
+    state: &HttpState,
+    plan: &Plan,
+) -> Result<Vec<(i64, PathBuf)>, Failure> {
+    let mut destinations = Vec::new();
+    if plan.sync_to_remote {
+        let ids = plan
+            .remote_storage_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        for id in ids {
+            let base: Option<String> = sqlx::query_scalar("SELECT base_path FROM remote_storages WHERE id=? AND enabled=1 AND storage_type='local' AND base_path IS NOT NULL")
+                .bind(id).fetch_optional(state.auth.pool()).await.map_err(|_| INTERNAL)?;
+            let base = base.filter(|path| !path.is_empty()).ok_or(UNSUPPORTED)?;
+            destinations.push((id, std::path::absolute(base).map_err(|_| INTERNAL)?));
+        }
+    }
+    Ok(destinations)
+}
+
 async fn execute(
     state: &HttpState,
     id: i64,
@@ -182,6 +220,7 @@ async fn execute(
         .await
         .map_err(|_| ())?;
     let plan = plan(state, target).await.map_err(|_| ())?;
+    let destinations = local_destinations(state, &plan).await.map_err(|_| ())?;
     let root = PathBuf::from(&state.config.backup_base_path);
     if root.as_os_str().is_empty() {
         return Err(());
@@ -233,6 +272,11 @@ async fn execute(
         .recipient
         .as_ref()
         .map(|_| dockervault_core::crypto::key_sidecar_path(&stored));
+    let remote_name = Path::new(&stored)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(())?;
+    let remote_archive = format!("{safe}/{remote_name}");
     let request = json!({"version":1,"dest":Path::new("/backups").join(&relative),"sources":[[&layout, &source]],"compress":compress,
         "include_paths":parse_filter(plan.include_paths)?,"exclude_paths":parse_filter(plan.exclude_paths)?});
     let pool = state.auth.pool();
@@ -263,6 +307,14 @@ async fn execute(
             }
             let fd = local::open_root(&source)?;
             let parent = local::open_or_create_root(&root.join(&safe))?;
+            let mut local_copies = Vec::with_capacity(destinations.len());
+            for (storage_id, copy_root) in destinations {
+                if copy_root.starts_with(&source) || source.starts_with(&copy_root) || copy_root.starts_with(&root) || root.starts_with(&copy_root) {
+                    return Err(io::Error::other("LOCAL destination overlaps source or backup storage"));
+                }
+                let meta = local::open_root(&copy_root)?.metadata()?;
+                local_copies.push(LocalCopy { storage_id, root: copy_root, device: meta.dev(), inode: meta.ino(), archive: remote_archive.clone() });
+            }
             let request =
                 Request::parse(&serde_json::to_vec(&request)?).map_err(io::Error::other)?;
             let (mut archive, checksum, mut wrapped_file) = if let Some(recipient) = plan.recipient {
@@ -289,28 +341,32 @@ async fn execute(
             if cancelled() {
                 return Err(io::ErrorKind::Interrupted.into());
             }
-            let proof = serde_json::to_string(&Publication { token, checksum: checksum.clone(), artifacts })?;
+            let delete_local_after_sync = plan.delete_local_after_sync && !local_copies.is_empty();
+            let proof = Publication { token, checksum, artifacts, local_copies, delete_local_after_sync };
+            let serialized = serde_json::to_string(&proof)?;
             let staged = runtime.block_on(sqlx::query("UPDATE backups SET backup_metadata=json_set(backup_metadata,'$.native_publication',json(?)) WHERE id=? AND status='RUNNING'")
-                .bind(proof).bind(id).execute(&journal_pool)).map_err(io::Error::other)?;
+                .bind(serialized).bind(id).execute(&journal_pool)).map_err(io::Error::other)?;
             if staged.rows_affected() != 1 || cancelled() { return Err(io::ErrorKind::Interrupted.into()); }
             // The durable receipt precedes both links, and key custody precedes ciphertext.
             if let (Some(key), Some(path)) = (&wrapped_file, &key_output) { publish(&parent, key, Path::new(path))?; }
             publish(&parent, &archive, Path::new(&output))?;
-            Ok((length, checksum))
+            Ok(proof)
         })
         .map_err(|_| ())?
         .wait()
         .await
         .map_err(|_| ())?
         .map_err(|_| ())?;
-    let len = i64::try_from(result.0).map_err(|_| ())?;
-    let changed = sqlx::query("UPDATE backups SET status='COMPLETED', file_path=?,file_size=?,checksum=?,encrypted=?,encryption_key_path=?,completed_at=strftime('%Y-%m-%d %H:%M:%f000','now'), duration_seconds=max(0,cast((julianday('now')-julianday(started_at))*86400 as integer)),backup_metadata=json_remove(backup_metadata,'$.active_artifacts','$.native_ephemeral_archive','$.native_publication') WHERE id=? AND status='RUNNING'")
-        .bind(stored).bind(len).bind(result.1).bind(sidecar.is_some()).bind(sidecar).bind(id).execute(pool).await.map_err(|_| ())?;
-    if changed.rows_affected() == 1 {
-        Ok(())
-    } else {
-        Err(())
-    }
+    complete_publication(pool, id, &result)
+        .await
+        .map_err(|error| {
+            tracing::warn!(backup_id=id, %error, "Archive publication remains unsettled");
+        })?;
+    settle_local_copies(pool, state.auth.blocking(), id, cancel)
+        .await
+        .map_err(|error| {
+            tracing::warn!(backup_id=id, %error, "Sync settlement remains pending");
+        })
 }
 
 fn prepare_encrypted(

@@ -3,6 +3,8 @@ pub mod ftp;
 pub mod local;
 pub mod s3;
 pub mod ssh;
+mod sync;
+pub(crate) use sync::{LocalCopy, complete_publication, settle_local_copies};
 mod upload;
 pub mod webdav;
 
@@ -34,9 +36,13 @@ pub(crate) struct Publication {
     pub token: String,
     pub checksum: String,
     pub artifacts: Vec<PublishedArtifact>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_copies: Vec<LocalCopy>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub delete_local_after_sync: bool,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PublishedArtifact {
     pub path: PathBuf,
     pub length: u64,
@@ -168,18 +174,7 @@ pub async fn reconcile_archive_publications(
                 (absent, verified)
             }).map_err(|e|sqlx::Error::Io(io::Error::other(e)))?.wait().await.map_err(|e|sqlx::Error::Io(io::Error::other(e)))?;
             if let Some(proof) = verified {
-                let archive = &proof.artifacts[0];
-                let sidecar = proof.artifacts.get(1).and_then(|entry| entry.path.to_str());
-                if let (Some(path), Ok(size)) =
-                    (archive.path.to_str(), i64::try_from(archive.length))
-                {
-                    sqlx::query("UPDATE backups SET status='COMPLETED',file_path=?,file_size=?,checksum=?,encrypted=?,encryption_key_path=?,
-                        completed_at=strftime('%Y-%m-%d %H:%M:%f000','now'),error_message=NULL,
-                        duration_seconds=max(0,cast((julianday('now')-julianday(started_at))*86400 as integer)),
-                        backup_metadata=json_remove(backup_metadata,'$.active_artifacts','$.native_ephemeral_archive','$.native_publication')
-                        WHERE id=? AND backup_metadata=? AND status='RUNNING' AND file_path IS NULL")
-                        .bind(path).bind(size).bind(proof.checksum).bind(sidecar.is_some()).bind(sidecar).bind(id).bind(metadata).execute(pool).await?;
-                }
+                complete_publication(pool, id, &proof).await?;
             } else if confirmed_absent {
                 sqlx::query("UPDATE backups SET backup_metadata=json_remove(backup_metadata,'$.active_artifacts','$.native_ephemeral_archive','$.native_publication') WHERE id=? AND backup_metadata=? AND status IN ('PENDING','RUNNING','FAILED')")
                     .bind(id).bind(metadata).execute(pool).await?;
@@ -193,6 +188,15 @@ pub async fn reconcile_archive_publications(
         }
     }
 }
+pub async fn reconcile_backup_storage(
+    pool: &sqlx::SqlitePool,
+    root: &str,
+    owner: &crate::ownership::Owner,
+) -> Result<(), sqlx::Error> {
+    reconcile_archive_publications(pool, root, owner).await?;
+    sync::reconcile_local_copies(pool, owner).await
+}
+
 use std::{
     fs::{File, Metadata, OpenOptions},
     io::{self, Read},

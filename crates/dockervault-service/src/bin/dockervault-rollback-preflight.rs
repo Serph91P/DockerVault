@@ -31,7 +31,8 @@ fn check() -> Result<(), &'static str> {
             "SELECT EXISTS(SELECT 1 FROM backups WHERE status IN ('PENDING','RUNNING') OR
                CASE WHEN backup_metadata IS NULL THEN 0 WHEN NOT json_valid(backup_metadata) THEN 1
                ELSE json_type(backup_metadata,'$.native_ephemeral_archive') IS NOT NULL
-                 OR json_type(backup_metadata,'$.native_publication') IS NOT NULL END)",
+                 OR json_type(backup_metadata,'$.native_publication') IS NOT NULL
+                 OR json_type(backup_metadata,'$.native_local_sync') IS NOT NULL END)",
             "backup work or archive publication is unsettled",
         ),
         (
