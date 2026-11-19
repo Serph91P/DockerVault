@@ -274,7 +274,7 @@ impl SftpEndpoint {
         rsync: bool,
     ) -> Result<Work<Result<(), SftpDownloadError>>, SftpDownloadError> {
         let invalid = || SftpDownloadError::Process(ProcessError::InvalidSpec);
-        if child.trim_matches('/').is_empty() || child.ends_with('/') {
+        if matches!(child.rsplit('/').next(), None | Some("" | "." | "..")) {
             return Err(invalid());
         }
         let path = remote_path(&self.host, self.port, &self.base, child).map_err(|_| invalid())?;
@@ -304,7 +304,17 @@ impl SftpEndpoint {
                         .map_err(SftpDownloadError::Process)?
                 } else {
                     let mut spec = endpoint.batch_spec().map_err(SftpDownloadError::Process)?;
-                    spec.input = format!("@put {local} {remote}\n@quit\n").into_bytes();
+                    let mut nonce = [0_u8; 16];
+                    getrandom::fill(&mut nonce).map_err(|_| {
+                        SftpDownloadError::Transfer(io::Error::other("SFTP staging identity unavailable").into())
+                    })?;
+                    let parent = path.rsplit_once('/').map_or("", |(dir, _)| dir);
+                    let token = format!(".dockervault-{:032x}", u128::from_be_bytes(nonce));
+                    let stage = if path.contains('/') { format!("{parent}/{token}") } else { token };
+                    let temporary = batch_path(&format!("{stage}/artifact"));
+                    let stage = batch_path(&stage);
+                    // OpenSSH's plain rename uses posix-rename when advertised and can replace the destination.
+                    spec.input = format!("@mkdir {stage}\n@put {local} {temporary}\n@rename -l {temporary} {remote}\n@rmdir {stage}\n@quit\n").into_bytes();
                     spec
                 };
                 run_batch(&processes, put, &cancel)

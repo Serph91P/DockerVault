@@ -165,3 +165,75 @@ fn remote_children_cannot_escape_the_configured_base() {
         );
     }
 }
+
+#[tokio::test]
+#[ignore = "requires the isolated loopback OpenSSH fixture"]
+async fn openssh_upload_does_not_replace_an_occupied_destination() {
+    use dockervault_service::storage::{VerifiedSource, ssh::SftpDownloadError};
+    use std::{fs, path::PathBuf, sync::Arc};
+
+    let root = PathBuf::from(std::env::var_os("DOCKERVAULT_SFTP_FIXTURE").unwrap());
+    let processes = ProcessOwner::new(1, root.join("dockervault-process-guard")).unwrap();
+    let workers = Owner::new(1).unwrap();
+    let endpoint = SftpEndpoint {
+        host: "127.0.0.1".into(),
+        username: "dvfixture".into(),
+        port: 32223,
+        base: root.join("remote").to_str().unwrap().into(),
+        known_hosts: root.join("client/known_hosts"),
+        identity: Some(root.join("client/id")),
+        password: None,
+    };
+    let input = root.join("client/input");
+    let source = Arc::new(VerifiedSource::open(&input, &|| false).unwrap());
+    let scratch = || fs::File::open(root.join("client/scratch")).unwrap();
+
+    endpoint
+        .upload(
+            &processes,
+            &workers,
+            "weekly [fixture].tar",
+            source.clone(),
+            scratch(),
+        )
+        .unwrap()
+        .wait()
+        .await
+        .unwrap()
+        .unwrap();
+    let downloaded = endpoint
+        .download(
+            &processes,
+            &workers,
+            "weekly [fixture].tar",
+            scratch(),
+            "output.tar".into(),
+        )
+        .unwrap()
+        .wait()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(downloaded.len(), 200_003);
+    assert_eq!(downloaded.sha256_hex(), source.sha256_hex());
+    assert_eq!(
+        fs::read(root.join("client/scratch/output.tar")).unwrap(),
+        fs::read(input).unwrap()
+    );
+
+    let outcome = endpoint
+        .upload(&processes, &workers, "occupied.tar", source, scratch())
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    assert!(
+        matches!(outcome, Err(SftpDownloadError::MutationUnverified)),
+        "occupied publication: {outcome:?}"
+    );
+    assert_eq!(
+        fs::read(root.join("remote/occupied.tar")).unwrap(),
+        b"original archive\n"
+    );
+    assert_eq!((processes.active(), workers.active()), (0, 0));
+}
