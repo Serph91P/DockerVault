@@ -1,5 +1,6 @@
 //! HTTP contracts; protocol state is shared, never retained in request-owned jobs.
 mod auth;
+mod backup_metrics;
 mod backup_restore;
 mod backup_submit;
 mod backups;
@@ -33,6 +34,7 @@ pub struct HttpState {
     download_slots: Arc<tokio::sync::Semaphore>,
     download_jobs: crate::ownership::Owner,
     backup_jobs: crate::ownership::Owner,
+    backup_metrics: Arc<std::sync::Mutex<backup_metrics::Metrics>>,
     backup_claims: crate::jobs::Claims,
 }
 impl HttpState {
@@ -53,6 +55,7 @@ impl HttpState {
             download_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             download_jobs: crate::ownership::Owner::new(4).expect("positive download capacity"),
             backup_jobs: crate::ownership::Owner::new(4).expect("positive backup capacity"),
+            backup_metrics: Arc::default(),
             backup_claims: crate::jobs::Claims::default(),
         }
     }
@@ -100,6 +103,14 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/backups/{id}", get(backups::get))
         .route("/api/v1/backups/{id}/logs", get(backups::logs))
         .route("/api/v1/backups/{id}/stats", get(backups::stats))
+        .route(
+            "/api/v1/backups/metrics/summary",
+            get(backup_metrics::summary),
+        )
+        .route(
+            "/api/v1/backups/metrics/target/{id}",
+            get(backup_metrics::target),
+        )
         .route("/api/v1/backups/{id}/download", get(backups::download))
         .route(
             "/api/v1/backups/{id}/restore-review",

@@ -78,10 +78,20 @@ pub(super) async fn submit(
             Err(failure) => { let _ = admitted.send(Err(failure)); return; }
         };
         let _ = admitted.send(Ok(response));
+        let started = std::time::Instant::now();
         if execute(&worker, id, input.target_id, &cancel).await.is_err() {
             let result = sqlx::query("UPDATE backups SET status='FAILED',error_message='Archive job did not complete',completed_at=strftime('%Y-%m-%d %H:%M:%f000','now') WHERE id=? AND status IN ('PENDING','RUNNING') AND json_extract(backup_metadata,'$.native_publication') IS NULL")
                 .bind(id).execute(worker.auth.pool()).await;
             if result.is_err() { tracing::error!(backup_id=id, "Failed to record interrupted backup state"); }
+        }
+        match sqlx::query_as::<_, (String, Option<i64>)>("SELECT status,file_size FROM backups WHERE id=?")
+            .bind(id).fetch_optional(worker.auth.pool()).await {
+            Ok(Some((status, size))) if status == "COMPLETED" || status == "FAILED" => worker.backup_metrics.lock().unwrap().record(
+                input.target_id, started.elapsed().as_secs_f64(),
+                if status == "COMPLETED" { Some(size.unwrap_or_default()) } else { None },
+            ),
+            Ok(_) => {},
+            Err(_) => tracing::warn!(backup_id=id, "Could not read backup settlement for metrics"),
         }
     });
     let Ok(work) = result else {

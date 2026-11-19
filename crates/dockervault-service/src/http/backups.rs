@@ -561,7 +561,7 @@ async fn render(
         .map_err(|_| Box::new(internal()))?
         .map_err(|_| Box::new(internal()))
 }
-fn format_size(size: i64) -> String {
+pub(super) fn format_size(size: i64) -> String {
     let mut size = size as f64;
     for unit in ["B", "KB", "MB", "GB", "TB"] {
         if size < 1024. {

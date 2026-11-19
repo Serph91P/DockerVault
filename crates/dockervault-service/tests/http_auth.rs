@@ -207,6 +207,42 @@ async fn submitted_path_backup_publishes_a_verified_archive_before_completion() 
     let mut data = Vec::new();
     std::io::Read::read_to_end(&mut entry, &mut data).unwrap();
     assert_eq!(data, b"owned backup bytes");
+    let headers = [("Cookie", cookie.as_str())];
+    let summary = "/api/v1/backups/metrics/summary";
+    assert_eq!(server.request("GET", summary, &[], None).await.0, 401);
+    let (status, _, payload) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let response = server.request("GET", summary, &headers, None).await;
+            if response.0 != 200 || response.2["total_backups"] != 0 {
+                break response;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(status, 200);
+    assert_eq!(payload["total_backups"], 1);
+    assert_eq!(payload["successful_backups"], 1);
+    assert_eq!(payload["failed_backups"], 0);
+    assert_eq!(payload["success_rate"], 100.0);
+    assert_eq!(payload["total_bytes_backed_up"], length);
+    assert!(payload["last_backup_time"].is_string());
+    let (status, _, payload) = server
+        .request("GET", "/api/v1/backups/metrics/target/1", &headers, None)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(payload["average_size_bytes"], length);
+    assert!(payload["average_duration_seconds"].as_f64().unwrap() >= 0.0);
+    assert_eq!(payload["backup_count"], 1);
+    let (status, _, payload) = server
+        .request("GET", "/api/v1/backups/metrics/target/999", &headers, None)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        payload,
+        json!({"target_id":999,"average_duration_seconds":null,"average_size_bytes":null,"average_size_human":null,"backup_count":0})
+    );
     std::fs::write(source.join("data.txt"), b"post-backup mutation").unwrap();
     std::fs::write(source.join("unrelated"), b"preserve me").unwrap();
     let headers = [
