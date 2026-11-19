@@ -13,6 +13,21 @@ use tokio_util::{
 type Snapshot<T> = (File, u64, T);
 
 impl S3 {
+    /// Recovery can prove an already written object without replay or a local source.
+    pub fn verify_object(
+        &self,
+        remote: String,
+        length: u64,
+        digest: [u8; 32],
+    ) -> Result<Work<Result<bool, S3Error>>, WorkError> {
+        self.download_with(remote, move |mut reader, declared, cancel| {
+            if declared != length {
+                return Ok(false);
+            }
+            Ok(crate::storage::hash_reader(&mut reader, cancel)? == digest)
+        })
+    }
+
     pub fn download(
         &self,
         remote: String,

@@ -52,6 +52,52 @@ async fn headers(socket: &mut tokio::net::TcpStream) {
     assert!(request.contains("AWS4-HMAC-SHA256"));
 }
 #[tokio::test]
+async fn recovery_verifies_s3_bytes_without_a_local_archive() {
+    use sha2::{Digest, Sha256};
+    let bytes = b"synthetic stored encrypted bytes";
+    for corrupt in [false, true] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tasks = Owner::new(1).unwrap();
+        let io = Owner::new(1).unwrap();
+        let backend = configured(listener.local_addr().unwrap(), tasks.clone(), io.clone());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            headers(&mut socket).await;
+            let mut body = bytes.to_vec();
+            if corrupt {
+                body[0] ^= 1;
+            }
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            socket.write_all(&body).await.unwrap();
+        });
+        let verified = backend
+            .verify_object(
+                "archive".into(),
+                bytes.len() as u64,
+                Sha256::digest(bytes).into(),
+            )
+            .unwrap()
+            .wait()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(verified, !corrupt);
+        server.await.unwrap();
+        tasks.shutdown(None).await;
+        io.shutdown(None).await;
+    }
+}
+
+#[tokio::test]
 async fn s3_download_publishes_only_complete_bytes_and_computes_independent_sha256() {
     use sha2::{Digest, Sha256};
     for truncated in [false, true] {
