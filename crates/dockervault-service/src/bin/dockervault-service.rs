@@ -141,6 +141,10 @@ async fn run() -> Result<(), &'static str> {
     let listener = TcpListener::bind(address).await.map_err(|_| "listener")?;
     let auth = AuthService::new(db.pool().clone());
     let state = HttpState::new(auth.clone(), config);
+    http::recover_s3_copies(&state).await.map_err(|error| {
+        tracing::error!(%error, "S3 sync journal recovery failed");
+        "storage recovery"
+    })?;
     let router = http::router(state.clone());
     let shutdown = state.clone();
     let result = axum::serve(

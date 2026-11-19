@@ -24,6 +24,41 @@ impl Default for S3UploadPolicy {
     }
 }
 impl S3 {
+    pub(crate) fn settle_multipart(
+        &self,
+        remote: String,
+        upload_id: String,
+    ) -> Result<Work<Result<(), S3Error>>, WorkError> {
+        let backend = self.clone();
+        self.owner.submit_async(move |_| async move {
+            let result = tokio::time::timeout(
+                CLEANUP_TIMEOUT,
+                backend
+                    .client
+                    .abort_multipart_upload()
+                    .bucket(&backend.bucket)
+                    .key(backend.key(&remote))
+                    .upload_id(upload_id)
+                    .send(),
+            )
+            .await
+            .map_err(|_| S3Error::Request)?;
+            match result {
+                Ok(_) => Ok(()),
+                Err(error)
+                    if error
+                        .raw_response()
+                        .is_some_and(|r| r.status().as_u16() == 404)
+                        && aws_sdk_s3::error::ProvideErrorMetadata::code(&error)
+                            == Some("NoSuchUpload") =>
+                {
+                    Ok(())
+                }
+                Err(error) => Err(request_error(error)),
+            }
+        })
+    }
+
     /// Caller must journal remote uncertainty BEFORE admission; failure is never a verified copy.
     pub fn upload(
         &self,
@@ -104,6 +139,8 @@ impl S3 {
                     .create_multipart_upload()
                     .bucket(&backend.bucket)
                     .key(&key)
+                    .customize()
+                    .config_override(single_attempt())
                     .send();
                 tokio::pin!(creation);
                 let created = tokio::select! {

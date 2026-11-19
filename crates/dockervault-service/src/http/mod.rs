@@ -4,8 +4,10 @@ mod backup_restore;
 mod backup_submit;
 mod backups;
 mod operations;
+mod s3_sync;
 pub mod security;
 mod storage;
+pub use s3_sync::recover_s3_copies;
 pub mod ws;
 use crate::{auth::AuthService, config::Config, storage_recovery::LocalDeleteJobs};
 use axum::{

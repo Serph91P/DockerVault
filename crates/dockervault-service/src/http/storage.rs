@@ -161,7 +161,7 @@ pub(super) async fn test_saved(
     probe_provider(&state, Value::Object(saved), false).await
 }
 
-async fn open_probe_credentials(
+pub(super) async fn open_probe_credentials(
     state: &HttpState,
     config: &mut serde_json::Map<String, Value>,
     overrides: Option<&serde_json::Map<String, Value>>,
@@ -300,7 +300,7 @@ async fn probe_s3(state: &HttpState, config: &Value) -> Option<()> {
         .ok()
 }
 
-fn s3_provider(state: &HttpState, config: &Value) -> Option<crate::storage::s3::S3> {
+pub(super) fn s3_provider(state: &HttpState, config: &Value) -> Option<crate::storage::s3::S3> {
     use crate::storage::s3::{S3, S3Config};
     let field = |key: &str| config[key].as_str().map(str::to_owned);
     let io = state.auth.blocking();
@@ -639,7 +639,7 @@ pub(super) async fn list_configured_files(
     }
 }
 
-async fn configured_browse_config(
+pub(super) async fn configured_browse_config(
     state: &HttpState,
     id: i64,
 ) -> Result<serde_json::Map<String, Value>, Box<Response>> {

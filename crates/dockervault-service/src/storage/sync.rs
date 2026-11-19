@@ -1,5 +1,5 @@
 //! Native LOCAL copy obligations share the archive publication transaction.
-use super::{FileIdentity, Publication, VerifiedSource, check, invalid, local};
+use super::{FileIdentity, Publication, check, invalid, local};
 use crate::ownership::Owner;
 use serde::{Deserialize, Serialize};
 use sqlx::{Error, SqlitePool};
@@ -19,6 +19,16 @@ pub(crate) struct LocalCopy {
     pub archive: String,
 }
 
+#[derive(Clone, Deserialize, Serialize, PartialEq)]
+pub(crate) struct S3Copy {
+    pub storage_id: i64,
+    pub archive: String,
+    pub endpoint: Option<String>,
+    pub bucket: String,
+    pub region: Option<String>,
+    pub prefix: Option<String>,
+}
+
 pub(crate) async fn complete_publication(
     pool: &SqlitePool,
     id: i64,
@@ -34,7 +44,7 @@ pub(crate) async fn complete_publication(
         .ok_or_else(|| Error::Protocol("Invalid publication path".into()))?;
     let length = i64::try_from(archive.length).map_err(|e| Error::Encode(Box::new(e)))?;
     let sidecar = proof.artifacts.get(1).and_then(|key| key.path.to_str());
-    let sync = (!proof.local_copies.is_empty())
+    let sync = (!proof.local_copies.is_empty() || !proof.s3_copies.is_empty())
         .then(|| serde_json::to_string(proof))
         .transpose()
         .map_err(|e| Error::Encode(Box::new(e)))?;
@@ -49,9 +59,19 @@ pub(crate) async fn complete_publication(
     if update.rows_affected() != 1 {
         return Err(Error::RowNotFound);
     }
-    for copy in &proof.local_copies {
+    let copies = proof
+        .local_copies
+        .iter()
+        .map(|copy| (copy.storage_id, &copy.archive))
+        .chain(
+            proof
+                .s3_copies
+                .iter()
+                .map(|copy| (copy.storage_id, &copy.archive)),
+        );
+    for (storage_id, archive) in copies {
         let write = sqlx::query("INSERT INTO backup_storage_syncs(backup_id,storage_id,remote_path,sync_status) VALUES(?,?,?,'running')")
-            .bind(id).bind(copy.storage_id).bind(&copy.archive).execute(&mut *tx).await?;
+            .bind(id).bind(storage_id).bind(archive).execute(&mut *tx).await?;
         if write.rows_affected() != 1 {
             return Err(Error::RowNotFound);
         }
@@ -104,18 +124,7 @@ pub(crate) async fn settle_local_copies(
                 // Validate both artifacts against the publication receipt before writing even a sidecar.
                 let mut sources = Vec::new();
                 for entry in &artifacts {
-                    let source = VerifiedSource::open(&entry.path, &cancelled)?;
-                    let identity: FileIdentity = source.identity;
-                    if identity.device != entry.device
-                        || identity.inode != entry.inode
-                        || source.len() != entry.length
-                        || source.sha256_hex() != entry.digest
-                    {
-                        return Err(invalid(
-                            "Local recovery point no longer matches the publication receipt",
-                        ));
-                    }
-                    sources.push(source);
+                    sources.push(entry.open_verified(&cancelled)?);
                 }
                 let remote = Path::new(&copy.archive);
                 let current = local::open_root(&copy.root)?;
@@ -157,7 +166,10 @@ pub(crate) async fn settle_local_copies(
             );
         }
     }
-    let cleanup = proof.delete_local_after_sync && !proof.local_copies.is_empty();
+    // Remote copies need their own cleanup revalidation contract before local removal.
+    let cleanup = proof.delete_local_after_sync
+        && proof.s3_copies.is_empty()
+        && !proof.local_copies.is_empty();
     let checked = if cleanup {
         let proof = proof.clone();
         let cancel = cancel.clone();
@@ -180,6 +192,13 @@ pub(crate) async fn settle_local_copies(
         Vec::new()
     };
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    for copy in &proof.s3_copies {
+        let completed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM remote_storages r JOIN backup_storage_syncs s ON s.storage_id=r.id WHERE r.id=? AND r.enabled=1 AND r.storage_type='s3' AND r.s3_bucket=? AND r.s3_region IS ? AND r.s3_endpoint_url IS ? AND r.base_path IS ? AND s.backup_id=? AND s.remote_path=? AND s.sync_status='completed')")
+            .bind(copy.storage_id).bind(&copy.bucket).bind(&copy.region).bind(&copy.endpoint).bind(&copy.prefix).bind(id).bind(&copy.archive).fetch_one(&mut *tx).await?;
+        if !completed {
+            return Ok(());
+        }
+    }
     for copy in &proof.local_copies {
         let current: Option<String> = sqlx::query_scalar("SELECT r.base_path FROM remote_storages r JOIN backup_storage_syncs s ON s.storage_id=r.id WHERE r.id=? AND r.enabled=1 AND r.storage_type='local' AND r.base_path IS NOT NULL AND s.backup_id=? AND s.remote_path=? AND s.sync_status='completed'")
             .bind(copy.storage_id).bind(id).bind(&copy.archive).fetch_optional(&mut *tx).await?;
@@ -223,7 +242,7 @@ pub(crate) async fn settle_local_copies(
             return Ok(());
         }
     }
-    sqlx::query("UPDATE backups SET backup_metadata=json_remove(backup_metadata,'$.native_local_sync') WHERE id=? AND json_extract(backup_metadata,'$.native_local_sync')=json(?)")
+    sqlx::query("UPDATE backups SET backup_metadata=json_remove(backup_metadata,'$.native_local_sync','$.native_s3_effects') WHERE id=? AND json_extract(backup_metadata,'$.native_local_sync')=json(?)")
         .bind(id).bind(receipt).execute(&mut *tx).await?;
     tx.commit().await
 }

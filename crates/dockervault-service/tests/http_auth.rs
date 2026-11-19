@@ -30,15 +30,18 @@ impl Server {
         )
         .await
     }
-    async fn configured(mut config: Config) -> Self {
+    async fn configured(config: Config) -> Self {
         let path = std::env::temp_dir().join(format!(
             "dv-http-auth-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&path).unwrap();
+        std::fs::create_dir(path.join("backups")).unwrap();
+        Self::open_at(config, path).await
+    }
+    async fn open_at(mut config: Config, path: PathBuf) -> Self {
         let backups = path.join("backups");
-        std::fs::create_dir(&backups).unwrap();
         config.backup_base_path = backups.to_str().unwrap().into();
         let owner = Owner::new(1).unwrap();
         let db = Database::open(path.join("db.sqlite"), path.join("snapshots"), &owner)
@@ -50,6 +53,7 @@ impl Server {
         let address = listener.local_addr().unwrap();
         let (stop, receiver) = oneshot::channel();
         let state = http::HttpState::new(auth.clone(), config);
+        http::recover_s3_copies(&state).await.unwrap();
         let notifications = state.notifications.clone();
         let app = http::router(state.clone());
         let task = tokio::spawn(async move {
@@ -129,11 +133,15 @@ impl Server {
             .to_owned()
     }
     async fn close(self) {
+        std::fs::remove_dir_all(self.stop_preserving_files().await).unwrap();
+    }
+    async fn stop_preserving_files(self) -> PathBuf {
         let _ = self.stop.send(());
         self.task.await.unwrap();
+        self.state.settle_storage().await.unwrap();
         self.auth.shutdown(None).await;
         self.db.close().await;
-        std::fs::remove_dir_all(self.path).unwrap();
+        self.path
     }
 }
 
@@ -557,6 +565,256 @@ async fn sync_to_remote_sqlite_faults_preserve_custody() {
         owner.shutdown(None).await;
         server.close().await;
     }
+}
+
+#[tokio::test]
+async fn s3_backup_submission_accepts_only_after_configured_native_admission() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let source = server.path.join("s3-source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("data"), b"synthetic admission fixture").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let pool = server.db.pool();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,s3_bucket,s3_region,s3_endpoint_url,s3_access_key,s3_secret_key) VALUES(7,'S3 test','s3',1,'fixture-bucket','us-east-1',?,'PUBLIC fixture access','PUBLIC fixture secret')")
+        .bind(format!("http://{}", listener.local_addr().unwrap())).execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO backup_targets(id,name,target_type,host_path,enabled,sync_to_remote,remote_storage_ids) VALUES(1,'S3Target','path',?,1,1,'[7]')")
+        .bind(source.to_str().unwrap()).execute(pool).await.unwrap();
+    let (status, _, accepted) = server
+        .request(
+            "POST",
+            "/api/v1/backups",
+            &[("Cookie", &cookie), ("Origin", "http://localhost:3000")],
+            Some(json!({"target_id":1})),
+        )
+        .await;
+    assert_eq!(status, 200, "{accepted}");
+    let id = accepted["id"].as_i64().unwrap();
+    let (mut socket, _) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+    let first_line = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut data = Vec::new();
+        while !data.ends_with(b"\r\n") {
+            assert!(data.len() < 4096);
+            data.push(socket.read_u8().await.unwrap());
+        }
+        String::from_utf8(data).unwrap()
+    })
+    .await
+    .unwrap();
+    let (intent, remote, effect): (String, String, Option<String>) = sqlx::query_as(
+        "SELECT s.sync_status,s.remote_path,json_type(b.backup_metadata,'$.native_s3_effects.destination_7.artifact_0') FROM backup_storage_syncs s JOIN backups b ON b.id=s.backup_id WHERE s.backup_id=? AND s.storage_id=7",
+    ).bind(id).fetch_one(pool).await.unwrap();
+    assert_eq!(intent, "running");
+    assert_eq!(effect.as_deref(), Some("object"));
+    let mut request = first_line.split_whitespace();
+    assert_eq!(request.next(), Some("PUT"));
+    assert_eq!(
+        request.next().unwrap().split('?').next().unwrap(),
+        format!("/fixture-bucket/{remote}")
+    );
+    drop(socket);
+    drop(listener);
+    server.state.settle_storage().await.unwrap();
+    let (state, archive): (String, String) = sqlx::query_as("SELECT s.sync_status,b.file_path FROM backup_storage_syncs s JOIN backups b ON b.id=s.backup_id WHERE s.backup_id=? AND s.storage_id=7").bind(id).fetch_one(pool).await.unwrap();
+    assert_eq!(
+        state, "running",
+        "lost PUT response must not settle as success"
+    );
+    assert!(std::path::Path::new(&archive).is_file());
+    server.close().await;
+}
+
+#[tokio::test]
+async fn encrypted_s3_copy_recovers_rejected_ack_and_restores_after_reopen() {
+    use age::secrecy::ExposeSecret;
+    use axum::{
+        body::Bytes,
+        http::{HeaderMap, Method, StatusCode, Uri},
+        response::IntoResponse,
+    };
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+    let config = Config::from_pairs([
+        ("COOKIE_SECURE", "false"),
+        ("CORS_ORIGINS", "http://localhost:3000"),
+    ])
+    .unwrap();
+    let server = Server::configured(config.clone()).await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let files = Arc::new(Mutex::new(BTreeMap::<String, Bytes>::new()));
+    let fixture = files.clone();
+    let (stop, stopped) = oneshot::channel::<()>();
+    let provider = tokio::spawn(async move {
+        let app = axum::Router::new().fallback(
+            move |method: Method, uri: Uri, headers: HeaderMap, mut body: Bytes| {
+                let fixture = fixture.clone();
+                async move {
+                    let mut files = fixture.lock().unwrap();
+                    let key = uri.path().to_owned();
+                    match method {
+                        Method::PUT => match files.entry(key) {
+                            std::collections::btree_map::Entry::Vacant(slot) => {
+                                if headers
+                                    .get("content-encoding")
+                                    .is_some_and(|value| value == "aws-chunked")
+                                {
+                                    let mut bytes = Vec::new();
+                                    let mut remaining = body.as_ref();
+                                    loop {
+                                        let end = remaining
+                                            .windows(2)
+                                            .position(|pair| pair == b"\r\n")
+                                            .unwrap();
+                                        let size = std::str::from_utf8(&remaining[..end])
+                                            .unwrap()
+                                            .split(';')
+                                            .next()
+                                            .unwrap();
+                                        let size = usize::from_str_radix(size, 16).unwrap();
+                                        remaining = &remaining[end + 2..];
+                                        if size == 0 {
+                                            break;
+                                        }
+                                        bytes.extend_from_slice(&remaining[..size]);
+                                        assert_eq!(&remaining[size..size + 2], b"\r\n");
+                                        remaining = &remaining[size + 2..];
+                                    }
+                                    body = bytes.into();
+                                }
+                                slot.insert(body);
+                                StatusCode::OK.into_response()
+                            }
+                            std::collections::btree_map::Entry::Occupied(_) => {
+                                StatusCode::PRECONDITION_FAILED.into_response()
+                            }
+                        },
+                        Method::GET => match files.get(&key) {
+                            Some(data) => data.clone().into_response(),
+                            None => StatusCode::NOT_FOUND.into_response(),
+                        },
+                        _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
+                    }
+                }
+            },
+        );
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+            .unwrap();
+    });
+    let origin = server.path.join("s3-cipher");
+    std::fs::create_dir(&origin).unwrap();
+    std::fs::write(origin.join("data"), b"original S3 plaintext fixture").unwrap();
+    let identity = age::x25519::Identity::generate();
+    let pool = server.db.pool();
+    sqlx::query("INSERT INTO encryption_config(id,public_key,encryption_enabled,setup_completed) VALUES(1,?,1,1)").bind(identity.to_public().to_string()).execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,s3_bucket,s3_region,s3_endpoint_url,s3_access_key,s3_secret_key) VALUES(7,'S3 fixture','s3',1,'fixture-bucket','us-east-1',?,'PUBLIC fixture access','PUBLIC fixture secret')").bind(url).execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO backup_targets(id,name,target_type,host_path,enabled,sync_to_remote,remote_storage_ids,delete_local_after_sync) VALUES(1,'S3Cipher','path',?,1,1,'[7]',1)").bind(origin.to_str().unwrap()).execute(pool).await.unwrap();
+    sqlx::query("CREATE TABLE test_sync_ack_attempts (backup_id INTEGER NOT NULL)")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("CREATE TRIGGER reject_completed_sync BEFORE UPDATE OF sync_status ON backup_storage_syncs WHEN NEW.sync_status='completed' BEGIN INSERT INTO test_sync_ack_attempts VALUES(NEW.backup_id); SELECT RAISE(FAIL,'synthetic failed acknowledgement'); END").execute(pool).await.unwrap();
+    let (status, _, body) = server
+        .request(
+            "POST",
+            "/api/v1/backups",
+            &headers,
+            Some(json!({"target_id":1})),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    let id = body["id"].as_i64().unwrap();
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let attempted: Option<i64> =
+                sqlx::query_scalar("SELECT backup_id FROM test_sync_ack_attempts")
+                    .fetch_optional(pool)
+                    .await
+                    .unwrap();
+            if attempted == Some(id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "S3 sync did not reach acknowledgement; {} fixture objects written",
+            files.lock().unwrap().len()
+        )
+    });
+    let (archive, key, remote, status): (String,String,String,String) = sqlx::query_as("SELECT b.file_path,b.encryption_key_path,s.remote_path,s.sync_status FROM backups b JOIN backup_storage_syncs s ON b.id=s.backup_id WHERE b.id=?").bind(id).fetch_one(pool).await.unwrap();
+    let key_remote = dockervault_core::crypto::key_sidecar_path(&remote);
+    let before = files.lock().unwrap().clone();
+    for (local, remote) in [(&archive, &remote), (&key, &key_remote)] {
+        assert_eq!(
+            before[&format!("/fixture-bucket/{remote}")],
+            std::fs::read(local).unwrap()
+        );
+    }
+    assert_eq!(status, "running");
+    let path = server.stop_preserving_files().await;
+    assert!(std::path::Path::new(&archive).is_file());
+    assert!(std::path::Path::new(&key).is_file());
+    // Remove the injected fault with the application stopped, then reopen the same SQLite file.
+    let owner = Owner::new(1).unwrap();
+    let db = Database::open(path.join("db.sqlite"), path.join("snapshots"), &owner)
+        .await
+        .unwrap();
+    sqlx::query("DROP TRIGGER reject_completed_sync")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    db.close().await;
+    owner.shutdown(None).await;
+    let reopened = Server::open_at(config, path).await;
+    let status: String =
+        sqlx::query_scalar("SELECT sync_status FROM backup_storage_syncs WHERE backup_id=?")
+            .bind(id)
+            .fetch_one(reopened.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "completed");
+    assert_eq!(*files.lock().unwrap(), before);
+    // Explicit fixture mutation, not evidence of automatic remote-backed cleanup.
+    std::fs::remove_file(archive).unwrap();
+    std::fs::remove_file(key).unwrap();
+    std::fs::write(origin.join("data"), b"mutated fixture").unwrap();
+    let review = reopened
+        .request(
+            "POST",
+            &format!("/api/v1/backups/{id}/restore-review"),
+            &headers,
+            Some(json!({"destination_type":"original"})),
+        )
+        .await;
+    assert_eq!(review.0, 200, "{:?}", review.2);
+    let response = reopened.request("POST", &format!("/api/v1/backups/{id}/restore"), &headers, Some(json!({"destination_type":"original","review_fingerprint":review.2["fingerprint"],"private_key":identity.to_string().expose_secret()}))).await;
+    assert_eq!(response.0, 200, "{:?}", response.2);
+    assert_eq!(
+        std::fs::read(origin.join("data")).unwrap(),
+        b"original S3 plaintext fixture"
+    );
+    reopened.close().await;
+    let _ = stop.send(());
+    provider.await.unwrap();
 }
 
 #[tokio::test]

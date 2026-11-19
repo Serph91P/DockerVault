@@ -4,7 +4,7 @@ pub mod local;
 pub mod s3;
 pub mod ssh;
 mod sync;
-pub(crate) use sync::{LocalCopy, complete_publication, settle_local_copies};
+pub(crate) use sync::{LocalCopy, S3Copy, complete_publication, settle_local_copies};
 mod upload;
 pub mod webdav;
 
@@ -38,6 +38,8 @@ pub(crate) struct Publication {
     pub artifacts: Vec<PublishedArtifact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub local_copies: Vec<LocalCopy>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub s3_copies: Vec<S3Copy>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub delete_local_after_sync: bool,
 }
@@ -49,6 +51,20 @@ pub(crate) struct PublishedArtifact {
     pub digest: String,
     pub device: u64,
     pub inode: u64,
+}
+
+impl PublishedArtifact {
+    pub(crate) fn open_verified(&self, cancel: &dyn Fn() -> bool) -> io::Result<VerifiedSource> {
+        let source = VerifiedSource::open(&self.path, cancel)?;
+        if source.identity.device != self.device
+            || source.identity.inode != self.inode
+            || source.len() != self.length
+            || source.sha256_hex() != self.digest
+        {
+            return Err(invalid("Recovery point differs from publication"));
+        }
+        Ok(source)
+    }
 }
 
 pub(crate) fn mark_publication(file: &File, token: &str) -> io::Result<()> {

@@ -3,8 +3,8 @@ use crate::{
     jobs::Resource,
     journal::{BackupKind, Journal, JournalError},
     storage::{
-        LocalCopy, Publication, PublishedArtifact, complete_publication, local, mark_publication,
-        settle_local_copies,
+        LocalCopy, Publication, PublishedArtifact, S3Copy, complete_publication, local,
+        mark_publication, settle_local_copies,
     },
 };
 use axum::{
@@ -151,7 +151,7 @@ async fn plan(state: &HttpState, id: i64) -> Result<Plan, Failure> {
 
 async fn admit(state: &HttpState, target_id: i64, kind: RunType) -> Result<(i64, Value), Failure> {
     let plan = plan(state, target_id).await?;
-    local_destinations(state, &plan).await?;
+    destinations(state, &plan, String::new()).await?;
     if !matches!(kind, RunType::Full) {
         return Err(UNSUPPORTED);
     }
@@ -187,11 +187,18 @@ async fn admit(state: &HttpState, target_id: i64, kind: RunType) -> Result<(i64,
     ))
 }
 
-async fn local_destinations(
+#[derive(Default)]
+struct Destinations {
+    local: Vec<(i64, PathBuf)>,
+    s3: Vec<S3Copy>,
+}
+
+async fn destinations(
     state: &HttpState,
     plan: &Plan,
-) -> Result<Vec<(i64, PathBuf)>, Failure> {
-    let mut destinations = Vec::new();
+    archive: String,
+) -> Result<Destinations, Failure> {
+    let mut destinations = Destinations::default();
     if plan.sync_to_remote {
         let ids = plan
             .remote_storage_ids
@@ -201,8 +208,17 @@ async fn local_destinations(
         for id in ids {
             let base: Option<String> = sqlx::query_scalar("SELECT base_path FROM remote_storages WHERE id=? AND enabled=1 AND storage_type='local' AND base_path IS NOT NULL")
                 .bind(id).fetch_optional(state.auth.pool()).await.map_err(|_| INTERNAL)?;
-            let base = base.filter(|path| !path.is_empty()).ok_or(UNSUPPORTED)?;
-            destinations.push((id, std::path::absolute(base).map_err(|_| INTERNAL)?));
+            if let Some(base) = base.filter(|path| !path.is_empty()) {
+                destinations
+                    .local
+                    .push((id, std::path::absolute(base).map_err(|_| INTERNAL)?));
+            } else {
+                destinations.s3.push(
+                    super::s3_sync::destination(state, id, archive.clone())
+                        .await
+                        .ok_or(UNSUPPORTED)?,
+                );
+            }
         }
     }
     Ok(destinations)
@@ -220,7 +236,7 @@ async fn execute(
         .await
         .map_err(|_| ())?;
     let plan = plan(state, target).await.map_err(|_| ())?;
-    let destinations = local_destinations(state, &plan).await.map_err(|_| ())?;
+
     let root = PathBuf::from(&state.config.backup_base_path);
     if root.as_os_str().is_empty() {
         return Err(());
@@ -277,6 +293,9 @@ async fn execute(
         .and_then(|name| name.to_str())
         .ok_or(())?;
     let remote_archive = format!("{safe}/{remote_name}");
+    let destinations = destinations(state, &plan, remote_archive.clone())
+        .await
+        .map_err(|_| ())?;
     let request = json!({"version":1,"dest":Path::new("/backups").join(&relative),"sources":[[&layout, &source]],"compress":compress,
         "include_paths":parse_filter(plan.include_paths)?,"exclude_paths":parse_filter(plan.exclude_paths)?});
     let pool = state.auth.pool();
@@ -307,8 +326,8 @@ async fn execute(
             }
             let fd = local::open_root(&source)?;
             let parent = local::open_or_create_root(&root.join(&safe))?;
-            let mut local_copies = Vec::with_capacity(destinations.len());
-            for (storage_id, copy_root) in destinations {
+            let mut local_copies = Vec::with_capacity(destinations.local.len());
+            for (storage_id, copy_root) in destinations.local {
                 if copy_root.starts_with(&source) || source.starts_with(&copy_root) || copy_root.starts_with(&root) || root.starts_with(&copy_root) {
                     return Err(io::Error::other("LOCAL destination overlaps source or backup storage"));
                 }
@@ -342,7 +361,7 @@ async fn execute(
                 return Err(io::ErrorKind::Interrupted.into());
             }
             let delete_local_after_sync = plan.delete_local_after_sync && !local_copies.is_empty();
-            let proof = Publication { token, checksum, artifacts, local_copies, delete_local_after_sync };
+            let proof = Publication { token, checksum, artifacts, local_copies, s3_copies: destinations.s3, delete_local_after_sync };
             let serialized = serde_json::to_string(&proof)?;
             let staged = runtime.block_on(sqlx::query("UPDATE backups SET backup_metadata=json_set(backup_metadata,'$.native_publication',json(?)) WHERE id=? AND status='RUNNING'")
                 .bind(serialized).bind(id).execute(&journal_pool)).map_err(io::Error::other)?;
@@ -361,6 +380,11 @@ async fn execute(
         .await
         .map_err(|error| {
             tracing::warn!(backup_id=id, %error, "Archive publication remains unsettled");
+        })?;
+    super::s3_sync::settle(state, id, cancel)
+        .await
+        .map_err(|error| {
+            tracing::warn!(backup_id=id, %error, "S3 sync settlement remains pending");
         })?;
     settle_local_copies(pool, state.auth.blocking(), id, cancel)
         .await
