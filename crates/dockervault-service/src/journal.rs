@@ -9,6 +9,9 @@ use std::time::Duration;
 use time::{UtcDateTime as Utc, format_description::well_known::Rfc3339};
 
 const INCOMPLETE: &str = "Workload recovery incomplete; retry reconciliation before new jobs";
+pub const RESTORE_WRITE_PHASE: &str = "native_restore_writing";
+pub const RESTORE_UNKNOWN: &str =
+    "Restore filesystem effects are unknown; inspect the destination before retrying";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JournalError {
     Database,
@@ -314,6 +317,22 @@ impl Journal {
             result
         })?.wait().await?
     }
+    pub async fn settle_native_restore(&self, id: i64, success: bool) -> Result<(), JournalError> {
+        self.update(id, move |operation| {
+            if operation.kind != Kind::Restore || !operation.resources.is_empty() {
+                return Err(JournalError::InvalidRecord);
+            }
+            if !success && operation.phase == RESTORE_WRITE_PHASE {
+                operation.state = "recovery_required".into();
+                operation.error = Some(RESTORE_UNKNOWN.into());
+            } else {
+                operation.state = "finished".into();
+            }
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn finish(&self, id: Option<i64>) -> Result<(), JournalError> {
         let Some(id) = id else { return Ok(()) };
         self.update(id, |operation| {

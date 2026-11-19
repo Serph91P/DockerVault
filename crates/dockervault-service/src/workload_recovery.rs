@@ -82,6 +82,16 @@ impl Recovery {
                     }
                     for operation in batch {
                         after = operation.id;
+                        if operation.kind == crate::journal::Kind::Restore
+                            && operation.phase == crate::journal::RESTORE_WRITE_PHASE
+                        {
+                            service
+                                .journal
+                                .settle_native_restore(operation.id, false)
+                                .await?;
+                            errors.push(crate::journal::RESTORE_UNKNOWN.into());
+                            continue;
+                        }
                         let mut failures = Vec::new();
                         let mut ready = HashSet::new();
                         for (identity, value) in &operation.resources {

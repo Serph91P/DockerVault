@@ -43,6 +43,35 @@ fn originals() -> IndexMap<String, Option<String>> {
 }
 
 #[tokio::test]
+async fn interrupted_restore_write_retains_manual_recovery_obligation() {
+    use dockervault_service::journal::{RESTORE_UNKNOWN, RESTORE_WRITE_PHASE};
+    let (_fixture, db, owner, journal) = Fixture::open().await;
+    for (began_writing, success, expected) in [
+        (false, false, "finished"),
+        (true, true, "finished"),
+        (true, false, "recovery_required"),
+    ] {
+        let id = journal
+            .begin(None, Kind::Restore, IndexMap::new(), None)
+            .await
+            .unwrap();
+        if began_writing {
+            journal.phase(id, RESTORE_WRITE_PHASE).await.unwrap();
+        }
+        journal.settle_native_restore(id, success).await.unwrap();
+        let row = journal.load(id).await.unwrap();
+        assert_eq!(row.state, expected);
+        assert_eq!(
+            row.error.as_deref(),
+            (expected == "recovery_required").then_some(RESTORE_UNKNOWN)
+        );
+    }
+    journal.shutdown(None).await;
+    db.close().await;
+    owner.shutdown(None).await;
+}
+
+#[tokio::test]
 async fn backup_admission_preserves_catalog_snapshot_and_blocks_unsettled_recovery() {
     let (_fixture, db, owner, journal) = Fixture::open().await;
     sqlx::raw_sql("INSERT INTO backup_targets(id,name,target_type,enabled,removed_at) VALUES

@@ -1,5 +1,6 @@
 //! HTTP contracts; protocol state is shared, never retained in request-owned jobs.
 mod auth;
+mod backup_restore;
 mod backup_submit;
 mod backups;
 mod operations;
@@ -92,6 +93,14 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/backups/history/{id}", get(backups::history_detail))
         .route("/api/v1/backups/{id}", get(backups::get))
         .route("/api/v1/backups/{id}/download", get(backups::download))
+        .route(
+            "/api/v1/backups/{id}/restore-review",
+            post(backup_restore::review),
+        )
+        .route(
+            "/api/v1/backups/{id}/restore",
+            post(backup_restore::restore),
+        )
         .route(
             "/api/v1/backups/{id}/restore-info",
             get(backups::restore_info),

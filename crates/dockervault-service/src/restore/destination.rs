@@ -44,6 +44,15 @@ struct Step {
 impl IndexedArchive {
     /// No mutation occurs until the complete ordered destination simulation succeeds.
     pub fn restore_into(&mut self, root: &File, cancel: &dyn Fn() -> bool) -> io::Result<()> {
+        self.restore_into_guarded(root, cancel, || Ok(()))
+    }
+
+    pub fn restore_into_guarded(
+        &mut self,
+        root: &File,
+        cancel: &dyn Fn() -> bool,
+        before_mutation: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<()> {
         check(cancel)?;
         if !root.metadata()?.is_dir() {
             return Err(invalid("Restore capability is not a directory"));
@@ -68,6 +77,7 @@ impl IndexedArchive {
             }
         }
         check(cancel)?;
+        before_mutation()?;
         let mut last = 0i64;
         loop {
             let step = self

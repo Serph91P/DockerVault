@@ -197,6 +197,57 @@ async fn submitted_path_backup_publishes_a_verified_archive_before_completion() 
     let mut data = Vec::new();
     std::io::Read::read_to_end(&mut entry, &mut data).unwrap();
     assert_eq!(data, b"owned backup bytes");
+    std::fs::write(source.join("data.txt"), b"post-backup mutation").unwrap();
+    std::fs::write(source.join("unrelated"), b"preserve me").unwrap();
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let review_route = format!("/api/v1/backups/{id}/restore-review");
+    let restore_route = format!("/api/v1/backups/{id}/restore");
+    let selected = json!({"destination_type":"original"});
+    let (code, _, review) = server
+        .request("POST", &review_route, &headers, Some(selected.clone()))
+        .await;
+    assert_eq!(code, 200, "{review}");
+    assert_eq!(review["destination"]["path"], source.to_str().unwrap());
+    assert_eq!(
+        server
+            .request("POST", &restore_route, &headers, Some(selected))
+            .await
+            .0,
+        409
+    );
+    let payload = json!({"destination_type":"original","review_fingerprint":review["fingerprint"]});
+    std::fs::rename(&source, server.path.join("previous")).unwrap();
+    std::fs::create_dir(&source).unwrap();
+    assert_eq!(
+        server
+            .request("POST", &restore_route, &headers, Some(payload))
+            .await
+            .0,
+        409
+    );
+    assert!(!source.join("data.txt").exists());
+    std::fs::rename(server.path.join("previous"), &source).unwrap();
+    let (code, _, restored) = server
+        .request(
+            "POST",
+            &restore_route,
+            &headers,
+            Some(json!({"destination_type":"original","review_fingerprint":review["fingerprint"]})),
+        )
+        .await;
+    assert_eq!(code, 200, "{restored}");
+    assert_eq!(restored["status"], "restored");
+    assert_eq!(
+        std::fs::read(source.join("data.txt")).unwrap(),
+        b"owned backup bytes"
+    );
+    assert_eq!(
+        std::fs::read(source.join("unrelated")).unwrap(),
+        b"preserve me"
+    );
     server.close().await;
 }
 
