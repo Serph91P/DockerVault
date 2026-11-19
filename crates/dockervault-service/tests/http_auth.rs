@@ -387,8 +387,36 @@ async fn encrypted_restore_authenticates_before_writing_the_destination() {
     assert_ne!(submit(selection.clone()).await.0, 200);
     assert_eq!(std::fs::read(source.join("data")).unwrap(), b"mutated");
     std::fs::write(&cipher, saved).unwrap();
+    assert_eq!(submit(selection.clone()).await.0, 200);
+    assert_eq!(std::fs::read(source.join("data")).unwrap(), original);
+    let remote = server.path.join("configured-local");
+    std::fs::create_dir(&remote).unwrap();
+    std::fs::rename(&cipher, remote.join("fixture.tar.enc")).unwrap();
+    std::fs::rename(&sidecar, remote.join("fixture.tar.key")).unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path) VALUES(77,'fixture-copy','local',1,?)")
+        .bind(remote.to_str().unwrap()).execute(server.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO backup_storage_syncs(backup_id,storage_id,remote_path,sync_status) VALUES(1,77,'fixture.tar.enc','completed')")
+        .execute(server.db.pool()).await.unwrap();
+    std::fs::write(source.join("data"), b"mutated again").unwrap();
+    let mut without_key = selection.clone();
+    without_key.as_object_mut().unwrap().remove("private_key");
+    assert_eq!(submit(without_key).await.0, 400);
+    let key_path = remote.join("fixture.tar.key");
+    std::fs::remove_file(&key_path).unwrap();
+    assert_eq!(submit(selection.clone()).await.0, 400);
+    assert_eq!(
+        std::fs::read(source.join("data")).unwrap(),
+        b"mutated again"
+    );
+    std::fs::write(&key_path, wrapped).unwrap();
     assert_eq!(submit(selection).await.0, 200);
     assert_eq!(std::fs::read(source.join("data")).unwrap(), original);
+    assert_eq!(
+        std::fs::read_dir(server.path.join("backups"))
+            .unwrap()
+            .count(),
+        0
+    );
     server.close().await;
 }
 

@@ -1,4 +1,8 @@
-use super::{HttpState, auth::required_user};
+use super::{
+    HttpState,
+    auth::required_user,
+    storage::{completed_archive_copies, saved_archive_source, snapshot_for_download},
+};
 use crate::{
     jobs::Resource,
     journal::{Journal, Kind, RESTORE_WRITE_PHASE},
@@ -32,6 +36,11 @@ const STALE: Failure = (StatusCode::CONFLICT, "Restore impact changed; review ag
 const UNAVAILABLE: Failure = (
     StatusCode::NOT_FOUND,
     "Backup archive is not available locally or remotely",
+);
+const KEY_REQUIRED: Failure = (StatusCode::BAD_REQUEST, "Private key required");
+const KEY_UNAVAILABLE: Failure = (
+    StatusCode::BAD_REQUEST,
+    "Encryption key sidecar not available",
 );
 const UNSUPPORTED: Failure = (
     StatusCode::SERVICE_UNAVAILABLE,
@@ -292,16 +301,24 @@ async fn execute(
             "Workload recovery incomplete; retry reconciliation before new jobs",
         ));
     }
+    let private = selection
+        .private_key
+        .as_ref()
+        .filter(|key| !key.trim().is_empty());
+    if reviewed.encrypted && private.is_none() {
+        return Err(KEY_REQUIRED);
+    }
+    let root = std::path::absolute(&state.config.backup_base_path).map_err(|_| INTERNAL)?;
+    let input = restore_input(state, id, &reviewed, &root, cancel).await?;
+    if cancel.is_cancelled() {
+        return Err(INTERNAL);
+    }
     let key = journal
         .begin(Some(id), Kind::Restore, indexmap::IndexMap::new(), None)
         .await
         .map_err(|_| INTERNAL)?;
     let token = cancel.clone();
-    let private = selection
-        .private_key
-        .as_ref()
-        .map(|key| Zeroizing::new(key.to_string()));
-    let root = PathBuf::from(&state.config.backup_base_path);
+    let private = private.cloned();
     let writer_journal = journal.clone();
     let runtime = tokio::runtime::Handle::current();
     let worker = state.auth.blocking().submit_blocking(move |owner_cancel| {
@@ -309,6 +326,7 @@ async fn execute(
         restore_path(
             &reviewed,
             &root,
+            input,
             private.as_ref().map(|key| key.as_str()),
             &cancelled,
             || {
@@ -330,49 +348,147 @@ async fn execute(
     result
 }
 
+struct RestoreInput {
+    archive: File,
+    length: u64,
+    sidecar: Option<File>,
+    gzip: bool,
+}
+
+fn gzip(path: &str) -> bool {
+    path.strip_suffix(".enc").unwrap_or(path).ends_with(".gz")
+}
+
+async fn restore_input(
+    state: &HttpState,
+    id: i64,
+    impact: &Impact,
+    root: &Path,
+    cancel: &CancellationToken,
+) -> Result<RestoreInput, Failure> {
+    if let Some(path) = impact.archive_path.clone().filter(|p| !p.is_empty()) {
+        let root = root.to_owned();
+        let key_path = impact.encrypted.then(|| {
+            impact
+                .key_path
+                .clone()
+                .filter(|p| !p.is_empty())
+                .unwrap_or_else(|| key_sidecar_path(&path))
+        });
+        let token = cancel.clone();
+        let input = state
+            .auth
+            .blocking()
+            .submit_blocking(move |owner| {
+                let open = |path: &str| {
+                    let absolute = std::path::absolute(path)?;
+                    let relative = absolute.strip_prefix(&root).map_err(io::Error::other)?;
+                    local::open_download_source(&root, relative)
+                };
+                let file = match open(&path) {
+                    Ok(file) => file,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+                    Err(_) => return Err(UNAVAILABLE),
+                };
+                let (archive, length) = local::snapshot_download_source(file, &|| {
+                    token.is_cancelled() || owner.is_cancelled()
+                })
+                .map_err(|_| INTERNAL)?;
+                let sidecar = key_path
+                    .map(|key| open(&key).map_err(|_| KEY_UNAVAILABLE))
+                    .transpose()?;
+                Ok(Some(RestoreInput {
+                    archive,
+                    length,
+                    sidecar,
+                    gzip: gzip(&path),
+                }))
+            })
+            .map_err(|_| INTERNAL)?
+            .wait()
+            .await
+            .map_err(|_| INTERNAL)??;
+        if let Some(input) = input {
+            return Ok(input);
+        }
+    }
+    let copies = completed_archive_copies(state, id)
+        .await
+        .map_err(|_| INTERNAL)?;
+    let mut missing_key = false;
+    for (storage, path) in copies {
+        if cancel.is_cancelled() {
+            return Err(INTERNAL);
+        }
+        let Some(source) = saved_archive_source(state, storage).await else {
+            continue;
+        };
+        let Some((archive, length, _, _)) =
+            snapshot_for_download(state, source.clone(), path.clone(), ()).await
+        else {
+            continue;
+        };
+        if impact
+            .length
+            .is_some_and(|size| u64::try_from(size) != Ok(length))
+        {
+            continue;
+        }
+        let sidecar = if impact.encrypted {
+            if cancel.is_cancelled() {
+                return Err(INTERNAL);
+            }
+            match snapshot_for_download(state, source, key_sidecar_path(&path), ()).await {
+                Some((key, 1..=65536, _, _)) => Some(key),
+                _ => {
+                    missing_key = true;
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+        return Ok(RestoreInput {
+            archive,
+            length,
+            sidecar,
+            gzip: gzip(&path),
+        });
+    }
+    Err(if missing_key {
+        KEY_UNAVAILABLE
+    } else {
+        UNAVAILABLE
+    })
+}
+
 fn restore_path(
     impact: &Impact,
     root: &Path,
+    input: RestoreInput,
     private_key: Option<&str>,
     cancel: &dyn Fn() -> bool,
     mark_intent: impl FnOnce() -> io::Result<()>,
 ) -> Result<(), Failure> {
-    let root = std::path::absolute(root).map_err(|_| INTERNAL)?;
-    let archive = impact.archive_path.as_ref().ok_or(UNAVAILABLE)?;
-    let archive = std::path::absolute(archive).map_err(|_| UNAVAILABLE)?;
-    let relative = archive.strip_prefix(&root).map_err(|_| UNAVAILABLE)?;
-    let input = local::open_download_source(&root, relative).map_err(|_| UNAVAILABLE)?;
-    let (mut snapshot, length) =
-        local::snapshot_download_source(input, cancel).map_err(|_| INTERNAL)?;
+    let RestoreInput {
+        archive: mut snapshot,
+        length,
+        sidecar,
+        gzip,
+    } = input;
     if impact
         .length
         .is_some_and(|len| u64::try_from(len) != Ok(length))
     {
         return Err(INTERNAL);
     }
-    let archive_dir = local::open_root(&root).map_err(|_| INTERNAL)?;
+    let archive_dir = local::open_root(root).map_err(|_| INTERNAL)?;
     if impact.encrypted {
-        let private_key = private_key
-            .filter(|key| !key.trim().is_empty())
-            .ok_or((StatusCode::BAD_REQUEST, "Private key required"))?;
-        let key_error = (
-            StatusCode::BAD_REQUEST,
-            "Encryption key sidecar not available",
-        );
-        let key_path = impact
-            .key_path
-            .clone()
-            .filter(|path| !path.is_empty())
-            .unwrap_or_else(|| key_sidecar_path(archive.to_str().unwrap_or_default()));
-        let key_path = std::path::absolute(key_path).map_err(|_| key_error)?;
-        let key = local::open_download_source(
-            &root,
-            key_path.strip_prefix(&root).map_err(|_| key_error)?,
-        )
-        .map_err(|_| key_error)?;
-        let key_len = key.metadata().map_err(|_| key_error)?.len();
+        let private_key = private_key.ok_or(KEY_REQUIRED)?;
+        let key = sidecar.ok_or(KEY_UNAVAILABLE)?;
+        let key_len = key.metadata().map_err(|_| KEY_UNAVAILABLE)?.len();
         if key_len == 0 || key_len > 64 * 1024 {
-            return Err(key_error);
+            return Err(KEY_UNAVAILABLE);
         }
         let material = decrypt_dek(std::io::Read::take(key, 64 * 1024 + 1), private_key)
             .map_err(|_| INTERNAL)?;
@@ -399,9 +515,7 @@ fn restore_path(
     }
     let mut index = IndexedArchive::prepare(
         snapshot,
-        relative
-            .to_str()
-            .is_some_and(|path| path.strip_suffix(".enc").unwrap_or(path).ends_with(".gz")),
+        gzip,
         &archive_dir,
         impact.layout.as_deref().map(str::as_bytes),
         cancel,

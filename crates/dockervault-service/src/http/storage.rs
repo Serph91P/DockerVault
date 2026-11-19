@@ -744,6 +744,17 @@ pub(super) enum DownloadSource {
     Rclone(Value),
 }
 
+pub(super) async fn completed_archive_copies(
+    state: &HttpState,
+    id: i64,
+) -> Result<Vec<(i64, String)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT s.storage_id,s.remote_path FROM backup_storage_syncs s JOIN remote_storages r ON s.storage_id=r.id
+         WHERE s.backup_id=? AND s.sync_status='completed' AND r.enabled=1 AND s.remote_path IS NOT NULL AND s.remote_path<>''
+         ORDER BY s.synced_at DESC,s.id ASC",
+    ).bind(id).fetch_all(state.auth.pool()).await
+}
+
 pub(super) async fn saved_archive_source(state: &HttpState, id: i64) -> Option<DownloadSource> {
     let mut config = configured_browse_config(state, id).await.ok()?;
     if config.get("enabled").and_then(Value::as_bool) != Some(true) {

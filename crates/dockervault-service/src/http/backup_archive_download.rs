@@ -3,7 +3,7 @@ use crate::{
     http::{
         HttpState,
         storage::{
-            attachment,
+            attachment, completed_archive_copies,
             download::{Validators, response},
             saved_archive_source, snapshot_for_download,
         },
@@ -185,11 +185,9 @@ async fn remote_archive(
     else {
         return internal();
     };
-    let Ok(copies) = sqlx::query_as::<_, (i64, String)>(
-        "SELECT s.storage_id,s.remote_path FROM backup_storage_syncs s JOIN remote_storages r ON s.storage_id=r.id
-         WHERE s.backup_id=? AND s.sync_status='completed' AND r.enabled=1 AND s.remote_path IS NOT NULL AND s.remote_path<>''
-         ORDER BY s.synced_at DESC,s.id ASC",
-    ).bind(id).fetch_all(state.auth.pool()).await else { return internal(); };
+    let Ok(copies) = completed_archive_copies(state, id).await else {
+        return internal();
+    };
     for (storage_id, path) in copies {
         let Some(source) = saved_archive_source(state, storage_id).await else {
             continue;
