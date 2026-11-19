@@ -22,6 +22,9 @@ use std::{
     path::Path as FsPath,
 };
 use time::{OffsetDateTime, macros::format_description};
+#[path = "backup_browse_source.rs"]
+mod source;
+use source::{Archive, run_archive};
 use zeroize::Zeroizing;
 #[path = "backup_browse_member.rs"]
 mod member_route;
@@ -137,9 +140,7 @@ async fn list_with_key(
             "Backup file not found locally or on any remote storage.",
         )
     };
-    let Some(path) = path.filter(|value| !value.is_empty()) else {
-        return unavailable();
-    };
+    let path = path.unwrap_or_default();
     let busy = || {
         detail(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -149,28 +150,22 @@ async fn list_with_key(
     let Ok(slot) = state.download_slots.clone().try_acquire_owned() else {
         return busy();
     };
-    let root = state.config.backup_base_path.clone();
-    let Ok(job) = state.download_jobs.submit_blocking(move |cancel| {
-        let _slot = slot;
-        let encryption = secret
-            .as_ref()
-            .map(|key| (sidecar.as_deref(), key.private_key.as_str()));
-        with_local_archive(
-            &root,
-            &path,
-            encryption,
-            &|| cancel.is_cancelled(),
-            |source, _| {
-                scan(source, offset, limit, &search.to_lowercase(), || {
-                    cancel.is_cancelled()
-                })
-            },
-        )
-    }) else {
-        return busy();
+    let input = Archive {
+        id: id.expect("validated backup id"),
+        path,
+        sidecar,
+        secret,
     };
-    match job.wait().await {
-        Ok(Ok((entries, total))) => {
+    let search = search.to_lowercase();
+    match run_archive(
+        &state,
+        input,
+        std::sync::Arc::new(slot),
+        move |file, _, cancelled| scan(file, offset, limit, &search, cancelled),
+    )
+    .await
+    {
+        Ok((entries, total)) => {
             let mut response = Json(entries).into_response();
             response
                 .headers_mut()
@@ -185,8 +180,9 @@ async fn list_with_key(
             );
             response
         }
-        Ok(Err(error)) if error.kind() == io::ErrorKind::NotFound => unavailable(),
-        Ok(Err(error)) if error.kind() == io::ErrorKind::PermissionDenied => key_error(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => unavailable(),
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => key_error(),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => busy(),
         _ => unreadable(),
     }
 }
@@ -237,13 +233,34 @@ fn with_local_archive<T>(
         Err(e) => return Err(e),
     };
     let before = identity(&source)?;
-    let archive_name = path.strip_suffix(".enc").unwrap_or(&path);
-    let compressed = archive_name.ends_with(".tar.gz") || archive_name.ends_with(".tgz");
-    let mut decrypted;
-    let input = if let Some((key_path, secret)) = encryption {
+    let key = if let Some((key_path, secret)) = encryption {
         let fallback = key_sidecar_path(&path);
         let key_path = key_path.filter(|p| !p.is_empty()).unwrap_or(&fallback);
         let key = open(key_path).map_err(|_| io::ErrorKind::PermissionDenied)?;
+        Some((key, secret))
+    } else {
+        None
+    };
+    let result = with_archive_data(&mut source, &path, &root, key, None, cancelled, task)?;
+    if identity(&source)? != before || identity(&open(&path)?)? != before {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    Ok(result)
+}
+
+fn with_archive_data<T>(
+    source: &mut File,
+    path: &str,
+    root: &FsPath,
+    key: Option<(File, &str)>,
+    checksum: Option<&str>,
+    cancelled: &dyn Fn() -> bool,
+    task: impl FnOnce(&mut File, &FsPath) -> io::Result<T>,
+) -> io::Result<T> {
+    let archive_name = path.strip_suffix(".enc").unwrap_or(path);
+    let compressed = archive_name.ends_with(".tar.gz") || archive_name.ends_with(".tgz");
+    let mut decrypted;
+    let input = if let Some((key, secret)) = key {
         let size = key.metadata()?.len();
         if !(1..=65536).contains(&size) {
             return Err(io::ErrorKind::PermissionDenied.into());
@@ -252,19 +269,27 @@ fn with_local_archive<T>(
             decrypt_dek(key.take(65537), secret).map_err(|_| io::ErrorKind::PermissionDenied)?;
         decrypted = decrypt_private(
             source.try_clone()?,
-            before.2,
-            temp(&root)?,
+            source.metadata()?.len(),
+            temp(root)?,
             &material,
             cancelled,
         )
         .map_err(|_| io::ErrorKind::PermissionDenied)?;
         &mut decrypted
     } else {
-        &mut source
+        source
     };
+    if let Some(checksum) = checksum {
+        let digest = crate::storage::hash_reader(input, cancelled)?;
+        let digest: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+        if !checksum.eq_ignore_ascii_case(&digest) {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        input.rewind()?;
+    }
     let mut spool;
     let input = if compressed {
-        spool = temp(&root)?;
+        spool = temp(root)?;
         let mut gzip = flate2::read::MultiGzDecoder::new(input);
         let mut bytes = [0; 65536];
         loop {
@@ -282,11 +307,7 @@ fn with_local_archive<T>(
     } else {
         input
     };
-    let result = task(input, &root)?;
-    if identity(&source)? != before || identity(&open(&path)?)? != before {
-        return Err(io::ErrorKind::InvalidData.into());
-    }
-    Ok(result)
+    task(input, root)
 }
 
 fn identity(file: &File) -> io::Result<(u64, u64, u64, i64, i64, i64, i64)> {

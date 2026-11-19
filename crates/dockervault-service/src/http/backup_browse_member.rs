@@ -1,6 +1,6 @@
 use super::{
-    BrowseKey, HttpState, INTEGER, detail, internal, invalid_key_body, key_error, query_integer,
-    required_user, temp, unreadable, validation, with_local_archive,
+    Archive, BrowseKey, HttpState, INTEGER, detail, internal, invalid_key_body, key_error,
+    query_integer, required_user, run_archive, temp, unreadable, validation,
 };
 use crate::{
     http::storage::download::{Validators, response},
@@ -99,8 +99,7 @@ async fn member_with_key(
         return busy();
     };
     let slot = Arc::new(slot);
-    let job_slot = slot.clone();
-    let root = state.config.backup_base_path.clone();
+
     let name =
         String::from_utf8_lossy(normalized.rsplit(|&c| c == b'/').next().unwrap_or_default());
     let disposition_name: String = name
@@ -122,46 +121,44 @@ async fn member_with_key(
             &disposition_name
         }
     );
-    let Ok(job) = state.download_jobs.submit_blocking(move |cancel| {
-        let _slot = job_slot;
-        let encryption = secret
-            .as_ref()
-            .map(|key| (sidecar.as_deref(), key.private_key.as_str()));
-        with_local_archive(
-            &root,
-            &path,
-            encryption,
-            &|| cancel.is_cancelled(),
-            |source, root| {
-                let Some(member) = resolve(source, normalized, &|| cancel.is_cancelled())? else {
-                    return Ok(None);
-                };
-                if member.kind == MemberKind::Directory {
-                    return Ok(Some(Err(())));
-                }
-                let mut file = temp(root)?;
-                source.seek(SeekFrom::Start(member.data_offset))?;
-                let mut remaining = member.size;
-                let mut buf = [0; 65536];
-                while remaining != 0 {
-                    if cancel.is_cancelled() {
-                        return Err(io::ErrorKind::Interrupted.into());
-                    }
-                    let count = remaining.min(buf.len() as u64) as usize;
-                    source.read_exact(&mut buf[..count])?;
-                    file.write_all(&buf[..count])?;
-                    remaining -= count as u64;
-                }
-                file.rewind()?;
-                let validators = Validators::read(&file, member.size)?;
-                Ok(Some(Ok((file, member.size, validators))))
-            },
-        )
-    }) else {
-        return busy();
+    let input = Archive {
+        id,
+        path,
+        sidecar,
+        secret,
     };
-    match job.wait().await {
-        Ok(Ok(Some(Ok((file, len, validators))))) => {
+    let result = run_archive(
+        &state,
+        input,
+        slot.clone(),
+        move |source, root, cancelled| {
+            let Some(member) = resolve(source, normalized.clone(), cancelled)? else {
+                return Ok(None);
+            };
+            if member.kind == MemberKind::Directory {
+                return Ok(Some(Err(())));
+            }
+            let mut file = temp(root)?;
+            source.seek(SeekFrom::Start(member.data_offset))?;
+            let mut remaining = member.size;
+            let mut buf = [0; 65536];
+            while remaining != 0 {
+                if cancelled() {
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                let count = remaining.min(buf.len() as u64) as usize;
+                source.read_exact(&mut buf[..count])?;
+                file.write_all(&buf[..count])?;
+                remaining -= count as u64;
+            }
+            file.rewind()?;
+            let validators = Validators::read(&file, member.size)?;
+            Ok(Some(Ok((file, member.size, validators))))
+        },
+    )
+    .await;
+    match result {
+        Ok(Some(Ok((file, len, validators)))) => {
             let mut result = response(
                 file,
                 len,
@@ -176,13 +173,14 @@ async fn member_with_key(
                 .insert("cache-control", HeaderValue::from_static("no-store"));
             result
         }
-        Ok(Ok(Some(Err(())))) => detail(StatusCode::BAD_REQUEST, "Cannot download directories"),
-        Ok(Ok(None)) => detail(StatusCode::NOT_FOUND, "File not found in archive"),
-        Ok(Err(error)) if error.kind() == io::ErrorKind::NotFound => detail(
+        Ok(Some(Err(()))) => detail(StatusCode::BAD_REQUEST, "Cannot download directories"),
+        Ok(None) => detail(StatusCode::NOT_FOUND, "File not found in archive"),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => detail(
             StatusCode::NOT_FOUND,
             "Backup file not found locally or on any remote storage.",
         ),
-        Ok(Err(error)) if error.kind() == io::ErrorKind::PermissionDenied => key_error(),
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => key_error(),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => busy(),
         _ => unreadable(),
     }
 }

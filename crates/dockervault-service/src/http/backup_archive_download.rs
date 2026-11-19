@@ -228,7 +228,7 @@ async fn remote_archive(
     detail(StatusCode::NOT_FOUND, "Archive content unavailable")
 }
 
-async fn verify_archive(
+pub(super) async fn verify_archive(
     state: &HttpState,
     mut file: std::fs::File,
     len: u64,
