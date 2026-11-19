@@ -136,6 +136,71 @@ impl Server {
 }
 
 #[tokio::test]
+async fn submitted_path_backup_publishes_a_verified_archive_before_completion() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let source = server.path.join("source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("data.txt"), b"owned backup bytes").unwrap();
+    sqlx::query("INSERT INTO backup_targets(id,name,target_type,host_path,enabled,compression_enabled) VALUES(1,'Source','path',?,1,0)")
+        .bind(source.to_str().unwrap()).execute(server.db.pool()).await.unwrap();
+    let (status, _, accepted) = server
+        .request(
+            "POST",
+            "/api/v1/backups",
+            &[("Cookie", &cookie), ("Origin", "http://localhost:3000")],
+            Some(json!({"target_id":1})),
+        )
+        .await;
+    assert_eq!(status, 200, "{accepted}");
+    assert_eq!(accepted["status"], "pending");
+    let id = accepted["id"].as_i64().unwrap();
+    let (path, checksum, length) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let row: (String, Option<String>, Option<String>, Option<i64>) = sqlx::query_as(
+                "SELECT status,file_path,checksum,file_size FROM backups WHERE id=?",
+            )
+            .bind(id)
+            .fetch_one(server.db.pool())
+            .await
+            .unwrap();
+            match row {
+                (state, Some(path), Some(checksum), Some(length)) if state == "COMPLETED" => {
+                    break (path, checksum, length);
+                }
+                (state, _, _, _) if state == "PENDING" || state == "RUNNING" => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await
+                }
+                row => panic!("Unexpected settlement: {row:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(i64::try_from(bytes.len()).unwrap(), length);
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        checksum,
+        Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    );
+    let mut reader = tar::Archive::new(bytes.as_slice());
+    let mut entry = reader
+        .entries()
+        .unwrap()
+        .map(Result::unwrap)
+        .find(|entry| entry.path().unwrap().as_ref() == std::path::Path::new("source/data.txt"))
+        .unwrap();
+    let mut data = Vec::new();
+    std::io::Read::read_to_end(&mut entry, &mut data).unwrap();
+    assert_eq!(data, b"owned backup bytes");
+    server.close().await;
+}
+
+#[tokio::test]
 async fn backup_history_accepts_legacy_datetime_filters_and_returns_python_errors() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

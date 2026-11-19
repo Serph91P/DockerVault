@@ -1,5 +1,6 @@
 //! HTTP contracts; protocol state is shared, never retained in request-owned jobs.
 mod auth;
+mod backup_submit;
 mod backups;
 mod operations;
 pub mod security;
@@ -25,6 +26,8 @@ pub struct HttpState {
     probe_jobs: crate::ownership::Owner,
     download_slots: Arc<tokio::sync::Semaphore>,
     download_jobs: crate::ownership::Owner,
+    backup_jobs: crate::ownership::Owner,
+    backup_claims: crate::jobs::Claims,
 }
 impl HttpState {
     pub fn new(auth: AuthService, config: Config) -> Self {
@@ -43,6 +46,8 @@ impl HttpState {
             probe_jobs: crate::ownership::Owner::new(4).expect("positive probe capacity"),
             download_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             download_jobs: crate::ownership::Owner::new(4).expect("positive download capacity"),
+            backup_jobs: crate::ownership::Owner::new(4).expect("positive backup capacity"),
+            backup_claims: crate::jobs::Claims::default(),
         }
     }
 
@@ -54,6 +59,9 @@ impl HttpState {
         &self,
     ) -> Result<(), crate::storage_recovery::StorageRecoveryError> {
         self.begin_shutdown();
+        self.backup_jobs
+            .shutdown(self.config.shutdown_limit())
+            .await;
         self.local_delete.shutdown().await;
         self.download_jobs.shutdown(None).await;
         self.probe_jobs.shutdown(None).await;
@@ -76,7 +84,10 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/auth/change-password", post(auth::change_password))
-        .route("/api/v1/backups", get(backups::list))
+        .route(
+            "/api/v1/backups",
+            get(backups::list).post(backup_submit::submit),
+        )
         .route("/api/v1/backups/history", get(backups::history))
         .route("/api/v1/backups/history/{id}", get(backups::history_detail))
         .route("/api/v1/backups/{id}", get(backups::get))
