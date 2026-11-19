@@ -128,6 +128,11 @@ pub(crate) async fn complete_publication(
             return Err(Error::RowNotFound);
         }
     }
+    sqlx::query("INSERT INTO backup_logs(backup_id,level,step,message,details,created_at)
+        SELECT id,'INFO','archive','Backup archive published',NULL,completed_at FROM backups WHERE id=?
+        UNION ALL
+        SELECT id,'INFO','complete','Backup completed',json_object('file_size',file_size,'duration_seconds',duration_seconds,'encrypted',json(CASE encrypted WHEN 1 THEN 'true' ELSE 'false' END)),completed_at FROM backups WHERE id=?")
+        .bind(id).bind(id).execute(&mut *tx).await?;
     tx.commit().await
 }
 

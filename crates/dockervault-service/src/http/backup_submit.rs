@@ -75,23 +75,45 @@ pub(super) async fn submit(
     let result = state.backup_jobs.submit_async(move |cancel| async move {
         let (id, response) = match admit(&worker, input.target_id, input.backup_type).await {
             Ok(value) => value,
-            Err(failure) => { let _ = admitted.send(Err(failure)); return; }
+            Err(failure) => {
+                let _ = admitted.send(Err(failure));
+                return;
+            }
         };
         let _ = admitted.send(Ok(response));
         let started = std::time::Instant::now();
-        if execute(&worker, id, input.target_id, &cancel).await.is_err() {
-            let result = sqlx::query("UPDATE backups SET status='FAILED',error_message='Archive job did not complete',completed_at=strftime('%Y-%m-%d %H:%M:%f000','now') WHERE id=? AND status IN ('PENDING','RUNNING') AND json_extract(backup_metadata,'$.native_publication') IS NULL")
-                .bind(id).execute(worker.auth.pool()).await;
-            if result.is_err() { tracing::error!(backup_id=id, "Failed to record interrupted backup state"); }
+        if execute(&worker, id, input.target_id, &cancel)
+            .await
+            .is_err()
+        {
+            let result = record_failure(worker.auth.pool(), id).await;
+            if result.is_err() {
+                tracing::error!(backup_id = id, "Failed to record interrupted backup state");
+            }
         }
-        match sqlx::query_as::<_, (String, Option<i64>)>("SELECT status,file_size FROM backups WHERE id=?")
-            .bind(id).fetch_optional(worker.auth.pool()).await {
-            Ok(Some((status, size))) if status == "COMPLETED" || status == "FAILED" => worker.backup_metrics.lock().unwrap().record(
-                input.target_id, started.elapsed().as_secs_f64(),
-                if status == "COMPLETED" { Some(size.unwrap_or_default()) } else { None },
+        match sqlx::query_as::<_, (String, Option<i64>)>(
+            "SELECT status,file_size FROM backups WHERE id=?",
+        )
+        .bind(id)
+        .fetch_optional(worker.auth.pool())
+        .await
+        {
+            Ok(Some((status, size))) if status == "COMPLETED" || status == "FAILED" => {
+                worker.backup_metrics.lock().unwrap().record(
+                    input.target_id,
+                    started.elapsed().as_secs_f64(),
+                    if status == "COMPLETED" {
+                        Some(size.unwrap_or_default())
+                    } else {
+                        None
+                    },
+                )
+            }
+            Ok(_) => {}
+            Err(_) => tracing::warn!(
+                backup_id = id,
+                "Could not read backup settlement for metrics"
             ),
-            Ok(_) => {},
-            Err(_) => tracing::warn!(backup_id=id, "Could not read backup settlement for metrics"),
         }
     });
     let Ok(work) = result else {
@@ -106,6 +128,16 @@ pub(super) async fn submit(
 }
 
 type Failure = (StatusCode, &'static str);
+async fn record_failure(pool: &sqlx::SqlitePool, id: i64) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let updated = sqlx::query("UPDATE backups SET status='FAILED',error_message='Archive job did not complete',completed_at=strftime('%Y-%m-%d %H:%M:%f000','now') WHERE id=? AND status IN ('PENDING','RUNNING') AND json_extract(backup_metadata,'$.native_publication') IS NULL")
+        .bind(id).execute(&mut *tx).await?;
+    if updated.rows_affected() == 1 {
+        sqlx::query("INSERT INTO backup_logs(backup_id,level,step,message,created_at) SELECT id,'ERROR','error',error_message,completed_at FROM backups WHERE id=?")
+            .bind(id).execute(&mut *tx).await?;
+    }
+    tx.commit().await
+}
 const INTERNAL: Failure = (StatusCode::INTERNAL_SERVER_ERROR, "Backup operation failed");
 const UNSUPPORTED: Failure = (
     StatusCode::SERVICE_UNAVAILABLE,
@@ -252,6 +284,9 @@ async fn execute(
     target: i64,
     cancel: &CancellationToken,
 ) -> Result<(), ()> {
+    let pool = state.auth.pool();
+    sqlx::query("INSERT INTO backup_logs(backup_id,level,step,message,created_at) VALUES(?,'INFO','start','Starting backup',strftime('%Y-%m-%d %H:%M:%f000','now'))")
+        .bind(id).execute(pool).await.map_err(|_| ())?;
     let _target = state
         .backup_claims
         .acquire([Resource::target(target)], cancel)
@@ -320,13 +355,16 @@ async fn execute(
         .map_err(|_| ())?;
     let request = json!({"version":1,"dest":Path::new("/backups").join(&relative),"sources":[[&layout, &source]],"compress":compress,
         "include_paths":parse_filter(plan.include_paths)?,"exclude_paths":parse_filter(plan.exclude_paths)?});
-    let pool = state.auth.pool();
+    let mut tx = pool.begin().await.map_err(|_| ())?;
     let update = sqlx::query("UPDATE backups SET status='RUNNING',started_at=strftime('%Y-%m-%d %H:%M:%f000','now'),backup_metadata=json_patch(backup_metadata,?) WHERE id=? AND status='PENDING'")
         .bind(json!({"archive_layout":{"version":1,"kind":"single","root":layout},"native_ephemeral_archive":true,"active_artifacts":std::iter::once(&stored).chain(sidecar.iter()).collect::<Vec<_>>()}).to_string())
-        .bind(id).execute(pool).await.map_err(|_| ())?;
+        .bind(id).execute(&mut *tx).await.map_err(|_| ())?;
     if update.rows_affected() != 1 {
         return Err(());
     }
+    sqlx::query("INSERT INTO backup_logs(backup_id,level,step,message,created_at) SELECT id,'INFO','archive','Creating backup archive',started_at FROM backups WHERE id=?")
+        .bind(id).execute(&mut *tx).await.map_err(|_| ())?;
+    tx.commit().await.map_err(|_| ())?;
     let job_cancel = cancel.clone();
     let output = stored.clone();
     let key_output = sidecar.clone();

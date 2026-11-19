@@ -243,6 +243,74 @@ async fn submitted_path_backup_publishes_a_verified_archive_before_completion() 
         payload,
         json!({"target_id":999,"average_duration_seconds":null,"average_size_bytes":null,"average_size_human":null,"backup_count":0})
     );
+    let (status, _, logs) = server
+        .request("GET", &format!("/api/v1/backups/{id}/logs"), &headers, None)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        logs.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["step"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["start", "archive", "archive", "complete"]
+    );
+    assert_eq!(logs[3]["details"]["file_size"], length);
+    assert_eq!(
+        server
+            .request(
+                "GET",
+                &format!("/api/v1/backups/{id}/download"),
+                &headers,
+                None
+            )
+            .await
+            .0,
+        200
+    );
+    sqlx::query("INSERT INTO backup_targets(id,name,target_type,host_path,enabled) VALUES(2,'Missing','path',?,1)")
+            .bind(source.join("missing-fixture").to_str().unwrap()).execute(server.db.pool()).await.unwrap();
+    let (status, _, failed) = server
+        .request(
+            "POST",
+            "/api/v1/backups",
+            &[("Cookie", &cookie), ("Origin", "http://localhost:3000")],
+            Some(json!({"target_id":2})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let failed = failed["id"].as_i64().unwrap();
+    let fail_stats = format!("/api/v1/backups/{failed}/stats");
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let (status, _, stats) = server.request("GET", &fail_stats, &headers, None).await;
+            assert_eq!(status, 200);
+            if stats["status"] == "failed" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let (status, _, logs) = server
+        .request(
+            "GET",
+            &format!("/api/v1/backups/{failed}/logs"),
+            &headers,
+            None,
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        logs.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["step"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["start", "error"]
+    );
+    assert_eq!(logs[1]["level"], "error");
     std::fs::write(source.join("data.txt"), b"post-backup mutation").unwrap();
     std::fs::write(source.join("unrelated"), b"preserve me").unwrap();
     let headers = [
