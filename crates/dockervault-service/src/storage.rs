@@ -26,6 +26,58 @@ pub(crate) fn relative_path(path: &str, allow_root: bool) -> Option<String> {
     (allow_root || !normalized.is_empty()).then_some(normalized)
 }
 use sha2::{Digest, Sha256};
+
+/// Before opening the listener, retire only native reservations whose exact
+/// destinations are all absent. Never remove an unknown filesystem occupant.
+pub async fn settle_unpublished_archives(
+    pool: &sqlx::SqlitePool,
+    root: &str,
+    owner: &crate::ownership::Owner,
+) -> Result<(), sqlx::Error> {
+    if root.is_empty() {
+        return Ok(());
+    }
+    let root = std::path::absolute(root).map_err(sqlx::Error::Io)?;
+    let mut after = i64::MIN;
+    loop {
+        let rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT id,backup_metadata FROM backups WHERE id>? AND status IN ('PENDING','RUNNING','FAILED')
+             AND CASE WHEN json_valid(backup_metadata) THEN json_type(backup_metadata,'$.native_ephemeral_archive')='true' ELSE 0 END
+             ORDER BY id LIMIT 64",
+        ).bind(after).fetch_all(pool).await?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        for (id, metadata) in rows {
+            after = id;
+            let Ok(metadata_value) = serde_json::from_str::<serde_json::Value>(&metadata) else {
+                continue;
+            };
+            let Some(paths) = metadata_value
+                .get("active_artifacts")
+                .and_then(|paths| serde_json::from_value::<Vec<PathBuf>>(paths.clone()).ok())
+            else {
+                continue;
+            };
+            if !(1..=2).contains(&paths.len()) {
+                continue;
+            }
+            let root = root.clone();
+            let confirmed_absent = owner.submit_blocking(move |cancel| {
+                paths.iter().all(|path| {
+                    !cancel.is_cancelled() && path.strip_prefix(&root).ok().is_some_and(|rel| {
+                        !rel.as_os_str().is_empty() && rel.components().all(|part| matches!(part,std::path::Component::Normal(_)))
+                            && matches!(local::open_download_source(&root, rel), Err(error) if error.kind() == io::ErrorKind::NotFound)
+                    })
+                })
+            }).map_err(|e|sqlx::Error::Io(io::Error::other(e)))?.wait().await.map_err(|e|sqlx::Error::Io(io::Error::other(e)))?;
+            if confirmed_absent {
+                sqlx::query("UPDATE backups SET backup_metadata=json_remove(backup_metadata,'$.active_artifacts','$.native_ephemeral_archive') WHERE id=? AND backup_metadata=? AND status IN ('PENDING','RUNNING','FAILED')")
+                    .bind(id).bind(metadata).execute(pool).await?;
+            }
+        }
+    }
+}
 use std::{
     fs::{File, Metadata, OpenOptions},
     io::{self, Read},

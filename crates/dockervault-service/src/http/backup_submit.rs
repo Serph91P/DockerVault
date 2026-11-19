@@ -2,7 +2,7 @@ use super::{HttpState, auth::required_user};
 use crate::{
     jobs::Resource,
     journal::{BackupKind, Journal, JournalError},
-    storage::{VerifiedSource, local},
+    storage::local,
 };
 use axum::{
     Json,
@@ -11,7 +11,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use dockervault_core::crypto::{decrypt_private, encrypt_dek, encrypt_stream};
-use dockervault_tools::archive_worker::{Request, archive_private, create_archive_from_directory};
+use dockervault_tools::archive_worker::{Request, archive_private};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::Row;
@@ -236,7 +236,7 @@ async fn execute(
         "include_paths":parse_filter(plan.include_paths)?,"exclude_paths":parse_filter(plan.exclude_paths)?});
     let pool = state.auth.pool();
     let update = sqlx::query("UPDATE backups SET status='RUNNING',started_at=strftime('%Y-%m-%d %H:%M:%f000','now'),backup_metadata=json_patch(backup_metadata,?) WHERE id=? AND status='PENDING'")
-        .bind(json!({"archive_layout":{"version":1,"kind":"single","root":layout},"active_artifacts":std::iter::once(&stored).chain(sidecar.iter()).collect::<Vec<_>>()}).to_string())
+        .bind(json!({"archive_layout":{"version":1,"kind":"single","root":layout},"native_ephemeral_archive":true,"active_artifacts":std::iter::once(&stored).chain(sidecar.iter()).collect::<Vec<_>>()}).to_string())
         .bind(id).execute(pool).await.map_err(|_| ())?;
     if update.rows_affected() != 1 {
         return Err(());
@@ -259,7 +259,6 @@ async fn execute(
                 ));
             }
             let fd = local::open_root(&source)?;
-            let backup_root = local::open_root(&root)?;
             let parent = local::open_or_create_root(&root.join(&safe))?;
             let request =
                 Request::parse(&serde_json::to_vec(&request)?).map_err(io::Error::other)?;
@@ -274,12 +273,15 @@ async fn execute(
                     &cancelled,
                 );
             }
-            let report = create_archive_from_directory(&request, &fd, &backup_root, &cancelled)?;
-            if report.skipped_count() != 0 {
-                return Err(io::Error::other("Archive source contains unreadable files"));
+            let mut archive = archive_private(&request, &fd, &parent, &cancelled)?;
+            archive.sync_all()?;
+            let length = archive.metadata()?.len();
+            let digest = crate::storage::hash_reader(&mut archive, &cancelled)?;
+            if cancelled() {
+                return Err(io::ErrorKind::Interrupted.into());
             }
-            let result = VerifiedSource::open(&path, &cancelled)?;
-            Ok((result.len(), result.sha256_hex()))
+            publish(&parent, &archive, &path)?;
+            Ok((length, digest.iter().map(|b| format!("{b:02x}")).collect()))
         })
         .map_err(|_| ())?
         .wait()
@@ -287,7 +289,7 @@ async fn execute(
         .map_err(|_| ())?
         .map_err(|_| ())?;
     let len = i64::try_from(result.0).map_err(|_| ())?;
-    let changed = sqlx::query("UPDATE backups SET status='COMPLETED', file_path=?,file_size=?,checksum=?,encrypted=?,encryption_key_path=?,completed_at=strftime('%Y-%m-%d %H:%M:%f000','now'), duration_seconds=max(0,cast((julianday('now')-julianday(started_at))*86400 as integer)),backup_metadata=json_remove(backup_metadata,'$.active_artifacts') WHERE id=? AND status='RUNNING'")
+    let changed = sqlx::query("UPDATE backups SET status='COMPLETED', file_path=?,file_size=?,checksum=?,encrypted=?,encryption_key_path=?,completed_at=strftime('%Y-%m-%d %H:%M:%f000','now'), duration_seconds=max(0,cast((julianday('now')-julianday(started_at))*86400 as integer)),backup_metadata=json_remove(backup_metadata,'$.active_artifacts','$.native_ephemeral_archive') WHERE id=? AND status='RUNNING'")
         .bind(stored).bind(len).bind(result.1).bind(sidecar.is_some()).bind(sidecar).bind(id).execute(pool).await.map_err(|_| ())?;
     if changed.rows_affected() == 1 {
         Ok(())
@@ -306,9 +308,8 @@ fn write_encrypted(
     cancel: &dyn Fn() -> bool,
 ) -> io::Result<(u64, String)> {
     use nix::{
-        fcntl::{AT_FDCWD, AtFlags, OFlag, openat},
+        fcntl::{OFlag, openat},
         sys::stat::Mode,
-        unistd::linkat,
     };
     let spool = || {
         openat(
@@ -347,24 +348,30 @@ fn write_encrypted(
     if readback != wrapped || cancel() {
         return Err(io::Error::other("Archive sidecar verification interrupted"));
     }
-    let publish = |file: &File, name: &Path| -> io::Result<()> {
-        let leaf = name
-            .file_name()
-            .ok_or_else(|| io::Error::other("Missing archive name"))?;
-        let fd = format!("/proc/self/fd/{}", file.as_raw_fd());
-        linkat(
-            AT_FDCWD,
-            fd.as_str(),
-            parent,
-            leaf,
-            AtFlags::AT_SYMLINK_FOLLOW,
-        )?;
-        parent.sync_all()
-    };
+
     // First preserve recoverable key custody; a crash cannot leave a newly published archive without its key.
-    publish(&wrapped_file, sidecar)?;
-    publish(&cipher, archive)?;
+    publish(parent, &wrapped_file, sidecar)?;
+    publish(parent, &cipher, archive)?;
     Ok((length, digest.iter().map(|b| format!("{b:02x}")).collect()))
+}
+
+fn publish(parent: &File, file: &File, path: &Path) -> io::Result<()> {
+    use nix::{
+        fcntl::{AT_FDCWD, AtFlags},
+        unistd::linkat,
+    };
+    let leaf = path
+        .file_name()
+        .ok_or_else(|| io::Error::other("Missing archive name"))?;
+    let fd = format!("/proc/self/fd/{}", file.as_raw_fd());
+    linkat(
+        AT_FDCWD,
+        fd.as_str(),
+        parent,
+        leaf,
+        AtFlags::AT_SYMLINK_FOLLOW,
+    )?;
+    parent.sync_all()
 }
 
 fn parse_filter(raw: Option<String>) -> Result<Option<Vec<String>>, ()> {

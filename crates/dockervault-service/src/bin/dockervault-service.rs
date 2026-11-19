@@ -121,6 +121,13 @@ async fn run() -> Result<(), &'static str> {
     }
     // Preserve staged activation and any specific result from journal reconciliation.
     if !activation_pending {
+        dockervault_service::storage::settle_unpublished_archives(
+            db.pool(),
+            &config.backup_base_path,
+            &owner,
+        )
+        .await
+        .map_err(|_| "archive reservation recovery")?;
         sqlx::query(
         "UPDATE backups SET status='FAILED', error_message=?,
          completed_at=strftime('%Y-%m-%d %H:%M:%f000','now')

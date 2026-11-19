@@ -116,6 +116,18 @@ fn standalone_service_migrates_serves_and_shuts_down_without_python() {
       INSERT INTO storage_operation_items(operation_id,path,state) VALUES ('interrupted','possibly removed','running'),('interrupted','not started','pending');").unwrap();
     let neighbor = dir.join("not started");
     std::fs::write(&neighbor, b"fixture must not be replayed").unwrap();
+    let archive_dir = dir.join("backups");
+    std::fs::create_dir(&archive_dir).unwrap();
+    let survivor = archive_dir.join("unknown.tar");
+    std::fs::write(&survivor, b"unknown artifact must not be deleted").unwrap();
+    for (id, file) in [(1, archive_dir.join("missing.tar")), (2, survivor.clone())] {
+        let meta = serde_json::json!({"native_ephemeral_archive":true,"active_artifacts":[file]});
+        db.execute(
+            "UPDATE backups SET backup_metadata=? WHERE id=?",
+            rusqlite::params![meta.to_string(), id],
+        )
+        .unwrap();
+    }
     process.kill().unwrap();
     assert!(!process.wait().unwrap().success());
     let mut process = run(&dir, port);
@@ -143,6 +155,14 @@ fn standalone_service_migrates_serves_and_shuts_down_without_python() {
         )
         .unwrap();
     assert_eq!(row, ("failed".into(), "interrupted".into(), 1, 1));
+    for (id, expected) in [(1, false), (2, true)] {
+        let retained: bool = db.query_row("SELECT json_type(backup_metadata,'$.active_artifacts') IS NOT NULL FROM backups WHERE id=?",[id],|row|row.get(0)).unwrap();
+        assert_eq!(retained, expected);
+    }
+    assert_eq!(
+        std::fs::read(survivor).unwrap(),
+        b"unknown artifact must not be deleted"
+    );
     assert_eq!(
         std::fs::read(neighbor).unwrap(),
         b"fixture must not be replayed"
