@@ -379,6 +379,7 @@ impl WebDav {
         let result = self
             .send(
                 self.request(Method::PUT, url.clone(), Duration::from_secs(seconds))
+                    .header("If-None-Match", "*")
                     .header("Content-Length", source.len())
                     .header("Content-Type", "application/octet-stream")
                     .body(body),
@@ -430,7 +431,9 @@ impl WebDav {
 }
 fn retryable(error: DavError) -> bool {
     match error {
-        DavError::Http(code) => !matches!(code, 400 | 401 | 403 | 405 | 409 | 413 | 422 | 507),
+        DavError::Http(code) => {
+            !matches!(code, 400 | 401 | 403 | 405 | 409 | 412 | 413 | 422 | 507)
+        }
         DavError::Transport | DavError::Verification => true,
         _ => false,
     }

@@ -31,6 +31,7 @@ type ObservedRequest = (
     Option<String>,
     Option<String>,
     bool,
+    Option<String>,
 );
 #[derive(Default)]
 struct Service {
@@ -57,6 +58,10 @@ async fn endpoint(State(state): State<Arc<Service>>, request: Request) -> Respon
         .get("content-length")
         .map(|h| h.to_str().unwrap().to_owned());
     let chunked = request.headers().contains_key("transfer-encoding");
+    let precondition = request
+        .headers()
+        .get("if-none-match")
+        .map(|h| h.to_str().unwrap().to_owned());
     let bytes = to_bytes(request.into_body(), 4 * 1024 * 1024)
         .await
         .unwrap()
@@ -68,6 +73,7 @@ async fn endpoint(State(state): State<Arc<Service>>, request: Request) -> Respon
         auth,
         length,
         chunked,
+        precondition,
     ));
     let mut builder = Response::builder();
     if method == "PROPFIND" && state.oversized_listing {
@@ -224,6 +230,7 @@ async fn actual_put_and_independent_get_preserve_encoded_endpoint_and_filename_i
     assert_eq!(put.2, b"complete independent protocol bytes");
     assert_eq!(put.4.as_deref(), Some("35"));
     assert!(!put.5);
+    assert_eq!(put.6.as_deref(), Some("*"));
     assert!(put.3.as_ref().unwrap().starts_with("Basic "));
     assert!(requests.iter().any(|r| r.0 == "GET" && r.1 == put.1));
     assert!(requests.iter().any(|r| r.0 == "HEAD" && r.1 == put.1));
@@ -232,7 +239,11 @@ async fn actual_put_and_independent_get_preserve_encoded_endpoint_and_filename_i
 }
 #[tokio::test]
 async fn retried_put_reopens_identical_bytes_but_permanent_unauthorized_never_retries() {
-    for (statuses, attempts, success) in [(vec![500, 201], 2, true), (vec![401, 201], 3, false)] {
+    for (statuses, attempts, success) in [
+        (vec![500, 201], 2, true),
+        (vec![401, 201], 3, false),
+        (vec![412, 201], 3, false),
+    ] {
         let server = Server::new(Service {
             put_status: Mutex::new(statuses.into()),
             ..Default::default()
