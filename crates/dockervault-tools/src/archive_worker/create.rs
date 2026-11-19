@@ -64,20 +64,7 @@ pub fn create_archive(
     cancel: &dyn Fn() -> bool,
 ) -> io::Result<Report> {
     check(cancel)?;
-    let relative = request
-        .dest
-        .strip_prefix("/backups")
-        .map_err(|_| invalid("Invalid destination"))?;
-    let filename = relative
-        .file_name()
-        .ok_or_else(|| invalid("Missing destination filename"))?;
-    let parent = descend(backups, relative.parent().unwrap_or(Path::new("")))?;
-    if fstatat(&parent, filename, AtFlags::AT_SYMLINK_NOFOLLOW).is_ok() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "Archive already exists",
-        ));
-    }
+
     // Freeze all approved source directory capabilities before creating any output.
     let mut sources = Vec::new();
     for (name, path) in &request.sources {
@@ -95,7 +82,53 @@ pub fn create_archive(
         let root = File::from(open(Path::new("/"), directory_flags(), Mode::empty())?);
         let source = descend(&root, real.strip_prefix("/").unwrap())?;
         let filters = request.filters_for(name).map_err(invalid)?;
-        sources.push((name, source, path, filters));
+        sources.push((name.as_str(), source, path.as_path(), filters));
+    }
+    write_archive(request, backups, &sources, cancel)
+}
+
+/// Archive a pinned directory; the request path is a report label, not opened here.
+pub fn create_archive_from_directory(
+    request: &Request,
+    directory: &File,
+    backups: &File,
+    cancel: &dyn Fn() -> bool,
+) -> io::Result<Report> {
+    let [(name, original)] = request.sources.as_slice() else {
+        return Err(invalid("Expected one pinned source"));
+    };
+    if !directory.metadata()?.is_dir() {
+        return Err(invalid("Source is not a directory"));
+    }
+    let filters = request.filters_for(name).map_err(invalid)?;
+    write_archive(
+        request,
+        backups,
+        &[(name, directory.try_clone()?, original, filters)],
+        cancel,
+    )
+}
+
+fn write_archive(
+    request: &Request,
+    backups: &File,
+    sources: &[(&str, File, &Path, Filters)],
+    cancel: &dyn Fn() -> bool,
+) -> io::Result<Report> {
+    check(cancel)?;
+    let relative = request
+        .dest
+        .strip_prefix("/backups")
+        .map_err(|_| invalid("Invalid destination"))?;
+    let filename = relative
+        .file_name()
+        .ok_or_else(|| invalid("Missing destination filename"))?;
+    let parent = descend(backups, relative.parent().unwrap_or(Path::new("")))?;
+    if fstatat(&parent, filename, AtFlags::AT_SYMLINK_NOFOLLOW).is_ok() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "Archive already exists",
+        ));
     }
     let stage = Stage::new(&parent)?;
     let mut output = stage.file("archive.partial", true)?;
@@ -108,7 +141,7 @@ pub fn create_archive(
         let mut archive = tar::Builder::new(gzip);
         archive.follow_symlinks(false);
         archive.sparse(false);
-        for (name, source, original, filters) in &sources {
+        for (name, source, original, filters) in sources {
             walk(
                 &mut archive,
                 source,
@@ -128,7 +161,7 @@ pub fn create_archive(
         let mut archive = tar::Builder::new(&mut output);
         archive.follow_symlinks(false);
         archive.sparse(false);
-        for (name, source, original, filters) in &sources {
+        for (name, source, original, filters) in sources {
             walk(
                 &mut archive,
                 source,

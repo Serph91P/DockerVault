@@ -6,7 +6,7 @@ use dockervault_service::{
     restore::IndexedArchive,
     storage::{VerifiedSource, local::LocalStorage},
 };
-use dockervault_tools::archive_worker::{Request, create_archive};
+use dockervault_tools::archive_worker::{Request, create_archive, create_archive_from_directory};
 #[path = "../../dockervault-core/tests/common/mod.rs"]
 mod common;
 use std::{
@@ -39,6 +39,40 @@ impl Drop for Fixture {
         fs::remove_dir_all(&self.0).unwrap();
     }
 }
+#[tokio::test]
+async fn pinned_path_archive_reads_the_claimed_directory_not_its_replacement() {
+    let root = Fixture::new();
+    let source = root.0.join("source");
+    fs::write(source.join("data"), b"claimed bytes").unwrap();
+    let pinned = fs::File::open(&source).unwrap();
+    fs::rename(&source, root.0.join("moved")).unwrap();
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("data"), b"replacement bytes").unwrap();
+    let request = Request::parse(
+        &serde_json::to_vec(&serde_json::json!({
+            "version":1,"dest":"/backups/archive.tar","compress":false,"sources":[["source",source]]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let backup_dir = root.0.join("backups");
+    let backups = fs::File::open(&backup_dir).unwrap();
+    assert!(create_archive_from_directory(&request, &pinned, &backups, &|| true).is_err());
+    assert_eq!(fs::read_dir(&backup_dir).unwrap().count(), 0);
+    create_archive_from_directory(&request, &pinned, &backups, &|| false).unwrap();
+    let file = fs::File::open(backup_dir.join("archive.tar")).unwrap();
+    let mut archive = tar::Archive::new(file);
+    let mut data = Vec::new();
+    use std::io::Read;
+    for entry in archive.entries().unwrap() {
+        let mut entry = entry.unwrap();
+        if entry.path().unwrap() == std::path::Path::new("source/data") {
+            entry.read_to_end(&mut data).unwrap();
+        }
+    }
+    assert_eq!(data, b"claimed bytes");
+}
+
 #[tokio::test]
 async fn plain_and_encrypted_compressed_and_uncompressed_restore_real_mutated_files() {
     for compressed in [false, true] {

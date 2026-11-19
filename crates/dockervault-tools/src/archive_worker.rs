@@ -1,6 +1,6 @@
 //! Versioned input for the fixed privileged archive executable, not an HTTP DTO.
 mod create;
-pub use create::{Report, create_archive};
+pub use create::{Report, create_archive, create_archive_from_directory};
 use dockervault_core::filters::Filters;
 use serde::Deserialize;
 use serde_json::Value;
