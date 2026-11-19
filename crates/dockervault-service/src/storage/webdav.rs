@@ -152,6 +152,23 @@ impl WebDav {
         }
         Ok(())
     }
+    pub fn verify_object(
+        &self,
+        remote: String,
+        length: u64,
+        digest: [u8; 32],
+    ) -> Result<Work<Result<bool, DavError>>, WorkError> {
+        self.download_with(remote, move |reader, declared, cancel| {
+            if declared.is_some_and(|actual| actual != length) {
+                return Ok(false);
+            }
+            let limit = length.saturating_add(1);
+            let mut bounded = reader.take(limit);
+            let actual = crate::storage::hash_reader(&mut bounded, cancel)?;
+            Ok(limit - bounded.limit() == length && actual == digest)
+        })
+    }
+
     pub fn download(
         &self,
         remote: String,

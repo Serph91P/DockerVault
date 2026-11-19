@@ -268,6 +268,41 @@ async fn retried_put_reopens_identical_bytes_but_permanent_unauthorized_never_re
     }
 }
 #[tokio::test]
+async fn webdav_restart_readback_detects_equal_length_corruption_without_local_source() {
+    use sha2::{Digest, Sha256};
+    let bytes = b"synthetic stored WebDAV bytes";
+    let remote = "/dav%2Froot/backups%20%23%3F%25/archive?tenant=one%26two";
+    let server = Server::new(Service::default()).await;
+    let (backend, owner, io) = server.backend(1);
+    for corrupt in [false, true] {
+        let mut stored = bytes.to_vec();
+        if corrupt {
+            stored[0] ^= 1;
+        }
+        server
+            .state
+            .objects
+            .lock()
+            .unwrap()
+            .insert(remote.into(), stored);
+        let verified = backend
+            .verify_object(
+                "archive".into(),
+                bytes.len() as u64,
+                Sha256::digest(bytes).into(),
+            )
+            .unwrap()
+            .wait()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(verified, !corrupt);
+    }
+    owner.shutdown(None).await;
+    io.shutdown(None).await;
+}
+
+#[tokio::test]
 async fn successful_put_and_head_cannot_hide_wrong_independent_download_bytes() {
     let server = Server::new(Service {
         corrupt_get: true,
