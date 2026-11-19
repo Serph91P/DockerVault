@@ -65,6 +65,61 @@ async fn s3_delete_waits_for_remote_settlement_after_cancel() {
 }
 
 #[tokio::test]
+async fn reviewed_s3_delete_sends_the_exact_etag_and_preserves_precondition_failure() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let tasks = Owner::new(1).unwrap();
+    let storage = configured(listener.local_addr().unwrap(), tasks.clone());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let request = read_headers(&mut socket).await;
+        assert!(request.starts_with(
+            "DELETE /public-bucket/PUBLIC-prefix/fixture.tar.enc?x-id=DeleteObject HTTP/1.1"
+        ));
+        assert!(request.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("if-match") && value.trim() == "\"Frozen-ETag\""
+            })
+        }));
+        let body =
+            "<Error><Code>PreconditionFailed</Code><Message>Object changed</Message></Error>";
+        socket.write_all(format!("HTTP/1.1 412 Precondition Failed\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+    });
+    let error = storage
+        .delete_reviewed("fixture.tar.enc".to_owned(), "\"Frozen-ETag\"".to_owned())
+        .unwrap()
+        .wait()
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.http_status(), Some(412));
+    server.await.unwrap();
+    tasks.shutdown(None).await;
+}
+
+#[tokio::test]
+async fn reviewed_s3_delete_refuses_non_specific_conditions_before_io() {
+    use dockervault_service::storage::s3::S3Error;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let tasks = Owner::new(1).unwrap();
+    let storage = configured(listener.local_addr().unwrap(), tasks.clone());
+    for condition in ["*", "", "\"\"", "\"one\", \"two\""] {
+        let result = storage
+            .delete_reviewed("fixture.tar.enc".into(), condition.into())
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        assert!(matches!(result, Err(S3Error::Config)));
+    }
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), listener.accept())
+            .await
+            .is_err()
+    );
+    tasks.shutdown(None).await;
+}
+
+#[tokio::test]
 async fn s3_listing_consumes_all_pages_and_preserves_wire_metadata() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let tasks = Owner::new(1).unwrap();

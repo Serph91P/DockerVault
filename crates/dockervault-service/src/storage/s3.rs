@@ -198,16 +198,46 @@ impl S3 {
     }
 
     pub fn delete(&self, remote: String) -> Result<Work<Result<(), S3Error>>, WorkError> {
+        self.delete_inner(remote, None)
+    }
+
+    /// Send a conditional delete with the reviewed ETag. The caller must establish
+    /// that the endpoint enforces the condition and handle bucket versioning.
+    pub fn delete_reviewed(
+        &self,
+        remote: String,
+        etag: String,
+    ) -> Result<Work<Result<(), S3Error>>, WorkError> {
+        self.delete_inner(remote, Some(etag))
+    }
+
+    fn delete_inner(
+        &self,
+        remote: String,
+        etag: Option<String>,
+    ) -> Result<Work<Result<(), S3Error>>, WorkError> {
         let backend = self.clone();
         self.owner.submit_async(move |cancel| async move {
             if cancel.is_cancelled() {
                 return Err(S3Error::Cancelled);
+            }
+            if etag.as_ref().is_some_and(|tag| {
+                tag.strip_prefix('"')
+                    .and_then(|s| s.strip_suffix('"'))
+                    .is_none_or(|s| {
+                        s.is_empty()
+                            || s.bytes()
+                                .any(|b| !(0x21..=0x7e).contains(&b) || matches!(b, b'"' | b'*'))
+                    })
+            }) {
+                return Err(S3Error::Config);
             }
             let result = backend
                 .client
                 .delete_object()
                 .bucket(&backend.bucket)
                 .key(backend.key(&remote))
+                .set_if_match(etag)
                 .send()
                 .await;
             // DELETE has no protocol abort: retain admission until the request settles.
