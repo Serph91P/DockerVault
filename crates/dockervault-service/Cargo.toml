@@ -30,6 +30,7 @@ strum = { version = "=0.28.0", default-features = false }
 dotenvy.workspace = true
 axum.workspace = true
 nix.workspace = true
+rustix = { version = "=1.1.6", features = ["fs"] }
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true

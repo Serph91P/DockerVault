@@ -27,9 +27,100 @@ pub(crate) fn relative_path(path: &str, allow_root: bool) -> Option<String> {
 }
 use sha2::{Digest, Sha256};
 
-/// Before opening the listener, retire only native reservations whose exact
-/// destinations are all absent. Never remove an unknown filesystem occupant.
-pub async fn settle_unpublished_archives(
+const PUBLICATION_ATTR: &str = "user.dockervault.publication";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct Publication {
+    pub token: String,
+    pub checksum: String,
+    pub artifacts: Vec<PublishedArtifact>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct PublishedArtifact {
+    pub path: PathBuf,
+    pub length: u64,
+    pub digest: String,
+    pub device: u64,
+    pub inode: u64,
+}
+
+pub(crate) fn mark_publication(file: &File, token: &str) -> io::Result<()> {
+    rustix::fs::fsetxattr(
+        file,
+        PUBLICATION_ATTR,
+        token.as_bytes(),
+        rustix::fs::XattrFlags::CREATE,
+    )?;
+    file.sync_all()
+}
+
+fn digest_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn verified_publication(
+    root: &Path,
+    paths: &[PathBuf],
+    proof: &Publication,
+    cancel: &dyn Fn() -> bool,
+) -> bool {
+    let valid_hex = |s: &str, len| s.len() == len && s.bytes().all(|b| b.is_ascii_hexdigit());
+    if !valid_hex(&proof.token, 32)
+        || !valid_hex(&proof.checksum, 64)
+        || paths.len() != proof.artifacts.len()
+    {
+        return false;
+    }
+    let Some(archive) = paths.first().and_then(|path| path.to_str()) else {
+        return false;
+    };
+    match paths {
+        [_] if !archive.ends_with(".enc") && proof.checksum == proof.artifacts[0].digest => {}
+        [_, key]
+            if archive.ends_with(".enc")
+                && key == Path::new(&dockervault_core::crypto::key_sidecar_path(archive)) => {}
+        _ => return false,
+    }
+    paths.iter().zip(&proof.artifacts).all(|(path, artifact)| {
+        if cancel() || *path != artifact.path || !valid_hex(&artifact.digest, 64) {
+            return false;
+        }
+        let check = || -> io::Result<bool> {
+            let rel = path.strip_prefix(root).map_err(io::Error::other)?;
+            let mut file = local::open_download_source(root, rel)?;
+            let identity = FileIdentity::read(&file.metadata()?)?;
+            let mut token = [0u8; 32];
+            if identity.length != artifact.length
+                || identity.device != artifact.device
+                || identity.inode != artifact.inode
+                || rustix::fs::fgetxattr(&file, PUBLICATION_ATTR, &mut token[..])? != token.len()
+                || token.as_slice() != proof.token.as_bytes()
+            {
+                return Ok(false);
+            }
+            if digest_hex(&hash_reader(&mut file, cancel)?) != artifact.digest {
+                return Ok(false);
+            }
+            let current = local::open_download_source(root, rel)?;
+            if identity != FileIdentity::read(&current.metadata()?)? {
+                return Ok(false);
+            }
+            file.sync_all()?;
+            local::open_root(
+                path.parent()
+                    .ok_or_else(|| invalid("Missing publication parent"))?,
+            )?
+            .sync_all()?;
+            Ok(true)
+        };
+        check().unwrap_or(false)
+    })
+}
+
+/// Reconcile native publications before opening the listener. Never remove a
+/// filesystem occupant based on a reservation alone.
+pub async fn reconcile_archive_publications(
     pool: &sqlx::SqlitePool,
     root: &str,
     owner: &crate::ownership::Owner,
@@ -40,15 +131,15 @@ pub async fn settle_unpublished_archives(
     let root = std::path::absolute(root).map_err(sqlx::Error::Io)?;
     let mut after = i64::MIN;
     loop {
-        let rows: Vec<(i64, String)> = sqlx::query_as(
-            "SELECT id,backup_metadata FROM backups WHERE id>? AND status IN ('PENDING','RUNNING','FAILED')
+        let rows: Vec<(i64, String, String)> = sqlx::query_as(
+            "SELECT id,status,backup_metadata FROM backups WHERE id>? AND status IN ('PENDING','RUNNING','FAILED')
              AND CASE WHEN json_valid(backup_metadata) THEN json_type(backup_metadata,'$.native_ephemeral_archive')='true' ELSE 0 END
              ORDER BY id LIMIT 64",
         ).bind(after).fetch_all(pool).await?;
         if rows.is_empty() {
             return Ok(());
         }
-        for (id, metadata) in rows {
+        for (id, status, metadata) in rows {
             after = id;
             let Ok(metadata_value) = serde_json::from_str::<serde_json::Value>(&metadata) else {
                 continue;
@@ -62,17 +153,35 @@ pub async fn settle_unpublished_archives(
             if !(1..=2).contains(&paths.len()) {
                 continue;
             }
+            let proof = metadata_value
+                .get("native_publication")
+                .and_then(|value| serde_json::from_value::<Publication>(value.clone()).ok());
             let root = root.clone();
-            let confirmed_absent = owner.submit_blocking(move |cancel| {
-                paths.iter().all(|path| {
+            let (confirmed_absent, verified) = owner.submit_blocking(move |cancel| {
+                let absent = paths.iter().all(|path| {
                     !cancel.is_cancelled() && path.strip_prefix(&root).ok().is_some_and(|rel| {
                         !rel.as_os_str().is_empty() && rel.components().all(|part| matches!(part,std::path::Component::Normal(_)))
                             && matches!(local::open_download_source(&root, rel), Err(error) if error.kind() == io::ErrorKind::NotFound)
                     })
-                })
+                });
+                let verified = proof.filter(|proof| status == "RUNNING" && !absent && verified_publication(&root, &paths, proof, &|| cancel.is_cancelled()));
+                (absent, verified)
             }).map_err(|e|sqlx::Error::Io(io::Error::other(e)))?.wait().await.map_err(|e|sqlx::Error::Io(io::Error::other(e)))?;
-            if confirmed_absent {
-                sqlx::query("UPDATE backups SET backup_metadata=json_remove(backup_metadata,'$.active_artifacts','$.native_ephemeral_archive') WHERE id=? AND backup_metadata=? AND status IN ('PENDING','RUNNING','FAILED')")
+            if let Some(proof) = verified {
+                let archive = &proof.artifacts[0];
+                let sidecar = proof.artifacts.get(1).and_then(|entry| entry.path.to_str());
+                if let (Some(path), Ok(size)) =
+                    (archive.path.to_str(), i64::try_from(archive.length))
+                {
+                    sqlx::query("UPDATE backups SET status='COMPLETED',file_path=?,file_size=?,checksum=?,encrypted=?,encryption_key_path=?,
+                        completed_at=strftime('%Y-%m-%d %H:%M:%f000','now'),error_message=NULL,
+                        duration_seconds=max(0,cast((julianday('now')-julianday(started_at))*86400 as integer)),
+                        backup_metadata=json_remove(backup_metadata,'$.active_artifacts','$.native_ephemeral_archive','$.native_publication')
+                        WHERE id=? AND backup_metadata=? AND status='RUNNING' AND file_path IS NULL")
+                        .bind(path).bind(size).bind(proof.checksum).bind(sidecar.is_some()).bind(sidecar).bind(id).bind(metadata).execute(pool).await?;
+                }
+            } else if confirmed_absent {
+                sqlx::query("UPDATE backups SET backup_metadata=json_remove(backup_metadata,'$.active_artifacts','$.native_ephemeral_archive','$.native_publication') WHERE id=? AND backup_metadata=? AND status IN ('PENDING','RUNNING','FAILED')")
                     .bind(id).bind(metadata).execute(pool).await?;
             } else {
                 sqlx::query("UPDATE backups SET status='FAILED', error_message=?,

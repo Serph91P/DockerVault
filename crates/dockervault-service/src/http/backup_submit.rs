@@ -2,7 +2,7 @@ use super::{HttpState, auth::required_user};
 use crate::{
     jobs::Resource,
     journal::{BackupKind, Journal, JournalError},
-    storage::local,
+    storage::{Publication, PublishedArtifact, local, mark_publication},
 };
 use axum::{
     Json,
@@ -19,6 +19,7 @@ use std::{
     fs::File,
     io::{self, Seek, Write},
     os::fd::AsRawFd,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
 use time::{UtcDateTime, macros::format_description};
@@ -244,6 +245,8 @@ async fn execute(
     let job_cancel = cancel.clone();
     let output = stored.clone();
     let key_output = sidecar.clone();
+    let journal_pool = pool.clone();
+    let runtime = tokio::runtime::Handle::current();
     let result = state
         .auth
         .blocking()
@@ -262,26 +265,38 @@ async fn execute(
             let parent = local::open_or_create_root(&root.join(&safe))?;
             let request =
                 Request::parse(&serde_json::to_vec(&request)?).map_err(io::Error::other)?;
-            if let (Some(recipient), Some(key_output)) = (plan.recipient, key_output) {
-                return write_encrypted(
-                    &request,
-                    &fd,
-                    &parent,
-                    &recipient,
-                    Path::new(&output),
-                    Path::new(&key_output),
-                    &cancelled,
-                );
+            let (mut archive, checksum, mut wrapped_file) = if let Some(recipient) = plan.recipient {
+                let (cipher, checksum, key) = prepare_encrypted(&request, &fd, &parent, &recipient, &cancelled)?;
+                (cipher, checksum, Some(key))
+            } else {
+                let mut plain = archive_private(&request, &fd, &parent, &cancelled)?;
+                let checksum = hash_hex(&mut plain, &cancelled)?;
+                (plain, checksum, None)
+            };
+            let mut nonce = [0u8; 16];
+            getrandom::fill(&mut nonce).map_err(|_| io::Error::other("Publication identity unavailable"))?;
+            let token: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+            let metadata = archive.metadata()?;
+            let length = metadata.len();
+            let digest = if wrapped_file.is_some() { hash_hex(&mut archive, &cancelled)? } else { checksum.clone() };
+            mark_publication(&archive, &token)?;
+            let mut artifacts = vec![PublishedArtifact { path: PathBuf::from(&output), length, digest, device: metadata.dev(), inode: metadata.ino() }];
+            if let (Some(key), Some(path)) = (&mut wrapped_file, &key_output) {
+                let metadata = key.metadata()?;
+                artifacts.push(PublishedArtifact { path: PathBuf::from(path), length: metadata.len(), digest: hash_hex(key, &cancelled)?, device: metadata.dev(), inode: metadata.ino() });
+                mark_publication(key, &token)?;
             }
-            let mut archive = archive_private(&request, &fd, &parent, &cancelled)?;
-            archive.sync_all()?;
-            let length = archive.metadata()?.len();
-            let digest = crate::storage::hash_reader(&mut archive, &cancelled)?;
             if cancelled() {
                 return Err(io::ErrorKind::Interrupted.into());
             }
-            publish(&parent, &archive, &path)?;
-            Ok((length, digest.iter().map(|b| format!("{b:02x}")).collect()))
+            let proof = serde_json::to_string(&Publication { token, checksum: checksum.clone(), artifacts })?;
+            let staged = runtime.block_on(sqlx::query("UPDATE backups SET backup_metadata=json_set(backup_metadata,'$.native_publication',json(?)) WHERE id=? AND status='RUNNING'")
+                .bind(proof).bind(id).execute(&journal_pool)).map_err(io::Error::other)?;
+            if staged.rows_affected() != 1 || cancelled() { return Err(io::ErrorKind::Interrupted.into()); }
+            // The durable receipt precedes both links, and key custody precedes ciphertext.
+            if let (Some(key), Some(path)) = (&wrapped_file, &key_output) { publish(&parent, key, Path::new(path))?; }
+            publish(&parent, &archive, Path::new(&output))?;
+            Ok((length, checksum))
         })
         .map_err(|_| ())?
         .wait()
@@ -289,7 +304,7 @@ async fn execute(
         .map_err(|_| ())?
         .map_err(|_| ())?;
     let len = i64::try_from(result.0).map_err(|_| ())?;
-    let changed = sqlx::query("UPDATE backups SET status='COMPLETED', file_path=?,file_size=?,checksum=?,encrypted=?,encryption_key_path=?,completed_at=strftime('%Y-%m-%d %H:%M:%f000','now'), duration_seconds=max(0,cast((julianday('now')-julianday(started_at))*86400 as integer)),backup_metadata=json_remove(backup_metadata,'$.active_artifacts','$.native_ephemeral_archive') WHERE id=? AND status='RUNNING'")
+    let changed = sqlx::query("UPDATE backups SET status='COMPLETED', file_path=?,file_size=?,checksum=?,encrypted=?,encryption_key_path=?,completed_at=strftime('%Y-%m-%d %H:%M:%f000','now'), duration_seconds=max(0,cast((julianday('now')-julianday(started_at))*86400 as integer)),backup_metadata=json_remove(backup_metadata,'$.active_artifacts','$.native_ephemeral_archive','$.native_publication') WHERE id=? AND status='RUNNING'")
         .bind(stored).bind(len).bind(result.1).bind(sidecar.is_some()).bind(sidecar).bind(id).execute(pool).await.map_err(|_| ())?;
     if changed.rows_affected() == 1 {
         Ok(())
@@ -298,15 +313,13 @@ async fn execute(
     }
 }
 
-fn write_encrypted(
+fn prepare_encrypted(
     request: &Request,
     source: &File,
     parent: &File,
     recipient: &str,
-    archive: &Path,
-    sidecar: &Path,
     cancel: &dyn Fn() -> bool,
-) -> io::Result<(u64, String)> {
+) -> io::Result<(File, String, File)> {
     use nix::{
         fcntl::{OFlag, openat},
         sys::stat::Mode,
@@ -349,10 +362,19 @@ fn write_encrypted(
         return Err(io::Error::other("Archive sidecar verification interrupted"));
     }
 
-    // First preserve recoverable key custody; a crash cannot leave a newly published archive without its key.
-    publish(parent, &wrapped_file, sidecar)?;
-    publish(parent, &cipher, archive)?;
-    Ok((length, digest.iter().map(|b| format!("{b:02x}")).collect()))
+    Ok((
+        cipher,
+        digest.iter().map(|b| format!("{b:02x}")).collect(),
+        wrapped_file,
+    ))
+}
+
+fn hash_hex(file: &mut File, cancel: &dyn Fn() -> bool) -> io::Result<String> {
+    file.rewind()?;
+    Ok(crate::storage::hash_reader(file, cancel)?
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
 }
 
 fn publish(parent: &File, file: &File, path: &Path) -> io::Result<()> {

@@ -128,6 +128,41 @@ fn standalone_service_migrates_serves_and_shuts_down_without_python() {
         )
         .unwrap();
     }
+    use std::os::unix::fs::MetadataExt;
+    let token = "0123456789abcdef0123456789abcdef";
+    let digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    for (id, name, mark, partial) in [
+        (5, "own.tar", true, false),
+        (6, "foreign.tar", false, false),
+        (7, "partial.tar.enc", true, true),
+    ] {
+        let path = archive_dir.join(name);
+        std::fs::write(&path, b"abc").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        if mark {
+            rustix::fs::fsetxattr(
+                &file,
+                "user.dockervault.publication",
+                token.as_bytes(),
+                rustix::fs::XattrFlags::CREATE,
+            )
+            .unwrap();
+        }
+        let metadata = file.metadata().unwrap();
+        let mut artifacts = vec![
+            serde_json::json!({"path":path,"length":3,"digest":digest,"device":metadata.dev(),"inode":metadata.ino()}),
+        ];
+        if partial {
+            artifacts.push(serde_json::json!({"path":archive_dir.join("partial.tar.key"),"length":3,"digest":digest,"device":metadata.dev(),"inode":metadata.ino()}));
+        }
+        let paths: Vec<_> = artifacts.iter().map(|item| &item["path"]).collect();
+        let proof = serde_json::json!({"native_ephemeral_archive":true,"active_artifacts":paths,"native_publication":{"token":token,"checksum":digest,"artifacts":artifacts}});
+        db.execute(
+            "INSERT INTO backups(id,target_id,status,backup_metadata) VALUES(?,1,'RUNNING',?)",
+            rusqlite::params![id, proof.to_string()],
+        )
+        .unwrap();
+    }
     process.kill().unwrap();
     assert!(!process.wait().unwrap().success());
     let mut process = run(&dir, port);
@@ -176,6 +211,24 @@ fn standalone_service_migrates_serves_and_shuts_down_without_python() {
         std::fs::read(neighbor).unwrap(),
         b"fixture must not be replayed"
     );
+    for (id, name, expected) in [
+        (5, "own.tar", "COMPLETED"),
+        (6, "foreign.tar", "FAILED"),
+        (7, "partial.tar.enc", "FAILED"),
+    ] {
+        let path = archive_dir.join(name);
+        let state: (String, Option<String>, bool) = db.query_row("SELECT status,file_path,json_type(backup_metadata,'$.native_publication') IS NOT NULL FROM backups WHERE id=?", [id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
+        let complete = expected == "COMPLETED";
+        assert_eq!(
+            state,
+            (
+                expected.into(),
+                complete.then(|| path.to_str().unwrap().into()),
+                !complete
+            )
+        );
+        assert_eq!(std::fs::read(path).unwrap(), b"abc");
+    }
     // Hold an incomplete login body after the server starts polling it.
     use std::io::{Read, Write};
     let mut incomplete = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();

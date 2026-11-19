@@ -121,7 +121,7 @@ async fn run() -> Result<(), &'static str> {
     }
     // Preserve staged activation and any specific result from journal reconciliation.
     if !activation_pending {
-        dockervault_service::storage::settle_unpublished_archives(
+        dockervault_service::storage::reconcile_archive_publications(
             db.pool(),
             &config.backup_base_path,
             &owner,
