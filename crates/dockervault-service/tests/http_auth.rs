@@ -2272,6 +2272,105 @@ async fn configured_s3_download_verifies_complete_object_before_serving_ranges()
 }
 
 #[tokio::test]
+async fn backup_remote_download_uses_verified_enabled_catalog_copy_and_sidecar() {
+    use sha2::{Digest, Sha256};
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [("Cookie", cookie.as_str())];
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    sqlx::raw_sql(
+        "INSERT INTO backup_targets(id,name,target_type) VALUES(1,'fixture','path');
+        INSERT INTO backups(id,target_id,backup_type,status,encrypted,file_size) VALUES
+        (1,1,'FULL','COMPLETED',1,13),(2,1,'FULL','COMPLETED',0,13),(3,1,'FULL','COMPLETED',1,13);",
+    )
+    .execute(server.db.pool())
+    .await
+    .unwrap();
+    sqlx::query("UPDATE backups SET checksum=? WHERE id=2")
+        .bind(
+            Sha256::digest(b"expected data")
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+        )
+        .execute(server.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,webdav_url) VALUES(44,'fixture','webdav',1,'/base',?),(45,'disabled','webdav',0,'/base',?)")
+        .bind(&endpoint).bind(&endpoint).execute(server.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO backup_storage_syncs(backup_id,storage_id,remote_path,sync_status) VALUES
+        (1,44,'job/archive.tar.enc','completed'),(2,44,'job/wrong.tar','completed'),(3,45,'job/disabled.tar.enc','completed')")
+        .execute(server.db.pool()).await.unwrap();
+    let provider = tokio::spawn(async move {
+        for (path, body) in [
+            ("archive.tar.enc", "archive bytes"),
+            ("archive.tar.enc", "archive bytes"),
+            ("archive.tar.key", "wrapped key"),
+            ("wrong.tar", "substitutions"),
+        ] {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut line = String::new();
+            stream.read_line(&mut line).await.unwrap();
+            assert_eq!(line, format!("GET /base/job/{path} HTTP/1.1\r\n"));
+            loop {
+                line.clear();
+                assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            stream
+                .get_mut()
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        }
+        listener
+    });
+    for (route, status, expected) in [
+        ("1/download", 200, json!("archive bytes")),
+        ("1/download?sidecar=true", 200, json!("wrapped key")),
+        (
+            "2/download",
+            404,
+            json!({"detail":"Archive content unavailable"}),
+        ),
+        (
+            "3/download",
+            404,
+            json!({"detail":"Archive content unavailable"}),
+        ),
+    ] {
+        let (actual, _, body) = server
+            .request("GET", &format!("/api/v1/backups/{route}"), &headers, None)
+            .await;
+        assert_eq!((actual, body), (status, expected));
+    }
+    let listener = provider.await.unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read_dir(server.path.join("backups"))
+            .unwrap()
+            .count(),
+        0
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn configured_webdav_download_does_not_publish_incomplete_bodies() {
     use tokio::io::{AsyncBufReadExt, BufReader};
     let server = Server::start("http://localhost:3000").await;

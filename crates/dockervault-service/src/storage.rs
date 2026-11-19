@@ -137,7 +137,10 @@ fn open_regular(path: &Path) -> io::Result<File> {
     FileIdentity::read(&file.metadata()?)?;
     Ok(file)
 }
-fn hash_reader(reader: &mut impl Read, cancel: &dyn Fn() -> bool) -> io::Result<[u8; 32]> {
+pub(crate) fn hash_reader(
+    reader: &mut impl Read,
+    cancel: &dyn Fn() -> bool,
+) -> io::Result<[u8; 32]> {
     let mut digest = Sha256::new();
     let mut buffer = [0u8; 65536];
     loop {

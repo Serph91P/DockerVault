@@ -6,10 +6,7 @@ use axum::{
 use futures_util::stream;
 use md5::{Digest, Md5};
 use std::{collections::VecDeque, fs::File, io, os::unix::fs::MetadataExt};
-use tokio::{
-    io::{AsyncReadExt, AsyncSeekExt},
-    sync::OwnedSemaphorePermit,
-};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 const CHUNK: usize = 64 * 1024;
 
@@ -45,7 +42,7 @@ enum Part {
 pub(in crate::http) fn response(
     file: File,
     length: u64,
-    slot: OwnedSemaphorePermit,
+    slot: impl Send + 'static,
     disposition: String,
     validators: Validators,
     request: &HeaderMap,

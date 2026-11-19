@@ -31,12 +31,12 @@ fn remote_name(config: &Value) -> Option<&str> {
         .filter(|name| dockervault_core::rclone_path::valid_name(name))
 }
 
-pub(super) async fn download_snapshot(
+pub(super) async fn download_snapshot<T: Send + 'static>(
     state: &HttpState,
     config: Value,
     child: String,
-    slot: tokio::sync::OwnedSemaphorePermit,
-) -> Option<(std::fs::File, u64, tokio::sync::OwnedSemaphorePermit)> {
+    slot: T,
+) -> Option<(std::fs::File, u64, T)> {
     use std::os::fd::AsRawFd;
     let shared = state.clone();
     state

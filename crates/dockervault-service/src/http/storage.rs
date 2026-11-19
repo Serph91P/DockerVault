@@ -498,7 +498,13 @@ pub(super) async fn configured_download(
             else {
                 return storage_error(StatusCode::INTERNAL_SERVER_ERROR, "Download failed");
             };
-            download_from(&state, DownloadSource::Sftp(endpoint, key), path, &headers).await
+            download_from(
+                &state,
+                DownloadSource::Sftp(endpoint, key.map(std::sync::Arc::new)),
+                path,
+                &headers,
+            )
+            .await
         }
         Some("webdav" | "s3" | "ftp") => {
             if !open_probe_credentials(&state, &mut config, None).await {
@@ -725,13 +731,47 @@ async fn download_at(
     download_from(state, DownloadSource::Local(root.into()), path, headers).await
 }
 
-enum DownloadSource {
+#[derive(Clone)]
+pub(super) enum DownloadSource {
     Local(std::path::PathBuf),
     Webdav(crate::storage::webdav::WebDav),
     S3(crate::storage::s3::S3),
     Ftp(crate::storage::ftp::Ftp),
-    Sftp(crate::storage::ssh::SftpEndpoint, Option<std::fs::File>),
+    Sftp(
+        crate::storage::ssh::SftpEndpoint,
+        Option<std::sync::Arc<std::fs::File>>,
+    ),
     Rclone(Value),
+}
+
+pub(super) async fn saved_archive_source(state: &HttpState, id: i64) -> Option<DownloadSource> {
+    let mut config = configured_browse_config(state, id).await.ok()?;
+    if config.get("enabled").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    if !open_probe_credentials(state, &mut config, None).await {
+        return None;
+    }
+    match config["storage_type"].as_str()? {
+        "local" => Some(DownloadSource::Local(
+            config["base_path"]
+                .as_str()
+                .filter(|path| !path.is_empty())?
+                .into(),
+        )),
+        "rclone" => Some(DownloadSource::Rclone(Value::Object(config))),
+        "ssh" | "sftp" => {
+            let base = config["base_path"].as_str().unwrap_or_default().to_owned();
+            let (endpoint, key) = ssh_endpoint(state, &Value::Object(config), false, base)
+                .await
+                .ok()?;
+            Some(DownloadSource::Sftp(endpoint, key.map(std::sync::Arc::new)))
+        }
+        "s3" => s3_provider(state, &Value::Object(config)).map(DownloadSource::S3),
+        "ftp" => ftp_provider(state, &Value::Object(config)).map(DownloadSource::Ftp),
+        "webdav" => configured_webdav(state, &config).map(DownloadSource::Webdav),
+        _ => None,
+    }
 }
 
 async fn download_from(
@@ -779,17 +819,12 @@ pub(super) fn attachment(name: &str) -> String {
     }
 }
 
-async fn snapshot_for_download(
+pub(super) async fn snapshot_for_download<T: Send + 'static>(
     state: &HttpState,
     source: DownloadSource,
     path: String,
-    slot: tokio::sync::OwnedSemaphorePermit,
-) -> Option<(
-    std::fs::File,
-    u64,
-    tokio::sync::OwnedSemaphorePermit,
-    download::Validators,
-)> {
+    slot: T,
+) -> Option<(std::fs::File, u64, T, download::Validators)> {
     let snapshot = match source {
         DownloadSource::Local(root) => state
             .auth
@@ -815,7 +850,7 @@ async fn snapshot_for_download(
                 state.probe_processes.as_ref()?,
                 &state.probe_jobs,
                 &path,
-                key,
+                key.map(|key| key.try_clone()).transpose().ok()?,
                 slot,
             )
             .ok()?
@@ -981,7 +1016,7 @@ async fn bulk_download(
                         "Bulk download failed",
                     );
                 };
-                DownloadSource::Sftp(endpoint, key)
+                DownloadSource::Sftp(endpoint, key.map(std::sync::Arc::new))
             }
             _ => {
                 return storage_error(
