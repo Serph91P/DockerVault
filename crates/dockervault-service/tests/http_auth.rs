@@ -966,6 +966,12 @@ enum ReplicaDrift {
     Destination,
     Path,
     Encryption,
+    SharedSidecar,
+}
+
+#[tokio::test]
+async fn remote_removal_retains_a_sidecar_shared_with_another_catalog_entry() {
+    replica_removal(ReplicaDrift::SharedSidecar).await;
 }
 
 async fn replica_removal(drift: ReplicaDrift) {
@@ -986,6 +992,15 @@ async fn replica_removal(drift: ReplicaDrift) {
     sqlx::raw_sql("INSERT INTO backup_targets(id,name,target_type,enabled) VALUES(1,'Fixture','path',1); INSERT INTO backups(id,target_id,backup_type,status) VALUES(1,1,'FULL','COMPLETED');").execute(db).await.unwrap();
     sqlx::query("INSERT INTO remote_storages(id,name,storage_type,base_path,enabled) VALUES(1,'Replica','local',?,1)").bind(copy.to_str().unwrap()).execute(db).await.unwrap();
     sqlx::query("INSERT INTO backup_storage_syncs(id,backup_id,storage_id,remote_path,sync_status) VALUES(1,1,1,'fixture.tar','completed')").execute(db).await.unwrap();
+    let shared = matches!(drift, ReplicaDrift::SharedSidecar);
+    let sidecar = "fixture.tar.key";
+    if shared {
+        sqlx::query("UPDATE backups SET encrypted=1 WHERE id=1")
+            .execute(db)
+            .await
+            .unwrap();
+        std::fs::write(copy.join(sidecar), b"shared bytes").unwrap();
+    }
     let (status, _, preview) = server
         .request(
             "POST",
@@ -1014,6 +1029,11 @@ async fn replica_removal(drift: ReplicaDrift) {
             .execute(db)
             .await
             .unwrap(),
+        ReplicaDrift::SharedSidecar => {
+            sqlx::query("INSERT INTO backups(id,target_id,backup_type,status) VALUES(2,1,'FULL','COMPLETED')").execute(db).await.unwrap();
+            sqlx::query("INSERT INTO backup_storage_syncs(id,backup_id,storage_id,remote_path,sync_status) VALUES(2,2,1,?,'completed')")
+                .bind(sidecar).execute(db).await.unwrap()
+        }
     };
     let (status, _, result) = server
         .request(
@@ -1040,7 +1060,10 @@ async fn replica_removal(drift: ReplicaDrift) {
         .fetch_one(db)
         .await
         .unwrap();
-    assert_eq!(count, 1);
+    assert_eq!(count, if shared { 2 } else { 1 });
+    if shared {
+        assert_eq!(std::fs::read(copy.join(sidecar)).unwrap(), b"shared bytes");
+    }
     server.close().await;
 }
 

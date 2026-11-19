@@ -161,8 +161,37 @@ async fn check_remote(state: &HttpState, item: &Item) -> Result<(), EntryError> 
     if destination != remote.destination {
         return Err(CHANGED);
     }
+    if let Some(archive) = &remote.archive {
+        let selected = replica_paths(archive, remote.backup_identity.3.unwrap_or(false));
+        let others = sqlx::query_as::<_, (String, Option<bool>)>(
+            "SELECT s.remote_path,b.encrypted FROM backup_storage_syncs s JOIN backups b ON b.id=s.backup_id WHERE s.storage_id=? AND s.id!=? AND s.remote_path IS NOT NULL",
+        )
+        .bind(storage_id)
+        .bind(remote.sync_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|_| INCOMPLETE)?;
+        if others.into_iter().any(|(path, encrypted)| {
+            replica_paths(&path, encrypted.unwrap_or(false))
+                .iter()
+                .any(|path| selected.contains(path))
+        }) {
+            return Err(Skipped(
+                "Copy is shared by another archive identity; retained for safety",
+            ));
+        }
+    }
     Err(Failed("Confirmed remote copy removal is not available"))
 }
+
+fn replica_paths(archive: &str, encrypted: bool) -> Vec<String> {
+    let Some(path) = crate::storage::relative_path(archive, false) else {
+        return Vec::new();
+    };
+    let sidecar = encrypted.then(|| dockervault_core::crypto::key_sidecar_path(&path));
+    std::iter::once(path).chain(sidecar).collect()
+}
+
 type Catalog = (
     i64,
     Option<String>,
