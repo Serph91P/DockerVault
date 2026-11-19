@@ -11,6 +11,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
+use dockervault_core::crypto::{decrypt_dek, decrypt_private, key_sidecar_path};
 use dockervault_core::encoding::python_json;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -23,6 +24,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tokio_util::sync::CancellationToken;
+use zeroize::Zeroizing;
 
 type Failure = (StatusCode, &'static str);
 const INTERNAL: Failure = (StatusCode::INTERNAL_SERVER_ERROR, "Restore failed");
@@ -45,6 +47,14 @@ pub(super) struct Selection {
     target_path: Option<String>,
     target_volume: Option<String>,
     review_fingerprint: Option<String>,
+    #[serde(default, deserialize_with = "private_key")]
+    private_key: Option<Zeroizing<String>>,
+}
+
+fn private_key<'de, D: serde::Deserializer<'de>>(
+    input: D,
+) -> Result<Option<Zeroizing<String>>, D::Error> {
+    Option::<String>::deserialize(input).map(|value| value.map(Zeroizing::new))
 }
 
 struct Impact {
@@ -52,6 +62,8 @@ struct Impact {
     destination: PathBuf,
     identity: (u64, u64),
     archive_path: Option<String>,
+    encrypted: bool,
+    key_path: Option<String>,
     checksum: Option<String>,
     length: Option<i64>,
     layout: Option<String>,
@@ -151,8 +163,7 @@ async fn impact(state: &HttpState, id: i64, selection: &Selection) -> Result<Imp
         .transpose()
         .map_err(|_| INTERNAL)?
         .unwrap_or(Value::Null);
-    if encrypted
-        || field::<String>(&row, "target_type")? != "path"
+    if field::<String>(&row, "target_type")? != "path"
         || (stop == Some(true) && container.as_deref().is_some_and(|s| !s.is_empty()))
         || !(dependencies.is_null() || dependencies.as_array().is_some_and(Vec::is_empty))
     {
@@ -204,9 +215,10 @@ async fn impact(state: &HttpState, id: i64, selection: &Selection) -> Result<Imp
     let archive_path: Option<String> = field(&row, "file_path")?;
     let checksum: Option<String> = field(&row, "checksum")?;
     let length = field(&row, "file_size")?;
-    let mut public = json!({"destination":{"type":"original","path":destination,"volume":null},"containers_to_stop":[],"containers_to_restart":[],"layout":"Contents of the single archive root merge into the destination","overwrite":"Colliding files are overwritten; unrelated files remain. No transactional rollback or application-health guarantee.","key_required":false});
+    let key_path: Option<String> = field(&row, "encryption_key_path")?;
+    let mut public = json!({"destination":{"type":"original","path":destination,"volume":null},"containers_to_stop":[],"containers_to_restart":[],"layout":"Contents of the single archive root merge into the destination","overwrite":"Colliding files are overwritten; unrelated files remain. No transactional rollback or application-health guarantee.","key_required":encrypted});
     let mut signed = public.clone();
-    signed["archive"] = json!({"id":id,"target_id":target,"file_path":archive_path,"checksum":checksum,"encrypted":false,"key_path":field::<Option<String>>(&row,"encryption_key_path")?,"layout":layout,"status":"completed"});
+    signed["archive"] = json!({"id":id,"target_id":target,"file_path":archive_path,"checksum":checksum,"encrypted":encrypted,"key_path":key_path,"layout":layout,"status":"completed"});
     signed["target"] = json!({"id":target,"target_type":"path","host_path":host,"volume_name":field::<Option<String>>(&row,"volume_name")?,"container_name":container,"stop_container":stop,"dependencies":dependencies});
     signed["destination_identity"] =
         json!({"path":destination,"ancestor":destination,"device":identity.0,"inode":identity.1});
@@ -219,6 +231,8 @@ async fn impact(state: &HttpState, id: i64, selection: &Selection) -> Result<Imp
         destination,
         identity,
         archive_path,
+        encrypted,
+        key_path,
         checksum,
         length,
         layout: strip,
@@ -283,16 +297,26 @@ async fn execute(
         .await
         .map_err(|_| INTERNAL)?;
     let token = cancel.clone();
+    let private = selection
+        .private_key
+        .as_ref()
+        .map(|key| Zeroizing::new(key.to_string()));
     let root = PathBuf::from(&state.config.backup_base_path);
     let writer_journal = journal.clone();
     let runtime = tokio::runtime::Handle::current();
     let worker = state.auth.blocking().submit_blocking(move |owner_cancel| {
         let cancelled = || token.is_cancelled() || owner_cancel.is_cancelled();
-        restore_path(&reviewed, &root, &cancelled, || {
-            runtime
-                .block_on(writer_journal.phase(key, RESTORE_WRITE_PHASE))
-                .map_err(io::Error::other)
-        })?;
+        restore_path(
+            &reviewed,
+            &root,
+            private.as_ref().map(|key| key.as_str()),
+            &cancelled,
+            || {
+                runtime
+                    .block_on(writer_journal.phase(key, RESTORE_WRITE_PHASE))
+                    .map_err(io::Error::other)
+            },
+        )?;
         Ok::<_, Failure>(reviewed.public)
     });
     let result = match worker {
@@ -309,6 +333,7 @@ async fn execute(
 fn restore_path(
     impact: &Impact,
     root: &Path,
+    private_key: Option<&str>,
     cancel: &dyn Fn() -> bool,
     mark_intent: impl FnOnce() -> io::Result<()>,
 ) -> Result<(), Failure> {
@@ -325,6 +350,46 @@ fn restore_path(
     {
         return Err(INTERNAL);
     }
+    let archive_dir = local::open_root(&root).map_err(|_| INTERNAL)?;
+    if impact.encrypted {
+        let private_key = private_key
+            .filter(|key| !key.trim().is_empty())
+            .ok_or((StatusCode::BAD_REQUEST, "Private key required"))?;
+        let key_error = (
+            StatusCode::BAD_REQUEST,
+            "Encryption key sidecar not available",
+        );
+        let key_path = impact
+            .key_path
+            .clone()
+            .filter(|path| !path.is_empty())
+            .unwrap_or_else(|| key_sidecar_path(archive.to_str().unwrap_or_default()));
+        let key_path = std::path::absolute(key_path).map_err(|_| key_error)?;
+        let key = local::open_download_source(
+            &root,
+            key_path.strip_prefix(&root).map_err(|_| key_error)?,
+        )
+        .map_err(|_| key_error)?;
+        let key_len = key.metadata().map_err(|_| key_error)?.len();
+        if key_len == 0 || key_len > 64 * 1024 {
+            return Err(key_error);
+        }
+        let material = decrypt_dek(std::io::Read::take(key, 64 * 1024 + 1), private_key)
+            .map_err(|_| INTERNAL)?;
+        let spool = File::from(
+            nix::fcntl::openat(
+                &archive_dir,
+                ".",
+                nix::fcntl::OFlag::O_TMPFILE
+                    | nix::fcntl::OFlag::O_RDWR
+                    | nix::fcntl::OFlag::O_CLOEXEC,
+                nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+            )
+            .map_err(|_| INTERNAL)?,
+        );
+        snapshot =
+            decrypt_private(snapshot, length, spool, &material, cancel).map_err(|_| INTERNAL)?;
+    }
     if let Some(checksum) = &impact.checksum {
         let digest = hash_reader(&mut snapshot, cancel).map_err(|_| INTERNAL)?;
         if !checksum.eq_ignore_ascii_case(&hex(&digest)) {
@@ -334,8 +399,10 @@ fn restore_path(
     }
     let mut index = IndexedArchive::prepare(
         snapshot,
-        relative.extension().is_some_and(|ext| ext == "gz"),
-        &local::open_root(&root).map_err(|_| INTERNAL)?,
+        relative
+            .to_str()
+            .is_some_and(|path| path.strip_suffix(".enc").unwrap_or(path).ends_with(".gz")),
+        &archive_dir,
         impact.layout.as_deref().map(str::as_bytes),
         cancel,
     )

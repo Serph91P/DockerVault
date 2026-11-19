@@ -9,8 +9,8 @@ use openssl::{
 use std::{
     fmt::Write as _,
     fs::{self, DirBuilder, File, OpenOptions},
-    io::{Read, Write},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+    io::{Read, Seek, Write},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
 };
 use zeroize::Zeroizing;
@@ -167,10 +167,41 @@ pub fn decrypt_file(
     key_material: &[u8],
     cancel: &dyn Fn() -> bool,
 ) -> Result<(), CryptoError> {
-    checkpoint(cancel)?;
-    let (key, require_authentication) = material(key_material)?;
     let mut input = File::open(source)?;
     let size = input.metadata()?.len();
+    let mut output = Stage::new(destination)?;
+    decrypt_stream(&mut input, size, &mut output.file, key_material, cancel)?;
+    output.publish(destination, cancel)
+}
+
+/// Return a plaintext descriptor only after format and authentication checks.
+/// Ownership of an anonymous, empty 0600 spool is transferred to the codec.
+pub fn decrypt_private(
+    mut input: impl Read,
+    size: u64,
+    mut output: File,
+    key_material: &[u8],
+    cancel: &dyn Fn() -> bool,
+) -> Result<File, CryptoError> {
+    let meta = output.metadata()?;
+    if !meta.is_file() || meta.nlink() != 0 || meta.len() != 0 || meta.mode() & 0o777 != 0o600 {
+        return Err(CryptoError::Format);
+    }
+    output.rewind()?;
+    decrypt_stream(&mut input, size, &mut output, key_material, cancel)?;
+    output.rewind()?;
+    Ok(output)
+}
+
+fn decrypt_stream(
+    input: &mut impl Read,
+    size: u64,
+    output: &mut File,
+    key_material: &[u8],
+    cancel: &dyn Fn() -> bool,
+) -> Result<(), CryptoError> {
+    checkpoint(cancel)?;
+    let (key, require_authentication) = material(key_material)?;
     let mut header = [0; 8];
     input.read_exact(&mut header)?;
     let authenticated = header == *ARCHIVE_MAGIC;
@@ -208,7 +239,6 @@ pub fn decrypt_file(
         &parameters[..32],
         Some(&parameters[32..]),
     )?;
-    let mut output = Stage::new(destination)?;
     let mut remaining = inner_size - 16;
     let mut buffer = vec![0; CHUNK];
     let mut plaintext = Zeroizing::new(vec![0; CHUNK + 16]);
@@ -222,7 +252,7 @@ pub fn decrypt_file(
             mac.update(&buffer[..count])?;
         }
         let written = cipher.update(&buffer[..count], &mut plaintext)?;
-        output.file.write_all(&plaintext[..written])?;
+        output.write_all(&plaintext[..written])?;
         remaining -= count as u64;
     }
     if authenticated {
@@ -237,7 +267,6 @@ pub fn decrypt_file(
         return Err(CryptoError::Format);
     }
     let written = cipher.finalize(&mut plaintext)?;
-    output.file.write_all(&plaintext[..written])?;
-    checkpoint(cancel)?;
-    output.publish(destination, cancel)
+    output.write_all(&plaintext[..written])?;
+    checkpoint(cancel)
 }

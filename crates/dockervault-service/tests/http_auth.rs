@@ -252,6 +252,72 @@ async fn submitted_path_backup_publishes_a_verified_archive_before_completion() 
 }
 
 #[tokio::test]
+async fn encrypted_restore_authenticates_before_writing_the_destination() {
+    #[path = "../../dockervault-core/tests/common/mod.rs"]
+    mod public_fixture;
+    use dockervault_core::crypto::{decrypt_dek, encrypt_file};
+    use sha2::{Digest, Sha256};
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let source = server.path.join("source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("data"), b"mutated").unwrap();
+    let plain = server.path.join("fixture.tar");
+    let mut tar = tar::Builder::new(std::fs::File::create(&plain).unwrap());
+    let original = b"verified bytes";
+    let mut header = tar::Header::new_gnu();
+    header.set_mode(0o640);
+    header.set_size(original.len() as u64);
+    tar.append_data(&mut header, "source/data", &original[..])
+        .unwrap();
+    drop(tar.into_inner().unwrap());
+    let cipher = server.path.join("backups/fixture.tar.enc");
+    let sidecar = server.path.join("backups/fixture.tar.key");
+    let wrapped =
+        include_bytes!("../../dockervault-core/tests/fixtures/pax-links.tar.key.TEST_ONLY");
+    std::fs::write(&sidecar, wrapped).unwrap();
+    let private = public_fixture::public_identity(false);
+    let material = decrypt_dek(&wrapped[..], &private).unwrap();
+    encrypt_file(&plain, &cipher, &material, &|| false).unwrap();
+    let checksum: String = Sha256::digest(std::fs::read(plain).unwrap())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    sqlx::query("INSERT INTO backup_targets(id,name,target_type,host_path,enabled) VALUES(1,'Fixture','path',?,1)").bind(source.to_str().unwrap()).execute(server.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO backups(id,target_id,status,encrypted,file_path,encryption_key_path,file_size,checksum) VALUES(1,1,'COMPLETED',1,?,?,?,?)")
+        .bind(cipher.to_str().unwrap()).bind(sidecar.to_str().unwrap()).bind(std::fs::metadata(&cipher).unwrap().len() as i64).bind(checksum).execute(server.db.pool()).await.unwrap();
+    let review = server
+        .request(
+            "POST",
+            "/api/v1/backups/1/restore-review",
+            &headers,
+            Some(json!({"destination_type":"original"})),
+        )
+        .await;
+    assert_eq!(review.0, 200);
+    assert_eq!(review.2["key_required"], true);
+    let mut selection =
+        json!({"destination_type":"original","review_fingerprint":review.2["fingerprint"]});
+    let submit = |body| server.request("POST", "/api/v1/backups/1/restore", &headers, Some(body));
+    assert_eq!(submit(selection.clone()).await.0, 400);
+    selection["private_key"] = json!(&private);
+    let saved = std::fs::read(&cipher).unwrap();
+    let mut tampered = saved.clone();
+    *tampered.last_mut().unwrap() ^= 1;
+    std::fs::write(&cipher, tampered).unwrap();
+    assert_ne!(submit(selection.clone()).await.0, 200);
+    assert_eq!(std::fs::read(source.join("data")).unwrap(), b"mutated");
+    std::fs::write(&cipher, saved).unwrap();
+    assert_eq!(submit(selection).await.0, 200);
+    assert_eq!(std::fs::read(source.join("data")).unwrap(), original);
+    server.close().await;
+}
+
+#[tokio::test]
 async fn backup_history_accepts_legacy_datetime_filters_and_returns_python_errors() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

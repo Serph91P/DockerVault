@@ -1,6 +1,6 @@
 //! Real native archive -> optional codec -> independently verified LOCAL copies -> mutation -> restore.
 //! Component integration only: this does not claim HTTP/jobs, process restart or S3 coverage.
-use dockervault_core::crypto::{decrypt_dek, decrypt_file, encrypt_file};
+use dockervault_core::crypto::{decrypt_dek, decrypt_file, decrypt_private, encrypt_file};
 use dockervault_service::{
     ownership::Owner,
     restore::IndexedArchive,
@@ -39,6 +39,64 @@ impl Drop for Fixture {
         fs::remove_dir_all(&self.0).unwrap();
     }
 }
+#[tokio::test]
+async fn authenticated_decryption_returns_only_an_anonymous_completed_snapshot() {
+    use nix::{
+        fcntl::{OFlag, openat},
+        sys::stat::Mode,
+    };
+    use std::io::Read;
+    let fixture = Fixture::new();
+    let root = fs::File::open(fixture.0.join("backups")).unwrap();
+    let anonymous = || {
+        fs::File::from(
+            openat(
+                &root,
+                ".",
+                OFlag::O_TMPFILE | OFlag::O_RDWR | OFlag::O_CLOEXEC,
+                Mode::S_IRUSR | Mode::S_IWUSR,
+            )
+            .unwrap(),
+        )
+    };
+    let material = decrypt_dek(
+        &include_bytes!("../../dockervault-core/tests/fixtures/pax-links.tar.key.TEST_ONLY")[..],
+        &common::public_identity(false),
+    )
+    .unwrap();
+    let good = include_bytes!("../../dockervault-core/tests/fixtures/pax-links.tar.enc");
+    let bad = include_bytes!("../../dockervault-core/tests/fixtures/pax-links.tar.tampered.enc");
+    assert!(
+        decrypt_private(&bad[..], bad.len() as u64, anonymous(), &material, &|| {
+            false
+        })
+        .is_err()
+    );
+    let mut plaintext = decrypt_private(
+        &good[..],
+        good.len() as u64,
+        anonymous(),
+        &material,
+        &|| false,
+    )
+    .unwrap();
+    let mut bytes = Vec::new();
+    plaintext.read_to_end(&mut bytes).unwrap();
+    assert_eq!(
+        bytes,
+        include_bytes!("../../dockervault-core/tests/fixtures/pax-links.tar")
+    );
+    let named = fixture.0.join("backups/named");
+    fs::write(&named, b"").unwrap();
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&named)
+        .unwrap();
+    assert!(decrypt_private(&good[..], good.len() as u64, file, &material, &|| false).is_err());
+    assert_eq!(fs::metadata(named).unwrap().len(), 0);
+}
+
 #[tokio::test]
 async fn pinned_path_archive_reads_the_claimed_directory_not_its_replacement() {
     let root = Fixture::new();
