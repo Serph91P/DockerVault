@@ -235,7 +235,7 @@ async fn probe_ssh(state: &HttpState, config: &Value, draft: bool) -> Response {
     probe_response(matches!(work.wait().await, Ok(Ok(output)) if output.status.success()))
 }
 
-async fn ssh_endpoint(
+pub(super) async fn ssh_endpoint(
     state: &HttpState,
     config: &Value,
     draft: bool,
@@ -861,14 +861,15 @@ pub(super) async fn snapshot_for_download<T: Send + 'static>(
                 state.probe_processes.as_ref()?,
                 &state.probe_jobs,
                 &path,
-                key.map(|key| key.try_clone()).transpose().ok()?,
-                slot,
+                None,
+                (slot, key), // The identity argument names this exact descriptor, not a duplicate.
             )
             .ok()?
             .wait()
             .await
             .ok()?
-            .ok()?,
+            .ok()
+            .map(|(file, length, (slot, _key))| (file, length, slot))?,
         DownloadSource::Ftp(provider) => provider
             .download_snapshot(path, state.auth.blocking(), slot)
             .ok()?

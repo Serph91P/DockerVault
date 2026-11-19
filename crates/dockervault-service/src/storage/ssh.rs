@@ -48,6 +48,20 @@ pub struct SftpEndpoint {
     pub password: Option<String>,
 }
 
+pub(crate) struct UploadStage {
+    pub nonce: u128,
+    pub identity: Option<File>,
+    pub created: bool,
+}
+
+pub(crate) fn stage_dir(child: &str, nonce: u128) -> String {
+    let leaf = format!(".dockervault-{nonce:032x}");
+    match child.rsplit_once('/') {
+        Some((parent, _)) => format!("{parent}/{leaf}"),
+        None => leaf,
+    }
+}
+
 pub(crate) fn key_file(path: &Path, allowed: &[PathBuf]) -> Option<File> {
     let path = path.canonicalize().ok()?;
     for root in allowed {
@@ -250,7 +264,36 @@ impl SftpEndpoint {
         source: Arc<VerifiedSource>,
         scratch: File,
     ) -> Result<Work<Result<(), SftpDownloadError>>, SftpDownloadError> {
-        self.upload_with(processes, workers, child, source, scratch, false)
+        let mut nonce = [0_u8; 16];
+        getrandom::fill(&mut nonce).map_err(|_| {
+            SftpDownloadError::Transfer(
+                io::Error::other("SFTP staging identity unavailable").into(),
+            )
+        })?;
+        self.upload_staged(
+            processes,
+            workers,
+            child,
+            source,
+            scratch,
+            UploadStage {
+                nonce: u128::from_be_bytes(nonce),
+                identity: None,
+                created: false,
+            },
+        )
+    }
+
+    pub(crate) fn upload_staged(
+        &self,
+        processes: &ProcessOwner,
+        workers: &Owner,
+        child: &str,
+        source: Arc<VerifiedSource>,
+        scratch: File,
+        stage: UploadStage,
+    ) -> Result<Work<Result<(), SftpDownloadError>>, SftpDownloadError> {
+        self.upload_with(processes, workers, child, source, scratch, Some(stage))
     }
 
     pub fn upload_rsync(
@@ -261,7 +304,7 @@ impl SftpEndpoint {
         source: Arc<VerifiedSource>,
         scratch: File,
     ) -> Result<Work<Result<(), SftpDownloadError>>, SftpDownloadError> {
-        self.upload_with(processes, workers, child, source, scratch, true)
+        self.upload_with(processes, workers, child, source, scratch, None)
     }
 
     fn upload_with(
@@ -271,7 +314,7 @@ impl SftpEndpoint {
         child: &str,
         source: Arc<VerifiedSource>,
         scratch: File,
-        rsync: bool,
+        stage: Option<UploadStage>,
     ) -> Result<Work<Result<(), SftpDownloadError>>, SftpDownloadError> {
         let invalid = || SftpDownloadError::Process(ProcessError::InvalidSpec);
         if matches!(child.rsplit('/').next(), None | Some("" | "." | "..")) {
@@ -281,9 +324,11 @@ impl SftpEndpoint {
         let remote = batch_path(&path);
         let mut get = self.batch_spec().map_err(SftpDownloadError::Process)?;
         let endpoint = self.clone();
+        let child = child.to_owned();
         let processes = processes.clone();
         workers
             .submit_async(move |cancel| async move {
+                let (_identity, staging) = stage.map_or((None, None), |stage| (stage.identity, Some((stage.nonce, stage.created))));
                 let pinned = source.clone();
                 let (input, verification) = tokio::task::spawn_blocking(move || {
                     Ok::<_, io::Error>((
@@ -298,24 +343,20 @@ impl SftpEndpoint {
                     return Err(SftpDownloadError::Process(ProcessError::Cancelled));
                 }
                 let local = format!("/proc/{}/fd/{}", std::process::id(), input.as_raw_fd());
-                let put = if rsync {
+                let put = if let Some((nonce, created)) = staging {
+                    let mut spec = endpoint.batch_spec().map_err(SftpDownloadError::Process)?;
+                    let stage = remote_path(&endpoint.host, endpoint.port, &endpoint.base, &stage_dir(&child, nonce)).map_err(|_| SftpDownloadError::Process(ProcessError::InvalidSpec))?;
+                    let temporary = batch_path(&format!("{stage}/artifact"));
+                    let stage = batch_path(&stage);
+                    let batch = if created { String::new() } else { endpoint.mkdir_batch(&child, &stage)? };
+                    // OpenSSH's plain rename uses posix-rename when advertised and can replace the destination.
+                    spec.input = format!("{batch}@put {local} {temporary}\n@rename -l {temporary} {remote}\n@rmdir {stage}\n@quit\n").into_bytes();
+                    spec.timeout = Some(Duration::from_secs(600));
+                    spec
+                } else {
                     endpoint
                         .rsync_put_spec(&path, &local)
                         .map_err(SftpDownloadError::Process)?
-                } else {
-                    let mut spec = endpoint.batch_spec().map_err(SftpDownloadError::Process)?;
-                    let mut nonce = [0_u8; 16];
-                    getrandom::fill(&mut nonce).map_err(|_| {
-                        SftpDownloadError::Transfer(io::Error::other("SFTP staging identity unavailable").into())
-                    })?;
-                    let parent = path.rsplit_once('/').map_or("", |(dir, _)| dir);
-                    let token = format!(".dockervault-{:032x}", u128::from_be_bytes(nonce));
-                    let stage = if path.contains('/') { format!("{parent}/{token}") } else { token };
-                    let temporary = batch_path(&format!("{stage}/artifact"));
-                    let stage = batch_path(&stage);
-                    // OpenSSH's plain rename uses posix-rename when advertised and can replace the destination.
-                    spec.input = format!("@mkdir {stage}\n@put {local} {temporary}\n@rename -l {temporary} {remote}\n@rmdir {stage}\n@quit\n").into_bytes();
-                    spec
                 };
                 run_batch(&processes, put, &cancel)
                     .await
@@ -323,6 +364,7 @@ impl SftpEndpoint {
                 drop(input);
                 get.input = format!("@get {remote} {}\n@quit\n", verification.descriptor_path())
                     .into_bytes();
+                get.timeout = Some(Duration::from_secs(600));
                 run_batch(&processes, get, &cancel)
                     .await
                     .map_err(|_| SftpDownloadError::MutationUnverified)?;
@@ -334,6 +376,42 @@ impl SftpEndpoint {
                 .map_err(|_| SftpDownloadError::MutationUnverified)
             })
             .map_err(SftpDownloadError::Admission)
+    }
+
+    fn mkdir_batch(&self, child: &str, stage: &str) -> Result<String, SftpDownloadError> {
+        let mut batch = String::new();
+        for (end, _) in child.match_indices('/').filter(|(end, _)| *end != 0) {
+            let dir = remote_path(&self.host, self.port, &self.base, &child[..end])
+                .map_err(|_| SftpDownloadError::Process(ProcessError::InvalidSpec))?;
+            batch.push_str(&format!("@-mkdir {}\n", batch_path(&dir)));
+        }
+        batch.push_str(&format!("@mkdir {stage}\n"));
+        Ok(batch)
+    }
+
+    pub(crate) async fn stage_directory(
+        &self,
+        processes: &ProcessOwner,
+        child: &str,
+        nonce: u128,
+        cleanup: bool,
+        cancel: &CancellationToken,
+    ) -> Result<(), SftpDownloadError> {
+        let dir = remote_path(&self.host, self.port, &self.base, &stage_dir(child, nonce))
+            .map_err(|_| SftpDownloadError::Process(ProcessError::InvalidSpec))?;
+        let stage = batch_path(&dir);
+        let batch = if cleanup {
+            format!(
+                "@rm {}\n@rmdir {stage}\n",
+                batch_path(&format!("{dir}/artifact"))
+            )
+        } else {
+            self.mkdir_batch(child, &stage)?
+        };
+        let mut spec = self.batch_spec().map_err(SftpDownloadError::Process)?;
+        spec.input = format!("{batch}@quit\n").into_bytes();
+        spec.timeout = Some(Duration::from_secs(45));
+        run_batch(processes, spec, cancel).await.map(|_| ())
     }
 
     pub fn delete(

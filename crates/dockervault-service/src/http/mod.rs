@@ -6,6 +6,7 @@ mod backups;
 mod operations;
 mod s3_sync;
 pub mod security;
+mod sftp_sync;
 mod storage;
 pub use s3_sync::recover_s3_copies;
 mod webdav_sync;

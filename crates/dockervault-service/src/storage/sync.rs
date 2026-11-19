@@ -38,6 +38,18 @@ pub(crate) struct WebDavCopy {
     pub username: Option<String>,
 }
 
+#[derive(Clone, Deserialize, Serialize, PartialEq)]
+pub(crate) struct SftpCopy {
+    pub storage_id: i64,
+    pub archive: String,
+    pub storage_type: String,
+    pub host: String,
+    pub port: Option<i64>,
+    pub prefix: Option<String>,
+    pub username: String,
+    pub key_path: Option<String>,
+}
+
 pub(crate) async fn complete_publication(
     pool: &SqlitePool,
     id: i64,
@@ -55,7 +67,8 @@ pub(crate) async fn complete_publication(
     let sidecar = proof.artifacts.get(1).and_then(|key| key.path.to_str());
     let sync = (!proof.local_copies.is_empty()
         || !proof.s3_copies.is_empty()
-        || !proof.webdav_copies.is_empty())
+        || !proof.webdav_copies.is_empty()
+        || !proof.sftp_copies.is_empty())
     .then(|| serde_json::to_string(proof))
     .transpose()
     .map_err(|e| Error::Encode(Box::new(e)))?;
@@ -83,6 +96,12 @@ pub(crate) async fn complete_publication(
         .chain(
             proof
                 .webdav_copies
+                .iter()
+                .map(|copy| (copy.storage_id, &copy.archive)),
+        )
+        .chain(
+            proof
+                .sftp_copies
                 .iter()
                 .map(|copy| (copy.storage_id, &copy.archive)),
         );
@@ -193,7 +212,9 @@ pub(crate) async fn settle_verified_copies(
             );
         }
     }
-    let remote = !proof.s3_copies.is_empty() || !proof.webdav_copies.is_empty();
+    let remote = !proof.s3_copies.is_empty()
+        || !proof.webdav_copies.is_empty()
+        || !proof.sftp_copies.is_empty();
     let cleanup = proof.delete_local_after_sync && (remote || !proof.local_copies.is_empty());
     if cleanup && remote && verified_remote_receipt != Some(receipt.as_str()) {
         return Ok(());
@@ -220,6 +241,13 @@ pub(crate) async fn settle_verified_copies(
         Vec::new()
     };
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    for copy in &proof.sftp_copies {
+        let completed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM remote_storages r JOIN backup_storage_syncs s ON s.storage_id=r.id WHERE r.id=? AND r.enabled=1 AND r.storage_type=? AND r.host=? AND r.port IS ? AND r.base_path IS ? AND r.username=? AND r.ssh_key_path IS ? AND s.backup_id=? AND s.remote_path=? AND s.sync_status='completed')")
+            .bind(copy.storage_id).bind(&copy.storage_type).bind(&copy.host).bind(copy.port).bind(&copy.prefix).bind(&copy.username).bind(&copy.key_path).bind(id).bind(&copy.archive).fetch_one(&mut *tx).await?;
+        if !completed {
+            return Ok(());
+        }
+    }
     for copy in &proof.webdav_copies {
         let completed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM remote_storages r JOIN backup_storage_syncs s ON s.storage_id=r.id WHERE r.id=? AND r.enabled=1 AND r.storage_type='webdav' AND r.webdav_url=? AND r.base_path IS ? AND r.username IS ? AND s.backup_id=? AND s.remote_path=? AND s.sync_status='completed')")
             .bind(copy.storage_id).bind(&copy.endpoint).bind(&copy.prefix).bind(&copy.username).bind(id).bind(&copy.archive).fetch_one(&mut *tx).await?;
