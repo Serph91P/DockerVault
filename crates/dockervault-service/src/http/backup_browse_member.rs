@@ -171,6 +171,10 @@ async fn member_with_key(
             result
                 .headers_mut()
                 .insert("cache-control", HeaderValue::from_static("no-store"));
+            // Keep the response lease tied to the client instead of nginx's buffer.
+            result
+                .headers_mut()
+                .insert("x-accel-buffering", HeaderValue::from_static("no"));
             result
         }
         Ok(Some(Err(()))) => detail(StatusCode::BAD_REQUEST, "Cannot download directories"),
