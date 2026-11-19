@@ -1,13 +1,20 @@
 //! S3 copy intents use the same compatible publication receipt as LOCAL.
 use super::{
     HttpState,
+    auth::required_user,
     storage::{configured_browse_config, open_probe_credentials, s3_provider},
 };
 use crate::storage::{
     Publication, S3Copy,
     s3::{S3Error, S3UploadPolicy},
 };
-use serde_json::Value;
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+};
+use serde_json::{Value, json};
 use sqlx::Error;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -43,6 +50,15 @@ pub(super) async fn settle(
     id: i64,
     cancel: &CancellationToken,
 ) -> Result<(), Error> {
+    settle_mode(state, id, cancel, false).await
+}
+
+async fn settle_mode(
+    state: &HttpState,
+    id: i64,
+    cancel: &CancellationToken,
+    manual_retry: bool,
+) -> Result<(), Error> {
     let pool = state.auth.pool();
     let receipt:Option<String>=sqlx::query_scalar("SELECT json_extract(backup_metadata,'$.native_local_sync') FROM backups WHERE id=? AND status='COMPLETED'").bind(id).fetch_optional(pool).await?.flatten();
     let Some(receipt) = receipt else {
@@ -76,7 +92,7 @@ pub(super) async fn settle(
         }
         let mut sources = None;
         let mut verified = true;
-        for (index, artifact) in proof.artifacts.iter().enumerate().rev() {
+        'artifacts: for (index, artifact) in proof.artifacts.iter().enumerate().rev() {
             if cancel.is_cancelled() {
                 return Ok(());
             }
@@ -99,91 +115,115 @@ pub(super) async fn settle(
                 *b = u8::from_str_radix(&artifact.digest[j * 2..j * 2 + 2], 16)
                     .map_err(|e| Error::Decode(Box::new(e)))?;
             }
-            let previous: bool = sqlx::query_scalar(
-                "SELECT json_type(backup_metadata,?) IS NOT NULL FROM backups WHERE id=?",
-            )
-            .bind(&effect)
-            .bind(id)
-            .fetch_one(pool)
-            .await?;
-            if !previous {
-                if sources.is_none() {
-                    let artifacts = proof.artifacts.clone();
-                    let owned = cancel.clone();
-                    sources = state
-                        .auth
-                        .blocking()
-                        .submit_blocking(move |worker| {
-                            artifacts
-                                .iter()
-                                .map(|entry| {
-                                    entry
-                                        .open_verified(&|| {
-                                            worker.is_cancelled() || owned.is_cancelled()
-                                        })
-                                        .map(Arc::new)
-                                })
-                                .collect::<std::io::Result<Vec<_>>>()
-                        })
-                        .map_err(work_error)?
-                        .wait()
-                        .await
-                        .map_err(work_error)?
-                        .ok();
+            loop {
+                if cancel.is_cancelled() {
+                    return Ok(());
                 }
-                let Some(source) = sources.as_ref().map(|files| files[index].clone()) else {
-                    verified = false;
-                    break;
-                };
-                let changed=sqlx::query("UPDATE backups SET backup_metadata=json_set(backup_metadata,?,json('{}'))
+                let previous: bool = sqlx::query_scalar(
+                    "SELECT json_type(backup_metadata,?) IS NOT NULL FROM backups WHERE id=?",
+                )
+                .bind(&effect)
+                .bind(id)
+                .fetch_one(pool)
+                .await?;
+                if !previous {
+                    if sources.is_none() {
+                        let artifacts = proof.artifacts.clone();
+                        let owned = cancel.clone();
+                        sources = state
+                            .auth
+                            .blocking()
+                            .submit_blocking(move |worker| {
+                                artifacts
+                                    .iter()
+                                    .map(|entry| {
+                                        entry
+                                            .open_verified(&|| {
+                                                worker.is_cancelled() || owned.is_cancelled()
+                                            })
+                                            .map(Arc::new)
+                                    })
+                                    .collect::<std::io::Result<Vec<_>>>()
+                            })
+                            .map_err(work_error)?
+                            .wait()
+                            .await
+                            .map_err(work_error)?
+                            .ok();
+                    }
+                    let Some(source) = sources.as_ref().map(|files| files[index].clone()) else {
+                        verified = false;
+                        break 'artifacts;
+                    };
+                    let changed=sqlx::query("UPDATE backups SET backup_metadata=json_set(backup_metadata,?,json('{}'))
                     WHERE id=? AND status='COMPLETED' AND json_type(backup_metadata,?) IS NULL AND json_type(backup_metadata,'$.native_local_sync')='object'
                     AND EXISTS (SELECT 1 FROM backup_storage_syncs s JOIN remote_storages r ON r.id=s.storage_id
                         WHERE s.id=? AND s.backup_id=backups.id AND s.storage_id=? AND s.remote_path=? AND s.sync_status='running'
                         AND r.storage_type='s3' AND r.enabled=1 AND r.s3_bucket=? AND r.s3_region IS ? AND r.s3_endpoint_url IS ? AND r.base_path IS ?)")
                     .bind(&effect).bind(id).bind(&effect).bind(row).bind(copy.storage_id).bind(&copy.archive)
                     .bind(&copy.bucket).bind(&copy.region).bind(&copy.endpoint).bind(&copy.prefix).execute(pool).await?;
-                if changed.rows_affected() != 1 {
-                    return Err(Error::RowNotFound);
-                }
-                let checkpoint_pool = pool.clone();
-                let checkpoint = format!("{effect}.multipart_id");
-                let work=provider.upload_checkpointed(source,path.clone(),S3UploadPolicy::default(),move |upload_id|async move {
+                    if changed.rows_affected() != 1 {
+                        return Err(Error::RowNotFound);
+                    }
+                    let checkpoint_pool = pool.clone();
+                    let checkpoint = format!("{effect}.multipart_id");
+                    let work=provider.upload_checkpointed(source,path.clone(),S3UploadPolicy::default(),move |upload_id|async move {
                     let changed=sqlx::query("UPDATE backups SET backup_metadata=json_set(backup_metadata,?,?)
                         WHERE id=? AND status='COMPLETED' AND json_type(backup_metadata,?)='object' AND json_type(backup_metadata,?) IS NULL
                         AND EXISTS(SELECT 1 FROM backup_storage_syncs WHERE id=? AND backup_id=backups.id AND sync_status='running')")
                         .bind(&checkpoint).bind(upload_id).bind(id).bind(effect).bind(&checkpoint).bind(row).execute(&checkpoint_pool).await.map_err(|_|S3Error::Io)?;
                     if changed.rows_affected()!=1 {return Err(S3Error::Io);} Ok(())
                 }).map_err(work_error)?;
-                let outcome = wait(work, cancel).await?;
-                if outcome.is_err() {
-                    verified = false;
-                    break;
-                }
-            } else {
-                let checkpoint = format!("{effect}.multipart_id");
-                let upload_id: Option<String> = sqlx::query_scalar(
-                    "SELECT json_extract(backup_metadata,?) FROM backups WHERE id=?",
-                )
-                .bind(checkpoint)
-                .bind(id)
-                .fetch_one(pool)
-                .await?;
-                if let Some(upload_id) = upload_id {
-                    let work = provider
-                        .settle_multipart(path.clone(), upload_id)
-                        .map_err(work_error)?;
-                    if wait(work, cancel).await?.is_err() {
+                    let outcome = wait(work, cancel).await?;
+                    if outcome.is_err() {
                         verified = false;
-                        break;
+                        break 'artifacts;
+                    }
+                } else {
+                    let checkpoint = format!("{effect}.multipart_id");
+                    let upload_id: Option<String> = sqlx::query_scalar(
+                        "SELECT json_extract(backup_metadata,?) FROM backups WHERE id=?",
+                    )
+                    .bind(checkpoint)
+                    .bind(id)
+                    .fetch_one(pool)
+                    .await?;
+                    if let Some(upload_id) = upload_id.as_ref() {
+                        let work = provider
+                            .settle_multipart(path.clone(), upload_id.clone())
+                            .map_err(work_error)?;
+                        if wait(work, cancel).await?.is_err() {
+                            verified = false;
+                            break 'artifacts;
+                        }
+                    }
+                    let work = provider
+                        .verify_object(path.clone(), artifact.length, digest)
+                        .map_err(work_error)?;
+                    match wait(work, cancel).await? {
+                        Ok(true) => (),
+                        Err(error)
+                            if manual_retry
+                                && !cancel.is_cancelled()
+                                && error.http_status() == Some(404)
+                                && error.provider_code() == Some("NoSuchKey")
+                                && upload_id.is_some() =>
+                        {
+                            // Only rearm after settling the old upload and confirming absence of the exact object.
+                            let changed = sqlx::query("UPDATE backups SET backup_metadata=json_remove(backup_metadata,?) WHERE id=? AND json_extract(backup_metadata,?)=? AND EXISTS(SELECT 1 FROM backup_storage_syncs WHERE id=? AND backup_id=backups.id AND sync_status='running')")
+                            .bind(&effect).bind(id).bind(format!("{effect}.multipart_id")).bind(upload_id).bind(row).execute(pool).await?;
+                            if changed.rows_affected() != 1 {
+                                return Err(Error::RowNotFound);
+                            }
+                            continue;
+                        }
+                        _ => {
+                            verified = false;
+                            break 'artifacts;
+                        }
                     }
                 }
-                let work = provider
-                    .verify_object(path, artifact.length, digest)
-                    .map_err(work_error)?;
-                if !matches!(wait(work, cancel).await?, Ok(true)) {
-                    verified = false;
-                    break;
-                }
+                break;
             }
         }
         if verified && !cancel.is_cancelled() {
@@ -192,6 +232,104 @@ pub(super) async fn settle(
         }
     }
     Ok(())
+}
+
+pub(super) async fn retry(
+    State(state): State<HttpState>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = required_user(&state, &headers).await {
+        return *response;
+    }
+    let worker = state.clone();
+    let Ok(work) = state
+        .backup_jobs
+        .submit_async(move |cancel| async move { retry_owned(&worker, id, &cancel).await })
+    else {
+        return retry_error(StatusCode::SERVICE_UNAVAILABLE, "Backup capacity exhausted");
+    };
+    match work.wait().await {
+        Ok(Ok(response)) => response,
+        _ => retry_error(StatusCode::INTERNAL_SERVER_ERROR, "Backup operation failed"),
+    }
+}
+
+async fn retry_owned(
+    state: &HttpState,
+    id: i64,
+    cancel: &CancellationToken,
+) -> Result<Response, Error> {
+    let pool = state.auth.pool();
+    let target: Option<i64> = sqlx::query_scalar("SELECT target_id FROM backups WHERE id=?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    let Some(target) = target else {
+        return Ok(retry_error(StatusCode::NOT_FOUND, "Backup not found"));
+    };
+    let Ok(_claim) = state
+        .backup_claims
+        .acquire([crate::jobs::Resource::target(target)], cancel)
+        .await
+    else {
+        return Ok(retry_error(
+            StatusCode::CONFLICT,
+            "Backup is not available for re-sync",
+        ));
+    };
+    let metadata: Option<String> = sqlx::query_scalar("SELECT CASE WHEN json_valid(backup_metadata) THEN json_extract(backup_metadata,'$.native_local_sync') END FROM backups WHERE id=? AND status='COMPLETED'").bind(id).fetch_optional(pool).await?.flatten();
+    let Some(metadata) = metadata else {
+        return Ok(retry_error(
+            StatusCode::BAD_REQUEST,
+            "No failed or missing sync records to retry",
+        ));
+    };
+    let proof: Publication =
+        serde_json::from_str(&metadata).map_err(|e| Error::Decode(Box::new(e)))?;
+    let before = super::backups::sync_details(state, id).await?;
+    let pending: Vec<_> = proof
+        .s3_copies
+        .iter()
+        .filter(|copy| {
+            before.iter().any(|row| {
+                row["storage_id"] == copy.storage_id
+                    && row["remote_path"] == copy.archive
+                    && row["status"] == "running"
+            })
+        })
+        .collect();
+    if pending.is_empty() {
+        return Ok(retry_error(
+            StatusCode::BAD_REQUEST,
+            "No failed or missing sync records to retry",
+        ));
+    }
+    settle_mode(state, id, cancel, true).await?;
+    let after = super::backups::sync_details(state, id).await?;
+    let succeeded = pending
+        .iter()
+        .filter(|copy| {
+            after.iter().any(|row| {
+                row["storage_id"] == copy.storage_id
+                    && row["remote_path"] == copy.archive
+                    && row["status"] == "completed"
+            })
+        })
+        .count();
+    if succeeded == 0 {
+        return Ok(retry_error(
+            StatusCode::CONFLICT,
+            "Remote sync has an unsettled provider effect",
+        ));
+    }
+    let failed = pending.len() - succeeded;
+    crate::storage::settle_local_copies(pool, state.auth.blocking(), id, cancel).await?;
+    Ok(Json(json!({"message":format!("Retry complete: {succeeded} succeeded, {failed} failed"),"succeeded":succeeded,"failed":failed,"sync_details":after})).into_response())
+}
+
+fn retry_error(status: StatusCode, detail: &'static str) -> Response {
+    (status, Json(json!({"detail":detail}))).into_response()
 }
 
 pub async fn recover_s3_copies(state: &HttpState) -> Result<(), Error> {

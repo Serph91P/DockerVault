@@ -454,6 +454,20 @@ async fn copies(
     }
     Ok(result)
 }
+pub(super) async fn sync_details(state: &HttpState, id: i64) -> Result<Vec<Value>, sqlx::Error> {
+    let mut db = state.auth.pool().acquire().await?;
+    let row = sqlx::query("SELECT ? AS id")
+        .bind(id)
+        .fetch_one(&mut *db)
+        .await?;
+    Ok(copies(&mut db, &[row])
+        .await?
+        .remove(&id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|copy| copy.dto)
+        .collect())
+}
 async fn render(
     state: &HttpState,
     rows: Vec<SqliteRow>,
