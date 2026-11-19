@@ -14,6 +14,8 @@ pub enum JournalError {
     Database,
     InvalidRecord,
     Missing,
+    TargetDisabled,
+    RecoveryRequired,
     UnknownOriginalState,
     Owner,
 }
@@ -23,6 +25,8 @@ impl std::fmt::Display for JournalError {
             Self::Database => "Workload journal database operation failed",
             Self::InvalidRecord => "Invalid workload journal record",
             Self::Missing => "Workload journal record missing",
+            Self::TargetDisabled => "Target is disabled",
+            Self::RecoveryRequired => INCOMPLETE,
             Self::UnknownOriginalState => "Unknown workload state; refusing external changes",
             Self::Owner => "Workload journal owner unavailable",
         })
@@ -39,6 +43,12 @@ impl From<WorkError> for JournalError {
         Self::Owner
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackupKind {
+    Full,
+    Incremental,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Backup,
@@ -137,6 +147,45 @@ impl Journal {
     pub async fn unfinished_after(&self, id: i64) -> Result<Vec<Operation>, JournalError> {
         sqlx::query("SELECT * FROM workload_operations WHERE state != 'finished' AND id>? ORDER BY id LIMIT 64").bind(id).fetch_all(&self.pool).await?.into_iter().map(decode).collect()
     }
+    /// Persist the initial catalog row; this does not start or resume a job.
+    pub async fn admit_backup(
+        &self,
+        target_id: i64,
+        kind: BackupKind,
+    ) -> Result<i64, JournalError> {
+        let pool = self.pool.clone();
+        self.owner.submit_async(move |_| async move {
+            let mut connection = pool.acquire().await?;
+            let mut tx = sqlx::Connection::begin_with(&mut *connection, "BEGIN IMMEDIATE").await?;
+            let result = async {
+                let recovery = crate::recovery_activation::recovery_pending_in(&mut *tx)
+                    .await.map_err(|_| JournalError::Database)?;
+                let outstanding: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM workload_operations WHERE state='recovery_required')",
+                ).fetch_one(&mut *tx).await?;
+                if recovery || outstanding {
+                    return Err(JournalError::RecoveryRequired);
+                }
+                let (name, target_type, enabled): (String, String, Option<bool>) = sqlx::query_as(
+                    "SELECT name,target_type,enabled FROM backup_targets WHERE id=? AND removed_at IS NULL",
+                ).bind(target_id).fetch_optional(&mut *tx).await?.ok_or(JournalError::Missing)?;
+                if enabled != Some(true) {
+                    return Err(JournalError::TargetDisabled);
+                }
+                let kind = match kind { BackupKind::Full => "FULL", BackupKind::Incremental => "INCREMENTAL" };
+                let result = sqlx::query(
+                    "INSERT INTO backups(target_id,backup_type,status,encrypted,retry_count,backup_metadata,created_at)
+                     VALUES(?,?,'PENDING',0,0,json_object('target_name',?,'target_type',?),strftime('%Y-%m-%d %H:%M:%f000','now'))",
+                ).bind(target_id).bind(kind).bind(name).bind(target_type).execute(&mut *tx).await?;
+                Ok(result.last_insert_rowid())
+            }.await;
+            let settled = if result.is_ok() { tx.commit().await } else { tx.rollback().await };
+            if settled.is_err() { connection.close().await?; }
+            settled?;
+            result
+        })?.wait().await?
+    }
+
     pub async fn begin(
         &self,
         backup_id: Option<i64>,

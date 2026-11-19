@@ -1,6 +1,6 @@
 use dockervault_service::{
     db::Database,
-    journal::{Journal, Kind},
+    journal::{BackupKind, Journal, JournalError, Kind},
     ownership::Owner,
 };
 use indexmap::IndexMap;
@@ -40,6 +40,77 @@ fn originals() -> IndexMap<String, Option<String>> {
     .into_iter()
     .map(|(id, state)| (id.into(), state.map(str::to_owned)))
     .collect()
+}
+
+#[tokio::test]
+async fn backup_admission_preserves_catalog_snapshot_and_blocks_unsettled_recovery() {
+    let (_fixture, db, owner, journal) = Fixture::open().await;
+    sqlx::raw_sql("INSERT INTO backup_targets(id,name,target_type,enabled,removed_at) VALUES
+        (1,'source','path',1,NULL),(2,'disabled','path',0,NULL),(3,'removed','path',1,'2026-01-01');")
+        .execute(db.pool()).await.unwrap();
+    for (id, error) in [
+        (4, JournalError::Missing),
+        (3, JournalError::Missing),
+        (2, JournalError::TargetDisabled),
+    ] {
+        assert_eq!(journal.admit_backup(id, BackupKind::Full).await, Err(error));
+    }
+    sqlx::query("INSERT INTO app_settings(key,value) VALUES('recovery_activation','{}')")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        journal.admit_backup(1, BackupKind::Full).await,
+        Err(JournalError::RecoveryRequired)
+    );
+    sqlx::query("DELETE FROM app_settings WHERE key='recovery_activation'")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let op = journal
+        .begin(None, Kind::Restore, originals(), None)
+        .await
+        .unwrap();
+    journal.stop(op, "web", false).await.unwrap();
+    journal.finish(Some(op)).await.unwrap();
+    assert_eq!(
+        journal.admit_backup(1, BackupKind::Full).await,
+        Err(JournalError::RecoveryRequired)
+    );
+    journal.recovered(op, vec![]).await.unwrap();
+    journal.finish(Some(op)).await.unwrap();
+    let id = journal
+        .admit_backup(1, BackupKind::Incremental)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE backup_targets SET name='renamed' WHERE id=1")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let rows = sqlx::query("SELECT * FROM backups")
+        .fetch_all(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    use sqlx::Row;
+    let row = &rows[0];
+    assert_eq!(row.get::<i64, _>("id"), id);
+    assert_eq!(row.get::<i64, _>("target_id"), 1);
+    assert_eq!(row.get::<String, _>("status"), "PENDING");
+    assert_eq!(row.get::<String, _>("backup_type"), "INCREMENTAL");
+    assert_eq!(row.get::<i64, _>("retry_count"), 0);
+    assert!(!row.get::<bool, _>("encrypted"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&row.get::<String, _>("backup_metadata"))
+            .unwrap(),
+        serde_json::json!({"target_name":"source","target_type":"path"})
+    );
+    assert!(
+        dockervault_core::timestamp::Timestamp::parse(&row.get::<String, _>("created_at")).is_ok()
+    );
+    journal.shutdown(None).await;
+    db.close().await;
+    owner.shutdown(None).await;
 }
 
 #[tokio::test]
