@@ -165,6 +165,12 @@ async fn s3_single_put_cancel_keeps_the_owner_until_the_non_abortable_request_re
         let (headers, body) = request(&mut socket).await;
         let mut request_line = headers.lines().next().unwrap().split_ascii_whitespace();
         assert_eq!(request_line.next(), Some("PUT"));
+        assert!(
+            headers
+                .lines()
+                .any(|header| header.eq_ignore_ascii_case("if-none-match: *")),
+            "backup PUT must not replace an occupied key"
+        );
         let target = request_line.next().unwrap();
         assert_eq!(
             target.split('?').next(),
@@ -433,6 +439,12 @@ async fn s3_multipart_streams_each_part_then_verifies_the_complete_object() {
         let (headers, body) = request(&mut socket).await;
         assert!(
             headers.starts_with("POST /public-bucket/PUBLIC-prefix/archive?uploadId=PUBLIC-id")
+        );
+        assert!(
+            headers
+                .lines()
+                .any(|header| header.eq_ignore_ascii_case("if-none-match: *")),
+            "multipart completion must not replace an occupied key"
         );
         let xml = String::from_utf8(body).unwrap();
         assert!(xml.contains("PUBLIC-part-1") && xml.contains("PUBLIC-part-2"));

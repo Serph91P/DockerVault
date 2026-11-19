@@ -67,6 +67,7 @@ impl S3 {
                                 .put_object()
                                 .bucket(&backend.bucket)
                                 .key(&key)
+                                .if_none_match("*")
                                 .content_length(
                                     i64::try_from(source.len()).map_err(|_| S3Error::Config)?,
                                 )
@@ -191,6 +192,7 @@ impl S3 {
             .complete_multipart_upload()
             .bucket(&self.bucket)
             .key(key)
+            .if_none_match("*")
             .upload_id(upload_id)
             .multipart_upload(
                 CompletedMultipartUpload::builder()
