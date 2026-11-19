@@ -816,9 +816,8 @@ async fn encrypted_s3_copy_recovers_rejected_ack_and_restores_after_reopen() {
             .unwrap();
     assert_eq!(status, "completed");
     assert_eq!(*files.lock().unwrap(), before);
-    // Explicit fixture mutation, not evidence of automatic remote-backed cleanup.
-    std::fs::remove_file(archive).unwrap();
-    std::fs::remove_file(key).unwrap();
+    assert!(!std::path::Path::new(&archive).exists());
+    assert!(!std::path::Path::new(&key).exists());
     std::fs::write(origin.join("data"), b"mutated fixture").unwrap();
     let review = reopened
         .request(

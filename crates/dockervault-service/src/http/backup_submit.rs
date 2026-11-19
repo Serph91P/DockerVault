@@ -4,7 +4,7 @@ use crate::{
     journal::{BackupKind, Journal, JournalError},
     storage::{
         LocalCopy, Publication, PublishedArtifact, S3Copy, complete_publication, local,
-        mark_publication, settle_local_copies,
+        mark_publication,
     },
 };
 use axum::{
@@ -360,7 +360,7 @@ async fn execute(
             if cancelled() {
                 return Err(io::ErrorKind::Interrupted.into());
             }
-            let delete_local_after_sync = plan.delete_local_after_sync && !local_copies.is_empty();
+            let delete_local_after_sync = plan.delete_local_after_sync && !(local_copies.is_empty() && destinations.s3.is_empty());
             let proof = Publication { token, checksum, artifacts, local_copies, s3_copies: destinations.s3, delete_local_after_sync };
             let serialized = serde_json::to_string(&proof)?;
             let staged = runtime.block_on(sqlx::query("UPDATE backups SET backup_metadata=json_set(backup_metadata,'$.native_publication',json(?)) WHERE id=? AND status='RUNNING'")
@@ -386,7 +386,7 @@ async fn execute(
         .map_err(|error| {
             tracing::warn!(backup_id=id, %error, "S3 sync settlement remains pending");
         })?;
-    settle_local_copies(pool, state.auth.blocking(), id, cancel)
+    super::s3_sync::finalize_copies(state, id, cancel)
         .await
         .map_err(|error| {
             tracing::warn!(backup_id=id, %error, "Sync settlement remains pending");

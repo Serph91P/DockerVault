@@ -85,6 +85,16 @@ pub(crate) async fn settle_local_copies(
     id: i64,
     cancel: &CancellationToken,
 ) -> Result<(), Error> {
+    settle_verified_copies(pool, owner, id, cancel, None).await
+}
+
+pub(crate) async fn settle_verified_copies(
+    pool: &SqlitePool,
+    owner: &Owner,
+    id: i64,
+    cancel: &CancellationToken,
+    verified_s3_receipt: Option<&str>,
+) -> Result<(), Error> {
     let receipt: Option<String> = sqlx::query_scalar("SELECT json_extract(backup_metadata,'$.native_local_sync') FROM backups WHERE id=? AND status='COMPLETED'")
         .bind(id).fetch_optional(pool).await?.flatten();
     let Some(receipt) = receipt else {
@@ -166,10 +176,11 @@ pub(crate) async fn settle_local_copies(
             );
         }
     }
-    // Remote copies need their own cleanup revalidation contract before local removal.
     let cleanup = proof.delete_local_after_sync
-        && proof.s3_copies.is_empty()
-        && !proof.local_copies.is_empty();
+        && !(proof.s3_copies.is_empty() && proof.local_copies.is_empty());
+    if cleanup && !proof.s3_copies.is_empty() && verified_s3_receipt != Some(receipt.as_str()) {
+        return Ok(());
+    }
     let checked = if cleanup {
         let proof = proof.clone();
         let cancel = cancel.clone();

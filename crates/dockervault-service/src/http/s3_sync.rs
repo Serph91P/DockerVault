@@ -105,16 +105,7 @@ async fn settle_mode(
                 "$.native_s3_effects.destination_{}.artifact_{}",
                 copy.storage_id, index
             );
-            let mut digest = [0u8; 32];
-            if artifact.digest.len() != 64
-                || !artifact.digest.bytes().all(|b| b.is_ascii_hexdigit())
-            {
-                return Err(Error::Protocol("Invalid S3 publication digest".into()));
-            }
-            for (j, b) in digest.iter_mut().enumerate() {
-                *b = u8::from_str_radix(&artifact.digest[j * 2..j * 2 + 2], 16)
-                    .map_err(|e| Error::Decode(Box::new(e)))?;
-            }
+            let digest = parse_digest(&artifact.digest)?;
             loop {
                 if cancel.is_cancelled() {
                     return Ok(());
@@ -324,12 +315,98 @@ async fn retry_owned(
         ));
     }
     let failed = pending.len() - succeeded;
-    crate::storage::settle_local_copies(pool, state.auth.blocking(), id, cancel).await?;
+    finalize_copies(state, id, cancel).await?;
     Ok(Json(json!({"message":format!("Retry complete: {succeeded} succeeded, {failed} failed"),"succeeded":succeeded,"failed":failed,"sync_details":after})).into_response())
 }
 
 fn retry_error(status: StatusCode, detail: &'static str) -> Response {
     (status, Json(json!({"detail":detail}))).into_response()
+}
+
+pub(super) async fn finalize_copies(
+    state: &HttpState,
+    id: i64,
+    cancel: &CancellationToken,
+) -> Result<(), Error> {
+    let pool = state.auth.pool();
+    let receipt: Option<String> = sqlx::query_scalar("SELECT CASE WHEN json_valid(backup_metadata) THEN json_extract(backup_metadata,'$.native_local_sync') END FROM backups WHERE id=? AND status='COMPLETED'")
+        .bind(id).fetch_optional(pool).await?.flatten();
+    let Some(receipt) = receipt else {
+        return Ok(());
+    };
+    let proof: Publication =
+        serde_json::from_str(&receipt).map_err(|e| Error::Decode(Box::new(e)))?;
+    let mut verified = false;
+    if proof.delete_local_after_sync && !proof.s3_copies.is_empty() {
+        verified = verify_cleanup_destinations(state, id, &proof, cancel).await?;
+    }
+    crate::storage::settle_verified_copies(
+        pool,
+        state.auth.blocking(),
+        id,
+        cancel,
+        verified.then_some(receipt.as_str()),
+    )
+    .await
+}
+
+async fn verify_cleanup_destinations(
+    state: &HttpState,
+    id: i64,
+    proof: &Publication,
+    cancel: &CancellationToken,
+) -> Result<bool, Error> {
+    if !(1..=2).contains(&proof.artifacts.len()) {
+        return Ok(false);
+    }
+    let pool = state.auth.pool();
+    for copy in &proof.s3_copies {
+        let completed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM backup_storage_syncs WHERE backup_id=? AND storage_id=? AND remote_path=? AND sync_status='completed')")
+            .bind(id).bind(copy.storage_id).bind(&copy.archive).fetch_one(pool).await?;
+        if !completed || cancel.is_cancelled() {
+            return Ok(false);
+        }
+        let Ok(mut cfg) = configured_browse_config(state, copy.storage_id).await else {
+            return Ok(false);
+        };
+        if from_config(&cfg, copy.storage_id, copy.archive.clone()).as_ref() != Some(copy)
+            || !open_probe_credentials(state, &mut cfg, None).await
+        {
+            return Ok(false);
+        }
+        let Some(provider) = s3_provider(state, &Value::Object(cfg)) else {
+            return Ok(false);
+        };
+        for (index, artifact) in proof.artifacts.iter().enumerate() {
+            if cancel.is_cancelled() {
+                return Ok(false);
+            }
+            let path = if index == 0 {
+                copy.archive.clone()
+            } else {
+                dockervault_core::crypto::key_sidecar_path(&copy.archive)
+            };
+            let work = provider
+                .verify_object(path, artifact.length, parse_digest(&artifact.digest)?)
+                .map_err(work_error)?;
+            if !matches!(wait(work, cancel).await?, Ok(true)) {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(!cancel.is_cancelled())
+}
+
+fn parse_digest(value: &str) -> Result<[u8; 32], Error> {
+    let mut digest = [0u8; 32];
+    if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(Error::Protocol("Invalid S3 publication digest".into()));
+    }
+    for (j, b) in digest.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&value[j * 2..j * 2 + 2], 16)
+            .map_err(|e| Error::Decode(Box::new(e)))?;
+    }
+    Ok(digest)
 }
 
 pub async fn recover_s3_copies(state: &HttpState) -> Result<(), Error> {
@@ -342,13 +419,7 @@ pub async fn recover_s3_copies(state: &HttpState) -> Result<(), Error> {
         for id in ids {
             after = id;
             settle(state, id, &state.draining).await?;
-            crate::storage::settle_local_copies(
-                state.auth.pool(),
-                state.auth.blocking(),
-                id,
-                &state.draining,
-            )
-            .await?;
+            finalize_copies(state, id, &state.draining).await?;
         }
     }
 }

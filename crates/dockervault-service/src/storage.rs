@@ -4,7 +4,7 @@ pub mod local;
 pub mod s3;
 pub mod ssh;
 mod sync;
-pub(crate) use sync::{LocalCopy, S3Copy, complete_publication, settle_local_copies};
+pub(crate) use sync::{LocalCopy, S3Copy, complete_publication, settle_verified_copies};
 mod upload;
 pub mod webdav;
 
