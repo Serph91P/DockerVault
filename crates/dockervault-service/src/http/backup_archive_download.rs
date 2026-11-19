@@ -172,9 +172,13 @@ async fn remote_archive(
     slot: Arc<tokio::sync::OwnedSemaphorePermit>,
     headers: &HeaderMap,
 ) -> Response {
+    // The shared catalog checksum describes the plaintext TAR. For encrypted
+    // downloads we can verify transfer completeness and catalog size, not
+    // ciphertext integrity or authenticity: the caller has the recovery key.
     let Ok(expected) = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
-        "SELECT file_size,checksum FROM backups WHERE id=?",
+        "SELECT file_size, CASE WHEN NOT ? THEN checksum END FROM backups WHERE id=?",
     )
+    .bind(encrypted)
     .bind(id)
     .fetch_one(state.auth.pool())
     .await

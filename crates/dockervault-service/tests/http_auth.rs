@@ -2288,7 +2288,8 @@ async fn backup_remote_download_uses_verified_enabled_catalog_copy_and_sidecar()
     .execute(server.db.pool())
     .await
     .unwrap();
-    sqlx::query("UPDATE backups SET checksum=? WHERE id=2")
+    // Python hashes the plaintext archive before encryption; the downloaded object is ciphertext.
+    sqlx::query("UPDATE backups SET checksum=? WHERE id IN (1,2)")
         .bind(
             Sha256::digest(b"expected data")
                 .iter()
