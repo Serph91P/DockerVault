@@ -29,6 +29,15 @@ pub(crate) struct S3Copy {
     pub prefix: Option<String>,
 }
 
+#[derive(Clone, Deserialize, Serialize, PartialEq)]
+pub(crate) struct WebDavCopy {
+    pub storage_id: i64,
+    pub archive: String,
+    pub endpoint: String,
+    pub prefix: Option<String>,
+    pub username: Option<String>,
+}
+
 pub(crate) async fn complete_publication(
     pool: &SqlitePool,
     id: i64,
@@ -44,10 +53,12 @@ pub(crate) async fn complete_publication(
         .ok_or_else(|| Error::Protocol("Invalid publication path".into()))?;
     let length = i64::try_from(archive.length).map_err(|e| Error::Encode(Box::new(e)))?;
     let sidecar = proof.artifacts.get(1).and_then(|key| key.path.to_str());
-    let sync = (!proof.local_copies.is_empty() || !proof.s3_copies.is_empty())
-        .then(|| serde_json::to_string(proof))
-        .transpose()
-        .map_err(|e| Error::Encode(Box::new(e)))?;
+    let sync = (!proof.local_copies.is_empty()
+        || !proof.s3_copies.is_empty()
+        || !proof.webdav_copies.is_empty())
+    .then(|| serde_json::to_string(proof))
+    .transpose()
+    .map_err(|e| Error::Encode(Box::new(e)))?;
     let mut tx = pool.begin().await?;
     let update = sqlx::query("UPDATE backups SET status='COMPLETED',file_path=?,file_size=?,checksum=?,encrypted=?,encryption_key_path=?,
         completed_at=strftime('%Y-%m-%d %H:%M:%f000','now'),error_message=NULL,
@@ -66,6 +77,12 @@ pub(crate) async fn complete_publication(
         .chain(
             proof
                 .s3_copies
+                .iter()
+                .map(|copy| (copy.storage_id, &copy.archive)),
+        )
+        .chain(
+            proof
+                .webdav_copies
                 .iter()
                 .map(|copy| (copy.storage_id, &copy.archive)),
         );
@@ -176,7 +193,8 @@ pub(crate) async fn settle_verified_copies(
             );
         }
     }
-    let cleanup = proof.delete_local_after_sync
+    let cleanup = proof.webdav_copies.is_empty()
+        && proof.delete_local_after_sync
         && !(proof.s3_copies.is_empty() && proof.local_copies.is_empty());
     if cleanup && !proof.s3_copies.is_empty() && verified_s3_receipt != Some(receipt.as_str()) {
         return Ok(());
@@ -203,6 +221,13 @@ pub(crate) async fn settle_verified_copies(
         Vec::new()
     };
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    for copy in &proof.webdav_copies {
+        let completed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM remote_storages r JOIN backup_storage_syncs s ON s.storage_id=r.id WHERE r.id=? AND r.enabled=1 AND r.storage_type='webdav' AND r.webdav_url=? AND r.base_path IS ? AND r.username IS ? AND s.backup_id=? AND s.remote_path=? AND s.sync_status='completed')")
+            .bind(copy.storage_id).bind(&copy.endpoint).bind(&copy.prefix).bind(&copy.username).bind(id).bind(&copy.archive).fetch_one(&mut *tx).await?;
+        if !completed {
+            return Ok(());
+        }
+    }
     for copy in &proof.s3_copies {
         let completed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM remote_storages r JOIN backup_storage_syncs s ON s.storage_id=r.id WHERE r.id=? AND r.enabled=1 AND r.storage_type='s3' AND r.s3_bucket=? AND r.s3_region IS ? AND r.s3_endpoint_url IS ? AND r.base_path IS ? AND s.backup_id=? AND s.remote_path=? AND s.sync_status='completed')")
             .bind(copy.storage_id).bind(&copy.bucket).bind(&copy.region).bind(&copy.endpoint).bind(&copy.prefix).bind(id).bind(&copy.archive).fetch_one(&mut *tx).await?;
@@ -253,7 +278,7 @@ pub(crate) async fn settle_verified_copies(
             return Ok(());
         }
     }
-    sqlx::query("UPDATE backups SET backup_metadata=json_remove(backup_metadata,'$.native_local_sync','$.native_s3_effects') WHERE id=? AND json_extract(backup_metadata,'$.native_local_sync')=json(?)")
+    sqlx::query("UPDATE backups SET backup_metadata=json_remove(backup_metadata,'$.native_local_sync','$.native_s3_effects','$.native_webdav_effects') WHERE id=? AND json_extract(backup_metadata,'$.native_local_sync')=json(?)")
         .bind(id).bind(receipt).execute(&mut *tx).await?;
     tx.commit().await
 }

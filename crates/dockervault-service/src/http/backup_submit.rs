@@ -3,7 +3,7 @@ use crate::{
     jobs::Resource,
     journal::{BackupKind, Journal, JournalError},
     storage::{
-        LocalCopy, Publication, PublishedArtifact, S3Copy, complete_publication, local,
+        LocalCopy, Publication, PublishedArtifact, S3Copy, WebDavCopy, complete_publication, local,
         mark_publication,
     },
 };
@@ -191,6 +191,7 @@ async fn admit(state: &HttpState, target_id: i64, kind: RunType) -> Result<(i64,
 struct Destinations {
     local: Vec<(i64, PathBuf)>,
     s3: Vec<S3Copy>,
+    webdav: Vec<WebDavCopy>,
 }
 
 async fn destinations(
@@ -212,12 +213,15 @@ async fn destinations(
                 destinations
                     .local
                     .push((id, std::path::absolute(base).map_err(|_| INTERNAL)?));
+            } else if let Some(copy) = super::s3_sync::destination(state, id, archive.clone()).await
+            {
+                destinations.s3.push(copy);
+            } else if let Some(copy) =
+                super::webdav_sync::destination(state, id, archive.clone()).await
+            {
+                destinations.webdav.push(copy);
             } else {
-                destinations.s3.push(
-                    super::s3_sync::destination(state, id, archive.clone())
-                        .await
-                        .ok_or(UNSUPPORTED)?,
-                );
+                return Err(UNSUPPORTED);
             }
         }
     }
@@ -361,7 +365,7 @@ async fn execute(
                 return Err(io::ErrorKind::Interrupted.into());
             }
             let delete_local_after_sync = plan.delete_local_after_sync && !(local_copies.is_empty() && destinations.s3.is_empty());
-            let proof = Publication { token, checksum, artifacts, local_copies, s3_copies: destinations.s3, delete_local_after_sync };
+            let proof = Publication { token, checksum, artifacts, local_copies, s3_copies: destinations.s3, webdav_copies: destinations.webdav, delete_local_after_sync };
             let serialized = serde_json::to_string(&proof)?;
             let staged = runtime.block_on(sqlx::query("UPDATE backups SET backup_metadata=json_set(backup_metadata,'$.native_publication',json(?)) WHERE id=? AND status='RUNNING'")
                 .bind(serialized).bind(id).execute(&journal_pool)).map_err(io::Error::other)?;
@@ -385,6 +389,11 @@ async fn execute(
         .await
         .map_err(|error| {
             tracing::warn!(backup_id=id, %error, "S3 sync settlement remains pending");
+        })?;
+    super::webdav_sync::settle(state, id, cancel)
+        .await
+        .map_err(|error| {
+            tracing::warn!(backup_id=id, %error, "WebDAV sync settlement remains pending");
         })?;
     super::s3_sync::finalize_copies(state, id, cancel)
         .await

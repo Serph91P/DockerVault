@@ -568,6 +568,46 @@ async fn sync_to_remote_sqlite_faults_preserve_custody() {
 }
 
 #[tokio::test]
+async fn webdav_backup_durably_admits_the_copy_before_provider_io() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let source = server.path.join("dav-source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("data"), b"synthetic WebDAV admission fixture").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let pool = server.db.pool();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,webdav_url,base_path) VALUES(7,'DAV fixture','webdav',1,?,'/copies')")
+        .bind(format!("http://{}/dav", listener.local_addr().unwrap())).execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO backup_targets(id,name,target_type,host_path,enabled,sync_to_remote,remote_storage_ids) VALUES(1,'DavTarget','path',?,1,1,'[7]')")
+        .bind(source.to_str().unwrap()).execute(pool).await.unwrap();
+    let (status, _, accepted) = server
+        .request(
+            "POST",
+            "/api/v1/backups",
+            &[("Cookie", &cookie), ("Origin", "http://localhost:3000")],
+            Some(json!({"target_id":1})),
+        )
+        .await;
+    assert_eq!(status, 200, "{accepted}");
+    let id = accepted["id"].as_i64().unwrap();
+    let (socket, _) = tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let intent: String = sqlx::query_scalar(
+        "SELECT sync_status FROM backup_storage_syncs WHERE backup_id=? AND storage_id=7",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(intent, "running");
+    drop(socket);
+    drop(listener);
+    server.close().await;
+}
+
+#[tokio::test]
 async fn s3_backup_submission_accepts_only_after_configured_native_admission() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
@@ -653,6 +693,15 @@ async fn s3_backup_submission_accepts_only_after_configured_native_admission() {
 
 #[tokio::test]
 async fn encrypted_s3_copy_recovers_rejected_ack_and_restores_after_reopen() {
+    encrypted_remote_copy_recovers_rejected_ack(false).await;
+}
+
+#[tokio::test]
+async fn encrypted_webdav_copy_recovers_rejected_ack_and_restores_after_reopen() {
+    encrypted_remote_copy_recovers_rejected_ack(true).await;
+}
+
+async fn encrypted_remote_copy_recovers_rejected_ack(dav: bool) {
     use age::secrecy::ExposeSecret;
     use axum::{
         body::Bytes,
@@ -728,6 +777,9 @@ async fn encrypted_s3_copy_recovers_rejected_ack_and_restores_after_reopen() {
                             Some(data) => data.clone().into_response(),
                             None => StatusCode::NOT_FOUND.into_response(),
                         },
+                        _ if dav && method.as_str() == "MKCOL" => {
+                            StatusCode::CREATED.into_response()
+                        }
                         _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
                     }
                 }
@@ -746,7 +798,11 @@ async fn encrypted_s3_copy_recovers_rejected_ack_and_restores_after_reopen() {
     let identity = age::x25519::Identity::generate();
     let pool = server.db.pool();
     sqlx::query("INSERT INTO encryption_config(id,public_key,encryption_enabled,setup_completed) VALUES(1,?,1,1)").bind(identity.to_public().to_string()).execute(pool).await.unwrap();
-    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,s3_bucket,s3_region,s3_endpoint_url,s3_access_key,s3_secret_key) VALUES(7,'S3 fixture','s3',1,'fixture-bucket','us-east-1',?,'PUBLIC fixture access','PUBLIC fixture secret')").bind(url).execute(pool).await.unwrap();
+    if dav {
+        sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,webdav_url,base_path) VALUES(7,'DAV fixture','webdav',1,?,'/fixture-bucket')").bind(url).execute(pool).await.unwrap();
+    } else {
+        sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,s3_bucket,s3_region,s3_endpoint_url,s3_access_key,s3_secret_key) VALUES(7,'S3 fixture','s3',1,'fixture-bucket','us-east-1',?,'PUBLIC fixture access','PUBLIC fixture secret')").bind(url).execute(pool).await.unwrap();
+    }
     sqlx::query("INSERT INTO backup_targets(id,name,target_type,host_path,enabled,sync_to_remote,remote_storage_ids,delete_local_after_sync) VALUES(1,'S3Cipher','path',?,1,1,'[7]',1)").bind(origin.to_str().unwrap()).execute(pool).await.unwrap();
     sqlx::query("CREATE TABLE test_sync_ack_attempts (backup_id INTEGER NOT NULL)")
         .execute(pool)
@@ -816,6 +872,11 @@ async fn encrypted_s3_copy_recovers_rejected_ack_and_restores_after_reopen() {
             .unwrap();
     assert_eq!(status, "completed");
     assert_eq!(*files.lock().unwrap(), before);
+    if dav {
+        // Only the fixture discards WebDAV-backed originals until cleanup is verified for this provider.
+        std::fs::remove_file(&archive).unwrap();
+        std::fs::remove_file(&key).unwrap();
+    }
     assert!(!std::path::Path::new(&archive).exists());
     assert!(!std::path::Path::new(&key).exists());
     std::fs::write(origin.join("data"), b"mutated fixture").unwrap();

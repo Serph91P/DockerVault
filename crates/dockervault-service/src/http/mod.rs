@@ -8,6 +8,7 @@ mod s3_sync;
 pub mod security;
 mod storage;
 pub use s3_sync::recover_s3_copies;
+mod webdav_sync;
 pub mod ws;
 use crate::{auth::AuthService, config::Config, storage_recovery::LocalDeleteJobs};
 use axum::{

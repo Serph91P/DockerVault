@@ -397,7 +397,7 @@ async fn verify_cleanup_destinations(
     Ok(!cancel.is_cancelled())
 }
 
-fn parse_digest(value: &str) -> Result<[u8; 32], Error> {
+pub(super) fn parse_digest(value: &str) -> Result<[u8; 32], Error> {
     let mut digest = [0u8; 32];
     if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Error::Protocol("Invalid S3 publication digest".into()));
@@ -412,25 +412,29 @@ fn parse_digest(value: &str) -> Result<[u8; 32], Error> {
 pub async fn recover_s3_copies(state: &HttpState) -> Result<(), Error> {
     let mut after = i64::MIN;
     loop {
-        let ids:Vec<i64>=sqlx::query_scalar("SELECT id FROM backups WHERE id>? AND status='COMPLETED' AND CASE WHEN json_valid(backup_metadata) THEN json_type(backup_metadata,'$.native_local_sync.s3_copies')='array' ELSE 0 END ORDER BY id LIMIT 64").bind(after).fetch_all(state.auth.pool()).await?;
+        let ids:Vec<i64>=sqlx::query_scalar("SELECT id FROM backups WHERE id>? AND status='COMPLETED' AND CASE WHEN json_valid(backup_metadata) THEN json_type(backup_metadata,'$.native_local_sync.s3_copies')='array' OR json_type(backup_metadata,'$.native_local_sync.webdav_copies')='array' ELSE 0 END ORDER BY id LIMIT 64").bind(after).fetch_all(state.auth.pool()).await?;
         if ids.is_empty() {
             return Ok(());
         }
         for id in ids {
             after = id;
             settle(state, id, &state.draining).await?;
+            super::webdav_sync::settle(state, id, &state.draining).await?;
             finalize_copies(state, id, &state.draining).await?;
         }
     }
 }
 
-async fn wait<T>(work: crate::ownership::Work<T>, cancel: &CancellationToken) -> Result<T, Error> {
+pub(super) async fn wait<T>(
+    work: crate::ownership::Work<T>,
+    cancel: &CancellationToken,
+) -> Result<T, Error> {
     let stop = work.cancellation_token();
     let waiting = work.wait();
     tokio::pin!(waiting);
     tokio::select! { result=&mut waiting=>result, _=cancel.cancelled()=>{stop.cancel(); waiting.await} }.map_err(work_error)
 }
 
-fn work_error(error: crate::ownership::WorkError) -> Error {
+pub(super) fn work_error(error: crate::ownership::WorkError) -> Error {
     Error::Io(std::io::Error::other(error))
 }

@@ -676,7 +676,7 @@ async fn list_webdav(
         .ok()
 }
 
-fn configured_webdav(
+pub(super) fn configured_webdav(
     state: &HttpState,
     config: &serde_json::Map<String, Value>,
 ) -> Option<crate::storage::webdav::WebDav> {
