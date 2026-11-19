@@ -136,6 +136,29 @@ enum EntryError {
 use EntryError::{Failed, Skipped};
 const INCOMPLETE: EntryError = Failed("Copy removal incomplete; metadata retained for retry");
 const CHANGED: EntryError = Skipped("Copy scope changed; review again before deleting");
+
+async fn check_remote(state: &HttpState, item: &Item) -> Result<(), EntryError> {
+    let (Some(storage_id), Some(remote)) = (item.storage_id, &item.remote) else {
+        return Err(CHANGED);
+    };
+    let mut tx = state.auth.pool().begin().await.map_err(|_| INCOMPLETE)?;
+    type SyncIdentity = (Option<String>, Option<String>, Option<String>);
+    let current = sqlx::query_as::<_, SyncIdentity>("SELECT s.remote_path,s.sync_status,s.synced_at FROM backup_storage_syncs s JOIN backups b ON b.id=s.backup_id WHERE s.id=? AND s.backup_id=? AND s.storage_id=? AND b.target_id=?")
+        .bind(remote.sync_id).bind(item.backup_id).bind(storage_id).bind(item.target_id)
+        .fetch_optional(&mut *tx).await.map_err(|_| INCOMPLETE)?;
+    if current.as_ref().is_none_or(|(path, status, synced_at)| {
+        path != &remote.archive || status != &remote.status || synced_at != &remote.synced_at
+    }) {
+        return Err(CHANGED);
+    }
+    let destination = crate::storage_recovery::remote_storage_identity_in(&mut *tx, storage_id)
+        .await
+        .map_err(|_| INCOMPLETE)?;
+    if destination != remote.destination {
+        return Err(CHANGED);
+    }
+    Err(Failed("Confirmed remote copy removal is not available"))
+}
 type Catalog = (
     i64,
     Option<String>,
@@ -153,7 +176,7 @@ async fn remove_local(
     cancel: &CancellationToken,
 ) -> Result<(), EntryError> {
     let Some(local) = &item.local else {
-        return Err(Failed("Confirmed remote copy removal is not available"));
+        return check_remote(state, item).await;
     };
     let Some(files) = local.files.clone() else {
         return Err(CHANGED);

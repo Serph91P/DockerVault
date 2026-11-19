@@ -50,6 +50,8 @@ struct Item {
     label: String,
     #[serde(skip)]
     local: Option<LocalCopy>,
+    #[serde(skip)]
+    remote: Option<RemoteCopy>,
 }
 
 type Backup = (
@@ -108,7 +110,23 @@ fn inspect(
     Ok(files)
 }
 
-type SyncRow = (i64, i64, String);
+type SyncRow = (
+    i64,
+    i64,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+#[derive(Clone)]
+struct RemoteCopy {
+    sync_id: i64,
+    archive: Option<String>,
+    status: Option<String>,
+    synced_at: Option<String>,
+    destination: Option<Value>,
+}
 
 struct Confirmation {
     expires: Instant,
@@ -209,16 +227,19 @@ pub(super) async fn preview(
         let mut items = Vec::new();
         let mut retained = Vec::new();
         for (backup_id,target_id,target_name,file_path,key_path,created,checksum,size,encrypted) in &backups {
-            let mut add = |copy,storage_id,label,local| {
-                let item=Item{backup_id:*backup_id,target_id:*target_id,target_name:target_name.clone(),copy,storage_id,label,local};
+            let mut add = |copy,storage_id,label,local,remote| {
+                let item=Item{backup_id:*backup_id,target_id:*target_id,target_name:target_name.clone(),copy,storage_id,label,local,remote};
                 if selection.scope==Scope::All || selection.scope==copy { items.push(item); }
                 else { let mut item=json!(item); item["outcome"]=json!("retained"); retained.push(item); }
             };
             if file_path.as_ref().is_some_and(|p| !p.is_empty()) || key_path.as_ref().is_some_and(|p| !p.is_empty()) {
-                add(Scope::Local,None,"Local copy".into(),Some(LocalCopy{archive:file_path.clone(),key:key_path.clone(),row_identity:(created.clone(),checksum.clone(),*size,*encrypted),files:None}));
+                add(Scope::Local,None,"Local copy".into(),Some(LocalCopy{archive:file_path.clone(),key:key_path.clone(),row_identity:(created.clone(),checksum.clone(),*size,*encrypted),files:None}),None);
             }
-            let rows = sqlx::query_as::<_,SyncRow>("SELECT s.id,s.storage_id,coalesce(r.name,'Storage '||s.storage_id) FROM backup_storage_syncs s LEFT JOIN remote_storages r ON r.id=s.storage_id WHERE s.backup_id=? ORDER BY s.id").bind(backup_id).fetch_all(&mut *db).await?;
-            for (_,id,label) in rows { add(Scope::Remote,Some(id),label,None); }
+            let rows = sqlx::query_as::<_,SyncRow>("SELECT s.id,s.storage_id,coalesce(r.name,'Storage '||s.storage_id),s.remote_path,s.sync_status,s.synced_at FROM backup_storage_syncs s LEFT JOIN remote_storages r ON r.id=s.storage_id WHERE s.backup_id=? ORDER BY s.id").bind(backup_id).fetch_all(&mut *db).await?;
+            for (sync_id,id,label,archive,status,synced_at) in rows {
+                let destination=crate::storage_recovery::remote_storage_identity_in(&mut *db,id).await.map_err(|_|sqlx::Error::Protocol("Could not freeze replica destination".into()))?;
+                add(Scope::Remote,Some(id),label,None,Some(RemoteCopy{sync_id,archive,status,synced_at,destination}));
+            }
         }
         db.commit().await?;
         Ok(Some((backups.len(),items,retained)))

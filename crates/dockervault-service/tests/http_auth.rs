@@ -948,6 +948,86 @@ async fn removal_acknowledgment_failure(restart: bool) {
 }
 
 #[tokio::test]
+async fn remote_removal_checks_frozen_destination_before_provider_io() {
+    replica_removal(true).await;
+}
+
+#[tokio::test]
+async fn remote_removal_checks_frozen_sync_path_before_provider_io() {
+    replica_removal(false).await;
+}
+
+async fn replica_removal(destination_drift: bool) {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let copy = server.path.join("copy");
+    let replacement = server.path.join("replacement");
+    std::fs::create_dir(&copy).unwrap();
+    std::fs::create_dir(&replacement).unwrap();
+    std::fs::write(copy.join("fixture.tar"), b"copy").unwrap();
+    std::fs::write(replacement.join("fixture.tar"), b"other copy").unwrap();
+    let db = server.db.pool();
+    sqlx::raw_sql("INSERT INTO backup_targets(id,name,target_type,enabled) VALUES(1,'Fixture','path',1); INSERT INTO backups(id,target_id,backup_type,status) VALUES(1,1,'FULL','COMPLETED');").execute(db).await.unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,base_path,enabled) VALUES(1,'Replica','local',?,1)").bind(copy.to_str().unwrap()).execute(db).await.unwrap();
+    sqlx::query("INSERT INTO backup_storage_syncs(id,backup_id,storage_id,remote_path,sync_status) VALUES(1,1,1,'fixture.tar','completed')").execute(db).await.unwrap();
+    let (status, _, preview) = server
+        .request(
+            "POST",
+            "/api/v1/backups/removal/preview",
+            &headers,
+            Some(json!({"scope":"remote","backup_ids":[1]})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(preview["copy_count"], 1);
+    if destination_drift {
+        sqlx::query("UPDATE remote_storages SET base_path=? WHERE id=1")
+            .bind(replacement.to_str().unwrap())
+            .execute(db)
+            .await
+            .unwrap();
+    } else {
+        std::fs::write(copy.join("replacement.tar"), b"new catalog path").unwrap();
+        sqlx::query("UPDATE backup_storage_syncs SET remote_path='replacement.tar' WHERE id=1")
+            .execute(db)
+            .await
+            .unwrap();
+    }
+    let (status, _, result) = server
+        .request(
+            "POST",
+            "/api/v1/backups/removal/execute",
+            &headers,
+            Some(json!({"token":preview["token"]})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(result["skipped"], 1);
+    assert_eq!(result["succeeded"], 0);
+    assert_eq!(
+        std::fs::read(replacement.join("fixture.tar")).unwrap(),
+        b"other copy"
+    );
+    assert_eq!(std::fs::read(copy.join("fixture.tar")).unwrap(), b"copy");
+    if !destination_drift {
+        assert_eq!(
+            std::fs::read(copy.join("replacement.tar")).unwrap(),
+            b"new catalog path"
+        );
+    }
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM backup_storage_syncs")
+        .fetch_one(db)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+    server.close().await;
+}
+
+#[tokio::test]
 async fn removal_does_not_unlink_replaced_or_shared_archives() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

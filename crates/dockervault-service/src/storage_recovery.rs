@@ -292,7 +292,14 @@ pub async fn remote_storage_identity(
     pool: &SqlitePool,
     id: i64,
 ) -> Result<Option<serde_json::Value>, StorageRecoveryError> {
-    remote_row(pool, id)
+    remote_storage_identity_in(pool, id).await
+}
+
+pub(crate) async fn remote_storage_identity_in<'e>(
+    executor: impl sqlx::SqliteExecutor<'e>,
+    id: i64,
+) -> Result<Option<serde_json::Value>, StorageRecoveryError> {
+    remote_row(executor, id)
         .await?
         .as_ref()
         .map(remote_identity)
