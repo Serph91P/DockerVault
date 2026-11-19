@@ -207,8 +207,64 @@ async fn submitted_path_backup_publishes_a_verified_archive_before_completion() 
     let mut data = Vec::new();
     std::io::Read::read_to_end(&mut entry, &mut data).unwrap();
     assert_eq!(data, b"owned backup bytes");
+    let browse = format!("/api/v1/backups/{id}/files");
+    let browse_auth = [("Cookie", cookie.as_str())];
+    assert_eq!(server.request("GET", &browse, &[], None).await.0, 401);
+    for (suffix, path, more, total) in [
+        ("?limit=1", "source", "true", "2"),
+        ("?limit=1&offset=1", "source/data.txt", "false", "2"),
+        ("?search=DATA.TXT", "source/data.txt", "false", "1"),
+    ] {
+        let (status, headers, entries) = server
+            .request("GET", &format!("{browse}{suffix}"), &browse_auth, None)
+            .await;
+        assert_eq!(status, 200);
+        assert!(
+            headers
+                .lines()
+                .any(|line| line == format!("x-total-count: {total}"))
+        );
+        assert!(
+            headers
+                .lines()
+                .any(|line| line == format!("x-has-more: {more}"))
+        );
+        assert_eq!(entries.as_array().unwrap().len(), 1);
+        assert_eq!(entries[0]["path"], path);
+    }
+    assert_eq!(
+        server
+            .request("GET", &format!("{browse}?limit=2001"), &browse_auth, None)
+            .await
+            .0,
+        422
+    );
     let headers = [("Cookie", cookie.as_str())];
     let summary = "/api/v1/backups/metrics/summary";
+    let member = format!("{browse}/source/data.txt");
+    assert_eq!(server.request("GET", &member, &[], None).await.0, 401);
+    let (status, member_headers, body) = server.request("GET", &member, &browse_auth, None).await;
+    assert_eq!(status, 200);
+    assert_eq!(body, json!("owned backup bytes"));
+    assert!(
+        member_headers
+            .lines()
+            .any(|line| line == "cache-control: no-store")
+    );
+    assert_eq!(
+        server
+            .request("GET", &format!("{browse}/source"), &browse_auth, None)
+            .await
+            .0,
+        400
+    );
+    assert_eq!(
+        server
+            .request("GET", &format!("{browse}/missing"), &browse_auth, None)
+            .await
+            .0,
+        404
+    );
     assert_eq!(server.request("GET", summary, &[], None).await.0, 401);
     let (status, _, payload) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {

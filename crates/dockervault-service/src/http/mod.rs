@@ -102,6 +102,11 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/backups/history/{id}", get(backups::history_detail))
         .route("/api/v1/backups/{id}", get(backups::get))
         .route("/api/v1/backups/{id}/logs", get(backups::logs))
+        .route("/api/v1/backups/{id}/files", get(backups::files))
+        .route(
+            "/api/v1/backups/{id}/files/{*name}",
+            get(backups::file_member),
+        )
         .route("/api/v1/backups/{id}/stats", get(backups::stats))
         .route(
             "/api/v1/backups/metrics/summary",

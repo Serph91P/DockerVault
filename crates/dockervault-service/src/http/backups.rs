@@ -1,5 +1,8 @@
+#[path = "backup_browse.rs"]
+mod browse;
 #[path = "backup_archive_download.rs"]
 mod download;
+pub(super) use browse::{list as files, member as file_member};
 pub(super) use download::whole_archive as download;
 
 use super::{
