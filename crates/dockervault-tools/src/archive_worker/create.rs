@@ -8,7 +8,7 @@ use nix::{
 };
 use std::{
     fs::File,
-    io::{self, Read, Write},
+    io::{self, Read, Seek, Write},
     os::unix::{
         ffi::{OsStrExt, OsStringExt},
         fs::MetadataExt,
@@ -109,6 +109,41 @@ pub fn create_archive_from_directory(
     )
 }
 
+pub fn archive_private(
+    request: &Request,
+    source: &File,
+    spool: &File,
+    cancel: &dyn Fn() -> bool,
+) -> io::Result<File> {
+    let [(name, path)] = request.sources.as_slice() else {
+        return Err(invalid("Expected one pinned source"));
+    };
+    if !source.metadata()?.is_dir() {
+        return Err(invalid("Source is not a directory"));
+    }
+    check(cancel)?;
+    let stage = Stage::new(spool)?;
+    let mut output = File::from(openat(
+        spool,
+        ".",
+        OFlag::O_TMPFILE | OFlag::O_RDWR | OFlag::O_CLOEXEC,
+        Mode::S_IRUSR | Mode::S_IWUSR,
+    )?);
+    let filters = request.filters_for(name).map_err(invalid)?;
+    let report = pack(
+        request.compress,
+        &[(name, source.try_clone()?, path, filters)],
+        &stage,
+        &mut output,
+        cancel,
+    )?;
+    if report.skipped_count() != 0 {
+        return Err(io::Error::other("Archive source contains unreadable files"));
+    }
+    output.rewind()?;
+    Ok(output)
+}
+
 fn write_archive(
     request: &Request,
     backups: &File,
@@ -132,52 +167,7 @@ fn write_archive(
     }
     let stage = Stage::new(&parent)?;
     let mut output = stage.file("archive.partial", true)?;
-    let mut report = Report {
-        skipped: stage.file("skipped.report", true)?,
-        count: 0,
-    };
-    if request.compress {
-        let gzip = flate2::write::GzEncoder::new(&mut output, flate2::Compression::new(6));
-        let mut archive = tar::Builder::new(gzip);
-        archive.follow_symlinks(false);
-        archive.sparse(false);
-        for (name, source, original, filters) in sources {
-            walk(
-                &mut archive,
-                source,
-                original,
-                Path::new(name),
-                Path::new(""),
-                &WalkOptions {
-                    stage: &stage,
-                    filters,
-                    cancel,
-                },
-                &mut report,
-            )?;
-        }
-        archive.into_inner()?.finish()?;
-    } else {
-        let mut archive = tar::Builder::new(&mut output);
-        archive.follow_symlinks(false);
-        archive.sparse(false);
-        for (name, source, original, filters) in sources {
-            walk(
-                &mut archive,
-                source,
-                original,
-                Path::new(name),
-                Path::new(""),
-                &WalkOptions {
-                    stage: &stage,
-                    filters,
-                    cancel,
-                },
-                &mut report,
-            )?;
-        }
-        archive.into_inner()?.flush()?;
-    }
+    let report = pack(request.compress, sources, &stage, &mut output, cancel)?;
     if nix::unistd::geteuid().is_root()
         && let (Ok(uid), Ok(gid)) = (std::env::var("SUDO_UID"), std::env::var("SUDO_GID"))
     {
@@ -195,7 +185,7 @@ fn write_archive(
     }
     output.sync_all()?;
     check(cancel)?;
-    // Atomic no-replace publication; existing recovery points can never be overwritten.
+    // Atomic no-replace publication; existing recovery points cannot be overwritten.
     linkat(
         &stage.directory,
         "archive.partial",
@@ -204,6 +194,63 @@ fn write_archive(
         AtFlags::empty(),
     )?;
     parent.sync_all()?;
+    Ok(report)
+}
+
+fn pack(
+    compress: bool,
+    sources: &[(&str, File, &Path, Filters)],
+    stage: &Stage,
+    output: &mut File,
+    cancel: &dyn Fn() -> bool,
+) -> io::Result<Report> {
+    let mut report = Report {
+        skipped: stage.file("skipped.report", true)?,
+        count: 0,
+    };
+    if compress {
+        let gzip = flate2::write::GzEncoder::new(output, flate2::Compression::new(6));
+        let mut archive = tar::Builder::new(gzip);
+        archive.follow_symlinks(false);
+        archive.sparse(false);
+        for (name, source, original, filters) in sources {
+            walk(
+                &mut archive,
+                source,
+                original,
+                Path::new(name),
+                Path::new(""),
+                &WalkOptions {
+                    stage,
+                    filters,
+                    cancel,
+                },
+                &mut report,
+            )?;
+        }
+        archive.into_inner()?.finish()?;
+    } else {
+        let mut archive = tar::Builder::new(output);
+        archive.follow_symlinks(false);
+        archive.sparse(false);
+        for (name, source, original, filters) in sources {
+            walk(
+                &mut archive,
+                source,
+                original,
+                Path::new(name),
+                Path::new(""),
+                &WalkOptions {
+                    stage,
+                    filters,
+                    cancel,
+                },
+                &mut report,
+            )?;
+        }
+        archive.into_inner()?.flush()?;
+    }
+    check(cancel)?;
     Ok(report)
 }
 

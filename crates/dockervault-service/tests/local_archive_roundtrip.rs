@@ -6,7 +6,9 @@ use dockervault_service::{
     restore::IndexedArchive,
     storage::{VerifiedSource, local::LocalStorage},
 };
-use dockervault_tools::archive_worker::{Request, create_archive, create_archive_from_directory};
+use dockervault_tools::archive_worker::{
+    Request, archive_private, create_archive, create_archive_from_directory,
+};
 #[path = "../../dockervault-core/tests/common/mod.rs"]
 mod common;
 use std::{
@@ -115,6 +117,15 @@ async fn pinned_path_archive_reads_the_claimed_directory_not_its_replacement() {
     .unwrap();
     let backup_dir = root.0.join("backups");
     let backups = fs::File::open(&backup_dir).unwrap();
+    let anonymous = archive_private(&request, &pinned, &backups, &|| false).unwrap();
+    assert_eq!(anonymous.metadata().unwrap().nlink(), 0);
+    assert_eq!(fs::read_dir(&backup_dir).unwrap().count(), 0);
+    assert!(
+        tar::Archive::new(anonymous)
+            .entries()
+            .unwrap()
+            .any(|entry| entry.unwrap().path().unwrap() == std::path::Path::new("source/data"))
+    );
     assert!(create_archive_from_directory(&request, &pinned, &backups, &|| true).is_err());
     assert_eq!(fs::read_dir(&backup_dir).unwrap().count(), 0);
     create_archive_from_directory(&request, &pinned, &backups, &|| false).unwrap();

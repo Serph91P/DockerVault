@@ -10,12 +10,15 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use dockervault_tools::archive_worker::{Request, create_archive_from_directory};
+use dockervault_core::crypto::{decrypt_private, encrypt_dek, encrypt_stream};
+use dockervault_tools::archive_worker::{Request, archive_private, create_archive_from_directory};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::Row;
 use std::{
-    io,
+    fs::File,
+    io::{self, Seek, Write},
+    os::fd::AsRawFd,
     path::{Path, PathBuf},
 };
 use time::{UtcDateTime, macros::format_description};
@@ -45,6 +48,7 @@ struct Plan {
     include_paths: Option<String>,
     exclude_paths: Option<String>,
     unsupported: bool,
+    recipient: Option<String>,
 }
 
 pub(super) async fn submit(
@@ -97,8 +101,8 @@ async fn plan(state: &HttpState, id: i64) -> Result<Plan, Failure> {
     let row = sqlx::query("SELECT name,host_path,target_type,enabled,compression_enabled,include_paths,exclude_paths,
           coalesce(sync_to_remote,0) OR coalesce(delete_local_after_sync,0) OR retention_policy_id IS NOT NULL
           OR coalesce(pre_backup_command,'')<>'' OR coalesce(post_backup_command,'')<>''
-          OR coalesce(dependencies,'[]') NOT IN ('[]','null')
-          OR EXISTS(SELECT 1 FROM encryption_config WHERE encryption_enabled=1) AS unsupported
+          OR coalesce(dependencies,'[]') NOT IN ('[]','null') AS unsupported,
+          (SELECT public_key FROM encryption_config WHERE encryption_enabled=1 ORDER BY id LIMIT 1) AS recipient
         FROM backup_targets WHERE id=? AND removed_at IS NULL")
         .bind(id).fetch_optional(state.auth.pool()).await.map_err(|_| INTERNAL)?
         .ok_or((StatusCode::NOT_FOUND,"Target not found"))?;
@@ -112,6 +116,7 @@ async fn plan(state: &HttpState, id: i64) -> Result<Plan, Failure> {
             include_paths: row.try_get("include_paths")?,
             exclude_paths: row.try_get("exclude_paths")?,
             unsupported: row.try_get("unsupported")?,
+            recipient: row.try_get("recipient")?,
         })
     })()
     .map_err(|_| INTERNAL)?;
@@ -217,17 +222,28 @@ async fn execute(
     ));
     let root = std::path::absolute(root).map_err(|_| ())?;
     let path = root.join(&relative);
-    let stored = path.to_str().ok_or(())?.to_owned();
+    let plaintext_path = path.to_str().ok_or(())?.to_owned();
+    let stored = if plan.recipient.is_some() {
+        format!("{plaintext_path}.enc")
+    } else {
+        plaintext_path
+    };
+    let sidecar = plan
+        .recipient
+        .as_ref()
+        .map(|_| dockervault_core::crypto::key_sidecar_path(&stored));
     let request = json!({"version":1,"dest":Path::new("/backups").join(&relative),"sources":[[&layout, &source]],"compress":compress,
         "include_paths":parse_filter(plan.include_paths)?,"exclude_paths":parse_filter(plan.exclude_paths)?});
     let pool = state.auth.pool();
     let update = sqlx::query("UPDATE backups SET status='RUNNING',started_at=strftime('%Y-%m-%d %H:%M:%f000','now'),backup_metadata=json_patch(backup_metadata,?) WHERE id=? AND status='PENDING'")
-        .bind(json!({"archive_layout":{"version":1,"kind":"single","root":layout},"active_artifacts":[&stored]}).to_string())
+        .bind(json!({"archive_layout":{"version":1,"kind":"single","root":layout},"active_artifacts":std::iter::once(&stored).chain(sidecar.iter()).collect::<Vec<_>>()}).to_string())
         .bind(id).execute(pool).await.map_err(|_| ())?;
     if update.rows_affected() != 1 {
         return Err(());
     }
     let job_cancel = cancel.clone();
+    let output = stored.clone();
+    let key_output = sidecar.clone();
     let result = state
         .auth
         .blocking()
@@ -244,38 +260,111 @@ async fn execute(
             }
             let fd = local::open_root(&source)?;
             let backup_root = local::open_root(&root)?;
-            local::open_or_create_root(&root.join(&safe))?;
+            let parent = local::open_or_create_root(&root.join(&safe))?;
             let request =
                 Request::parse(&serde_json::to_vec(&request)?).map_err(io::Error::other)?;
+            if let (Some(recipient), Some(key_output)) = (plan.recipient, key_output) {
+                return write_encrypted(
+                    &request,
+                    &fd,
+                    &parent,
+                    &recipient,
+                    Path::new(&output),
+                    Path::new(&key_output),
+                    &cancelled,
+                );
+            }
             let report = create_archive_from_directory(&request, &fd, &backup_root, &cancelled)?;
             if report.skipped_count() != 0 {
                 return Err(io::Error::other("Archive source contains unreadable files"));
             }
-            VerifiedSource::open(&path, &cancelled)
+            let result = VerifiedSource::open(&path, &cancelled)?;
+            Ok((result.len(), result.sha256_hex()))
         })
         .map_err(|_| ())?
         .wait()
         .await
         .map_err(|_| ())?
         .map_err(|_| ())?;
-    let len = i64::try_from(result.len()).map_err(|_| ())?;
-    let checksum = result.sha256_hex();
-    state
-        .auth
-        .blocking()
-        .submit_blocking(move |_| result.check_unchanged())
-        .map_err(|_| ())?
-        .wait()
-        .await
-        .map_err(|_| ())?
-        .map_err(|_| ())?;
-    let changed = sqlx::query("UPDATE backups SET status='COMPLETED', file_path=?,file_size=?,checksum=?,completed_at=strftime('%Y-%m-%d %H:%M:%f000','now'), duration_seconds=max(0,cast((julianday('now')-julianday(started_at))*86400 as integer)),backup_metadata=json_remove(backup_metadata,'$.active_artifacts') WHERE id=? AND status='RUNNING'")
-        .bind(stored).bind(len).bind(checksum).bind(id).execute(pool).await.map_err(|_| ())?;
+    let len = i64::try_from(result.0).map_err(|_| ())?;
+    let changed = sqlx::query("UPDATE backups SET status='COMPLETED', file_path=?,file_size=?,checksum=?,encrypted=?,encryption_key_path=?,completed_at=strftime('%Y-%m-%d %H:%M:%f000','now'), duration_seconds=max(0,cast((julianday('now')-julianday(started_at))*86400 as integer)),backup_metadata=json_remove(backup_metadata,'$.active_artifacts') WHERE id=? AND status='RUNNING'")
+        .bind(stored).bind(len).bind(result.1).bind(sidecar.is_some()).bind(sidecar).bind(id).execute(pool).await.map_err(|_| ())?;
     if changed.rows_affected() == 1 {
         Ok(())
     } else {
         Err(())
     }
+}
+
+fn write_encrypted(
+    request: &Request,
+    source: &File,
+    parent: &File,
+    recipient: &str,
+    archive: &Path,
+    sidecar: &Path,
+    cancel: &dyn Fn() -> bool,
+) -> io::Result<(u64, String)> {
+    use nix::{
+        fcntl::{AT_FDCWD, AtFlags, OFlag, openat},
+        sys::stat::Mode,
+        unistd::linkat,
+    };
+    let spool = || {
+        openat(
+            parent,
+            ".",
+            OFlag::O_TMPFILE | OFlag::O_RDWR | OFlag::O_CLOEXEC,
+            Mode::S_IRUSR | Mode::S_IWUSR,
+        )
+        .map(File::from)
+    };
+    let mut key = zeroize::Zeroizing::new([0u8; 32]);
+    getrandom::fill(&mut *key).map_err(|_| io::Error::other("Archive key generation failed"))?;
+    let wrapped = encrypt_dek(&key[..], recipient).map_err(io::Error::other)?;
+    let mut plain = archive_private(request, source, parent, cancel)?;
+    let digest = crate::storage::hash_reader(&mut plain, cancel)?;
+    plain.rewind()?;
+    let mut cipher = spool()?;
+    encrypt_stream(plain, &mut cipher, &key[..], cancel).map_err(io::Error::other)?;
+    cipher.sync_all()?;
+    let length = cipher.metadata()?.len();
+    cipher.rewind()?;
+    let mut checked = decrypt_private(&mut cipher, length, spool()?, &key[..], cancel)
+        .map_err(io::Error::other)?;
+    if crate::storage::hash_reader(&mut checked, cancel)? != digest {
+        return Err(io::Error::other("Encrypted archive verification failed"));
+    }
+    let mut wrapped_file = spool()?;
+    wrapped_file.write_all(&wrapped)?;
+    wrapped_file.sync_all()?;
+    wrapped_file.rewind()?;
+    use std::io::Read;
+    let mut readback = Vec::new();
+    Read::by_ref(&mut wrapped_file)
+        .take(wrapped.len() as u64 + 1)
+        .read_to_end(&mut readback)?;
+    if readback != wrapped || cancel() {
+        return Err(io::Error::other("Archive sidecar verification interrupted"));
+    }
+    let publish = |file: &File, name: &Path| -> io::Result<()> {
+        let leaf = name
+            .file_name()
+            .ok_or_else(|| io::Error::other("Missing archive name"))?;
+        let fd = format!("/proc/self/fd/{}", file.as_raw_fd());
+        linkat(
+            AT_FDCWD,
+            fd.as_str(),
+            parent,
+            leaf,
+            AtFlags::AT_SYMLINK_FOLLOW,
+        )?;
+        parent.sync_all()
+    };
+    // First preserve recoverable key custody; a crash cannot leave a newly published archive without its key.
+    publish(&wrapped_file, sidecar)?;
+    publish(&cipher, archive)?;
+    Ok((length, digest.iter().map(|b| format!("{b:02x}")).collect()))
 }
 
 fn parse_filter(raw: Option<String>) -> Result<Option<Vec<String>>, ()> {

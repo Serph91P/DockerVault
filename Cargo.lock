@@ -1117,6 +1117,7 @@ dependencies = [
 name = "dockervault-service"
 version = "0.1.0"
 dependencies = [
+ "age",
  "async_zip",
  "aws-sdk-s3",
  "aws-smithy-types",

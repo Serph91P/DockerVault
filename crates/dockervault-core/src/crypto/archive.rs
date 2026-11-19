@@ -123,9 +123,21 @@ pub fn encrypt_file(
     key_material: &[u8],
     cancel: &dyn Fn() -> bool,
 ) -> Result<(), CryptoError> {
+    let input = File::open(source)?;
+    let mut output = Stage::new(destination)?;
+    encrypt_stream(input, &mut output.file, key_material, cancel)?;
+    output.publish(destination, cancel)
+}
+
+/// Writes to private, unpublished output owned by the caller.
+pub fn encrypt_stream(
+    mut input: impl Read,
+    mut output: impl Write,
+    key_material: &[u8],
+    cancel: &dyn Fn() -> bool,
+) -> Result<(), CryptoError> {
     checkpoint(cancel)?;
     let (key, _) = material(key_material)?;
-    let mut input = File::open(source)?;
     let mut salt = [0; 8];
     openssl::rand::rand_bytes(&mut salt)?;
     let parameters = parameters(key, &salt)?;
@@ -137,10 +149,9 @@ pub fn encrypt_file(
     )?;
     let signing = mac_key(key)?;
     let mut mac = Signer::new(MessageDigest::sha256(), &signing)?;
-    let mut output = Stage::new(destination)?;
     for header in [ARCHIVE_MAGIC.as_slice(), SALTED.as_slice(), salt.as_slice()] {
         mac.update(header)?;
-        output.file.write_all(header)?;
+        output.write_all(header)?;
     }
     let mut buffer = Zeroizing::new(vec![0; CHUNK]);
     let mut encrypted = vec![0; CHUNK + 16];
@@ -152,14 +163,13 @@ pub fn encrypt_file(
         }
         let written = cipher.update(&buffer[..count], &mut encrypted)?;
         mac.update(&encrypted[..written])?;
-        output.file.write_all(&encrypted[..written])?;
+        output.write_all(&encrypted[..written])?;
     }
     let written = cipher.finalize(&mut encrypted)?;
     mac.update(&encrypted[..written])?;
-    output.file.write_all(&encrypted[..written])?;
-    output.file.write_all(&mac.sign_to_vec()?)?;
-    checkpoint(cancel)?;
-    output.publish(destination, cancel)
+    output.write_all(&encrypted[..written])?;
+    output.write_all(&mac.sign_to_vec()?)?;
+    checkpoint(cancel)
 }
 pub fn decrypt_file(
     source: &Path,

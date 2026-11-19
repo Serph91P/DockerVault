@@ -6,7 +6,7 @@ const KEY_MAGIC: &[u8; 8] = b"DVKEY\0\x01\n";
 #[cfg(unix)]
 mod archive;
 #[cfg(unix)]
-pub use archive::{decrypt_file, decrypt_private, encrypt_file, key_sidecar_path};
+pub use archive::{decrypt_file, decrypt_private, encrypt_file, encrypt_stream, key_sidecar_path};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CryptoError {
     InvalidKey,

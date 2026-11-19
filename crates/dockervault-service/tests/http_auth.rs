@@ -252,6 +252,81 @@ async fn submitted_path_backup_publishes_a_verified_archive_before_completion() 
 }
 
 #[tokio::test]
+async fn native_encrypted_backup_has_recoverable_key_and_no_named_plaintext() {
+    use dockervault_core::crypto::{decrypt_dek, decrypt_file};
+    use sha2::{Digest, Sha256};
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let source = server.path.join("source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("data"), b"encrypted backup payload").unwrap();
+    let identity = age::x25519::Identity::generate();
+    sqlx::query("INSERT INTO encryption_config(id,public_key,encryption_enabled,setup_completed) VALUES(1,?,1,1)")
+        .bind(identity.to_public().to_string()).execute(server.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO backup_targets(id,name,target_type,host_path,enabled,compression_enabled) VALUES(1,'Cipher','path',?,1,1)")
+        .bind(source.to_str().unwrap()).execute(server.db.pool()).await.unwrap();
+    let (status, _, body) = server
+        .request(
+            "POST",
+            "/api/v1/backups",
+            &headers,
+            Some(json!({"target_id":1})),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    let id = body["id"].as_i64().unwrap();
+    let (archive,key,size,checksum)=tokio::time::timeout(std::time::Duration::from_secs(5),async {
+        loop {
+            let row=sqlx::query_as::<_,(String,Option<String>,Option<String>,Option<i64>,Option<String>,bool)>("SELECT status,file_path,encryption_key_path,file_size,checksum,encrypted FROM backups WHERE id=?").bind(id).fetch_one(server.db.pool()).await.unwrap();
+            match row {
+                (s,Some(a),Some(k),Some(n),Some(hash),true) if s=="COMPLETED"=>break (a,k,n,hash),
+                (s,..) if s=="PENDING" || s=="RUNNING"=>tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+                row=>panic!("unexpected backup result: {row:?}"),
+            }
+        }
+    }).await.unwrap();
+    assert_eq!(std::fs::metadata(&archive).unwrap().len() as i64, size);
+    assert_eq!(
+        std::fs::read_dir(server.path.join("backups/Cipher"))
+            .unwrap()
+            .count(),
+        2
+    );
+    use age::secrecy::ExposeSecret;
+    let material = decrypt_dek(
+        std::fs::File::open(&key).unwrap(),
+        identity.to_string().expose_secret(),
+    )
+    .unwrap();
+    let decoded = server.path.join("decoded.gz");
+    decrypt_file(std::path::Path::new(&archive), &decoded, &material, &|| {
+        false
+    })
+    .unwrap();
+    let bytes = std::fs::read(decoded).unwrap();
+    let digest: String = Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(digest, checksum);
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(bytes.as_slice()));
+    let mut member = tar
+        .entries()
+        .unwrap()
+        .map(Result::unwrap)
+        .find(|member| member.path().unwrap().as_ref() == std::path::Path::new("source/data"))
+        .unwrap();
+    let mut data = Vec::new();
+    std::io::Read::read_to_end(&mut member, &mut data).unwrap();
+    assert_eq!(data, b"encrypted backup payload");
+    server.close().await;
+}
+
+#[tokio::test]
 async fn encrypted_restore_authenticates_before_writing_the_destination() {
     #[path = "../../dockervault-core/tests/common/mod.rs"]
     mod public_fixture;
