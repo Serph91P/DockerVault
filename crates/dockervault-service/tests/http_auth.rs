@@ -416,6 +416,96 @@ async fn retention_reads_preserve_policy_and_catalog_wire_contracts() {
 }
 
 #[tokio::test]
+async fn retention_policy_writes_preserve_null_zero_and_removed_references() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [("cookie", cookie.as_str())];
+    let db = server.db.pool();
+    let path = "/api/v1/retention";
+    assert_eq!(
+        server
+            .request("POST", path, &[], Some(json!({"name":"fixture"})))
+            .await
+            .0,
+        401
+    );
+    let (status, _, invalid) = server
+        .request(
+            "POST",
+            path,
+            &headers,
+            Some(json!({"name":"fixture","keep_last":0})),
+        )
+        .await;
+    assert_eq!(
+        (status, invalid),
+        (
+            422,
+            json!({"detail":"Validation error","errors":[{"field":"body.keep_last","message":"Input should be greater than or equal to 1"}]})
+        )
+    );
+    let (status, _, created) = server
+        .request(
+            "POST",
+            path,
+            &headers,
+            Some(json!({"name":"fixture","keep_daily":0})),
+        )
+        .await;
+    assert_eq!(status, 200, "{created}");
+    assert_eq!(created["keep_daily"], 0);
+    assert_eq!(created["keep_last"], 3);
+    let id = created["id"].as_i64().unwrap();
+    let (status, _, duplicate) = server
+        .request("POST", path, &headers, Some(json!({"name":"fixture"})))
+        .await;
+    assert_eq!(
+        (status, duplicate),
+        (
+            400,
+            json!({"detail":"Policy with this name already exists"})
+        )
+    );
+    let path = format!("{path}/{id}");
+    let (status, _, changed) = server
+        .request(
+            "PUT",
+            &path,
+            &headers,
+            Some(json!({"name":null,"keep_last":null,"keep_weekly":0})),
+        )
+        .await;
+    assert_eq!(status, 200, "{changed}");
+    assert_eq!(changed["name"], "fixture");
+    assert_eq!(changed["keep_last"], 3);
+    assert_eq!(changed["keep_weekly"], 0);
+    assert_eq!(changed["created_at"], created["created_at"]);
+    sqlx::query("INSERT INTO backup_targets(id,name,target_type,retention_policy_id,removed_at) VALUES (72,'Removed','path',?,'2025-01-01 00:00:00.000000')").bind(id).execute(db).await.unwrap();
+    let (status, _, protected) = server.request("DELETE", &path, &headers, None).await;
+    assert_eq!(
+        (status, protected),
+        (
+            409,
+            json!({"detail":"Policy is still referenced by a plan, including removed plans"})
+        )
+    );
+    let reference: i64 =
+        sqlx::query_scalar("SELECT retention_policy_id FROM backup_targets WHERE id=72")
+            .fetch_one(db)
+            .await
+            .unwrap();
+    assert_eq!(reference, id);
+    sqlx::query("UPDATE backup_targets SET retention_policy_id=NULL WHERE id=72")
+        .execute(db)
+        .await
+        .unwrap();
+    let (status, _, deleted) = server.request("DELETE", &path, &headers, None).await;
+    assert_eq!((status, deleted), (200, json!({"status":"deleted"})));
+    assert_eq!(server.request("GET", &path, &headers, None).await.0, 404);
+    server.close().await;
+}
+
+#[tokio::test]
 async fn schedule_target_trigger_admits_only_an_enabled_non_removed_plan() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

@@ -1,13 +1,186 @@
 use super::{HttpState, auth, backups::format_size};
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Request, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
 use dockervault_core::timestamp::Timestamp;
 use serde_json::{Value, json};
 use sqlx::{Row, sqlite::SqliteRow};
+
+const FIELDS: [(&str, i64, i64, i64); 6] = [
+    ("keep_last", 3, 1, 1000),
+    ("keep_daily", 7, 0, 1000),
+    ("keep_weekly", 4, 0, 1000),
+    ("keep_monthly", 6, 0, 1000),
+    ("keep_yearly", 2, 0, 1000),
+    ("max_age_days", 365, 1, 36500),
+];
+
+type PolicyFields<'a> = (Option<&'a str>, [Option<i64>; 6]);
+
+fn write_fields(body: &Value, create: bool) -> Result<PolicyFields<'_>, Vec<Value>> {
+    let mut errors = Vec::new();
+    let name = match body.get("name") {
+        None if create => {
+            errors.push(json!({"field":"body.name","message":"Field required"}));
+            None
+        }
+        None | Some(Value::Null) if !create => None,
+        Some(Value::String(name)) => Some(name.as_str()),
+        _ => {
+            errors.push(json!({"field":"body.name","message":"Input should be a valid string"}));
+            None
+        }
+    };
+    let values = FIELDS.map(|(field, default, min, max)| {
+        let value = match body.get(field) {
+            None => return create.then_some(default),
+            Some(Value::Null) if !create => return None,
+            Some(Value::Bool(value)) => Ok(f64::from(u8::from(*value))),
+            Some(Value::Number(value)) => value
+                .as_f64()
+                .filter(|n| n.fract() == 0.0)
+                .ok_or("Input should be a valid integer, got a number with a fractional part"),
+            Some(Value::String(value)) => super::operations::query_integer(value)
+                .map(|n| n as f64)
+                .ok_or("Input should be a valid integer, unable to parse string as an integer"),
+            _ => Err("Input should be a valid integer"),
+        };
+        let message = match value {
+            Ok(value) if value < min as f64 => {
+                format!("Input should be greater than or equal to {min}")
+            }
+            Ok(value) if value > max as f64 => {
+                format!("Input should be less than or equal to {max}")
+            }
+            Ok(value) => return Some(value as i64),
+            Err(message) => message.to_owned(),
+        };
+        errors.push(json!({"field":format!("body.{field}"),"message":message}));
+        None
+    });
+    if errors.is_empty() {
+        Ok((name, values))
+    } else {
+        Err(errors)
+    }
+}
+
+pub(super) async fn create(State(state): State<HttpState>, request: Request) -> Response {
+    write(state, request, None).await
+}
+pub(super) async fn update(
+    State(state): State<HttpState>,
+    Path(id): Path<String>,
+    request: Request,
+) -> Response {
+    let Some(id) = super::operations::query_integer(&id) else {
+        return invalid_id("path.policy_id");
+    };
+    write(state, request, Some(id)).await
+}
+
+async fn write(state: HttpState, mut request: Request, id: Option<i64>) -> Response {
+    let body = match auth::json_body(&state, &mut request).await {
+        Ok(body) => body,
+        Err(error) => return *error,
+    };
+    let (name, [last, daily, weekly, monthly, yearly, age]) =
+        match write_fields(&body, id.is_none()) {
+            Ok(fields) => fields,
+            Err(errors) => return *auth::validation(errors),
+        };
+    let mut tx = match state.auth.pool().begin_with("BEGIN IMMEDIATE").await {
+        Ok(tx) => tx,
+        Err(_) => return internal(),
+    };
+    let query = if let Some(id) = id {
+        sqlx::query("UPDATE retention_policies SET updated_at=CASE WHEN
+            (?1 IS NOT NULL AND name IS NOT ?1) OR (?2 IS NOT NULL AND keep_last IS NOT ?2)
+            OR (?3 IS NOT NULL AND keep_daily IS NOT ?3) OR (?4 IS NOT NULL AND keep_weekly IS NOT ?4)
+            OR (?5 IS NOT NULL AND keep_monthly IS NOT ?5) OR (?6 IS NOT NULL AND keep_yearly IS NOT ?6)
+            OR (?7 IS NOT NULL AND max_age_days IS NOT ?7) THEN strftime('%Y-%m-%d %H:%M:%f000','now') ELSE updated_at END,
+            name=coalesce(?1,name), keep_last=coalesce(?2,keep_last), keep_daily=coalesce(?3,keep_daily),
+            keep_weekly=coalesce(?4,keep_weekly), keep_monthly=coalesce(?5,keep_monthly), keep_yearly=coalesce(?6,keep_yearly),
+            max_age_days=coalesce(?7,max_age_days) WHERE id=?8 RETURNING *")
+            .bind(name).bind(last).bind(daily).bind(weekly).bind(monthly).bind(yearly).bind(age).bind(id)
+    } else {
+        sqlx::query("INSERT INTO retention_policies(name,keep_last,keep_daily,keep_weekly,keep_monthly,keep_yearly,max_age_days,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,strftime('%Y-%m-%d %H:%M:%f000','now'),strftime('%Y-%m-%d %H:%M:%f000','now')) RETURNING *")
+            .bind(name).bind(last).bind(daily).bind(weekly).bind(monthly).bind(yearly).bind(age)
+    };
+    let result = match query
+        .fetch_optional(&mut *tx)
+        .await
+        .and_then(|row| row.map(policy).transpose())
+    {
+        Ok(Some(value)) => value,
+        Ok(None) => return failure(StatusCode::NOT_FOUND, "Policy not found"),
+        Err(e)
+            if id.is_none()
+                && e.as_database_error()
+                    .is_some_and(|e| e.is_unique_violation()) =>
+        {
+            return failure(
+                StatusCode::BAD_REQUEST,
+                "Policy with this name already exists",
+            );
+        }
+        Err(_) => return internal(),
+    };
+    if tx.commit().await.is_err() {
+        return internal();
+    }
+    Json(result).into_response()
+}
+
+pub(super) async fn delete(State(state): State<HttpState>, Path(id): Path<String>) -> Response {
+    let Some(id) = super::operations::query_integer(&id) else {
+        return invalid_id("path.policy_id");
+    };
+    let mut tx = match state.auth.pool().begin_with("BEGIN IMMEDIATE").await {
+        Ok(tx) => tx,
+        Err(_) => return internal(),
+    };
+    let row: Result<Option<(String,bool)>, _> = sqlx::query_as("SELECT name, EXISTS(SELECT 1 FROM backup_targets WHERE retention_policy_id=?1) FROM retention_policies WHERE id=?1").bind(id).fetch_optional(&mut *tx).await;
+    match row {
+        Ok(Some((name, _))) if name == "default" => {
+            return failure(StatusCode::BAD_REQUEST, "Cannot delete default policy");
+        }
+        Ok(Some((_, true))) => {
+            return failure(
+                StatusCode::CONFLICT,
+                "Policy is still referenced by a plan, including removed plans",
+            );
+        }
+        Ok(Some((_, false))) => {}
+        Ok(None) => return failure(StatusCode::NOT_FOUND, "Policy not found"),
+        Err(_) => return internal(),
+    }
+    match sqlx::query("DELETE FROM retention_policies WHERE id=?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+    {
+        Ok(result) if result.rows_affected() == 1 => {}
+        Err(e)
+            if e.as_database_error()
+                .is_some_and(|e| e.is_foreign_key_violation()) =>
+        {
+            return failure(
+                StatusCode::CONFLICT,
+                "Policy is still referenced by a plan, including removed plans",
+            );
+        }
+        _ => return internal(),
+    }
+    if tx.commit().await.is_err() {
+        return internal();
+    }
+    Json(json!({"status":"deleted"})).into_response()
+}
 
 fn failure(status: StatusCode, detail: &str) -> Response {
     (status, Json(json!({"detail":detail}))).into_response()
