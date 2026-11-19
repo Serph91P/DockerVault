@@ -147,6 +147,218 @@ impl Server {
 }
 
 #[tokio::test]
+async fn schedule_reads_and_preview_preserve_the_existing_database() {
+    let config = Config::from_pairs([("TZ", "Europe/Berlin")]).unwrap();
+    let server = Server::configured(config.clone()).await;
+    let cookie = server.setup().await;
+    let db = server.db.pool();
+    sqlx::raw_sql("INSERT INTO schedules (id,name,cron_expression,enabled,created_at,updated_at) VALUES
+        (10,'Shared','0 3 13 * 4',0,'2025-01-01 00:00:00.123456','2025-01-02 00:00:00.000000'),
+        (11,'Invalid','@daily',1,'2025-01-01 00:00:00.000000','2025-01-02 00:00:00.000000');
+        INSERT INTO backup_targets (id,name,target_type,schedule_id,schedule_cron,enabled,removed_at) VALUES
+        (20,'Assigned','path',10,'0 8 * * 0',1,NULL),
+        (21,'Removed','path',10,'0 8 * * 0',1,'2025-01-02 00:00:00.000000'),
+        (22,'Invalid legacy','path',NULL,'@daily',1,NULL),
+        (23,'Invalid shared overrides legacy','path',11,'0 8 * * sun',1,NULL);")
+        .execute(db).await.unwrap();
+    let server = Server::open_at(config, server.stop_preserving_files().await).await;
+    let db = server.db.pool();
+    let snapshot = || async {
+        sqlx::query_scalar::<_, String>("SELECT json_array(
+          (SELECT json_group_array(json_array(id,name,cron_expression,enabled,created_at,updated_at)) FROM schedules),
+          (SELECT json_group_array(json_array(id,schedule_id,schedule_cron,enabled,removed_at)) FROM backup_targets),
+          (SELECT count(*) FROM backups), (SELECT count(*) FROM workload_operations),
+          (SELECT count(*) FROM storage_operations), (SELECT count(*) FROM backup_schedules),
+          (SELECT json_group_array(version) FROM (SELECT version FROM schema_migrations ORDER BY version)))")
+            .fetch_one(db).await.unwrap()
+    };
+    let before = snapshot().await;
+    for (method, path) in [
+        ("POST", "/api/v1/schedules/preview"),
+        ("GET", "/api/v1/schedules"),
+        ("GET", "/api/v1/schedules/10"),
+        ("GET", "/api/v1/schedules/compatibility/inventory"),
+        ("GET", "/api/v1/schedules/legacy/by-target"),
+        ("GET", "/api/v1/schedules/cron-help"),
+    ] {
+        assert_eq!(server.request(method, path, &[], None).await.0, 401);
+    }
+    let headers = [("cookie", cookie.as_str())];
+    let preview = "/api/v1/schedules/preview";
+    let (status, _, body) = server
+        .request(
+            "POST",
+            preview,
+            &headers,
+            Some(json!({
+                "cron_expression":"30 2 * * *", "base_time":"2025-03-29T03:00:00+01:00"
+            })),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    let contract = "Five fields: minute hour day month weekday. Monday=0, Sunday=6; prefer mon..sun. Day-of-month AND weekday must both match. Times use the server timezone and native APScheduler wall-clock/DST behavior; macros are not supported.";
+    assert_eq!(
+        body,
+        json!({"next_runs":["2025-03-30T02:30:00+01:00","2025-03-31T02:30:00+02:00","2025-04-01T02:30:00+02:00"],"timezone":"Europe/Berlin","contract":contract,"warnings":[]})
+    );
+    for (input, error) in [
+        ("@daily", "Wrong number of fields; got 1, expected 5"),
+        ("0 0 31 2 *", "Cron expression has no future fire time"),
+        (
+            "60 0 * * *",
+            "Error validating expression '60': the last value (60) is higher than the maximum value (59)",
+        ),
+        ("*/0 * * * *", "Increment must be higher than 0"),
+        ("0 0 * * mON-foo", "Invalid weekday name \"foo\""),
+        (
+            "0 0 * * sun-mon",
+            "The minimum value in a range must not be higher than the maximum",
+        ),
+        (
+            "0x * * * *",
+            "Unrecognized expression \"0x\" for field \"minute\"",
+        ),
+    ] {
+        let (status, _, body) = server
+            .request(
+                "POST",
+                preview,
+                &headers,
+                Some(json!({"cron_expression":input})),
+            )
+            .await;
+        assert_eq!(
+            (status, body),
+            (
+                400,
+                json!({"detail":format!("Invalid cron expression: {error}")})
+            )
+        );
+    }
+    let (status, _, body) = server.request("POST", preview, &headers, Some(json!({"cron_expression":"* * * * *", "base_time":"2025-03-29T03:00:00", "count":11}))).await;
+    assert_eq!(status, 422);
+    assert_eq!(
+        body,
+        json!({"detail":"Validation error","errors":[{"field":"body.base_time","message":"Input should have timezone info"},{"field":"body.count","message":"Input should be less than or equal to 10"}]})
+    );
+    let (status, _, body) = server
+        .request(
+            "POST",
+            preview,
+            &headers,
+            Some(json!({
+                "cron_expression":"30 2 * * *", "base_time":"2025-10-25T03:00:00+02:00"
+            })),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["next_runs"],
+        json!([
+            "2025-10-26T02:30:00+02:00",
+            "2025-10-26T02:30:00+01:00",
+            "2025-10-27T02:30:00+01:00"
+        ])
+    );
+
+    let (_, _, list) = server
+        .request("GET", "/api/v1/schedules", &headers, None)
+        .await;
+    assert_eq!(list.as_array().unwrap().len(), 2);
+    let mut shared = json!({"id":10,"name":"Shared","cron_expression":"0 3 13 * 4","description":null,"enabled":false,"target_count":1,"next_run":null,"created_at":"2025-01-01T00:00:00.123456","updated_at":"2025-01-02T00:00:00","cron_warnings":["Numeric weekdays retain existing execution: Monday=0, Sunday=6 (not Unix). Review intent; prefer mon..sun. No automatic conversion was performed.","Day-of-month AND weekday must both match, not Unix OR. Existing execution is unchanged; review intent."]});
+    assert_eq!(list[0], shared);
+    assert_eq!(list[1]["next_run"], Value::Null);
+    assert!(
+        list[1]["cron_warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("Wrong number of fields")
+    );
+    shared["targets"] = json!([{"id":20,"name":"Assigned","target_type":"path","enabled":true}]);
+    assert_eq!(
+        server
+            .request("GET", "/api/v1/schedules/10", &headers, None)
+            .await
+            .2,
+        shared
+    );
+    let (_, _, legacy) = server
+        .request("GET", "/api/v1/schedules/legacy/by-target", &headers, None)
+        .await;
+    assert_eq!(
+        legacy,
+        json!([
+            {"id":20,"target_id":20,"target_name":"Assigned","cron_expression":"0 3 13 * 4","next_run":null,"last_run":null,"enabled":false},
+            {"id":22,"target_id":22,"target_name":"Invalid legacy","cron_expression":"@daily","next_run":null,"last_run":null,"enabled":true},
+            {"id":23,"target_id":23,"target_name":"Invalid shared overrides legacy","cron_expression":"@daily","next_run":null,"last_run":null,"enabled":true}
+        ])
+    );
+    let (_, _, inventory) = server
+        .request(
+            "GET",
+            "/api/v1/schedules/compatibility/inventory",
+            &headers,
+            None,
+        )
+        .await;
+    assert_eq!(inventory["timezone"], "Europe/Berlin");
+    assert_eq!(inventory["items"].as_array().unwrap().len(), 5);
+    assert_eq!(inventory["items"][3]["kind"], "target_legacy");
+    assert_eq!(inventory["items"][3]["id"], 21);
+    let (_, _, help) = server
+        .request("GET", "/api/v1/schedules/cron-help", &headers, None)
+        .await;
+    assert_eq!(help["contract"], contract);
+    assert_eq!(help["special"]["*/n"], "Every n units");
+    assert_eq!(snapshot().await, before);
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("PRAGMA integrity_check")
+            .fetch_one(db)
+            .await
+            .unwrap(),
+        "ok"
+    );
+    assert!(
+        sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(db)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    server.close().await;
+}
+
+#[tokio::test]
+async fn schedule_preview_count_matches_python_integer_coercion() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    for (count, accepted) in [
+        ("2e0", false),
+        ("2.00000000000001", false),
+        ("2.", false),
+        ("2.0", true),
+        (" 2 ", true),
+        ("0_2", true),
+    ] {
+        let (status, _, body) = server.request("POST", "/api/v1/schedules/preview", &[("cookie", cookie.as_str())], Some(json!({"cron_expression":"0 3 * * *","base_time":"2025-01-01T00:00:00Z","count":count}))).await;
+        if accepted {
+            assert_eq!(status, 200, "{count:?}: {body}");
+            assert_eq!(body["next_runs"].as_array().unwrap().len(), 2);
+        } else {
+            assert_eq!(
+                (status, body),
+                (
+                    422,
+                    json!({"detail":"Validation error","errors":[{"field":"body.count","message":"Input should be a valid integer, unable to parse string as an integer"}]})
+                ),
+                "{count:?}"
+            );
+        }
+    }
+    server.close().await;
+}
+
+#[tokio::test]
 async fn submitted_path_backup_publishes_a_verified_archive_before_completion() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

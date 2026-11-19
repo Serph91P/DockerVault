@@ -1,0 +1,364 @@
+use super::{HttpState, auth};
+use axum::{
+    Json,
+    extract::{Path, Request, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
+use dockervault_core::{
+    cron::{CronError, Schedule, TimeZone},
+    timestamp::Timestamp,
+};
+use serde_json::{Value, json};
+use sqlx::{Row, sqlite::SqliteRow};
+use std::path::Path as FsPath;
+use strum::EnumMessage;
+use time::{UtcDateTime, format_description::well_known::Rfc3339};
+
+const CONTRACT: &str = "Five fields: minute hour day month weekday. Monday=0, Sunday=6; prefer mon..sun. Day-of-month AND weekday must both match. Times use the server timezone and native APScheduler wall-clock/DST behavior; macros are not supported.";
+
+pub(super) struct Failure(Box<Response>);
+
+impl IntoResponse for Failure {
+    fn into_response(self) -> Response {
+        *self.0
+    }
+}
+
+fn failure(status: StatusCode, detail: impl Into<String>) -> Failure {
+    Failure(Box::new(
+        (status, Json(json!({"detail": detail.into()}))).into_response(),
+    ))
+}
+fn internal() -> Failure {
+    failure(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
+}
+fn now() -> Timestamp {
+    Timestamp::parse(
+        &UtcDateTime::now()
+            .format(&Rfc3339)
+            .expect("current UTC date"),
+    )
+    .expect("valid current UTC timestamp")
+}
+
+struct Cron {
+    zone: TimeZone,
+    now: Timestamp,
+    cancel: tokio_util::sync::CancellationToken,
+}
+impl Cron {
+    fn load(state: &HttpState) -> Result<Self, Failure> {
+        let name = &state.config.tz;
+        if name.is_empty()
+            || !FsPath::new(name)
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)))
+        {
+            return Err(internal());
+        }
+        let path = FsPath::new("/usr/share/zoneinfo").join(name);
+        let zone = std::fs::read(path)
+            .ok()
+            .and_then(|data| TimeZone::from_tz_data(&data).ok())
+            .ok_or_else(internal)?;
+        Ok(Self {
+            zone,
+            now: now(),
+            cancel: state.draining.clone(),
+        })
+    }
+    fn next(&self, schedule: &Schedule) -> Result<String, CronError> {
+        schedule
+            .next(self.now, &self.zone, &|| self.cancel.is_cancelled())
+            .map(|run| run.timestamp.api())
+    }
+    fn inspect(&self, expression: &str) -> (Option<String>, Vec<String>) {
+        if expression.is_empty() {
+            return (None, vec![]);
+        }
+        let run = match Schedule::parse(expression).and_then(|schedule| self.next(&schedule)) {
+            Ok(run) => run,
+            Err(e) => {
+                return (
+                    None,
+                    vec![format!(
+                        "Invalid stored schedule; cannot run until corrected: {e}. {CONTRACT}"
+                    )],
+                );
+            }
+        };
+        let parts: Vec<_> = expression
+            .split(|c: char| c.is_whitespace() || matches!(c, '\u{1c}'..='\u{1f}'))
+            .filter(|s| !s.is_empty())
+            .collect();
+        let mut warnings = vec![];
+        if parts[4] != "*" && parts[4].chars().any(char::is_numeric) {
+            warnings.push("Numeric weekdays retain existing execution: Monday=0, Sunday=6 (not Unix). Review intent; prefer mon..sun. No automatic conversion was performed.".into());
+        }
+        if parts[2] != "*" && parts[4] != "*" {
+            warnings.push("Day-of-month AND weekday must both match, not Unix OR. Existing execution is unchanged; review intent.".into());
+        }
+        (Some(run), warnings)
+    }
+}
+
+fn parse_base(value: &Value) -> Result<Option<Timestamp>, String> {
+    use speedate::{
+        Date, DateTime, DateTimeConfig, MicrosecondsPrecisionOverflowBehavior, TimeConfig,
+        TimestampUnit,
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let number;
+    let raw = if let Some(text) = value.as_str() {
+        text
+    } else if value.is_number() {
+        number = value.to_string();
+        &number
+    } else {
+        return Err("Input should be a valid datetime".into());
+    };
+    let config = DateTimeConfig {
+        timestamp_unit: TimestampUnit::Infer,
+        time_config: TimeConfig {
+            microseconds_precision_overflow_behavior:
+                MicrosecondsPrecisionOverflowBehavior::Truncate,
+            unix_timestamp_offset: Some(0),
+        },
+    };
+    match DateTime::parse_bytes_with_config(raw.as_bytes(), &config) {
+        Ok(dt) if dt.time.tz_offset.is_some() => Timestamp::parse(&dt.to_string())
+            .map(Some)
+            .map_err(|_| "Input should be a valid datetime".into()),
+        Ok(_) => Err("Input should have timezone info".into()),
+        Err(_) if Date::parse_str(raw).is_ok() => Err("Input should have timezone info".into()),
+        Err(err) => {
+            let reason = if value.is_string() {
+                Date::parse_str(raw).err().unwrap_or(err)
+            } else {
+                err
+            };
+            let reason = reason
+                .get_documentation()
+                .unwrap_or("invalid date or datetime");
+            Err(format!(
+                "Input should be a valid datetime or date, {reason}"
+            ))
+        }
+    }
+}
+
+fn integer_string(input: &str) -> Option<f64> {
+    let input = input.trim();
+    let unsigned = input.strip_prefix(['-', '+']).unwrap_or(input);
+    let digits = match unsigned.split_once('.') {
+        Some((integer, fraction))
+            if !fraction.is_empty() && fraction.bytes().all(|b| b == b'0') =>
+        {
+            integer
+        }
+        Some(_) => return None,
+        None => unsigned,
+    };
+    let mut value = 0_u8;
+    for group in digits.split('_') {
+        if group.is_empty() || !group.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        for digit in group.bytes() {
+            value = (value * 10 + digit - b'0').min(11);
+        }
+    }
+    let value = f64::from(value);
+    Some(if input.starts_with('-') {
+        -value
+    } else {
+        value
+    })
+}
+
+fn count(value: Option<&Value>) -> Result<usize, &'static str> {
+    let Some(value) = value else {
+        return Ok(3);
+    };
+    let number = match value {
+        Value::Bool(v) => f64::from(u8::from(*v)),
+        Value::Number(n) => n.as_f64().unwrap_or(f64::INFINITY),
+        Value::String(s) => integer_string(s)
+            .ok_or("Input should be a valid integer, unable to parse string as an integer")?,
+        _ => return Err("Input should be a valid integer"),
+    };
+    if !number.is_finite() || number.fract() != 0.0 {
+        return Err("Input should be a valid integer, got a number with a fractional part");
+    }
+    if number < 1.0 {
+        return Err("Input should be greater than or equal to 1");
+    }
+    if number > 10.0 {
+        return Err("Input should be less than or equal to 10");
+    }
+    Ok(number as usize)
+}
+
+pub(super) async fn preview(
+    State(state): State<HttpState>,
+    mut request: Request,
+) -> Result<Json<Value>, Failure> {
+    let body = auth::json_body(&state, &mut request)
+        .await
+        .map_err(Failure)?;
+    let mut errors = vec![];
+    let expression = body.get("cron_expression").and_then(Value::as_str);
+    if expression.is_none() {
+        errors.push(json!({"field":"body.cron_expression","message":if body.get("cron_expression").is_none() { "Field required" } else { "Input should be a valid string" }}));
+    }
+    let base = body.get("base_time").map(parse_base).transpose();
+    if let Err(message) = &base {
+        errors.push(json!({"field":"body.base_time","message":message}));
+    }
+    let count = count(body.get("count"));
+    if let Err(message) = &count {
+        errors.push(json!({"field":"body.count","message":message}));
+    }
+    if !errors.is_empty() {
+        return Err(Failure(auth::validation(errors)));
+    }
+    let expression = expression.expect("validated expression").to_owned();
+    let count = count.expect("validated count");
+    let base = base.expect("validated base").flatten();
+    blocking(state, move |state, cron| {
+        let invalid = |e: CronError| if matches!(e, CronError::Cancelled) {
+            failure(StatusCode::SERVICE_UNAVAILABLE, "Service shutting down")
+        } else { failure(StatusCode::BAD_REQUEST, format!("Invalid cron expression: {e}")) };
+        let cancel = || cron.cancel.is_cancelled();
+        let schedule = Schedule::parse(&expression).map_err(invalid)?;
+        let mut run = schedule.next(base.unwrap_or(cron.now), &cron.zone, &cancel).map_err(invalid)?;
+        let mut runs = vec![run.timestamp.api()];
+        for _ in 1..count {
+            run = schedule.next_after_fire(run, &cron.zone, &cancel).map_err(invalid)?;
+            runs.push(run.timestamp.api());
+        }
+        Ok(json!({"next_runs":runs,"timezone":state.config.tz,"contract":CONTRACT,"warnings":cron.inspect(&expression).1}))
+    }).await
+}
+
+async fn blocking(
+    state: HttpState,
+    compute: impl FnOnce(HttpState, Cron) -> Result<Value, Failure> + Send + 'static,
+) -> Result<Json<Value>, Failure> {
+    tokio::task::spawn_blocking(move || {
+        let cron = Cron::load(&state)?;
+        compute(state, cron).map(Json)
+    })
+    .await
+    .map_err(|_| internal())?
+}
+
+fn schedule(row: &SqliteRow, cron: &Cron) -> Result<Value, sqlx::Error> {
+    let expression: String = row.try_get("cron_expression")?;
+    let enabled: bool = row.try_get("enabled")?;
+    let (next, warnings) = cron.inspect(&expression);
+    let timestamp = |key| -> Result<_, sqlx::Error> {
+        let raw: String = row.try_get(key)?;
+        Timestamp::parse(&raw)
+            .map(|dt| dt.api())
+            .map_err(|e| sqlx::Error::Protocol(e.to_string()))
+    };
+    Ok(
+        json!({"id":row.try_get::<i64,_>("id")?,"name":row.try_get::<String,_>("name")?,
+        "description":row.try_get::<Option<String>,_>("description")?,"cron_expression":expression,
+        "enabled":enabled,"target_count":row.try_get::<i64,_>("target_count")?,
+        "next_run":if enabled { next } else { None },"cron_warnings":warnings,
+        "created_at":timestamp("created_at")?,"updated_at":timestamp("updated_at")?}),
+    )
+}
+
+const SCHEDULES: &str = "SELECT s.*, (SELECT count(*) FROM backup_targets t WHERE t.schedule_id=s.id AND t.removed_at IS NULL) AS target_count FROM schedules s WHERE (?1 IS NULL OR s.id=?1) ORDER BY s.id";
+fn db_error(_: sqlx::Error) -> Failure {
+    internal()
+}
+
+pub(super) async fn list(State(state): State<HttpState>) -> Result<Json<Value>, Failure> {
+    let rows = sqlx::query(SCHEDULES)
+        .bind(None::<i64>)
+        .fetch_all(state.auth.pool())
+        .await
+        .map_err(db_error)?;
+    blocking(state, move |_, cron| {
+        rows.iter()
+            .map(|row| schedule(row, &cron))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array)
+            .map_err(db_error)
+    })
+    .await
+}
+
+pub(super) async fn detail(
+    State(state): State<HttpState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, Failure> {
+    let id = id
+        .bytes()
+        .all(|b| b.is_ascii_digit())
+        .then(|| id.parse::<i64>().ok())
+        .flatten()
+        .ok_or_else(|| failure(StatusCode::NOT_FOUND, "Not Found"))?;
+    let mut tx = state.auth.pool().begin().await.map_err(db_error)?;
+    let row = sqlx::query(SCHEDULES)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_error)?
+        .ok_or_else(|| failure(StatusCode::NOT_FOUND, "Schedule not found"))?;
+    let targets: Vec<(i64,String,String,Option<bool>)> = sqlx::query_as("SELECT id,name,target_type,enabled FROM backup_targets WHERE schedule_id=? AND removed_at IS NULL ORDER BY id").bind(id).fetch_all(&mut *tx).await.map_err(db_error)?;
+    tx.commit().await.map_err(db_error)?;
+    blocking(state, move |_, cron| {
+        let mut result = schedule(&row, &cron).map_err(db_error)?;
+        result["targets"] = Value::Array(targets.into_iter().map(|(id,name,kind,enabled)| json!({"id":id,"name":name,"target_type":kind,"enabled":enabled})).collect());
+        Ok(result)
+    }).await
+}
+
+pub(super) async fn inventory(State(state): State<HttpState>) -> Result<Json<Value>, Failure> {
+    let rows: Vec<(String, i64, String, Option<String>)> =
+        sqlx::query_as("SELECT 'schedule',id,name,cron_expression FROM schedules ORDER BY id")
+            .fetch_all(state.auth.pool())
+            .await
+            .map_err(db_error)?;
+    let targets: Vec<(String,i64,String,Option<String>)> = sqlx::query_as("SELECT 'target_legacy',id,name,schedule_cron FROM backup_targets WHERE schedule_cron IS NOT NULL ORDER BY id").fetch_all(state.auth.pool()).await.map_err(db_error)?;
+    blocking(state, move |state, cron| {
+        let items: Vec<_> = rows.into_iter().chain(targets).filter_map(|(kind,id,name,expression)| {
+            let expression = expression?;
+            let warnings = cron.inspect(&expression).1;
+            (!warnings.is_empty()).then(|| json!({"kind":kind,"id":id,"name":name,"expression":expression,"warnings":warnings}))
+        }).collect();
+        Ok(json!({"items":items,"contract":CONTRACT,"timezone":state.config.tz}))
+    }).await
+}
+
+pub(super) async fn legacy(State(state): State<HttpState>) -> Result<Json<Value>, Failure> {
+    let rows: Vec<(i64,String,Option<String>,bool,bool)> = sqlx::query_as("SELECT t.id,t.name,CASE WHEN s.id IS NOT NULL THEN s.cron_expression ELSE t.schedule_cron END, coalesce(t.enabled,0), CASE WHEN s.id IS NOT NULL THEN coalesce(s.enabled,0) ELSE 1 END FROM backup_targets t LEFT JOIN schedules s ON s.id=t.schedule_id WHERE t.removed_at IS NULL AND (t.schedule_id IS NOT NULL OR t.schedule_cron IS NOT NULL) ORDER BY t.id").fetch_all(state.auth.pool()).await.map_err(db_error)?;
+    blocking(state, move |_, cron| {
+        Ok(Value::Array(rows.into_iter().filter_map(|(id,name,expression,target_enabled,schedule_enabled)| {
+            let expression = expression.filter(|s| !s.is_empty())?;
+            let enabled = target_enabled && schedule_enabled;
+            let next_run = enabled.then(|| Schedule::parse(&expression).and_then(|s| cron.next(&s)).ok()).flatten();
+            Some(json!({"id":id,"target_id":id,"target_name":name,"cron_expression":expression,"next_run":next_run,"last_run":null,"enabled":enabled}))
+        }).collect()))
+    }).await
+}
+
+pub(super) async fn help(State(state): State<HttpState>) -> Json<Value> {
+    Json(
+        json!({"format":"minute hour day month weekday","contract":CONTRACT,"timezone":state.config.tz,
+        "examples":[{"expression":"0 2 * * *","description":"Every day at 2:00 AM"},
+            {"expression":"0 3 * * sun","description":"Every Sunday at 3:00 AM"},
+            {"expression":"0 4 1 * *","description":"First day of every month at 4:00 AM"},
+            {"expression":"0 */6 * * *","description":"Every 6 hours"},
+            {"expression":"30 1 * * mon-fri","description":"Weekdays at 1:30 AM"}],
+        "special":{"*":"Any value","*/n":"Every n units","n-m":"Range from n to m","n,m":"n and m"}}),
+    )
+}

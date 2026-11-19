@@ -7,15 +7,20 @@ pub use tz::TimeZone;
 use tz::datetime::FoundDateTimeKind;
 use unicode_general_category::{GeneralCategory, get_general_category};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CronError {
     Invalid,
+    Expression(String),
     NoFuture,
     Cancelled,
 }
 impl std::fmt::Display for CronError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Invalid or unavailable schedule occurrence")
+        f.write_str(match self {
+            Self::Expression(detail) => detail,
+            Self::NoFuture => "Cron expression has no future fire time",
+            Self::Cancelled | Self::Invalid => "Invalid or unavailable schedule occurrence",
+        })
     }
 }
 impl std::error::Error for CronError {}
@@ -78,16 +83,19 @@ fn number(s: &str) -> Result<u32> {
 fn letter(c: char) -> bool {
     c.is_ascii_alphabetic() || matches!(c, 'İ' | 'ı' | 'ſ' | 'K')
 }
-fn named_prefix(s: &str, names: &[&str], base: u32) -> Result<(u32, u32)> {
+fn named_prefix(s: &str, names: &[&str], base: u32, unit: &str) -> Result<(u32, u32)> {
+    let lookup = |name: &str| {
+        names
+            .iter()
+            .position(|n| *n == name.to_lowercase())
+            .map(|n| n as u32 + base)
+            .ok_or_else(|| CronError::Expression(format!("Invalid {unit} name \"{name}\"")))
+    };
     let first_end = s
         .char_indices()
         .find(|(_, c)| !letter(*c))
         .map_or(s.len(), |(i, _)| i);
-    let first = names
-        .iter()
-        .position(|n| *n == s[..first_end].to_lowercase())
-        .ok_or(CronError::Invalid)? as u32
-        + base;
+    let first = lookup(&s[..first_end])?;
     let tail = &s[first_end..];
     let last = if let Some(tail) = tail.strip_prefix('-') {
         let end = tail
@@ -97,19 +105,18 @@ fn named_prefix(s: &str, names: &[&str], base: u32) -> Result<(u32, u32)> {
         if end == 0 {
             first
         } else {
-            names
-                .iter()
-                .position(|n| *n == tail[..end].to_lowercase())
-                .ok_or(CronError::Invalid)? as u32
-                + base
+            lookup(&tail[..end])?
         }
     } else {
         first
     };
     if first > last {
-        return Err(CronError::Invalid);
+        return Err(reversed_range());
     }
     Ok((first, last))
+}
+fn reversed_range() -> CronError {
+    CronError::Expression("The minimum value in a range must not be higher than the maximum".into())
 }
 fn field(text: &str, index: usize) -> Result<Field> {
     // The implicit year wildcard needs no eight-thousand-element allocation.
@@ -155,38 +162,88 @@ fn field(text: &str, index: usize) -> Result<Field> {
                         "nov", "dec",
                     ],
                     1,
+                    "month",
                 )?
             } else {
-                named_prefix(item, &["mon", "tue", "wed", "thu", "fri", "sat", "sun"], 0)?
+                named_prefix(
+                    item,
+                    &["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+                    0,
+                    "weekday",
+                )?
             };
             out.values.extend(first..=last);
             continue;
         }
+        let name = [
+            "year",
+            "month",
+            "day",
+            "day_of_week",
+            "hour",
+            "minute",
+            "second",
+        ][index];
+        let unrecognized = |_| {
+            CronError::Expression(format!(
+                "Unrecognized expression \"{item}\" for field \"{name}\""
+            ))
+        };
         let mut pieces = item.split('/');
         let range = pieces.next().unwrap();
-        let step = pieces.next().map(number).transpose()?;
-        if pieces.next().is_some() || step == Some(0) {
-            return Err(CronError::Invalid);
+        let step = pieces
+            .next()
+            .map(number)
+            .transpose()
+            .map_err(unrecognized)?;
+        if pieces.next().is_some() {
+            return Err(unrecognized(CronError::Invalid));
         }
         let (first, last, validation_last) = if range == "*" {
             (min, max, max)
         } else {
             let mut parts = range.split('-');
-            let first = number(parts.next().unwrap())?;
-            let explicit = parts.next().map(number).transpose()?;
+            let first = number(parts.next().unwrap()).map_err(unrecognized)?;
+            let explicit = parts.next().map(number).transpose().map_err(unrecognized)?;
             if parts.next().is_some() {
-                return Err(CronError::Invalid);
+                return Err(unrecognized(CronError::Invalid));
             }
             let last = explicit.unwrap_or(if step.is_some() { max } else { first });
             // APScheduler uses Python's `last or max`, including an explicit zero.
             (first, last, if last == 0 { max } else { last })
         };
+        if step == Some(0) {
+            return Err(CronError::Expression(
+                "Increment must be higher than 0".into(),
+            ));
+        }
         if first < min
             || last > max
             || first > last
             || step.is_some_and(|s| s > validation_last.saturating_sub(first))
         {
-            return Err(CronError::Invalid);
+            let detail = if first > last && (range.contains('-') || step.is_none()) {
+                return Err(reversed_range());
+            } else if let Some(s) = step.filter(|s| *s > max - min) {
+                format!(
+                    "the step value ({s}) is higher than the total range of the expression ({})",
+                    max - min
+                )
+            } else if first < min {
+                format!("the first value ({first}) is lower than the minimum value ({min})")
+            } else if last > max {
+                format!("the last value ({last}) is higher than the maximum value ({max})")
+            } else if let Some(s) = step {
+                format!(
+                    "the step value ({s}) is higher than the total range of the expression ({})",
+                    i64::from(validation_last) - i64::from(first)
+                )
+            } else {
+                return Err(CronError::Invalid);
+            };
+            return Err(CronError::Expression(format!(
+                "Error validating expression '{item}': {detail}"
+            )));
         }
         out.values
             .extend((first..=last).step_by(step.unwrap_or(1) as usize));
@@ -307,7 +364,10 @@ impl Schedule {
             .filter(|s| !s.is_empty())
             .collect();
         if words.len() != 5 {
-            return Err(CronError::Invalid);
+            return Err(CronError::Expression(format!(
+                "Wrong number of fields; got {}, expected 5",
+                words.len()
+            )));
         }
         let mut fields = Vec::new();
         for (index, text) in [
@@ -387,6 +447,27 @@ impl Schedule {
         zone: &TimeZone,
         cancel: &dyn Fn() -> bool,
     ) -> Result<FireTime> {
+        self.next_from(base, zone, false, cancel)
+    }
+
+    // Continuation retains ZoneInfo identity; a fixed-offset input compares
+    // differently during an ambiguous hour even if the instant is the same.
+    pub fn next_after_fire(
+        &self,
+        base: FireTime,
+        zone: &TimeZone,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<FireTime> {
+        self.next_from(base.timestamp, zone, true, cancel)
+    }
+
+    fn next_from(
+        &self,
+        base: Timestamp,
+        zone: &TimeZone,
+        same_zone: bool,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<FireTime> {
         if cancel() {
             return Err(CronError::Cancelled);
         }
@@ -411,7 +492,7 @@ impl Schedule {
         };
         let mut wall = project(zone, epoch)?;
         // Python inter-zone equality is false in a fold; naive bases share ZoneInfo.
-        let equal = if base.offset.is_none() {
+        let equal = if base.offset.is_none() || same_zone {
             wall.date == base.naive
         } else {
             resolve(zone, wall.date, false)?.offset == resolve(zone, wall.date, true)?.offset
