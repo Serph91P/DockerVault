@@ -19,6 +19,25 @@ impl Ftp {
         remote: String,
         io: &Owner,
     ) -> Result<Work<Result<(), FtpError>>, WorkError> {
+        self.upload_with(source, remote, io, true)
+    }
+
+    pub(crate) fn upload_claimed(
+        &self,
+        source: Arc<VerifiedSource>,
+        remote: String,
+        io: &Owner,
+    ) -> Result<Work<Result<(), FtpError>>, WorkError> {
+        self.upload_with(source, remote, io, false)
+    }
+
+    fn upload_with(
+        &self,
+        source: Arc<VerifiedSource>,
+        remote: String,
+        io: &Owner,
+        create_parents: bool,
+    ) -> Result<Work<Result<(), FtpError>>, WorkError> {
         let config = self.config.clone();
         let io = io.clone();
         self.owner.submit_async(move |cancel| async move {
@@ -28,7 +47,7 @@ impl Ftp {
             let remote = format!("{}/{}", config.base_path.trim_end_matches('/'), remote);
             super::upload::check_source(&io, source.clone()).await?;
             let mut control = Control::connect(&config, &cancel).await?;
-            for (end, _) in remote.match_indices('/').skip(1) {
+            for (end, _) in remote.match_indices('/').skip(1).filter(|_| create_parents) {
                 if cancel.is_cancelled() { return Err(FtpError::Cancelled); }
                 // An existing directory may return 550; STOR is still authoritative.
                 expect(control.command("MKD", Some(&remote[..end])).await?, &[250, 257, 550])?;

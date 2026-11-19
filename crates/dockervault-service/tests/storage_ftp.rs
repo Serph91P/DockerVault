@@ -350,6 +350,47 @@ async fn ftp_upload_requires_independent_full_readback_before_reporting_success(
 }
 
 #[tokio::test]
+async fn ftp_exclusive_claim_never_accepts_an_occupied_directory() {
+    for status in [257, 550] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let owner = Owner::new(1).unwrap();
+        let ftp = backend(&listener, &owner, "owned", "synthetic");
+        let server = tokio::spawn(async move {
+            let mut control = BufReader::new(listener.accept().await.unwrap().0);
+            control.write_all(b"220 fixture\r\n").await.unwrap();
+            assert_eq!(read_command(&mut control).await, "USER owned\r\n");
+            control.write_all(b"230 logged in\r\n").await.unwrap();
+            assert_eq!(read_command(&mut control).await, "MKD /backups/unique\r\n");
+            control
+                .write_all(format!("{status} fixture\r\n").as_bytes())
+                .await
+                .unwrap();
+            if status == 257 {
+                assert_eq!(read_command(&mut control).await, "QUIT\r\n");
+                control.write_all(b"221 goodbye\r\n").await.unwrap();
+            }
+            assert!(read_command(&mut control).await.is_empty());
+        });
+        let result = ftp
+            .create_claim("unique".into())
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            if status == 257 {
+                Ok(())
+            } else {
+                Err(FtpError::Reply(550))
+            }
+        );
+        server.await.unwrap();
+        assert_eq!(owner.active(), 0);
+    }
+}
+
+#[tokio::test]
 async fn ftp_delete_claim_survives_cancel_until_provider_acknowledges() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let owner = Owner::new(1).unwrap();

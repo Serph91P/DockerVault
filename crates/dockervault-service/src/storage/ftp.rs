@@ -93,6 +93,30 @@ impl Ftp {
 }
 
 impl Ftp {
+    /// Only a positive exclusive MKD reply establishes ownership. Never reuse a rejected claim.
+    pub fn create_claim(&self, leaf: String) -> Result<Work<Result<(), FtpError>>, WorkError> {
+        let config = self.config.clone();
+        self.owner.submit_async(move |cancel| async move {
+            if !valid_argument(&leaf)
+                || leaf.contains('/')
+                || matches!(leaf.as_str(), "" | "." | "..")
+            {
+                return Err(FtpError::Config);
+            }
+            let remote = format!("{}/{}", config.base_path.trim_end_matches('/'), leaf);
+            let mut control = Control::connect(&config, &cancel).await?;
+            if cancel.is_cancelled() {
+                return Err(FtpError::Cancelled);
+            }
+            expect(control.command("MKD", Some(&remote)).await?, &[257])?;
+            control.quit().await?;
+            if cancel.is_cancelled() {
+                return Err(FtpError::Cancelled);
+            }
+            Ok(())
+        })
+    }
+
     /// Caller owns the durable delete intent, including an unconfirmed server reply.
     pub fn delete(&self, remote: String) -> Result<Work<Result<(), FtpError>>, WorkError> {
         let config = self.config.clone();

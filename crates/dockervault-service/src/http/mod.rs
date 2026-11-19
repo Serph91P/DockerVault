@@ -3,6 +3,7 @@ mod auth;
 mod backup_restore;
 mod backup_submit;
 mod backups;
+mod ftp_sync;
 mod operations;
 mod s3_sync;
 pub mod security;

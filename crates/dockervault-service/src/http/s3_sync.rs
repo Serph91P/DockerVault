@@ -340,7 +340,8 @@ pub(super) async fn finalize_copies(
     if proof.delete_local_after_sync {
         verified = verify_cleanup_destinations(state, id, &proof, cancel).await?
             && super::webdav_sync::verify_cleanup_destinations(state, id, &proof, cancel).await?
-            && super::sftp_sync::verify_cleanup_destinations(state, id, &proof, cancel).await?;
+            && super::sftp_sync::verify_cleanup_destinations(state, id, &proof, cancel).await?
+            && super::ftp_sync::verify_cleanup_destinations(state, id, &proof, cancel).await?;
     }
     crate::storage::settle_verified_copies(
         pool,
@@ -414,7 +415,7 @@ pub(super) fn parse_digest(value: &str) -> Result<[u8; 32], Error> {
 pub async fn recover_s3_copies(state: &HttpState) -> Result<(), Error> {
     let mut after = i64::MIN;
     loop {
-        let ids:Vec<i64>=sqlx::query_scalar("SELECT id FROM backups WHERE id>? AND status='COMPLETED' AND CASE WHEN json_valid(backup_metadata) THEN json_type(backup_metadata,'$.native_local_sync.s3_copies')='array' OR json_type(backup_metadata,'$.native_local_sync.webdav_copies')='array' OR json_type(backup_metadata,'$.native_local_sync.sftp_copies')='array' ELSE 0 END ORDER BY id LIMIT 64").bind(after).fetch_all(state.auth.pool()).await?;
+        let ids:Vec<i64>=sqlx::query_scalar("SELECT id FROM backups WHERE id>? AND status='COMPLETED' AND CASE WHEN json_valid(backup_metadata) THEN json_type(backup_metadata,'$.native_local_sync.s3_copies')='array' OR json_type(backup_metadata,'$.native_local_sync.webdav_copies')='array' OR json_type(backup_metadata,'$.native_local_sync.sftp_copies')='array' OR json_type(backup_metadata,'$.native_local_sync.ftp_copies')='array' ELSE 0 END ORDER BY id LIMIT 64").bind(after).fetch_all(state.auth.pool()).await?;
         if ids.is_empty() {
             return Ok(());
         }
@@ -423,6 +424,7 @@ pub async fn recover_s3_copies(state: &HttpState) -> Result<(), Error> {
             settle(state, id, &state.draining).await?;
             super::webdav_sync::settle(state, id, &state.draining).await?;
             super::sftp_sync::settle(state, id, &state.draining).await?;
+            super::ftp_sync::settle(state, id, &state.draining).await?;
             finalize_copies(state, id, &state.draining).await?;
         }
     }

@@ -609,6 +609,44 @@ async fn sftp_backup_durably_admits_the_copy_before_provider_io() {
 }
 
 #[tokio::test]
+async fn ftp_backup_durably_admits_unique_catalog_path_before_provider_io() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let source = server.path.join("ftp-source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("data"), b"synthetic FTP admission fixture").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let pool = server.db.pool();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,host,port,username,base_path) VALUES(7,'FTP fixture','ftp',1,'127.0.0.1',?,'dvfixture','/copies')")
+        .bind(listener.local_addr().unwrap().port()).execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO backup_targets(id,name,target_type,host_path,enabled,sync_to_remote,remote_storage_ids) VALUES(1,'FtpTarget','path',?,1,1,'[7]')")
+        .bind(source.to_str().unwrap()).execute(pool).await.unwrap();
+    let (status, _, accepted) = server
+        .request(
+            "POST",
+            "/api/v1/backups",
+            &[("Cookie", &cookie), ("Origin", "http://localhost:3000")],
+            Some(json!({"target_id":1})),
+        )
+        .await;
+    assert_eq!(status, 200, "{accepted}");
+    let id = accepted["id"].as_i64().unwrap();
+    let (socket, _) = tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let (status, path): (String, String) = sqlx::query_as("SELECT sync_status,remote_path FROM backup_storage_syncs WHERE backup_id=? AND storage_id=7")
+        .bind(id).fetch_one(pool).await.unwrap();
+    assert_eq!(status, "running");
+    let (claim, archive) = path.split_once('/').unwrap();
+    assert_eq!(claim.strip_prefix("dockervault-").unwrap().len(), 32);
+    assert!(!archive.contains('/') && archive.contains(".tar"));
+    drop(socket);
+    drop(listener);
+    server.close().await;
+}
+
+#[tokio::test]
 async fn webdav_backup_durably_admits_the_copy_before_provider_io() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

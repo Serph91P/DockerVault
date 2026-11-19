@@ -324,7 +324,7 @@ async fn probe_ftp(state: &HttpState, config: &Value) -> Option<()> {
     provider.test_connection().ok()?.wait().await.ok()?.ok()
 }
 
-fn ftp_provider(state: &HttpState, config: &Value) -> Option<crate::storage::ftp::Ftp> {
+pub(super) fn ftp_provider(state: &HttpState, config: &Value) -> Option<crate::storage::ftp::Ftp> {
     use crate::storage::ftp::{Ftp, FtpConfig};
     let field = |key: &str| config[key].as_str().unwrap_or_default().to_owned();
     let port = if config["port"].is_null() {

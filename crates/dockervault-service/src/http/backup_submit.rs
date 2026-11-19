@@ -193,6 +193,7 @@ struct Destinations {
     s3: Vec<S3Copy>,
     webdav: Vec<WebDavCopy>,
     sftp: Vec<crate::storage::SftpCopy>,
+    ftp: Vec<crate::storage::FtpCopy>,
 }
 
 async fn destinations(
@@ -225,6 +226,8 @@ async fn destinations(
                 super::sftp_sync::destination(state, id, archive.clone()).await
             {
                 destinations.sftp.push(copy);
+            } else if let Some(copy) = super::ftp_sync::destination(state, id, &archive).await {
+                destinations.ftp.push(copy);
             } else {
                 return Err(UNSUPPORTED);
             }
@@ -369,8 +372,8 @@ async fn execute(
             if cancelled() {
                 return Err(io::ErrorKind::Interrupted.into());
             }
-            let delete_local_after_sync = plan.delete_local_after_sync && !(local_copies.is_empty() && destinations.s3.is_empty() && destinations.webdav.is_empty() && destinations.sftp.is_empty());
-            let proof = Publication { token, checksum, artifacts, local_copies, s3_copies: destinations.s3, webdav_copies: destinations.webdav, sftp_copies: destinations.sftp, delete_local_after_sync };
+            let delete_local_after_sync = plan.delete_local_after_sync && !(local_copies.is_empty() && destinations.s3.is_empty() && destinations.webdav.is_empty() && destinations.sftp.is_empty() && destinations.ftp.is_empty());
+            let proof = Publication { token, checksum, artifacts, local_copies, s3_copies: destinations.s3, webdav_copies: destinations.webdav, sftp_copies: destinations.sftp, ftp_copies: destinations.ftp, delete_local_after_sync };
             let serialized = serde_json::to_string(&proof)?;
             let staged = runtime.block_on(sqlx::query("UPDATE backups SET backup_metadata=json_set(backup_metadata,'$.native_publication',json(?)) WHERE id=? AND status='RUNNING'")
                 .bind(serialized).bind(id).execute(&journal_pool)).map_err(io::Error::other)?;
@@ -404,6 +407,11 @@ async fn execute(
         .await
         .map_err(|error| {
             tracing::warn!(backup_id=id, %error, "SFTP sync settlement remains pending");
+        })?;
+    super::ftp_sync::settle(state, id, cancel)
+        .await
+        .map_err(|error| {
+            tracing::warn!(backup_id=id, %error, "FTP sync settlement remains pending");
         })?;
     super::s3_sync::finalize_copies(state, id, cancel)
         .await

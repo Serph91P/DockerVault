@@ -5,7 +5,7 @@ pub mod s3;
 pub mod ssh;
 mod sync;
 pub(crate) use sync::{
-    LocalCopy, S3Copy, SftpCopy, WebDavCopy, complete_publication, settle_verified_copies,
+    FtpCopy, LocalCopy, S3Copy, SftpCopy, WebDavCopy, complete_publication, settle_verified_copies,
 };
 mod upload;
 pub mod webdav;
@@ -46,6 +46,8 @@ pub(crate) struct Publication {
     pub webdav_copies: Vec<WebDavCopy>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sftp_copies: Vec<SftpCopy>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ftp_copies: Vec<FtpCopy>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub delete_local_after_sync: bool,
 }
