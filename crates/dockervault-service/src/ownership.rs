@@ -51,6 +51,7 @@ impl Drop for Inner {
 pub struct Work<T> {
     reply: Option<oneshot::Receiver<Result<T, WorkError>>>,
     cancel: CancellationToken,
+    cancel_on_drop: bool,
 }
 
 impl<T> Work<T> {
@@ -68,12 +69,19 @@ impl<T> Work<T> {
             .await
             .map_err(|_| WorkError::WorkerFailed)?
     }
+
+    /// Release the waiter without cancelling work accepted by the owner.
+    pub fn detach(mut self) {
+        self.cancel_on_drop = false;
+    }
 }
 
 impl<T> Drop for Work<T> {
     fn drop(&mut self) {
-        // This requests cleanup; the tracked worker, not this handle, owns the permit.
-        self.cancel.cancel();
+        // The tracked worker, not this handle, owns the permit.
+        if self.cancel_on_drop {
+            self.cancel.cancel();
+        }
     }
 }
 
@@ -134,6 +142,7 @@ impl Owner {
         Ok(Work {
             reply: Some(reply),
             cancel,
+            cancel_on_drop: true,
         })
     }
 
@@ -171,6 +180,7 @@ impl Owner {
         Ok(Work {
             reply: Some(reply),
             cancel,
+            cancel_on_drop: true,
         })
     }
 

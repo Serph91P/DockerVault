@@ -7,6 +7,38 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 #[tokio::test]
+async fn accepted_background_work_remains_owned_after_request_departure() {
+    let owner = Owner::new(1).unwrap();
+    let (entered_tx, entered) = oneshot::channel();
+    let (release, release_rx) = oneshot::channel();
+    let work = owner
+        .submit_async(move |cancel| async move {
+            entered_tx.send(cancel.clone()).unwrap();
+            release_rx.await.unwrap();
+            assert!(cancel.is_cancelled());
+        })
+        .unwrap();
+    let cancel = entered.await.unwrap();
+    work.detach();
+    assert!(!cancel.is_cancelled());
+    assert_eq!(owner.active(), 1);
+    let shutdown = owner.shutdown(Some(Duration::ZERO));
+    tokio::pin!(shutdown);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut shutdown)
+            .await
+            .is_err()
+    );
+    assert!(cancel.is_cancelled());
+    assert_eq!(owner.active(), 1);
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), shutdown)
+        .await
+        .unwrap();
+    assert_eq!(owner.active(), 0);
+}
+
+#[tokio::test]
 async fn completion_wakeup_is_never_advertised_before_the_physical_admission_slot_is_released() {
     use futures_util::task::{ArcWake, waker};
     use std::{
