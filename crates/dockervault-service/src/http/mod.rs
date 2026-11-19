@@ -112,6 +112,10 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/schedules/legacy/by-target", get(schedules::legacy))
         .route("/api/v1/schedules/cron-help", get(schedules::help))
         .route(
+            "/api/v1/schedules/target/{id}/trigger",
+            post(schedules::trigger_target),
+        )
+        .route(
             "/api/v1/backups",
             get(backups::list).post(backup_submit::submit),
         )

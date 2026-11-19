@@ -70,6 +70,28 @@ pub(super) async fn submit(
     let Ok(Json(input)) = input else {
         return error((StatusCode::UNPROCESSABLE_ENTITY, "Invalid backup request"));
     };
+    match enqueue(&state, input).await {
+        Ok(response) => Json(response).into_response(),
+        Err(failure) => error(failure),
+    }
+}
+
+pub(super) async fn trigger_full(state: &HttpState, target_id: i64) -> Response {
+    match enqueue(
+        state,
+        Submit {
+            target_id,
+            backup_type: RunType::Full,
+        },
+    )
+    .await
+    {
+        Ok(_) => Json(json!({"status":"triggered"})).into_response(),
+        Err(failure) => error(failure),
+    }
+}
+
+async fn enqueue(state: &HttpState, input: Submit) -> Result<Value, Failure> {
     let worker = state.clone();
     let (admitted, reply) = tokio::sync::oneshot::channel();
     let result = state.backup_jobs.submit_async(move |cancel| async move {
@@ -117,14 +139,10 @@ pub(super) async fn submit(
         }
     });
     let Ok(work) = result else {
-        return error((StatusCode::SERVICE_UNAVAILABLE, "Backup capacity exhausted"));
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "Backup capacity exhausted"));
     };
     work.detach();
-    match reply.await {
-        Ok(Ok(response)) => Json(response).into_response(),
-        Ok(Err(failure)) => error(failure),
-        Err(_) => error(INTERNAL),
-    }
+    reply.await.unwrap_or(Err(INTERNAL))
 }
 
 type Failure = (StatusCode, &'static str);

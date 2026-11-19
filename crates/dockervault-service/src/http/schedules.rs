@@ -351,6 +351,18 @@ pub(super) async fn legacy(State(state): State<HttpState>) -> Result<Json<Value>
     }).await
 }
 
+pub(super) async fn trigger_target(
+    State(state): State<HttpState>,
+    Path(id): Path<String>,
+) -> Response {
+    let Ok(id) = id.trim().parse() else {
+        return *auth::validation(vec![
+            json!({"field":"path.target_id","message":"Input should be a valid integer, unable to parse string as an integer"}),
+        ]);
+    };
+    super::backup_submit::trigger_full(&state, id).await
+}
+
 pub(super) async fn help(State(state): State<HttpState>) -> Json<Value> {
     Json(
         json!({"format":"minute hour day month weekday","contract":CONTRACT,"timezone":state.config.tz,

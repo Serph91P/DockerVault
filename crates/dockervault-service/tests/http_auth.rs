@@ -416,6 +416,64 @@ async fn retention_reads_preserve_policy_and_catalog_wire_contracts() {
 }
 
 #[tokio::test]
+async fn schedule_target_trigger_admits_only_an_enabled_non_removed_plan() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let db = server.db.pool();
+    let source = server.path.join("trigger-source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("data.txt"), b"scheduled fixture").unwrap();
+    sqlx::query(
+        "INSERT INTO backup_targets(id,name,target_type,host_path,enabled,removed_at) VALUES
+        (21,'Enabled','path',?1,1,NULL),(22,'Disabled','path',?1,0,NULL),
+        (23,'Removed','path',?1,1,'2025-01-01 00:00:00.000000')",
+    )
+    .bind(source.to_str().unwrap())
+    .execute(db)
+    .await
+    .unwrap();
+    let headers = [("cookie", cookie.as_str())];
+    let endpoint = |id| format!("/api/v1/schedules/target/{id}/trigger");
+    assert_eq!(
+        server.request("POST", &endpoint(21), &[], None).await.0,
+        401
+    );
+    for (id, status, detail) in [
+        (22, 409, "Target is disabled"),
+        (23, 404, "Target not found"),
+        (99, 404, "Target not found"),
+    ] {
+        let (actual, _, body) = server.request("POST", &endpoint(id), &headers, None).await;
+        assert_eq!((actual, body), (status, json!({"detail":detail})), "{id}");
+    }
+    let (status, _, body) = server.request("POST", &endpoint(21), &headers, None).await;
+    assert_eq!((status, body), (200, json!({"status":"triggered"})));
+    let results = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let rows: Vec<(i64, String, Option<String>)> =
+                sqlx::query_as("SELECT target_id,status,file_path FROM backups")
+                    .fetch_all(db)
+                    .await
+                    .unwrap();
+            if rows
+                .iter()
+                .all(|(_, state, _)| !matches!(state.as_str(), "RUNNING" | "PENDING"))
+            {
+                break rows;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(results.len(), 1);
+    let (id, status, archive) = &results[0];
+    assert_eq!((*id, status.as_str()), (21, "COMPLETED"));
+    assert!(std::path::Path::new(archive.as_ref().unwrap()).is_file());
+    server.close().await;
+}
+
+#[tokio::test]
 async fn submitted_path_backup_publishes_a_verified_archive_before_completion() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
