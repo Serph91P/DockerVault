@@ -1,4 +1,7 @@
-use super::{Confirmation, HttpState, Item, detail, inspect, required_user, validation};
+use super::{
+    Confirmation, HttpState, Item, RemoteCopy, detail, inspect, inspect_replica, required_user,
+    validation,
+};
 use crate::{jobs::Resource, storage::local::delete_reviewed_leaf};
 use axum::{
     Json,
@@ -97,7 +100,12 @@ async fn settle(
             }
             Err(Failed(message)) => {
                 failed += 1;
-                if item.local.is_some() {
+                if item.local.is_some()
+                    || item
+                        .remote
+                        .as_ref()
+                        .is_some_and(|r| r.local_files.is_some())
+                {
                     retry.push(item.clone());
                 }
                 ("failed", message)
@@ -137,13 +145,15 @@ use EntryError::{Failed, Skipped};
 const INCOMPLETE: EntryError = Failed("Copy removal incomplete; metadata retained for retry");
 const CHANGED: EntryError = Skipped("Copy scope changed; review again before deleting");
 
-async fn check_remote(state: &HttpState, item: &Item) -> Result<(), EntryError> {
-    let (Some(storage_id), Some(remote)) = (item.storage_id, &item.remote) else {
-        return Err(CHANGED);
-    };
-    let mut tx = state.auth.pool().begin().await.map_err(|_| INCOMPLETE)?;
+async fn check_remote(
+    tx: &mut sqlx::SqliteConnection,
+    backup: i64,
+    target: i64,
+    storage_id: i64,
+    remote: &RemoteCopy,
+) -> Result<(), EntryError> {
     let current = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<bool>)>("SELECT s.remote_path,s.sync_status,s.synced_at,b.created_at,b.checksum,b.file_size,b.encrypted FROM backup_storage_syncs s JOIN backups b ON b.id=s.backup_id WHERE s.id=? AND s.backup_id=? AND s.storage_id=? AND b.target_id=?")
-        .bind(remote.sync_id).bind(item.backup_id).bind(storage_id).bind(item.target_id)
+        .bind(remote.sync_id).bind(backup).bind(storage_id).bind(target)
         .fetch_optional(&mut *tx).await.map_err(|_| INCOMPLETE)?;
     if current.is_none_or(
         |(path, status, synced_at, created, checksum, size, encrypted)| {
@@ -181,7 +191,7 @@ async fn check_remote(state: &HttpState, item: &Item) -> Result<(), EntryError> 
             ));
         }
     }
-    Err(Failed("Confirmed remote copy removal is not available"))
+    Ok(())
 }
 
 fn replica_paths(archive: &str, encrypted: bool) -> Vec<String> {
@@ -190,6 +200,194 @@ fn replica_paths(archive: &str, encrypted: bool) -> Vec<String> {
     };
     let sidecar = encrypted.then(|| dockervault_core::crypto::key_sidecar_path(&path));
     std::iter::once(path).chain(sidecar).collect()
+}
+
+#[derive(serde::Serialize, Deserialize)]
+struct ReplicaIntent {
+    nonce: String,
+    target_id: i64,
+    storage_id: i64,
+    replica: RemoteCopy,
+}
+
+async fn remove_replica(
+    state: &HttpState,
+    item: &Item,
+    cancel: &CancellationToken,
+) -> Result<(), EntryError> {
+    let (Some(storage_id), Some(replica)) = (item.storage_id, &item.remote) else {
+        return Err(CHANGED);
+    };
+    let _claim = state
+        .backup_claims
+        .acquire([Resource::target(item.target_id)], cancel)
+        .await
+        .map_err(|_| INCOMPLETE)?;
+    let mut tx = state
+        .auth
+        .pool()
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|_| INCOMPLETE)?;
+    check_remote(&mut tx, item.backup_id, item.target_id, storage_id, replica).await?;
+    let Some(root) = &replica.local_root else {
+        return Err(Failed("Confirmed remote copy removal is not available"));
+    };
+    let (Some(path), Some(reviewed)) = (&replica.archive, &replica.local_files) else {
+        return Err(CHANGED);
+    };
+    let pending: Option<String> = sqlx::query_scalar(
+        "SELECT json_extract(backup_metadata,'$.native_copy_removal') FROM backups WHERE id=?",
+    )
+    .bind(item.backup_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|_| INCOMPLETE)?;
+    if let Some(raw) = pending {
+        let intent: ReplicaIntent = serde_json::from_str(&raw).map_err(|_| INCOMPLETE)?;
+        if intent.storage_id != storage_id
+            || intent.replica.sync_id != replica.sync_id
+            || intent.replica.local_root.as_ref() != Some(root)
+            || intent
+                .replica
+                .local_files
+                .as_ref()
+                .is_none_or(|(id, files)| {
+                    *id != reviewed.0
+                        || files
+                            .iter()
+                            .zip(&reviewed.1)
+                            .any(|((old_path, old), (path, now))| {
+                                old_path != path || (now.is_some() && now != old)
+                            })
+                        || files.len() != reviewed.1.len()
+                })
+        {
+            return Err(CHANGED);
+        }
+        tx.rollback().await.map_err(|_| INCOMPLETE)?;
+        return settle_replica(state, item.backup_id, &intent, &raw, cancel).await;
+    }
+    ensure_backup_idle(&mut tx, item.backup_id).await?;
+    let (root, path, encrypted) = (
+        root.clone(),
+        path.clone(),
+        replica.backup_identity.3.unwrap_or(false),
+    );
+    let current = state
+        .download_jobs
+        .submit_blocking(move |_| inspect_replica(&root, &path, encrypted))
+        .map_err(|_| INCOMPLETE)?
+        .wait()
+        .await
+        .map_err(|_| INCOMPLETE)?
+        .map_err(|_| CHANGED)?;
+    if &current != reviewed {
+        return Err(CHANGED);
+    }
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(|_| INCOMPLETE)?;
+    let intent = ReplicaIntent {
+        nonce: bytes.iter().map(|v| format!("{v:02x}")).collect(),
+        target_id: item.target_id,
+        storage_id,
+        replica: replica.clone(),
+    };
+    let raw = serde_json::to_string(&intent).map_err(|_| INCOMPLETE)?;
+    sqlx::query("UPDATE backups SET backup_metadata=json_set(coalesce(nullif(backup_metadata,'null'),'{}'),'$.native_copy_removal',json(?)) WHERE id=?")
+        .bind(&raw).bind(item.backup_id).execute(&mut *tx).await.map_err(|_| INCOMPLETE)?;
+    tx.commit().await.map_err(|_| INCOMPLETE)?;
+    settle_replica(state, item.backup_id, &intent, &raw, cancel).await
+}
+
+async fn ensure_backup_idle(
+    tx: &mut sqlx::SqliteConnection,
+    backup: i64,
+) -> Result<(), EntryError> {
+    let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM backups WHERE id=? AND status IN ('PENDING','RUNNING')) OR EXISTS(SELECT 1 FROM workload_operations WHERE backup_id=? AND state!='finished') OR EXISTS(SELECT 1 FROM backup_storage_syncs WHERE backup_id=? AND sync_status IN ('pending','running'))")
+        .bind(backup).bind(backup).bind(backup).fetch_one(tx).await.map_err(|_| INCOMPLETE)?;
+    if active {
+        return Err(INCOMPLETE);
+    }
+    Ok(())
+}
+
+async fn settle_replica(
+    state: &HttpState,
+    backup: i64,
+    intent: &ReplicaIntent,
+    raw: &str,
+    cancel: &CancellationToken,
+) -> Result<(), EntryError> {
+    let replica = &intent.replica;
+    let (Some(root), Some((root_identity, files))) = (&replica.local_root, &replica.local_files)
+    else {
+        return Err(CHANGED);
+    };
+    let mut tx = state
+        .auth
+        .pool()
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|_| INCOMPLETE)?;
+    let current: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM backups WHERE id=? AND json_extract(backup_metadata,'$.native_copy_removal')=?)").bind(backup).bind(raw).fetch_one(&mut *tx).await.map_err(|_| INCOMPLETE)?;
+    if !current {
+        return Err(CHANGED);
+    }
+    check_remote(
+        &mut tx,
+        backup,
+        intent.target_id,
+        intent.storage_id,
+        replica,
+    )
+    .await?;
+    ensure_backup_idle(&mut tx, backup).await?;
+    let primary = sqlx::query_as::<_, (Option<String>, Option<String>)>("SELECT file_path,encryption_key_path FROM backups WHERE file_path IS NOT NULL OR encryption_key_path IS NOT NULL")
+        .fetch_all(&mut *tx).await.map_err(|_| INCOMPLETE)?;
+    let aliases = sqlx::query_as::<_, (String, String, Option<bool>)>("SELECT r.base_path,s.remote_path,b.encrypted FROM backup_storage_syncs s JOIN remote_storages r ON r.id=s.storage_id JOIN backups b ON b.id=s.backup_id WHERE r.storage_type='local' AND s.storage_id!=? AND r.base_path IS NOT NULL AND s.remote_path IS NOT NULL")
+        .bind(intent.storage_id).fetch_all(&mut *tx).await.map_err(|_| INCOMPLETE)?;
+    let root = root.clone();
+    let files = files.clone();
+    let nonce = intent.nonce.clone();
+    let root_identity = *root_identity;
+    let request_cancel = cancel.clone();
+    state.download_jobs.submit_blocking(move |worker_cancel| {
+        use crate::storage::FileIdentity;
+        let meta = crate::storage::local::open_root(&root).and_then(|f| f.metadata()).map_err(|_| CHANGED)?;
+        if (meta.dev(), meta.ino()) != root_identity { return Err(CHANGED); }
+        let foreign = primary.into_iter().flat_map(|(a,k)| [a,k].into_iter().flatten().map(PathBuf::from))
+            .chain(aliases.into_iter().flat_map(|(base,path,encrypted)| replica_paths(&path, encrypted.unwrap_or(false)).into_iter().map(move |path| PathBuf::from(&base).join(path))));
+        for other in foreign {
+            let absolute = std::path::absolute(&other).ok();
+            let actual = std::fs::metadata(other).ok().and_then(|m| FileIdentity::read(&m).ok());
+            if files.iter().any(|(path, identity)| absolute.as_ref() == Some(&root.join(path)) || (identity.is_some() && identity == &actual)) {
+                return Err(Skipped("Copy is shared by another archive identity; retained for safety"));
+            }
+        }
+        for (index, (path, stamp)) in files.into_iter().enumerate() {
+            if worker_cancel.is_cancelled() || request_cancel.is_cancelled() { return Err(INCOMPLETE); }
+            let name = path.to_str().ok_or(CHANGED)?;
+            if crate::storage::relative_path(name, false).as_deref() != Some(name) { return Err(CHANGED); }
+            if let Some(stamp) = stamp {
+                delete_reviewed_leaf(&root, &path, stamp, &format!(".dv-removal-{nonce}-{index}")).map_err(|_| INCOMPLETE)?;
+            } else if !matches!(crate::storage::local::open_download_source(&root, &path), Err(error) if error.kind() == std::io::ErrorKind::NotFound) {
+                return Err(CHANGED);
+            }
+        }
+        Ok(())
+    }).map_err(|_| INCOMPLETE)?.wait().await.map_err(|_| INCOMPLETE)??;
+    sqlx::query("DELETE FROM backup_storage_syncs WHERE id=?")
+        .bind(replica.sync_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| INCOMPLETE)?;
+    let removed = sqlx::query("DELETE FROM backups WHERE id=? AND coalesce(file_path,'')='' AND coalesce(encryption_key_path,'')='' AND NOT EXISTS(SELECT 1 FROM backup_storage_syncs WHERE backup_id=?)")
+        .bind(backup).bind(backup).execute(&mut *tx).await.map_err(|_| INCOMPLETE)?;
+    if removed.rows_affected() == 0 {
+        sqlx::query("UPDATE backups SET backup_metadata=json_remove(backup_metadata,'$.native_copy_removal') WHERE id=?").bind(backup).execute(&mut *tx).await.map_err(|_| INCOMPLETE)?;
+    }
+    tx.commit().await.map_err(|_| INCOMPLETE)
 }
 
 type Catalog = (
@@ -209,7 +407,7 @@ async fn remove_local(
     cancel: &CancellationToken,
 ) -> Result<(), EntryError> {
     let Some(local) = &item.local else {
-        return check_remote(state, item).await;
+        return remove_replica(state, item, cancel).await;
     };
     let Some(files) = local.files.clone() else {
         return Err(CHANGED);
@@ -362,6 +560,15 @@ pub async fn recover(state: &HttpState) -> Result<(), sqlx::Error> {
         }
         for (id, raw) in page {
             last = id;
+            if let Ok(intent) = serde_json::from_str::<ReplicaIntent>(&raw) {
+                if settle_replica(state, id, &intent, &raw, &CancellationToken::new())
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!(backup_id = id, "Unsettled LOCAL replica removal retained");
+                }
+                continue;
+            }
             let Ok(intent) = serde_json::from_str::<LocalIntent>(&raw) else {
                 tracing::warn!(backup_id = id, "Invalid copy removal receipt retained");
                 continue;

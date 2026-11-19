@@ -119,9 +119,10 @@ type SyncRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
 );
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, serde::Deserialize)]
 struct RemoteCopy {
     sync_id: i64,
     archive: Option<String>,
@@ -129,6 +130,25 @@ struct RemoteCopy {
     synced_at: Option<String>,
     destination: Option<Value>,
     backup_identity: BackupIdentity,
+    local_root: Option<PathBuf>,
+    local_files: Option<ReviewedFiles>,
+}
+
+type ReviewedFiles = ((u64, u64), Vec<(PathBuf, Option<FileIdentity>)>);
+
+fn inspect_replica(root: &Path, archive: &str, encrypted: bool) -> io::Result<ReviewedFiles> {
+    use std::os::unix::fs::MetadataExt;
+    if crate::storage::relative_path(archive, false).as_deref() != Some(archive) {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    let meta = crate::storage::local::open_root(root)?.metadata()?;
+    let archive = root.join(archive);
+    let name = archive.to_str().ok_or(io::ErrorKind::InvalidInput)?;
+    let key = encrypted.then(|| dockervault_core::crypto::key_sidecar_path(name));
+    Ok((
+        (meta.dev(), meta.ino()),
+        inspect(root, Some(name), key.as_deref())?,
+    ))
 }
 
 struct Confirmation {
@@ -238,10 +258,10 @@ pub(super) async fn preview(
             if file_path.as_ref().is_some_and(|p| !p.is_empty()) || key_path.as_ref().is_some_and(|p| !p.is_empty()) {
                 add(Scope::Local,None,"Local copy".into(),Some(LocalCopy{archive:file_path.clone(),key:key_path.clone(),row_identity:(created.clone(),checksum.clone(),*size,*encrypted),files:None}),None);
             }
-            let rows = sqlx::query_as::<_,SyncRow>("SELECT s.id,s.storage_id,coalesce(r.name,'Storage '||s.storage_id),s.remote_path,s.sync_status,s.synced_at FROM backup_storage_syncs s LEFT JOIN remote_storages r ON r.id=s.storage_id WHERE s.backup_id=? ORDER BY s.id").bind(backup_id).fetch_all(&mut *db).await?;
-            for (sync_id,id,label,archive,status,synced_at) in rows {
+            let rows = sqlx::query_as::<_,SyncRow>("SELECT s.id,s.storage_id,coalesce(r.name,'Storage '||s.storage_id),s.remote_path,s.sync_status,s.synced_at,CASE WHEN r.storage_type='local' AND r.enabled THEN r.base_path END FROM backup_storage_syncs s LEFT JOIN remote_storages r ON r.id=s.storage_id WHERE s.backup_id=? ORDER BY s.id").bind(backup_id).fetch_all(&mut *db).await?;
+            for (sync_id,id,label,archive,status,synced_at,local_root) in rows {
                 let destination=crate::storage_recovery::remote_storage_identity_in(&mut *db,id).await.map_err(|_|sqlx::Error::Protocol("Could not freeze replica destination".into()))?;
-                add(Scope::Remote,Some(id),label,None,Some(RemoteCopy{sync_id,archive,status,synced_at,destination,backup_identity:(created.clone(),checksum.clone(),*size,*encrypted)}));
+                add(Scope::Remote,Some(id),label,None,Some(RemoteCopy{sync_id,archive,status,synced_at,destination,backup_identity:(created.clone(),checksum.clone(),*size,*encrypted),local_root:local_root.map(PathBuf::from),local_files:None}));
             }
         }
         db.commit().await?;
@@ -268,6 +288,12 @@ pub(super) async fn preview(
         for item in &mut items {
             if let Some(local) = &mut item.local {
                 local.files = inspect(&root, local.archive.as_deref(), local.key.as_deref()).ok();
+            }
+            if let Some(remote) = &mut item.remote
+                && let (Some(root), Some(path)) = (&remote.local_root, &remote.archive)
+            {
+                remote.local_files =
+                    inspect_replica(root, path, remote.backup_identity.3.unwrap_or(false)).ok();
             }
         }
         items

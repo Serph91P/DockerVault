@@ -1068,6 +1068,93 @@ async fn replica_removal(drift: ReplicaDrift) {
 }
 
 #[tokio::test]
+async fn encrypted_local_replica_removal_settles_files_before_catalog_ack() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let replica = server.path.join("replica");
+    std::fs::create_dir(&replica).unwrap();
+    let primary = server.path.join("backups");
+    for (root, data) in [(&replica, b"replica"), (&primary, b"primary")] {
+        for name in ["fixture.tar.enc", "fixture.tar.key"] {
+            std::fs::write(root.join(name), data).unwrap();
+        }
+    }
+    let db = server.db.pool();
+    sqlx::query(
+        "INSERT INTO backup_targets(id,name,target_type,enabled) VALUES(1,'Fixture','path',1)",
+    )
+    .execute(db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO backups(id,target_id,backup_type,status,encrypted,file_path,encryption_key_path) VALUES(1,1,'FULL','COMPLETED',1,?,?)")
+        .bind(primary.join("fixture.tar.enc").to_str().unwrap()).bind(primary.join("fixture.tar.key").to_str().unwrap()).execute(db).await.unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,base_path,enabled) VALUES(1,'Replica','local',?,1)").bind(replica.to_str().unwrap()).execute(db).await.unwrap();
+    sqlx::raw_sql("INSERT INTO backup_storage_syncs(id,backup_id,storage_id,remote_path,sync_status) VALUES(1,1,1,'fixture.tar.enc','completed'); CREATE TRIGGER reject_ack BEFORE DELETE ON backup_storage_syncs BEGIN SELECT RAISE(ABORT,'fixture'); END;").execute(db).await.unwrap();
+    let (status, _, preview) = server
+        .request(
+            "POST",
+            "/api/v1/backups/removal/preview",
+            &headers,
+            Some(json!({"scope":"remote","backup_ids":[1]})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(preview["copy_count"], 1);
+    let (status, _, result) = server
+        .request(
+            "POST",
+            "/api/v1/backups/removal/execute",
+            &headers,
+            Some(json!({"token":preview["token"]})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(result["status"], "incomplete");
+    assert_eq!(result["succeeded"], 0);
+    for name in ["fixture.tar.enc", "fixture.tar.key"] {
+        assert!(
+            !replica.join(name).exists(),
+            "replica member {name} not removed"
+        );
+        assert_eq!(std::fs::read(primary.join(name)).unwrap(), b"primary");
+    }
+    let count =
+        || sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM backup_storage_syncs").fetch_one(db);
+    assert_eq!(count().await.unwrap(), 1);
+    assert!(result["retry_token"].is_string());
+    sqlx::query("DROP TRIGGER reject_ack")
+        .execute(db)
+        .await
+        .unwrap();
+    let (status, _, retry) = server
+        .request(
+            "POST",
+            "/api/v1/backups/removal/execute",
+            &headers,
+            Some(json!({"token":result["retry_token"]})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(retry["succeeded"], 1);
+    assert_eq!(count().await.unwrap(), 0);
+    let (archive, key): (String, String) =
+        sqlx::query_as("SELECT file_path,encryption_key_path FROM backups WHERE id=1")
+            .fetch_one(db)
+            .await
+            .unwrap();
+    assert_eq!(archive, primary.join("fixture.tar.enc").to_str().unwrap());
+    assert_eq!(key, primary.join("fixture.tar.key").to_str().unwrap());
+    for name in ["fixture.tar.enc", "fixture.tar.key"] {
+        assert_eq!(std::fs::read(primary.join(name)).unwrap(), b"primary");
+    }
+    server.close().await;
+}
+
+#[tokio::test]
 async fn removal_does_not_unlink_replaced_or_shared_archives() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
