@@ -2,7 +2,10 @@
 mod browse;
 #[path = "backup_archive_download.rs"]
 mod download;
-pub(super) use browse::{list as files, member as file_member};
+pub(super) use browse::{
+    list as files, list_encrypted as encrypted_files, member as file_member,
+    member_encrypted as encrypted_member,
+};
 pub(super) use download::whole_archive as download;
 
 use super::{

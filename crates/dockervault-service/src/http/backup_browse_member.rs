@@ -1,6 +1,6 @@
 use super::{
-    HttpState, INTEGER, detail, internal, query_integer, required_user, temp, unreadable,
-    validation, with_local_archive,
+    BrowseKey, HttpState, INTEGER, detail, internal, invalid_key_body, key_error, query_integer,
+    required_user, temp, unreadable, validation, with_local_archive,
 };
 use crate::{
     http::storage::download::{Validators, response},
@@ -28,6 +28,30 @@ pub(in crate::http) async fn member(
     if let Err(error) = required_user(&state, &headers).await {
         return *error;
     }
+    member_with_key(state, id, name, None).await
+}
+
+pub(in crate::http) async fn member_encrypted(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((id, name)): Path<(String, String)>,
+    input: Result<axum::Json<BrowseKey>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    if let Err(error) = required_user(&state, &headers).await {
+        return *error;
+    }
+    let Ok(axum::Json(key)) = input else {
+        return invalid_key_body();
+    };
+    member_with_key(state, id, name, Some(key)).await
+}
+
+async fn member_with_key(
+    state: HttpState,
+    id: String,
+    name: String,
+    secret: Option<BrowseKey>,
+) -> Response {
     let Some(id) = query_integer(&id) else {
         return *validation(vec![json!({"field":"path.backup_id","message":INTEGER})]);
     };
@@ -40,21 +64,29 @@ pub(in crate::http) async fn member(
     if normalized.split(|&c| c == b'/').any(|c| c == b"..") {
         return detail(StatusCode::BAD_REQUEST, "Invalid file path");
     }
-    let current = sqlx::query_as::<_, (Option<String>, Option<String>, Option<bool>)>(
-        "SELECT status,file_path,encrypted FROM backups WHERE id=?",
-    )
-    .bind(id)
-    .fetch_optional(state.auth.pool())
-    .await;
-    let path = match current {
+    let current =
+        sqlx::query_as::<_, (Option<String>, Option<String>, Option<bool>, Option<String>)>(
+            "SELECT status,file_path,encrypted,encryption_key_path FROM backups WHERE id=?",
+        )
+        .bind(id)
+        .fetch_optional(state.auth.pool())
+        .await;
+    let (path, sidecar) = match current {
         Ok(None) => return detail(StatusCode::NOT_FOUND, "Backup not found"),
-        Ok(Some((status, _, _))) if status.as_deref() != Some("COMPLETED") => {
+        Ok(Some((status, _, _, _))) if status.as_deref() != Some("COMPLETED") => {
             return detail(StatusCode::BAD_REQUEST, "Backup is not completed");
         }
-        Ok(Some((_, _, Some(true)))) => {
-            return detail(StatusCode::BAD_REQUEST, "Private key required");
+        Ok(Some((_, _, encrypted, _))) if encrypted.unwrap_or(false) != secret.is_some() => {
+            return detail(
+                StatusCode::BAD_REQUEST,
+                if secret.is_some() {
+                    "Backup is not encrypted. Use GET endpoint instead."
+                } else {
+                    "Private key required"
+                },
+            );
         }
-        Ok(Some((_, path, _))) => path.unwrap_or_default(),
+        Ok(Some((_, path, _, sidecar))) => (path.unwrap_or_default(), sidecar),
         Err(_) => return internal(),
     };
     let busy = || {
@@ -92,30 +124,39 @@ pub(in crate::http) async fn member(
     );
     let Ok(job) = state.download_jobs.submit_blocking(move |cancel| {
         let _slot = job_slot;
-        with_local_archive(&root, &path, &|| cancel.is_cancelled(), |source, root| {
-            let Some(member) = resolve(source, normalized, &|| cancel.is_cancelled())? else {
-                return Ok(None);
-            };
-            if member.kind == MemberKind::Directory {
-                return Ok(Some(Err(())));
-            }
-            let mut file = temp(root)?;
-            source.seek(SeekFrom::Start(member.data_offset))?;
-            let mut remaining = member.size;
-            let mut buf = [0; 65536];
-            while remaining != 0 {
-                if cancel.is_cancelled() {
-                    return Err(io::ErrorKind::Interrupted.into());
+        let encryption = secret
+            .as_ref()
+            .map(|key| (sidecar.as_deref(), key.private_key.as_str()));
+        with_local_archive(
+            &root,
+            &path,
+            encryption,
+            &|| cancel.is_cancelled(),
+            |source, root| {
+                let Some(member) = resolve(source, normalized, &|| cancel.is_cancelled())? else {
+                    return Ok(None);
+                };
+                if member.kind == MemberKind::Directory {
+                    return Ok(Some(Err(())));
                 }
-                let count = remaining.min(buf.len() as u64) as usize;
-                source.read_exact(&mut buf[..count])?;
-                file.write_all(&buf[..count])?;
-                remaining -= count as u64;
-            }
-            file.rewind()?;
-            let validators = Validators::read(&file, member.size)?;
-            Ok(Some(Ok((file, member.size, validators))))
-        })
+                let mut file = temp(root)?;
+                source.seek(SeekFrom::Start(member.data_offset))?;
+                let mut remaining = member.size;
+                let mut buf = [0; 65536];
+                while remaining != 0 {
+                    if cancel.is_cancelled() {
+                        return Err(io::ErrorKind::Interrupted.into());
+                    }
+                    let count = remaining.min(buf.len() as u64) as usize;
+                    source.read_exact(&mut buf[..count])?;
+                    file.write_all(&buf[..count])?;
+                    remaining -= count as u64;
+                }
+                file.rewind()?;
+                let validators = Validators::read(&file, member.size)?;
+                Ok(Some(Ok((file, member.size, validators))))
+            },
+        )
     }) else {
         return busy();
     };
@@ -141,6 +182,7 @@ pub(in crate::http) async fn member(
             StatusCode::NOT_FOUND,
             "Backup file not found locally or on any remote storage.",
         ),
+        Ok(Err(error)) if error.kind() == io::ErrorKind::PermissionDenied => key_error(),
         _ => unreadable(),
     }
 }

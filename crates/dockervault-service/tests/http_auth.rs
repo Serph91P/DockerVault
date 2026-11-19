@@ -1245,6 +1245,48 @@ async fn native_encrypted_backup_has_recoverable_key_and_no_named_plaintext() {
     let mut data = Vec::new();
     std::io::Read::read_to_end(&mut member, &mut data).unwrap();
     assert_eq!(data, b"encrypted backup payload");
+    let route = format!("/api/v1/backups/{id}/files");
+    let key_body = || json!({"private_key":identity.to_string().expose_secret()});
+    let (status, _, rows) = server
+        .request(
+            "POST",
+            &format!("{route}?search=data"),
+            &headers,
+            Some(key_body()),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(rows[0]["path"], "source/data");
+    let (status, _, data) = server
+        .request(
+            "POST",
+            &format!("{route}/source/data"),
+            &headers,
+            Some(key_body()),
+        )
+        .await;
+    assert_eq!((status, data), (200, json!("encrypted backup payload")));
+    for path in [&route, &format!("{route}/source/data")] {
+        assert_eq!(
+            server
+                .request(
+                    "POST",
+                    path,
+                    &headers,
+                    Some(json!({"private_key":"synthetic-invalid"}))
+                )
+                .await
+                .0,
+            400
+        );
+        assert_eq!(
+            server
+                .request("POST", path, &headers, Some(json!({})))
+                .await
+                .0,
+            422
+        );
+    }
     server.close().await;
 }
 
