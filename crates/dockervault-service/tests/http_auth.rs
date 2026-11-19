@@ -949,15 +949,26 @@ async fn removal_acknowledgment_failure(restart: bool) {
 
 #[tokio::test]
 async fn remote_removal_checks_frozen_destination_before_provider_io() {
-    replica_removal(true).await;
+    replica_removal(ReplicaDrift::Destination).await;
 }
 
 #[tokio::test]
 async fn remote_removal_checks_frozen_sync_path_before_provider_io() {
-    replica_removal(false).await;
+    replica_removal(ReplicaDrift::Path).await;
 }
 
-async fn replica_removal(destination_drift: bool) {
+#[tokio::test]
+async fn remote_removal_checks_frozen_encryption_before_provider_io() {
+    replica_removal(ReplicaDrift::Encryption).await;
+}
+
+enum ReplicaDrift {
+    Destination,
+    Path,
+    Encryption,
+}
+
+async fn replica_removal(drift: ReplicaDrift) {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
     let headers = [
@@ -969,6 +980,7 @@ async fn replica_removal(destination_drift: bool) {
     std::fs::create_dir(&copy).unwrap();
     std::fs::create_dir(&replacement).unwrap();
     std::fs::write(copy.join("fixture.tar"), b"copy").unwrap();
+    std::fs::write(copy.join("replacement.tar"), b"new catalog path").unwrap();
     std::fs::write(replacement.join("fixture.tar"), b"other copy").unwrap();
     let db = server.db.pool();
     sqlx::raw_sql("INSERT INTO backup_targets(id,name,target_type,enabled) VALUES(1,'Fixture','path',1); INSERT INTO backups(id,target_id,backup_type,status) VALUES(1,1,'FULL','COMPLETED');").execute(db).await.unwrap();
@@ -984,19 +996,25 @@ async fn replica_removal(destination_drift: bool) {
         .await;
     assert_eq!(status, 200);
     assert_eq!(preview["copy_count"], 1);
-    if destination_drift {
-        sqlx::query("UPDATE remote_storages SET base_path=? WHERE id=1")
-            .bind(replacement.to_str().unwrap())
+    match drift {
+        ReplicaDrift::Destination => {
+            sqlx::query("UPDATE remote_storages SET base_path=? WHERE id=1")
+                .bind(replacement.to_str().unwrap())
+                .execute(db)
+                .await
+                .unwrap()
+        }
+        ReplicaDrift::Path => {
+            sqlx::query("UPDATE backup_storage_syncs SET remote_path='replacement.tar' WHERE id=1")
+                .execute(db)
+                .await
+                .unwrap()
+        }
+        ReplicaDrift::Encryption => sqlx::query("UPDATE backups SET encrypted=1 WHERE id=1")
             .execute(db)
             .await
-            .unwrap();
-    } else {
-        std::fs::write(copy.join("replacement.tar"), b"new catalog path").unwrap();
-        sqlx::query("UPDATE backup_storage_syncs SET remote_path='replacement.tar' WHERE id=1")
-            .execute(db)
-            .await
-            .unwrap();
-    }
+            .unwrap(),
+    };
     let (status, _, result) = server
         .request(
             "POST",
@@ -1008,17 +1026,16 @@ async fn replica_removal(destination_drift: bool) {
     assert_eq!(status, 200);
     assert_eq!(result["skipped"], 1);
     assert_eq!(result["succeeded"], 0);
+    assert!(result["retry_token"].is_null());
     assert_eq!(
         std::fs::read(replacement.join("fixture.tar")).unwrap(),
         b"other copy"
     );
     assert_eq!(std::fs::read(copy.join("fixture.tar")).unwrap(), b"copy");
-    if !destination_drift {
-        assert_eq!(
-            std::fs::read(copy.join("replacement.tar")).unwrap(),
-            b"new catalog path"
-        );
-    }
+    assert_eq!(
+        std::fs::read(copy.join("replacement.tar")).unwrap(),
+        b"new catalog path"
+    );
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM backup_storage_syncs")
         .fetch_one(db)
         .await

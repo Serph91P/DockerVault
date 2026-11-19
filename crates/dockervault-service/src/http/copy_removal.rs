@@ -66,11 +66,13 @@ type Backup = (
     Option<bool>,
 );
 
+type BackupIdentity = (Option<String>, Option<String>, Option<i64>, Option<bool>);
+
 #[derive(Clone)]
 struct LocalCopy {
     archive: Option<String>,
     key: Option<String>,
-    row_identity: (Option<String>, Option<String>, Option<i64>, Option<bool>),
+    row_identity: BackupIdentity,
     files: Option<Vec<(PathBuf, Option<FileIdentity>)>>,
 }
 
@@ -126,6 +128,7 @@ struct RemoteCopy {
     status: Option<String>,
     synced_at: Option<String>,
     destination: Option<Value>,
+    backup_identity: BackupIdentity,
 }
 
 struct Confirmation {
@@ -238,7 +241,7 @@ pub(super) async fn preview(
             let rows = sqlx::query_as::<_,SyncRow>("SELECT s.id,s.storage_id,coalesce(r.name,'Storage '||s.storage_id),s.remote_path,s.sync_status,s.synced_at FROM backup_storage_syncs s LEFT JOIN remote_storages r ON r.id=s.storage_id WHERE s.backup_id=? ORDER BY s.id").bind(backup_id).fetch_all(&mut *db).await?;
             for (sync_id,id,label,archive,status,synced_at) in rows {
                 let destination=crate::storage_recovery::remote_storage_identity_in(&mut *db,id).await.map_err(|_|sqlx::Error::Protocol("Could not freeze replica destination".into()))?;
-                add(Scope::Remote,Some(id),label,None,Some(RemoteCopy{sync_id,archive,status,synced_at,destination}));
+                add(Scope::Remote,Some(id),label,None,Some(RemoteCopy{sync_id,archive,status,synced_at,destination,backup_identity:(created.clone(),checksum.clone(),*size,*encrypted)}));
             }
         }
         db.commit().await?;

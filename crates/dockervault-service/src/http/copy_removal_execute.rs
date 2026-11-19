@@ -142,13 +142,17 @@ async fn check_remote(state: &HttpState, item: &Item) -> Result<(), EntryError> 
         return Err(CHANGED);
     };
     let mut tx = state.auth.pool().begin().await.map_err(|_| INCOMPLETE)?;
-    type SyncIdentity = (Option<String>, Option<String>, Option<String>);
-    let current = sqlx::query_as::<_, SyncIdentity>("SELECT s.remote_path,s.sync_status,s.synced_at FROM backup_storage_syncs s JOIN backups b ON b.id=s.backup_id WHERE s.id=? AND s.backup_id=? AND s.storage_id=? AND b.target_id=?")
+    let current = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<bool>)>("SELECT s.remote_path,s.sync_status,s.synced_at,b.created_at,b.checksum,b.file_size,b.encrypted FROM backup_storage_syncs s JOIN backups b ON b.id=s.backup_id WHERE s.id=? AND s.backup_id=? AND s.storage_id=? AND b.target_id=?")
         .bind(remote.sync_id).bind(item.backup_id).bind(storage_id).bind(item.target_id)
         .fetch_optional(&mut *tx).await.map_err(|_| INCOMPLETE)?;
-    if current.as_ref().is_none_or(|(path, status, synced_at)| {
-        path != &remote.archive || status != &remote.status || synced_at != &remote.synced_at
-    }) {
+    if current.is_none_or(
+        |(path, status, synced_at, created, checksum, size, encrypted)| {
+            path != remote.archive
+                || status != remote.status
+                || synced_at != remote.synced_at
+                || (created, checksum, size, encrypted) != remote.backup_identity
+        },
+    ) {
         return Err(CHANGED);
     }
     let destination = crate::storage_recovery::remote_storage_identity_in(&mut *tx, storage_id)
