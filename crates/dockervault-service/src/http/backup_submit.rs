@@ -487,7 +487,7 @@ async fn execute(
                 if copy_root.starts_with(&source) || source.starts_with(&copy_root) || copy_root.starts_with(&root) || root.starts_with(&copy_root) {
                     return Err(io::Error::other("LOCAL destination overlaps source or backup storage"));
                 }
-                let meta = local::open_root(&copy_root)?.metadata()?;
+                let meta = local::open_or_create_root(&copy_root)?.metadata()?;
                 local_copies.push(LocalCopy { storage_id, root: copy_root, device: meta.dev(), inode: meta.ino(), archive: remote_archive.clone() });
             }
             let request =

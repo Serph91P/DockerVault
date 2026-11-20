@@ -1913,14 +1913,14 @@ async fn submitted_path_backup_publishes_a_verified_archive_before_completion() 
 }
 
 #[tokio::test]
-async fn sync_to_remote_publishes_a_verified_local_copy_and_records_it() {
+async fn sync_to_remote_creates_a_missing_local_root_and_records_a_verified_copy() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
     let source = server.path.join("source");
     std::fs::create_dir(&source).unwrap();
     std::fs::write(source.join("data.txt"), b"owned backup bytes").unwrap();
-    let remote = server.path.join("remote-copies");
-    std::fs::create_dir(&remote).unwrap();
+    let remote = server.path.join("new-storage/remote-copies");
+    assert!(!remote.exists());
     sqlx::query(
         "INSERT INTO remote_storages(id,name,storage_type,enabled,base_path) VALUES(7,'LocalCopy','local',1,?)",
     )
@@ -1954,6 +1954,7 @@ async fn sync_to_remote_publishes_a_verified_local_copy_and_records_it() {
             .fetch_one(server.db.pool())
             .await
             .unwrap();
+            assert_ne!(row.0, "FAILED", "LOCAL backup failed: {row:?}");
             if let (state, Some(file), Some(sync), Some(path)) = row
                 && state == "COMPLETED" && sync == "completed"
             {
