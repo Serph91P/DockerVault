@@ -17,19 +17,19 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path};
 use tokio_util::sync::CancellationToken;
 
-const MAX_BUNDLE: usize = 32 * 1024 * 1024;
+pub(super) const MAX_BUNDLE: usize = 32 * 1024 * 1024;
 const MAX_REQUEST: usize = MAX_BUNDLE + 65_536;
-type Failure = (StatusCode, &'static str);
-const REQUEST: Failure = (StatusCode::BAD_REQUEST, "Invalid recovery request");
-const INVALID: Failure = (
+pub(super) type Failure = (StatusCode, &'static str);
+pub(super) const REQUEST: Failure = (StatusCode::BAD_REQUEST, "Invalid recovery request");
+pub(super) const INVALID: Failure = (
     StatusCode::BAD_REQUEST,
     "Invalid or incompatible recovery bundle or password",
 );
-const BUSY: Failure = (
+pub(super) const BUSY: Failure = (
     StatusCode::CONFLICT,
     "Setup or recovery is already in progress",
 );
-const INTERNAL: Failure = (
+pub(super) const INTERNAL: Failure = (
     StatusCode::INTERNAL_SERVER_ERROR,
     "System recovery failed; inspect setup status before retrying",
 );
@@ -50,7 +50,7 @@ struct RcloneRemotes {
     remotes: BTreeMap<String, serde::de::IgnoredAny>,
 }
 
-async fn require_unconfigured(state: &HttpState) -> Result<(), Failure> {
+pub(super) async fn require_unconfigured(state: &HttpState) -> Result<(), Failure> {
     if state.auth.setup_complete().await.map_err(|_| INTERNAL)? {
         return Err((
             StatusCode::FORBIDDEN,
@@ -60,7 +60,7 @@ async fn require_unconfigured(state: &HttpState) -> Result<(), Failure> {
     Ok(())
 }
 
-fn error((status, detail): Failure) -> Response {
+pub(super) fn error((status, detail): Failure) -> Response {
     (status, Json(json!({"detail":detail}))).into_response()
 }
 
@@ -89,8 +89,17 @@ async fn validate(
     request: Request,
     cancel: CancellationToken,
 ) -> Result<Value, Failure> {
-    let blocking = state.auth.blocking();
-    let claims = state.auth.preparation_claims().clone();
+    let bytes = read_body(request, &cancel).await?;
+    let Preview { bundle, password } = serde_json::from_slice(&bytes).map_err(|_| REQUEST)?;
+    let result = validate_bundle(&state, bundle, password, &cancel).await?;
+    require_unconfigured(&state).await?;
+    Ok(result.preview().clone())
+}
+
+pub(super) async fn read_body(
+    request: Request,
+    cancel: &CancellationToken,
+) -> Result<zeroize::Zeroizing<Vec<u8>>, Failure> {
     let mut body = request.into_body().into_data_stream();
     let mut bytes = zeroize::Zeroizing::new(Vec::new());
     loop {
@@ -109,14 +118,24 @@ async fn validate(
         }
         bytes.extend_from_slice(&chunk);
     }
+    Ok(bytes)
+}
+
+pub(super) async fn validate_bundle(
+    state: &HttpState,
+    bundle: String,
+    password: String,
+    cancel: &CancellationToken,
+) -> Result<crate::recovery_state::ValidatedState, Failure> {
+    let blocking = state.auth.blocking();
+    let claims = state.auth.preparation_claims().clone();
     let owned = cancel.clone();
     let (guard, payload, has_remotes) = blocking
         .submit_blocking(move |physical| {
             if owned.is_cancelled() || physical.is_cancelled() {
                 return Err(INTERNAL);
             }
-            let Preview { bundle, password } =
-                serde_json::from_slice(&bytes).map_err(|_| REQUEST)?;
+
             let password = zeroize::Zeroizing::new(password);
             if bundle.len() > MAX_BUNDLE || password.len() > 1024 {
                 return Err(REQUEST);
@@ -155,7 +174,7 @@ async fn validate(
     } else {
         BTreeMap::new()
     };
-    let (now, timezone) = Cron::load(&state).map_err(|_| INTERNAL)?.into_clock();
+    let (now, timezone) = Cron::load(state).map_err(|_| INTERNAL)?.into_clock();
     let context = ValidationContext {
         backup_root: state.config.backup_base_path.clone().into(),
         now,
@@ -174,6 +193,5 @@ async fn validate(
             RecordValidationError::Cancelled | RecordValidationError::Owner => INTERNAL,
         })?;
     drop(guard);
-    require_unconfigured(&state).await?;
-    Ok(result.preview().clone())
+    Ok(result)
 }

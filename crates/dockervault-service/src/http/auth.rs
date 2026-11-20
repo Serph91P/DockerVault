@@ -185,26 +185,28 @@ fn session_response(
     message: &str,
     include_user: bool,
 ) -> Response {
-    let cookie = format!(
-        "session_token={}; HttpOnly; Max-Age=604800; Path=/; SameSite=lax{}",
-        session.token.expose(),
-        if state.config.cookie_secure {
-            "; Secure"
-        } else {
-            ""
-        }
-    );
+    let cookie = session_cookie(state, &session.token);
     let mut response = Json(if include_user {
         json!({"message":message,"user":session.user})
     } else {
         json!({"message":message})
     })
     .into_response();
-    response.headers_mut().insert(
-        "set-cookie",
-        HeaderValue::from_str(&cookie).expect("URL-safe generated token"),
-    );
+    response.headers_mut().insert("set-cookie", cookie);
     response
+}
+
+pub(super) fn session_cookie(state: &HttpState, token: &crate::auth::SessionToken) -> HeaderValue {
+    let cookie = format!(
+        "session_token={}; HttpOnly; Max-Age=604800; Path=/; SameSite=lax{}",
+        token.expose(),
+        if state.config.cookie_secure {
+            "; Secure"
+        } else {
+            ""
+        }
+    );
+    HeaderValue::from_str(&cookie).expect("URL-safe generated token")
 }
 pub(super) async fn status(State(state): State<HttpState>, request: Request) -> Response {
     let setup = match state.auth.setup_complete().await {

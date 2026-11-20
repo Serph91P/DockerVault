@@ -312,6 +312,7 @@ pub(super) async fn guard(
         "/api/v1/auth/setup",
         "/api/v1/auth/login",
         "/api/v1/recovery/preview",
+        "/api/v1/recovery/restore",
     ]
     .contains(&path)
         || path.starts_with("/ws/");
@@ -359,7 +360,10 @@ pub(super) async fn guard(
 pub(super) async fn recovery_privacy(request: Request, next: Next) -> Response {
     let private = matches!(
         request.uri().path(),
-        "/api/v1/recovery/preview" | "/api/v1/recovery/status" | "/api/v1/recovery/export"
+        "/api/v1/recovery/preview"
+            | "/api/v1/recovery/restore"
+            | "/api/v1/recovery/status"
+            | "/api/v1/recovery/export"
     );
     let mut response = next.run(request).await;
     if private {

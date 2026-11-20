@@ -180,6 +180,68 @@ impl RecoveryGeneration<'_> {
     pub fn identifier(&self) -> &str {
         &self.generation
     }
+
+    /// The setup claim owns this physical transaction. Publish readiness only
+    /// with the administrator, session and restore result in the same commit.
+    pub fn commit_activation<T>(
+        &self,
+        write: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T, JournalError>,
+    ) -> Result<T, JournalError> {
+        let path = self
+            .guard
+            .database
+            .as_ref()
+            .ok_or(JournalError::NotDurable)?;
+        let mut connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .map_err(|_| JournalError::Io)?;
+        connection
+            .pragma_update(None, "foreign_keys", true)
+            .map_err(|_| JournalError::Io)?;
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| JournalError::Io)?;
+        if tx
+            .query_row("SELECT EXISTS(SELECT 1 FROM users)", [], |row| {
+                row.get::<_, bool>(0)
+            })
+            .map_err(|_| JournalError::Io)?
+        {
+            return Err(JournalError::AlreadySetup);
+        }
+        let before = tx
+            .query_row(
+                "SELECT value FROM app_settings WHERE key='recovery_activation'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|_| JournalError::InvalidJournal)?;
+        let marker: serde_json::Value =
+            serde_json::from_str(&before).map_err(|_| JournalError::InvalidJournal)?;
+        if marker["state"] != "preparing"
+            || marker["generation"].as_str() != Some(self.identifier())
+        {
+            return Err(JournalError::InvalidJournal);
+        }
+        let result = write(&tx)?;
+        let ready = tx.query_row("SELECT (SELECT count(*) FROM users)=1 AND (SELECT count(*) FROM sessions JOIN users ON users.id=sessions.user_id WHERE users.is_admin=1)=1 AND EXISTS(SELECT 1 FROM app_settings WHERE key='recovery_result')", [], |row| row.get::<_, bool>(0)).map_err(|_| JournalError::Io)?;
+        if !ready {
+            return Err(JournalError::InvalidJournal);
+        }
+        let active =
+            serde_json::json!({"state":"active","generation":self.identifier()}).to_string();
+        if tx
+            .execute(
+                "UPDATE app_settings SET value=?1 WHERE key='recovery_activation' AND value=?2",
+                [&active, &before],
+            )
+            .map_err(|_| JournalError::Io)?
+            != 1
+        {
+            return Err(JournalError::InvalidJournal);
+        }
+        tx.commit().map_err(|_| JournalError::Io)?;
+        Ok(result)
+    }
     /// Path projection only; subsequent filesystem effects need held no-follow authority.
     pub fn directory(&self) -> Result<PathBuf, JournalError> {
         let root = self

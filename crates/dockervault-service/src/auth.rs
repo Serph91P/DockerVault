@@ -338,7 +338,7 @@ impl AuthService {
             .await?;
         Ok(())
     }
-    async fn credentials(
+    pub(crate) async fn credentials(
         &self,
         password: String,
         hash: Option<String>,

@@ -15,6 +15,7 @@ mod operations;
 mod overview;
 mod recovery_export;
 mod recovery_preview;
+mod recovery_restore;
 mod recovery_status;
 mod retention;
 mod s3_sync;
@@ -122,6 +123,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/recovery/preview", post(recovery_preview::preview))
+        .route("/api/v1/recovery/restore", post(recovery_restore::restore))
         .route("/api/v1/recovery/export", post(recovery_export::export))
         .route("/api/v1/overview/summary", get(overview::summary))
         .route("/api/v1/docker/health", get(docker_inventory::health))
