@@ -254,6 +254,8 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          sbom: true
+          provenance: mode=min
           tags: ${{ needs.prepare.outputs.docker_tags }}
           labels: ${{ needs.prepare.outputs.docker_labels }}
           cache-from: type=gha

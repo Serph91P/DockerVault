@@ -39,10 +39,11 @@ RUN VITE_NATIVE_BACKEND=true npm run build
 
 # Opt-in local candidate only. Keep production as the default final stage.
 FROM rust@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS native-builder
+RUN cargo install --locked cargo-auditable --version 0.7.7
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
-RUN cargo fetch --locked && cargo build --release --locked --offline --bins \
+RUN cargo fetch --locked && cargo auditable build --release --locked --offline --bins \
     -p dockervault-service -p dockervault-tools
 
 FROM scratch AS rollback-preflight

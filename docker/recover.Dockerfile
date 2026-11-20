@@ -1,8 +1,9 @@
 FROM rust@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS build
+RUN cargo install --locked cargo-auditable --version 0.7.7
 WORKDIR /source
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
-RUN cargo build --locked --release --jobs 2 -p dockervault-tools --bin dockervault-recover \
+RUN cargo auditable build --locked --release --jobs 2 -p dockervault-tools --bin dockervault-recover \
     && mkdir /licenses \
     && cp /usr/local/cargo/registry/src/*/fernet-0.2.2/LICENSE /licenses/fernet-MPL-2.0.txt
 

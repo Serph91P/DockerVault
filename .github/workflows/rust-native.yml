@@ -92,6 +92,8 @@ jobs:
           docker build --build-arg VCS_REF="$(git rev-parse HEAD)" \
             -f docker/recover.Dockerfile -t dockervault-recovery-ci .
           test "$(docker image inspect --format '{{.Architecture}}' dockervault-recovery-ci)" = '${{ matrix.arch }}'
+      - name: Verify embedded dependencies in shipped native binaries
+        run: sh docker/test-native-rust-inventory.sh dockervault-native-candidate-ci dockervault-recovery-ci
       - name: Recover original v1 and legacy bytes without network or Python
         shell: bash
         run: |
