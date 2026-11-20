@@ -15,65 +15,14 @@ env:
   IMAGE_NAME: ${{ github.repository_owner }}/dockervault
 
 jobs:
-  # Wait for tests to complete when triggered by push
-  wait-for-tests:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
-    outputs:
-      tests_passed: ${{ steps.check.outputs.passed }}
-    steps:
-      - name: Wait for Tests workflow
-        id: check
-        uses: actions/github-script@v9
-        with:
-          script: |
-            // Wait up to 10 minutes for Tests workflow to complete
-            const maxWait = 600000; // 10 minutes
-            const checkInterval = 15000; // 15 seconds
-            let waited = 0;
-            
-            while (waited < maxWait) {
-              const runs = await github.rest.actions.listWorkflowRuns({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: 'test.yml',
-                head_sha: context.sha,
-                per_page: 1
-              });
-              
-              if (runs.data.workflow_runs.length > 0) {
-                const run = runs.data.workflow_runs[0];
-                console.log(`Tests workflow status: ${run.status}, conclusion: ${run.conclusion}`);
-                
-                if (run.status === 'completed') {
-                  if (run.conclusion === 'success') {
-                    core.setOutput('passed', 'true');
-                    return;
-                  } else {
-                    core.setOutput('passed', 'false');
-                    core.setFailed(`Tests failed with conclusion: ${run.conclusion}`);
-                    return;
-                  }
-                }
-              }
-              
-              console.log(`Waiting for Tests workflow... (${waited/1000}s)`);
-              await new Promise(r => setTimeout(r, checkInterval));
-              waited += checkInterval;
-            }
-            
-            core.setFailed('Timed out waiting for Tests workflow');
-            core.setOutput('passed', 'false');
-
   prepare:
     runs-on: ubuntu-latest
-    needs: [wait-for-tests]
+    permissions:
+      actions: read
+      contents: read
     if: |
-      always() && (
-        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
-        (github.event_name == 'push' && needs.wait-for-tests.outputs.tests_passed == 'true') ||
-        (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
-      )
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success')
     outputs:
       version: ${{ steps.version.outputs.version }}
       is_prerelease: ${{ steps.version.outputs.is_prerelease }}
@@ -96,6 +45,55 @@ jobs:
             *) exit 1 ;;
           esac
           printf 'sha=%s\nref=%s\nname=%s\n' "$SOURCE_SHA" "$SOURCE_REF" "${SOURCE_REF#refs/*/}" >> "$GITHUB_OUTPUT"
+      - name: Require successful Tests and both native architectures on the release SHA
+        id: admission
+        uses: actions/github-script@v9
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          SOURCE_REF: ${{ steps.source.outputs.ref }}
+        with:
+          script: |
+            const {SOURCE_SHA: sha, SOURCE_REF: ref} = process.env;
+            const branches = ref.startsWith('refs/tags/v') ? ['main', 'develop'] : [ref.slice('refs/heads/'.length)];
+            const repository = {owner: context.repo.owner, repo: context.repo.repo};
+            const workflows = ['test.yml', 'rust-native.yml'];
+            const completed = runs => runs.every(run => run?.status === 'completed');
+
+            // Native package builds and tests can outlast the former Tests-only wait.
+            for (let attempt = 0; attempt < 120; attempt++) {
+              const runs = await Promise.all(workflows.map(async workflow_id => {
+                const {data} = await github.rest.actions.listWorkflowRuns({
+                  ...repository, workflow_id, head_sha: sha, event: 'push', per_page: 100
+                });
+                return data.workflow_runs.find(run =>
+                  run.head_sha === sha && run.event === 'push' && branches.includes(run.head_branch));
+              }));
+              for (const [index, run] of runs.entries()) {
+                if (run?.status === 'completed' && run.conclusion !== 'success') {
+                  core.setFailed(`${workflows[index]} did not pass for ${sha}: ${run.conclusion}`);
+                  return;
+                }
+              }
+              if (completed(runs)) {
+                const native = runs[1];
+                const {data} = await github.rest.actions.listJobsForWorkflowRun({
+                  ...repository, run_id: native.id, filter: 'latest', per_page: 100
+                });
+                for (const arch of ['amd64', 'arm64']) {
+                  const name = `Native workspace and offline recovery (${arch})`;
+                  const matches = data.jobs.filter(job => job.name === name);
+                  if (matches.length !== 1 || matches[0].head_sha !== sha ||
+                      matches[0].status !== 'completed' || matches[0].conclusion !== 'success') {
+                    core.setFailed(`${name} did not pass for ${sha}`);
+                    return;
+                  }
+                }
+                core.info(`Release validation passed for ${sha}: Tests run ${runs[0].id}, native run ${native.id}`);
+                return;
+              }
+              if (attempt < 119) await new Promise(resolve => setTimeout(resolve, 15000));
+            }
+            core.setFailed(`Timed out waiting for successful release validation on ${sha}`);
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
