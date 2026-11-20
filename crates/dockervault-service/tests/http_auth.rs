@@ -13,6 +13,8 @@ use tokio::{
     task::JoinHandle,
 };
 static NEXT: AtomicU64 = AtomicU64::new(0);
+// These scenarios share the production process-wide, single-slot recovery KDF.
+static RECOVERY_KDF_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 struct Server {
     state: http::HttpState,
     path: PathBuf,
@@ -2257,7 +2259,90 @@ async fn sftp_backup_durably_admits_the_copy_before_provider_io() {
 }
 
 #[tokio::test]
+async fn recovery_export_is_admin_only_and_returns_an_encrypted_read_only_snapshot() {
+    let _kdf = RECOVERY_KDF_TEST.lock().await;
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("cookie", cookie.as_str()),
+        ("origin", "http://localhost:3000"),
+    ];
+    let route = "/api/v1/recovery/export";
+    let password = "PUBLIC_TEST_EXPORT_PASSWORD";
+    let valid = json!({"password":password,"confirm_password":password});
+    assert_eq!(
+        server
+            .request("POST", route, &[], Some(valid.clone()))
+            .await
+            .0,
+        401
+    );
+    for (request, detail) in [
+        (json!({"password":password}), "Invalid recovery request"),
+        (
+            json!({"password":password,"confirm_password":"different"}),
+            "Enter and confirm the dedicated system-backup password",
+        ),
+    ] {
+        let (status, _, body) = server.request("POST", route, &headers, Some(request)).await;
+        assert_eq!((status, body), (400, json!({"detail":detail})));
+    }
+    let db = server.db.pool();
+    sqlx::raw_sql(
+        "INSERT INTO backup_targets (id,name,target_type) VALUES (1,'Export fixture','path');
+        INSERT INTO backups (id,target_id,status,backup_type) VALUES (2,1,'COMPLETED','FULL');",
+    )
+    .execute(db)
+    .await
+    .unwrap();
+    let (status, response, envelope) = server.request("POST", route, &headers, Some(valid)).await;
+    assert_eq!(status, 200);
+    for header in [
+        "cache-control: no-store",
+        "pragma: no-cache",
+        "x-content-type-options: nosniff",
+        "content-type: application/octet-stream",
+        "content-disposition: attachment; filename=\"dockervault-system-backup.dockervault\"",
+    ] {
+        assert!(response.contains(header), "missing {header}");
+    }
+    let bytes = serde_json::to_vec(&envelope).unwrap();
+    assert!(!String::from_utf8_lossy(&bytes).contains("Export fixture"));
+    let catalog = dockervault_core::recovery_bundle::decode_bundle(&bytes, password).unwrap();
+    assert_eq!(catalog["tables"]["backups"][0]["id"], 2);
+    assert!(catalog["tables"].get("users").is_none());
+    assert!(catalog["tables"].get("sessions").is_none());
+    assert_eq!(
+        catalog["manifest"],
+        dockervault_core::recovery_state::state_manifest(&catalog).unwrap()
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT status FROM backups WHERE id=2")
+            .fetch_one(db)
+            .await
+            .unwrap(),
+        "COMPLETED"
+    );
+    sqlx::query("UPDATE users SET is_admin=0")
+        .execute(db)
+        .await
+        .unwrap();
+    let (status, _, body) = server
+        .request(
+            "POST",
+            route,
+            &headers,
+            Some(json!({"password":password,"confirm_password":password})),
+        )
+        .await;
+    assert_eq!(status, 403);
+    assert_eq!(body, json!({"detail":"Administrator access required"}));
+    server.close().await;
+}
+
+#[tokio::test]
 async fn recovery_preview_is_private_read_only_and_available_only_before_setup() {
+    let _kdf = RECOVERY_KDF_TEST.lock().await;
     let server = Server::configured(Config::from_pairs([("TZ", "UTC")]).unwrap()).await;
     let fixture: Value = serde_json::from_str(include_str!(
         "../../dockervault-core/tests/fixtures/recovery-state.TEST_ONLY.json"

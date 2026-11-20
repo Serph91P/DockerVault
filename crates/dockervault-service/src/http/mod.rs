@@ -13,6 +13,7 @@ pub use copy_removal::recover_copy_removals;
 mod ftp_sync;
 mod operations;
 mod overview;
+mod recovery_export;
 mod recovery_preview;
 mod recovery_status;
 mod retention;
@@ -121,6 +122,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/recovery/preview", post(recovery_preview::preview))
+        .route("/api/v1/recovery/export", post(recovery_export::export))
         .route("/api/v1/overview/summary", get(overview::summary))
         .route("/api/v1/docker/health", get(docker_inventory::health))
         .route(

@@ -163,6 +163,62 @@ pub(super) async fn download_public(
     )
 }
 
+pub(super) fn export_public(
+    restored: Option<&str>,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<Vec<serde_json::Value>, ()> {
+    use std::collections::BTreeMap;
+    #[derive(serde::Deserialize)]
+    struct PublicKey {
+        name: String,
+        public_key: String,
+    }
+    let restored: Vec<PublicKey> =
+        serde_json::from_str(restored.unwrap_or("[]")).map_err(|_| ())?;
+    let mut keys = BTreeMap::new();
+    for PublicKey { name, public_key } in restored {
+        let key = dockervault_core::ssh_public::canonical_public_key(public_key.as_bytes())
+            .map_err(|_| ())?;
+        keys.insert(name, key);
+    }
+    let root = FsPath::new(KEY_ROOT);
+    if root.exists() {
+        let dir = crate::storage::local::open_root(root).map_err(|_| ())?;
+        for entry in
+            std::fs::read_dir(format!("/proc/self/fd/{}", dir.as_raw_fd())).map_err(|_| ())?
+        {
+            if cancel.is_cancelled() {
+                return Err(());
+            }
+            let entry = entry.map_err(|_| ())?;
+            let filename = entry.file_name();
+            let Some(name) = filename
+                .to_str()
+                .and_then(|name| name.strip_suffix(".pub"))
+                .filter(|name| valid_name(name))
+            else {
+                continue;
+            };
+            if entry.file_type().map_err(|_| ())?.is_symlink() {
+                continue;
+            }
+            let file = crate::storage::local::open_download_source(root, FsPath::new(&filename))
+                .map_err(|_| ())?;
+            let mut bytes = Vec::new();
+            file.take(16_385).read_to_end(&mut bytes).map_err(|_| ())?;
+            if bytes.len() > 16_384 {
+                return Err(());
+            }
+            let key = dockervault_core::ssh_public::canonical_public_key(&bytes).map_err(|_| ())?;
+            keys.insert(name.to_owned(), key);
+        }
+    }
+    Ok(keys
+        .into_iter()
+        .map(|(name, public_key)| json!({"name":name,"public_key":public_key}))
+        .collect())
+}
+
 fn read_public(root: &FsPath, filename: &FsPath) -> Option<Vec<u8>> {
     let file = crate::storage::local::open_download_source(root, filename).ok()?;
     let mut bytes = Vec::new();

@@ -137,7 +137,7 @@ pub struct Schedule {
     #[serde(deserialize_with = "nullable")]
     pub updated_at: Option<Timestamp>,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteStorage {
     #[serde(deserialize_with = "id")]

@@ -16,6 +16,10 @@ use zeroize::Zeroizing;
 
 const MAX_BUNDLE: usize = 32 * 1024 * 1024;
 pub const MAX_PAYLOAD: usize = 24 * 1024 * 1024 - 1024;
+pub fn passwords_match(password: &str, confirmation: &str) -> bool {
+    password.len() == confirmation.len()
+        && openssl::memcmp::eq(password.as_bytes(), confirmation.as_bytes())
+}
 static KDF_BUSY: AtomicBool = AtomicBool::new(false);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BundleError {

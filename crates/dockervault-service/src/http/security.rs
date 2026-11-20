@@ -359,7 +359,7 @@ pub(super) async fn guard(
 pub(super) async fn recovery_privacy(request: Request, next: Next) -> Response {
     let private = matches!(
         request.uri().path(),
-        "/api/v1/recovery/preview" | "/api/v1/recovery/status"
+        "/api/v1/recovery/preview" | "/api/v1/recovery/status" | "/api/v1/recovery/export"
     );
     let mut response = next.run(request).await;
     if private {
