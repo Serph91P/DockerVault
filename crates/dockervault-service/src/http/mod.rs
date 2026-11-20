@@ -277,6 +277,8 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/operations/{id}/cancel", post(operations::cancel))
         .route("/api/v1/operations/{id}/retry", post(operations::retry))
         .route("/api/v1/storage/types", get(storage::types))
+        .route("/api/v1/storage/ssh-keys", get(ssh_keys::list))
+        .route("/api/v1/storage/ssh-keys/{name}", get(ssh_keys::detail))
         .route(
             "/api/v1/storage/ssh-keys/{name}/public",
             get(ssh_keys::download_public),

@@ -1470,6 +1470,22 @@ async fn ssh_public_key_download_requires_auth_and_checks_the_key_name() {
 }
 
 #[tokio::test]
+async fn ssh_key_metadata_routes_use_the_legacy_empty_and_missing_replies() {
+    let server = Server::start("http://localhost:3000").await;
+    let root = "/api/v1/storage/ssh-keys";
+    let cookie = server.setup().await;
+    let headers = [("cookie", cookie.as_str())];
+    assert_eq!(server.request("GET", root, &[], None).await.0, 401);
+    let (status, _, body) = server.request("GET", root, &headers, None).await;
+    assert_eq!((status, body), (200, json!([])));
+    let (status, _, body) = server
+        .request("GET", &format!("{root}/_missing_fixture_"), &headers, None)
+        .await;
+    assert_eq!((status, body), (404, json!({"detail":"SSH key not found"})));
+    server.close().await;
+}
+
+#[tokio::test]
 async fn schedule_batch_runs_enabled_targets_sequentially() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
