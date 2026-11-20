@@ -584,6 +584,142 @@ pub fn assemble_canonical(
     Ok(json!({"schema_version":1,"roots":output_roots,"remotes":selected,"files":all_files}))
 }
 
+/// Combine already normalized snapshots without conflating same-named remotes.
+pub fn merge_snapshots(
+    managed: Value,
+    external: Value,
+    storages: &mut [RemoteStorage],
+    options: &BTreeMap<String, BTreeSet<String>>,
+    cancel: &dyn Fn() -> bool,
+) -> Result<Value> {
+    let names = |packet: &Value| -> Result<BTreeSet<String>> {
+        let mut names: BTreeSet<_> = packet["remotes"]
+            .as_object()
+            .ok_or(Invalid)?
+            .keys()
+            .cloned()
+            .collect();
+        for root in packet["roots"].as_array().ok_or(Invalid)? {
+            names.insert(root["remote_name"].as_str().ok_or(Invalid)?.to_owned());
+        }
+        Ok(names)
+    };
+    let occupied = names(&managed)?;
+    let external_names = names(&external)?;
+    let mut reserved: BTreeSet<_> = occupied.union(&external_names).cloned().collect();
+    let mut renamed = BTreeMap::new();
+    for name in occupied.intersection(&external_names) {
+        let hash = openssl::sha::sha256(name.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let mut replacement = format!("__dv_external_{hash}");
+        while reserved.contains(&replacement) {
+            replacement.push('_');
+        }
+        reserved.insert(replacement.clone());
+        renamed.insert(name.clone(), replacement);
+    }
+    let rename = |name: &str| {
+        renamed
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| name.to_owned())
+    };
+    let reference = |value: &str| -> Result<String> {
+        Ok(match canonical_reference(value)? {
+            Some(name) => format!(
+                "{}:{}",
+                rename(&name),
+                rclone_path::parse(value).map_err(|_| Invalid)?.path
+            ),
+            None => value.to_owned(),
+        })
+    };
+    let mut remotes = managed["remotes"].as_object().ok_or(Invalid)?.clone();
+    for (name, node) in external["remotes"].as_object().ok_or(Invalid)? {
+        if cancel() {
+            return Err(RcloneError::Cancelled);
+        }
+        let mut node = node.clone();
+        match node["type"].as_str().ok_or(Invalid)? {
+            "alias" | "crypt" | "chunker" | "compress" | "hasher" | "archive" | "cache" => {
+                node["remote"] = json!(reference(node["remote"].as_str().ok_or(Invalid)?)?);
+            }
+            kind @ ("combine" | "union") => {
+                let mut output = Vec::new();
+                for value in space_list(node["upstreams"].as_str().ok_or(Invalid)?)? {
+                    if kind == "combine" {
+                        let (mount, target) = value.split_once('=').ok_or(Invalid)?;
+                        output.push(format!("{mount}={}", reference(target)?));
+                    } else {
+                        let (target, suffix) = [":writeback", ":ro", ":nc"]
+                            .into_iter()
+                            .find_map(|flag| value.strip_suffix(flag).map(|v| (v, flag)))
+                            .unwrap_or((&value, ""));
+                        output.push(format!("{}{suffix}", reference(target)?));
+                    }
+                }
+                node["upstreams"] = json!(csv(&output));
+            }
+            _ => {}
+        }
+        if remotes.insert(rename(name), node).is_some() {
+            return Err(Invalid);
+        }
+    }
+    let mut files = managed["files"].as_object().ok_or(Invalid)?.clone();
+    for (id, value) in external["files"].as_object().ok_or(Invalid)? {
+        if files.get(id).is_some_and(|old| old != value) {
+            return Err(Invalid);
+        }
+        files.insert(id.clone(), value.clone());
+    }
+    let mut roots = BTreeMap::new();
+    for (packet, is_external) in [(managed, false), (external, true)] {
+        for root in packet["roots"].as_array().ok_or(Invalid)? {
+            let mut root = root.clone();
+            if is_external {
+                root["remote_name"] = json!(rename(root["remote_name"].as_str().ok_or(Invalid)?));
+                for field in ["ssh_requirements", "external_commands"] {
+                    if let Some(values) = root.get_mut(field) {
+                        let values = values.as_array_mut().ok_or(Invalid)?;
+                        for value in &mut *values {
+                            value["remote"] =
+                                json!(rename(value["remote"].as_str().ok_or(Invalid)?));
+                        }
+                        values.sort_by(|a, b| {
+                            (a["remote"].as_str(), a["field"].as_str())
+                                .cmp(&(b["remote"].as_str(), b["field"].as_str()))
+                        });
+                    }
+                }
+            }
+            if roots
+                .insert(root["storage_id"].as_i64().ok_or(Invalid)?, root)
+                .is_some()
+            {
+                return Err(Invalid);
+            }
+        }
+    }
+    let mut ordered = Vec::new();
+    for row in storages
+        .iter_mut()
+        .filter(|row| row.storage_type == "rclone")
+    {
+        let root = roots.remove(&row.id).ok_or(Invalid)?;
+        row.rclone_remote = Some(root["remote_name"].as_str().ok_or(Invalid)?.to_owned());
+        ordered.push(root);
+    }
+    if !roots.is_empty() {
+        return Err(Invalid);
+    }
+    let packet = json!({"schema_version":1,"roots":ordered,"remotes":remotes,"files":files});
+    validate(&packet, storages, options, cancel)?;
+    Ok(packet)
+}
+
 pub fn validate(
     payload: &Value,
     storages: &[RemoteStorage],

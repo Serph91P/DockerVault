@@ -5,6 +5,61 @@ pub use managed::{ManagedCommandOutput, ManagedConfigBuilder};
 use std::collections::{BTreeMap, BTreeSet};
 type Options = BTreeMap<String, BTreeSet<String>>;
 const OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
+
+/// Offline config dump from an already opened file. Keep the descriptor alive
+/// until the supervised child has exited, even on cancellation.
+pub(crate) async fn external_config_dump(
+    processes: &crate::process::ProcessOwner,
+    file: std::fs::File,
+    password: &str,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<serde_json::Value, RcloneError> {
+    use RcloneError::{Cancelled, Invalid};
+    use std::os::fd::AsRawFd;
+    if cancel.is_cancelled() {
+        return Err(Cancelled);
+    }
+    let pinned = format!("/proc/{}/fd/{}", std::process::id(), file.as_raw_fd());
+    let mut spec = crate::process::ProcessSpec::new(
+        "/usr/local/bin/rclone",
+        [
+            "--config",
+            &pinned,
+            "--ask-password=false",
+            "config",
+            "dump",
+        ],
+    );
+    spec.timeout = Some(std::time::Duration::from_secs(15));
+    spec.stdout_limit = OUTPUT_LIMIT;
+    spec.env = vec![
+        ("HOME".into(), "/nonexistent".into()),
+        ("LANG".into(), "C.UTF-8".into()),
+    ];
+    if !password.is_empty() {
+        spec.env
+            .push(("RCLONE_CONFIG_PASS".into(), password.into()));
+    }
+    let work = processes.start(spec).map_err(|_| Invalid)?;
+    let stop = work.cancellation_token();
+    let waiting = work.wait();
+    tokio::pin!(waiting);
+    let output = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => {
+            stop.cancel();
+            let _ = waiting.await;
+            return Err(Cancelled);
+        }
+        result = &mut waiting => result.map_err(|_| Invalid)?.map_err(|_| Invalid)?,
+    };
+    drop(file);
+    if !output.status.success() {
+        return Err(Invalid);
+    }
+    let bytes = zeroize::Zeroizing::new(output.stdout);
+    serde_json::from_slice(&bytes).map_err(|_| Invalid)
+}
 pub async fn provider_options(
     processes: &crate::process::ProcessOwner,
     blocking: &crate::ownership::Owner,

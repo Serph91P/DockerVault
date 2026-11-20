@@ -141,7 +141,7 @@ async fn run(
     let config = state.config.clone();
     let blocking = state.auth.blocking();
     let owner_cancel = cancel.clone();
-    let (claim, catalog, ssh, managed, cipher) = blocking.submit_blocking(move |physical| {
+    let (claim, mut catalog, ssh, managed, cipher) = blocking.submit_blocking(move |physical| {
         let cancelled = || owner_cancel.is_cancelled() || physical.is_cancelled();
         if cancelled() { return Err(INTERNAL); }
         let claim = claims.try_claim(ClaimKind::Crypto).map_err(|err| match err {
@@ -188,7 +188,9 @@ async fn run(
         let ssh = super::ssh_keys::export_public(public.as_deref(), &owner_cancel).map_err(|_| INVALID)?;
         Ok((claim, catalog, ssh, managed, cipher))
     }).map_err(|_| BUSY)?.wait().await.map_err(|_| INTERNAL)??;
-    let rclone = if let Some(managed) = managed {
+    let mut managed_packet = None;
+    let mut external_rows = Vec::new();
+    if let Some(managed) = managed {
         let roots = managed["roots"].as_array().ok_or(INVALID)?;
         let mut storages = Vec::new();
         for row in catalog
@@ -196,12 +198,13 @@ async fn run(
             .iter()
             .filter(|row| row.storage_type == "rclone")
         {
-            // Unmanaged configuration needs its own portable-snapshot adapter.
-            // Do not silently reclassify it as a missing or stripped managed remote.
             let mut matching = roots
                 .iter()
                 .filter(|root| root["storage_id"].as_i64() == Some(row.id));
-            let root = matching.next().ok_or(INVALID)?;
+            let Some(root) = matching.next() else {
+                external_rows.push(row.clone());
+                continue;
+            };
             if matching.next().is_some()
                 || root["remote_name"].as_str() != row.rclone_remote.as_deref()
             {
@@ -221,12 +224,12 @@ async fn run(
             binary.into(),
         );
         let work = runner
-            .start_export_managed(managed, cipher.ok_or(INVALID)?, storages, options)
+            .start_export_managed(managed, cipher.ok_or(INVALID)?, storages, options.clone())
             .map_err(|_| BUSY)?;
         let stop = work.cancellation_token();
         let waiting = work.wait();
         tokio::pin!(waiting);
-        tokio::select! {
+        let packet = tokio::select! {
             biased;
             _ = cancel.cancelled() => {
                 stop.cancel();
@@ -234,41 +237,114 @@ async fn run(
                 return Err(INTERNAL);
             }
             outcome = &mut waiting => outcome.map_err(|_| INTERNAL)?.map_err(|_| INVALID)?,
-        }
-    } else if catalog
-        .remote_storages
-        .iter()
-        .any(|row| row.storage_type == "rclone")
-    {
-        match std::fs::symlink_metadata(&state.config.rclone_config) {
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
-                ) => {}
-            // A present external configuration has not been safely normalized yet.
-            _ => return Err(INVALID),
-        }
+        };
+        managed_packet = Some((packet, options));
+    } else {
+        external_rows.extend(
+            catalog
+                .remote_storages
+                .iter()
+                .filter(|row| row.storage_type == "rclone")
+                .cloned(),
+        );
+    }
+    let external = if !external_rows.is_empty() {
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = state.config.rclone_config.clone();
+        let file = blocking
+            .submit_blocking(move |_| {
+                match std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+                    .open(path)
+                {
+                    Ok(file) => {
+                        let metadata = file.metadata().map_err(|_| INVALID)?;
+                        if !metadata.is_file() || metadata.len() > 8 * 1024 * 1024 {
+                            return Err(INVALID);
+                        }
+                        Ok(Some(file))
+                    }
+                    Err(err)
+                        if matches!(
+                            err.kind(),
+                            std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+                        ) =>
+                    {
+                        Ok(None)
+                    }
+                    Err(_) => Err(INVALID),
+                }
+            })
+            .map_err(|_| BUSY)?
+            .wait()
+            .await
+            .map_err(|_| INTERNAL)??;
+        let (remotes, options) = if let Some(file) = file {
+            let processes = state.probe_processes.as_ref().ok_or(INVALID)?;
+            let binary = Path::new("/usr/local/bin/rclone");
+            let remotes = crate::rclone::external_config_dump(
+                processes,
+                file,
+                state.config.rclone_config_pass.expose(),
+                &cancel,
+            )
+            .await
+            .map_err(|_| INVALID)?;
+            let options =
+                crate::rclone::provider_options(processes, blocking, binary, cancel.clone())
+                    .await
+                    .map_err(|_| INVALID)?;
+            (remotes, options)
+        } else {
+            (json!({}), Default::default())
+        };
         let empty = json!({});
         let package = dockervault_core::rclone_package::assemble_canonical(
+            &remotes,
             &empty,
-            &empty,
-            &catalog.remote_storages,
+            &external_rows,
             &json!([]),
-            &Default::default(),
+            &options,
             &|| cancel.is_cancelled(),
         )
         .map_err(|_| INVALID)?;
-        dockervault_core::rclone_package::validate(
-            &package,
-            &catalog.remote_storages,
-            &Default::default(),
-            &|| cancel.is_cancelled(),
-        )
+        // A present but non-canonical referenced remote still needs the external
+        // normalization adapter. Do not conceal it as a missing configuration.
+        if package["roots"]
+            .as_array()
+            .ok_or(INVALID)?
+            .iter()
+            .any(|root| {
+                root["reason"] == "external_or_unsafe_dependency"
+                    && root["remote_name"]
+                        .as_str()
+                        .is_some_and(|name| remotes.get(name).is_some())
+            })
+        {
+            return Err(INVALID);
+        }
+        dockervault_core::rclone_package::validate(&package, &external_rows, &options, &|| {
+            cancel.is_cancelled()
+        })
         .map_err(|_| INVALID)?;
-        package
+        Some(package)
     } else {
-        json!({"schema_version":1,"roots":[],"remotes":{},"files":{}})
+        None
+    };
+    let rclone = match (managed_packet, external) {
+        (Some((managed, options)), Some(external)) => {
+            dockervault_core::rclone_package::merge_snapshots(
+                managed,
+                external,
+                &mut catalog.remote_storages,
+                &options,
+                &|| cancel.is_cancelled(),
+            )
+            .map_err(|_| INVALID)?
+        }
+        (Some((packet, _)), None) | (None, Some(packet)) => packet,
+        (None, None) => json!({"schema_version":1,"roots":[],"remotes":{},"files":{}}),
     };
     let root = std::path::absolute(&state.config.backup_base_path).map_err(|_| INTERNAL)?;
     blocking.submit_blocking(move |physical| {
