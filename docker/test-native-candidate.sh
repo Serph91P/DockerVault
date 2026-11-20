@@ -36,6 +36,21 @@ docker exec "$container" sh -eu -c '
         test "$(stat -c %u:%g:%a "$file")" = 0:0:755
     done
 '
+# Fetch the advertised native executable through nginx, not directly from the image.
+arch=$(docker image inspect --format '{{.Architecture}}' "$image")
+revision=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")
+docker exec -u dockervault "$container" sh -eu -c '
+    cd /tmp
+    curl -fsS http://127.0.0.1/recovery-tools/manifest.json -o recovery-manifest.json
+    curl -fsS http://127.0.0.1/recovery-tools/dockervault-recover -o downloaded-recovery
+    cmp downloaded-recovery /usr/local/bin/dockervault-recover
+    hash=$(sha256sum downloaded-recovery); hash=${hash%% *}
+    expected=$(printf "{\"os\":\"linux\",\"arch\":\"%s\",\"revision\":\"%s\",\"file\":\"dockervault-recover\",\"sha256\":\"%s\"}" "$1" "$2" "$hash")
+    test "$(cat recovery-manifest.json)" = "$expected"
+    test "$(curl -sS -o /dev/null -w "%{http_code}" http://127.0.0.1/recovery-tools/missing)" = 404
+    chmod 700 downloaded-recovery
+    env -i ./downloaded-recovery --help >/dev/null
+' sh "$arch" "$revision"
 # Reading /proc/PID/exe needs the service UID under Docker's default capabilities.
 pid=$(docker exec "$container" s6-svstat -o pid /run/dockervault/services/backend)
 test "$(docker exec -u 1000:1000 "$container" readlink "/proc/$pid/exe")" = /usr/local/bin/dockervault-service

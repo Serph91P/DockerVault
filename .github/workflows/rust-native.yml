@@ -46,11 +46,12 @@ jobs:
           test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = 'linux/${{ matrix.arch }}'
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$sha"
           sh docker/test-native-candidate.sh "$image"
-      - name: Exercise native policy routes through the packaged frontend
+      - name: Exercise policy routes and recovery downloads through the packaged frontend
         if: matrix.arch == 'amd64'
         run: |
           docker build -f backend/tests/browser.Dockerfile -t dockervault-native-browser-ci .
           bash docker/test-native-policy-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci
+          bash docker/test-native-policy-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci native
       - name: Rehearse exclusive writer startup with fenced Python rollback
         shell: bash
         run: |
@@ -66,6 +67,9 @@ jobs:
           test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' dockervault-python-rollback-ci)" = 'linux/${{ matrix.arch }}'
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' dockervault-python-rollback-ci)" = "$ref"
           sh docker/test-writer-fence.sh dockervault-native-candidate-ci dockervault-python-rollback-ci
+      - name: Verify the fenced Python recovery download after native handoff
+        if: matrix.arch == 'amd64'
+        run: bash docker/test-native-policy-browser.sh dockervault-python-rollback-ci dockervault-native-browser-ci python dockervault-native-candidate-ci
       - name: Native pinned rclone capabilities and encrypted preparation without network
         run: |
           docker build -f docker/rclone-test.Dockerfile -t dockervault-rclone-ci .

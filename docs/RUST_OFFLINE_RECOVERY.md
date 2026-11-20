@@ -6,6 +6,19 @@ separate full recovery-bundle feature. Service/API/frontend migration remains
 pending the reviewed live-base integration; do not infer that the currently
 published Python download endpoint has already changed.
 
+## Save the native candidate's recovery tool
+
+The opt-in native application serves `/recovery-tools/manifest.json` and
+`/recovery-tools/dockervault-recover`. Save both from the same trusted candidate
+before disconnecting. The manifest identifies the executable's SHA-256, source
+revision and platform (`linux/amd64` or `linux/arm64`); the download matches the
+**server image's** architecture, not necessarily the machine running the browser.
+Check the platform and checksum before use. The checksum detects mismatched or
+damaged files; it does not authenticate a manifest from an untrusted server.
+This is not a replacement for release attestations or a download for macOS or
+Windows. `/recover_backup.py` still belongs to the Python reference, not to
+the candidate.
+
 ## Recover an existing backup
 
 ```sh

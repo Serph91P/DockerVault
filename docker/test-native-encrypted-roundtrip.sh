@@ -43,6 +43,7 @@ api() {
 }
 recovery=$(docker run --detach --rm --pull=never --network none --read-only \
     --tmpfs /work:rw,uid=1000,gid=1000,mode=0700,size=16m \
+    --tmpfs /tool:rw,exec,nosuid,nodev,uid=1000,gid=1000,mode=0700,size=16m \
     --user 1000:1000 --entrypoint /bin/sleep "$recovery_image" infinity)
 # Only the fresh synthetic identity is passed over stdin; no response logging or host file.
 api POST /encryption/setup --data '{}' | jq -er '.private_key | strings | select(startswith("AGE-SECRET-KEY-"))' | \
@@ -71,6 +72,19 @@ ready
 test "$(docker exec "$app" stat -c %i /app/data/backup.db)" = "$inode"
 api GET "/backups/$backup" | jq -e '.status == "completed" and .encrypted == true' >/dev/null
 
+download_base=http://127.0.0.1/recovery-tools
+download_sha=$(docker exec "$app" curl -fsS "$download_base/manifest.json" | jq -er \
+    --arg rev "$rev" --arg arch "$(docker image inspect -f '{{.Architecture}}' "$app_image")" '
+    select(.os == "linux" and .arch == $arch and .revision == $rev and .file == "dockervault-recover") |
+    .sha256 | strings | select(test("^[0-9a-f]{64}$"))')
+docker exec "$app" curl -fsS "$download_base/dockervault-recover" | \
+    docker exec -i "$recovery" /bin/sh -ec '
+        cd /tool; umask 077
+        cat > dockervault-recover
+        printf "%s  %s\n" "$1" dockervault-recover | sha256sum --check -
+        chmod 700 dockervault-recover
+    ' sh "$download_sha"
+
 docker exec -u 1000:1000 "$app" sh -ec '
     cd /backups/native-roundtrip
     set -- *.tar.enc
@@ -87,5 +101,7 @@ docker exec "$recovery" /bin/sh -ec '
     printf "DockerVault encrypted candidate fixture\n" > expected
     tar -xOf restored.tar dv-encrypted-roundtrip/content > actual
     cmp expected actual
+    env -i /tool/dockervault-recover --identity identity --archive "$1" --key "${1%.enc}.key" --output downloaded.tar >/dev/null
+    cmp restored.tar downloaded.tar
 '
 printf 'Authenticated encrypted backup, database reopen and standalone offline recovery passed: %s\n' "$rev"
