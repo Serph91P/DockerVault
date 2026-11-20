@@ -561,6 +561,39 @@ async fn started_scheduler_dispatches_and_rechecks_targets_before_admission() {
 }
 
 #[tokio::test]
+async fn scheduler_projects_retained_plans_when_recovery_gate_reopens() {
+    let server = Server::configured(Config::from_pairs([("TZ", "UTC")]).unwrap()).await;
+    let cookie = server.setup().await;
+    let headers = [("Cookie", cookie.as_str())];
+    let db = server.db.pool();
+    sqlx::raw_sql("INSERT INTO app_settings(key,value) VALUES('recovery_activation','{}'); INSERT INTO backup_targets(id,name,target_type,enabled,schedule_cron) VALUES(191,'Recovered','path',1,'0 3 * * *');").execute(db).await.unwrap();
+    server.state.start_scheduler().await;
+    let route = "/api/v1/schedules/jobs";
+    assert_eq!(
+        server.request("GET", route, &headers, None).await.2,
+        json!([])
+    );
+    sqlx::query("DELETE FROM app_settings WHERE key='recovery_activation'")
+        .execute(db)
+        .await
+        .unwrap();
+    let jobs = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let (_, _, jobs) = server.request("GET", route, &headers, None).await;
+            if jobs != json!([]) {
+                break jobs;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(jobs.as_array().unwrap().len(), 1);
+    assert_eq!(jobs[0]["id"], "backup_target_191");
+    server.close().await;
+}
+
+#[tokio::test]
 async fn system_info_is_authenticated_and_redacts_configured_paths() {
     let server = Server::start("http://localhost:3000").await;
     let path = "/api/v1/settings/system-info";

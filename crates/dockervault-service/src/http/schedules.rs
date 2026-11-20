@@ -180,6 +180,7 @@ pub(super) async fn start(state: &HttpState) {
     }
     let state = state.clone();
     *worker = Some(tokio::spawn(async move {
+        let mut recovery = None;
         let mut maintenance = Cron::load(&state).ok().map(|cron| {
             let jobs = maintenance_jobs(cron.now, &cron.zone);
             (cron.zone, jobs)
@@ -191,6 +192,7 @@ pub(super) async fn start(state: &HttpState) {
                 biased;
                 _ = state.draining.cancelled() => break,
                 _ = interval.tick() => {
+                    refresh_recovery_projection(&state, &mut recovery).await;
                     dispatch_due(&state).await;
                     if let Some((zone, [retention, sessions])) = &mut maintenance {
                         let now = now();
@@ -211,6 +213,20 @@ pub(super) async fn start(state: &HttpState) {
 pub(super) async fn stop(state: &HttpState) {
     if let Some(worker) = state.scheduler.worker.lock().await.take() {
         let _ = worker.await;
+    }
+}
+
+async fn refresh_recovery_projection(state: &HttpState, projected: &mut Option<Option<String>>) {
+    let marker: Result<Option<Option<String>>, _> =
+        sqlx::query_scalar("SELECT value FROM app_settings WHERE key='recovery_activation'")
+            .fetch_optional(state.auth.pool())
+            .await;
+    let Ok(marker) = marker else {
+        return;
+    };
+    let marker = marker.flatten();
+    if projected.as_ref() != Some(&marker) && reconcile(state).await.is_ok() {
+        *projected = Some(marker);
     }
 }
 
