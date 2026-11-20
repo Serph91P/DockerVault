@@ -117,6 +117,7 @@ pub fn router(state: HttpState) -> Router {
                 .delete(retention::delete),
         )
         .route("/api/v1/retention/{id}/stats", get(retention::stats))
+        .route("/api/v1/retention/{id}/apply", post(retention::apply))
         .route(
             "/api/v1/schedules",
             get(schedules::list).post(schedules::create),

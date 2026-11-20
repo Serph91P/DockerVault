@@ -12,6 +12,7 @@ pub mod rclone_path;
 pub mod rclone_ssh;
 pub mod recovery_bundle;
 pub mod recovery_state;
+pub mod retention;
 pub mod ssh_public;
 pub mod storage_validation;
 pub mod timestamp;

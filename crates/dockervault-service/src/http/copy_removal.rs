@@ -199,8 +199,8 @@ impl Previews {
 
 #[path = "copy_removal_execute.rs"]
 mod execution;
-pub(super) use execution::execute;
 pub use execution::recover as recover_copy_removals;
+pub(super) use execution::{apply_retention, execute};
 
 fn detail(status: StatusCode, message: &'static str) -> Response {
     (status, Json(json!({"detail":message}))).into_response()

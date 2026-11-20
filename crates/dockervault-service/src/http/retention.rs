@@ -18,6 +18,76 @@ const FIELDS: [(&str, i64, i64, i64); 6] = [
     ("max_age_days", 365, 1, 36500),
 ];
 
+pub(super) struct Selection {
+    pub kept: usize,
+    pub expired: Vec<i64>,
+}
+
+pub(super) async fn select(
+    db: &mut sqlx::SqliteConnection,
+    target: i64,
+    now: i64,
+) -> Result<Selection, &'static str> {
+    use dockervault_core::retention::{Policy, keep};
+    let (removed, policy_id): (bool, Option<i64>) = sqlx::query_as(
+        "SELECT removed_at IS NOT NULL, retention_policy_id FROM backup_targets WHERE id=?",
+    )
+    .bind(target)
+    .fetch_optional(&mut *db)
+    .await
+    .map_err(|_| "Could not read retention selection")?
+    .ok_or("Target not found")?;
+    if removed {
+        return Err("Plan removed");
+    }
+    let (keep_last, daily, weekly, monthly, yearly, max_age_days): (Option<i64>, i64, i64, i64, i64, i64) = sqlx::query_as("SELECT keep_last,keep_daily,keep_weekly,keep_monthly,keep_yearly,max_age_days FROM retention_policies WHERE id=?1 OR (?1 IS NULL AND name='default')")
+        .bind(policy_id.filter(|id| *id != 0)).fetch_optional(&mut *db).await.map_err(|_| "Could not read retention selection")?.ok_or("No policy found")?;
+    let rows = sqlx::query_as::<_, (i64, String)>("SELECT id,created_at FROM backups WHERE target_id=? AND status='COMPLETED' ORDER BY created_at DESC,id ASC")
+        .bind(target).fetch_all(&mut *db).await.map_err(|_| "Could not read retention selection")?;
+    let rows = rows
+        .into_iter()
+        .map(|(id, raw)| Timestamp::parse(&raw).map(|stamp| (id, stamp)))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "Could not read retention selection")?;
+    let kept = keep(
+        &rows,
+        &Policy {
+            keep_last: keep_last.unwrap_or(0),
+            buckets: [daily, weekly, monthly, yearly],
+            max_age_days,
+        },
+        now,
+    );
+    Ok(Selection {
+        kept: kept.len(),
+        expired: rows
+            .into_iter()
+            .map(|(id, _)| id)
+            .filter(|id| !kept.contains(id))
+            .collect(),
+    })
+}
+
+pub(super) async fn apply(
+    State(state): State<HttpState>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Err(response) = auth::required_user(&state, &headers).await {
+        return *response;
+    }
+    let Some(id) = super::operations::query_integer(&id) else {
+        return invalid_id("path.target_id");
+    };
+    match super::copy_removal::apply_retention(&state, id).await {
+        Ok((kept, deleted)) => Json(json!({"kept":kept,"deleted":deleted})).into_response(),
+        Err(message @ ("Target not found" | "Plan removed" | "No policy found")) => {
+            failure(StatusCode::BAD_REQUEST, message)
+        }
+        Err(_) => internal(),
+    }
+}
+
 type PolicyFields<'a> = (Option<&'a str>, [Option<i64>; 6]);
 
 fn write_fields(body: &Value, create: bool) -> Result<PolicyFields<'_>, Vec<Value>> {

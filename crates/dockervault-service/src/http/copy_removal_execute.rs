@@ -1,6 +1,6 @@
 use super::{
-    Confirmation, HttpState, Item, RemoteCopy, detail, inspect, inspect_replica, required_user,
-    validation,
+    Confirmation, HttpState, Item, LocalCopy, RemoteCopy, Scope, detail, inspect, inspect_replica,
+    required_user, validation,
 };
 use crate::{jobs::Resource, storage::local::delete_reviewed_leaf};
 use axum::{
@@ -13,6 +13,98 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{os::unix::fs::MetadataExt, path::PathBuf, sync::Arc, time::Instant};
 use tokio_util::sync::CancellationToken;
+
+pub(in crate::http) async fn apply_retention(
+    state: &HttpState,
+    target: i64,
+) -> Result<(usize, usize), &'static str> {
+    let ctx = state.clone();
+    let (send, recv) = tokio::sync::oneshot::channel();
+    state
+        .backup_jobs
+        .submit_async(move |cancel| async move {
+            let _ = send.send(retain_local(&ctx, target, &cancel).await);
+        })
+        .map_err(|_| "Retention capacity exhausted")?
+        .detach();
+    recv.await.map_err(|_| "Retention interrupted")?
+}
+
+async fn retain_local(
+    state: &HttpState,
+    target: i64,
+    cancel: &CancellationToken,
+) -> Result<(usize, usize), &'static str> {
+    const ERROR: &str = "Could not read retention selection";
+    let _claim = state
+        .backup_claims
+        .acquire([Resource::target(target)], cancel)
+        .await
+        .map_err(|_| "Retention interrupted")?;
+    let now = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000) as i64;
+    let mut tx = state.auth.pool().begin().await.map_err(|_| ERROR)?;
+    let selection = super::super::retention::select(&mut tx, target, now).await?;
+    let rows = sqlx::query_as::<_, super::Backup>("SELECT b.id,b.target_id,t.name,b.file_path,b.encryption_key_path,b.created_at,b.checksum,b.file_size,b.encrypted FROM backups b JOIN backup_targets t ON t.id=b.target_id WHERE b.target_id=? AND b.id IN (SELECT value FROM json_each(?)) AND (coalesce(b.file_path,'')!='' OR (coalesce(b.encryption_key_path,'')!='' AND NOT EXISTS(SELECT 1 FROM backup_storage_syncs s WHERE s.backup_id=b.id)))")
+        .bind(target).bind(json!(selection.expired).to_string()).fetch_all(&mut *tx).await.map_err(|_| ERROR)?;
+    tx.commit().await.map_err(|_| ERROR)?;
+    let root = PathBuf::from(&state.config.backup_base_path);
+    let reviewed = state
+        .download_jobs
+        .submit_blocking(move |cancel| {
+            rows.into_iter()
+                .take_while(|_| !cancel.is_cancelled())
+                .map(
+                    |(
+                        backup_id,
+                        target_id,
+                        target_name,
+                        archive,
+                        key,
+                        created,
+                        checksum,
+                        size,
+                        encrypted,
+                    )| {
+                        let files = inspect(&root, archive.as_deref(), key.as_deref()).ok();
+                        let local = LocalCopy {
+                            archive,
+                            key,
+                            row_identity: (created, checksum, size, encrypted),
+                            files,
+                        };
+                        Item {
+                            backup_id,
+                            target_id,
+                            target_name,
+                            copy: Scope::Local,
+                            storage_id: None,
+                            label: "Local copy".into(),
+                            local: Some(local),
+                            remote: None,
+                        }
+                    },
+                )
+                .collect::<Vec<_>>()
+        })
+        .map_err(|_| "Retention capacity exhausted")?
+        .wait()
+        .await
+        .map_err(|_| "Retention interrupted")?;
+    let mut deleted = 0;
+    for item in reviewed {
+        if cancel.is_cancelled() {
+            return Err("Retention interrupted");
+        }
+        if let Some(local) = &item.local
+            && remove_claimed_primary(state, &item, local, Some(now), cancel)
+                .await
+                .is_ok()
+        {
+            deleted += 1;
+        }
+    }
+    Ok((selection.kept, deleted))
+}
 
 #[derive(Deserialize)]
 pub(in crate::http) struct Execute {
@@ -426,18 +518,36 @@ async fn remove_local(
     let Some(local) = &item.local else {
         return remove_replica(state, item, cancel).await;
     };
-    let Some(files) = local.files.clone() else {
-        return Err(CHANGED);
-    };
     let _claim = state
         .backup_claims
         .acquire([Resource::target(item.target_id)], cancel)
         .await
         .map_err(|_| INCOMPLETE)?;
+    remove_claimed_primary(state, item, local, None, cancel).await
+}
+
+async fn remove_claimed_primary(
+    state: &HttpState,
+    item: &Item,
+    local: &LocalCopy,
+    retention_time: Option<i64>,
+    cancel: &CancellationToken,
+) -> Result<(), EntryError> {
+    let Some(files) = local.files.clone() else {
+        return Err(CHANGED);
+    };
     let mut db = state.auth.pool().acquire().await.map_err(|_| INCOMPLETE)?;
     let mut tx = sqlx::Connection::begin_with(&mut *db, "BEGIN IMMEDIATE")
         .await
         .map_err(|_| INCOMPLETE)?;
+    if let Some(now) = retention_time {
+        let selection = super::super::retention::select(&mut tx, item.target_id, now)
+            .await
+            .map_err(|_| INCOMPLETE)?;
+        if !selection.expired.contains(&item.backup_id) {
+            return Err(CHANGED);
+        }
+    }
     let row=sqlx::query_as::<_,Catalog>("SELECT target_id,file_path,encryption_key_path,created_at,checksum,file_size,encrypted,status FROM backups WHERE id=?")
         .bind(item.backup_id).fetch_optional(&mut *tx).await.map_err(|_|INCOMPLETE)?;
     let Some((target, archive, key, created, checksum, size, encrypted, status)) = row else {
@@ -476,6 +586,8 @@ async fn remove_local(
     // Check aliases owned by other catalog entries before removing either leaf.
     let others=sqlx::query_as::<_,(Option<String>,Option<String>)>("SELECT file_path,encryption_key_path FROM backups WHERE id!=? AND (file_path IS NOT NULL OR encryption_key_path IS NOT NULL)")
         .bind(item.backup_id).fetch_all(&mut *tx).await.map_err(|_|INCOMPLETE)?;
+    let replicas = sqlx::query_as::<_, (Option<String>, String, Option<bool>)>("SELECT r.base_path,s.remote_path,b.encrypted FROM backup_storage_syncs s JOIN remote_storages r ON r.id=s.storage_id JOIN backups b ON b.id=s.backup_id WHERE r.storage_type='local' AND coalesce(s.remote_path,'')!=''")
+        .fetch_all(&mut *tx).await.map_err(|_|INCOMPLETE)?;
     let remote: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM backup_storage_syncs WHERE backup_id=?)")
             .bind(item.backup_id)
@@ -496,6 +608,34 @@ async fn remove_local(
                 inspect(&root, archive.as_deref(), key.as_deref()).map_err(|_| CHANGED)?;
             if current != files {
                 return Err(CHANGED);
+            }
+            for (base, archive, encrypted) in replicas {
+                let path = PathBuf::from(archive);
+                let path = if path.is_absolute() {
+                    path
+                } else if let Some(base) = base {
+                    PathBuf::from(base).join(path)
+                } else {
+                    continue;
+                };
+                let sidecar = if encrypted.unwrap_or(false) {
+                    Some(PathBuf::from(dockervault_core::crypto::key_sidecar_path(
+                        path.to_str().ok_or(CHANGED)?,
+                    )))
+                } else {
+                    None
+                };
+                for path in std::iter::once(path).chain(sidecar) {
+                    let resolved = std::fs::canonicalize(&path).ok();
+                    if files.iter().any(|(relative, _)| {
+                        let candidate = root.join(relative);
+                        path == candidate || resolved.as_ref() == Some(&candidate)
+                    }) {
+                        return Err(Skipped(
+                            "Copy is shared by another archive identity; retained for safety",
+                        ));
+                    }
+                }
             }
             for (archive, key) in others {
                 for raw in [archive, key].into_iter().flatten() {
@@ -680,15 +820,17 @@ async fn settle_local(
         })
         .map_err(|_| INCOMPLETE)?;
     work.wait().await.map_err(|_| INCOMPLETE)??;
-    if remote || retained_key.is_some() {
+    let acknowledged = if remote || retained_key.is_some() {
         sqlx::query("UPDATE backups SET file_path=NULL,encryption_key_path=?,backup_metadata=json_set(json_remove(backup_metadata,'$.native_copy_removal'),'$.local_copy_removed',json('true')) WHERE id=?")
-            .bind(retained_key).bind(id).execute(&mut *tx).await.map_err(|_|INCOMPLETE)?;
+            .bind(retained_key).bind(id).execute(&mut *tx).await
     } else {
         sqlx::query("DELETE FROM backups WHERE id=?")
             .bind(id)
             .execute(&mut *tx)
             .await
-            .map_err(|_| INCOMPLETE)?;
+    }.map_err(|_| INCOMPLETE)?;
+    if acknowledged.rows_affected() != 1 {
+        return Err(INCOMPLETE);
     }
     tx.commit().await.map_err(|_| INCOMPLETE)
 }

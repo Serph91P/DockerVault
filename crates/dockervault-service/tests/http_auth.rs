@@ -1544,16 +1544,90 @@ async fn removal_preview_selects_all_matching_copies_without_writing() {
 }
 
 #[tokio::test]
+async fn retention_applies_only_to_expired_local_copies_and_counts_settled_changes() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let endpoint = "/api/v1/retention/1/apply";
+    assert_eq!(server.request("POST", endpoint, &[], None).await.0, 401);
+    let db = server.db.pool();
+    sqlx::raw_sql("INSERT INTO retention_policies(id,name,keep_last,keep_daily,keep_weekly,keep_monthly,keep_yearly,max_age_days) VALUES(123,'GFS',2,7,4,6,2,1); INSERT INTO backup_targets(id,name,target_type,enabled,retention_policy_id) VALUES(1,'Fixture','path',1,123); INSERT INTO backup_targets(id,name,target_type,enabled,removed_at) VALUES(2,'Removed','path',0,'2020-01-01T00:00:00'); INSERT INTO remote_storages(id,name,storage_type,base_path) VALUES(123,'Replica','local','/unused');").execute(db).await.unwrap();
+    let archive = |id| server.path.join(format!("backups/gfs-{id}.tar"));
+    let key = |id| server.path.join(format!("backups/gfs-{id}.key"));
+    for (id, target, status) in [
+        (1, 1, "COMPLETED"),
+        (2, 1, "COMPLETED"),
+        (3, 1, "COMPLETED"),
+        (4, 1, "COMPLETED"),
+        (5, 1, "FAILED"),
+        (6, 2, "COMPLETED"),
+    ] {
+        std::fs::write(archive(id), b"archive").unwrap();
+        std::fs::write(key(id), b"sidecar").unwrap();
+        sqlx::query("INSERT INTO backups(id,target_id,backup_type,status,file_path,encryption_key_path,created_at,encrypted) VALUES(?,?,'FULL',?,?,?,?,1)").bind(id).bind(target).bind(status).bind(archive(id).to_str()).bind(key(id).to_str()).bind(format!("2020-01-0{}T00:00:00",7-id)).execute(db).await.unwrap();
+    }
+    sqlx::query("INSERT INTO backup_storage_syncs(backup_id,storage_id,sync_status,remote_path) VALUES(4,123,'failed','replica.tar')").execute(db).await.unwrap();
+    let shared = server.path.join("backups/shared-replica.tar");
+    std::fs::write(&shared, b"another backup's replica").unwrap();
+    sqlx::query("INSERT INTO backups(id,target_id,backup_type,status,file_path,created_at) VALUES(7,1,'FULL','COMPLETED',?,'2020-01-01T00:00:00')")
+        .bind(shared.to_str()).execute(db).await.unwrap();
+    sqlx::query("INSERT INTO backup_storage_syncs(backup_id,storage_id,sync_status,remote_path) VALUES(1,123,'completed',?)")
+        .bind(shared.to_str()).execute(db).await.unwrap();
+    let (_, _, removed) = server
+        .request("POST", "/api/v1/retention/2/apply", &headers, None)
+        .await;
+    assert_eq!(removed, json!({"detail":"Plan removed"}));
+    let (status, _, result) = server.request("POST", endpoint, &headers, None).await;
+    assert_eq!((status, result), (200, json!({"kept":2,"deleted":2})));
+    for id in [1, 2, 5, 6] {
+        assert!(archive(id).exists() && key(id).exists());
+    }
+    assert!(!archive(3).exists() && !key(3).exists());
+    assert!(!archive(4).exists() && key(4).exists());
+    let rows: Vec<(i64, Option<String>)> =
+        sqlx::query_as("SELECT id,file_path FROM backups ORDER BY id")
+            .fetch_all(db)
+            .await
+            .unwrap();
+    assert_eq!(
+        rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        vec![1, 2, 4, 5, 6, 7]
+    );
+    assert_eq!(std::fs::read(&shared).unwrap(), b"another backup's replica");
+    assert_eq!(rows[2], (4, None));
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT remote_path FROM backup_storage_syncs WHERE backup_id=4"
+        )
+        .fetch_one(db)
+        .await
+        .unwrap(),
+        "replica.tar"
+    );
+    let (status, _, result) = server.request("POST", endpoint, &headers, None).await;
+    assert_eq!((status, result), (200, json!({"kept":2,"deleted":0})));
+    server.close().await;
+}
+
+#[tokio::test]
 async fn removal_keeps_durable_intent_when_catalog_acknowledgment_fails() {
-    removal_acknowledgment_failure(true).await;
+    removal_acknowledgment_failure(true, false).await;
 }
 
 #[tokio::test]
 async fn removal_retry_resumes_durable_intent_once() {
-    removal_acknowledgment_failure(false).await;
+    removal_acknowledgment_failure(false, false).await;
 }
 
-async fn removal_acknowledgment_failure(restart: bool) {
+#[tokio::test]
+async fn removal_does_not_report_success_for_an_ignored_primary_catalog_delete() {
+    removal_acknowledgment_failure(true, true).await;
+}
+
+async fn removal_acknowledgment_failure(restart: bool, ignore: bool) {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
     let headers = [
@@ -1562,7 +1636,21 @@ async fn removal_acknowledgment_failure(restart: bool) {
     ];
     let path = server.path.join("backups/disposable.tar");
     std::fs::write(&path, b"discardable fixture").unwrap();
-    sqlx::raw_sql("INSERT INTO backup_targets(id,name,target_type,enabled) VALUES(1,'Fixture','path',1); CREATE TRIGGER refuse_removal BEFORE DELETE ON backups BEGIN SELECT RAISE(ABORT,'fixture refused catalog acknowledgment'); END;").execute(server.db.pool()).await.unwrap();
+    sqlx::query(
+        "INSERT INTO backup_targets(id,name,target_type,enabled) VALUES(1,'Fixture','path',1)",
+    )
+    .execute(server.db.pool())
+    .await
+    .unwrap();
+    let fixture = if ignore {
+        "CREATE TRIGGER refuse_removal BEFORE DELETE ON backups BEGIN SELECT RAISE(IGNORE); END"
+    } else {
+        "CREATE TRIGGER refuse_removal BEFORE DELETE ON backups BEGIN SELECT RAISE(ABORT,'fixture refused catalog acknowledgment'); END"
+    };
+    sqlx::query(fixture)
+        .execute(server.db.pool())
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO backups(id,target_id,backup_type,status,file_path) VALUES(1,1,'FULL','COMPLETED',?)").bind(path.to_str().unwrap()).execute(server.db.pool()).await.unwrap();
     let (status, _, preview) = server
         .request(
