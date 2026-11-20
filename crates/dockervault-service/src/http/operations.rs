@@ -144,6 +144,7 @@ async fn admit_local(state: &HttpState, selection: LocalSelection) -> Response {
             state.config.clone(),
             selection,
             state.draining.clone(),
+            None,
             move |user, id| {
                 notifications
                     .send_to_user(user, &json!({"type":"operation_update","operation_id":id}))

@@ -130,23 +130,24 @@ impl LocalStorage {
         path: PathBuf,
         expected_root: (u64, u64),
     ) -> Result<Work<Result<(), TransferError>>, WorkError> {
-        self.delete(path, expected_root, false)
+        self.delete(path, expected_root, false, |_| ())
     }
 
     pub(crate) fn delete_target(
         &self,
         path: PathBuf,
         expected_root: (u64, u64),
-    ) -> Result<Work<Result<(), TransferError>>, WorkError> {
-        self.delete(path, expected_root, true)
+    ) -> Result<Work<Result<&'static str, TransferError>>, WorkError> {
+        self.delete(path, expected_root, true, |kind| kind)
     }
 
-    fn delete(
+    fn delete<T: Send + 'static>(
         &self,
         path: PathBuf,
         expected_root: (u64, u64),
         recursive: bool,
-    ) -> Result<Work<Result<(), TransferError>>, WorkError> {
+        result: impl FnOnce(&'static str) -> T + Send + 'static,
+    ) -> Result<Work<Result<T, TransferError>>, WorkError> {
         let root = self.root.clone();
         let configured = self.configured_root.clone();
         self.workers.submit_blocking(move |cancel| {
@@ -171,13 +172,16 @@ impl LocalStorage {
                     mutated: false,
                     cancel: &|| cancel.is_cancelled(),
                 };
-                return removal.remove(Path::new(&path), None, 0).map_err(|error| {
-                    if removal.mutated {
-                        TransferError::PublicationUncertain(error)
-                    } else {
-                        TransferError::Io(error)
-                    }
-                });
+                return removal
+                    .remove(Path::new(&path), None, 0)
+                    .map(result)
+                    .map_err(|error| {
+                        if removal.mutated {
+                            TransferError::PublicationUncertain(error)
+                        } else {
+                            TransferError::Io(error)
+                        }
+                    });
             }
             let (parent, name) = parent(&root, Path::new(&path), false)?;
             check(&|| cancel.is_cancelled())?;
@@ -185,7 +189,8 @@ impl LocalStorage {
                 .map_err(io::Error::from)?;
             parent
                 .sync_all()
-                .map_err(TransferError::PublicationUncertain)
+                .map_err(TransferError::PublicationUncertain)?;
+            Ok(result("file"))
         })
     }
 
@@ -224,7 +229,12 @@ struct TreeRemoval<'a> {
 }
 
 impl TreeRemoval<'_> {
-    fn remove(&mut self, path: &Path, parent_pin: Option<&File>, depth: usize) -> io::Result<()> {
+    fn remove(
+        &mut self,
+        path: &Path,
+        parent_pin: Option<&File>,
+        depth: usize,
+    ) -> io::Result<&'static str> {
         check(self.cancel)?;
         if depth >= 128 {
             return Err(invalid("Storage tree exceeds the directory depth limit"));
@@ -245,7 +255,8 @@ impl TreeRemoval<'_> {
             }
         }
         let stat = fstatat(&parent, name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
-        let directory = stat.st_mode & SFlag::S_IFMT.bits() == SFlag::S_IFDIR.bits();
+        let mode = stat.st_mode & SFlag::S_IFMT.bits();
+        let directory = mode == SFlag::S_IFDIR.bits();
         let expected = (stat.st_dev, stat.st_ino);
         let directory_pin = if directory {
             let fd = open_tree_directory(&parent, Path::new(name))?;
@@ -291,7 +302,14 @@ impl TreeRemoval<'_> {
             },
         )?;
         self.mutated = true;
-        current.sync_all()
+        current.sync_all()?;
+        Ok(if directory {
+            "directory"
+        } else if mode == SFlag::S_IFLNK.bits() {
+            "symlink"
+        } else {
+            "file"
+        })
     }
 }
 

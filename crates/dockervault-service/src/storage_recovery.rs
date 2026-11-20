@@ -54,7 +54,7 @@ pub async fn submit_delete(
     pool: &SqlitePool,
     request: DeleteAdmission<'_>,
 ) -> Result<String, StorageRecoveryError> {
-    Ok(admit_delete(pool, request, None, None).await?.0)
+    Ok(admit_delete(pool, request, None, None, false).await?.0)
 }
 
 async fn admit_delete(
@@ -62,6 +62,7 @@ async fn admit_delete(
     request: DeleteAdmission<'_>,
     parent: Option<&RetryParent>,
     remote_id: Option<i64>,
+    ordered_local: bool,
 ) -> Result<(String, bool), StorageRecoveryError> {
     use StorageRecoveryError as Error;
     let invalid = Error::InvalidRequest;
@@ -84,7 +85,15 @@ async fn admit_delete(
     }
     let request_id = request.request_id.to_ascii_lowercase();
     let path = relative_path(request.path, true).ok_or(Error::InvalidRequest)?;
-    let paths = normalize_delete_selection(request.paths.iter().copied())?;
+    let paths = if ordered_local && !request.paths.is_empty() && request.paths.len() <= 1000 {
+        request
+            .paths
+            .iter()
+            .map(|path| (*path).to_owned())
+            .collect()
+    } else {
+        normalize_delete_selection(request.paths.iter().copied())?
+    };
     let parent_id = parent.map(|parent| parent.id.as_str());
     let payload = delete_payload(request.storage_id, &path, &paths, parent_id);
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -119,19 +128,7 @@ async fn admit_delete(
     {
         return Err(Error::IdentityChanged);
     }
-    let mut nonce = [0u8; 16];
-    getrandom::fill(&mut nonce).map_err(|_| Error::Randomness)?;
-    nonce[6] = (nonce[6] & 0x0f) | 0x40;
-    nonce[8] = (nonce[8] & 0x3f) | 0x80;
-    let hex: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
-    let id = format!(
-        "{}-{}-{}-{}-{}",
-        &hex[..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..]
-    );
+    let id = delete_request_id()?;
     sqlx::query("INSERT INTO storage_operations(id,user_id,request_id,payload,storage_identity,parent_id,action,storage_id,path,state,stage,total,completed,succeeded,failed,skipped,unknown,cancel_requested,created_at,updated_at)
                  VALUES(?,?,?,?,?,?,'storage_delete',?,?,'queued','queued',?,0,0,0,0,0,0,strftime('%Y-%m-%d %H:%M:%f','now'),strftime('%Y-%m-%d %H:%M:%f','now'))")
         .bind(&id).bind(request.user_id).bind(&request_id).bind(payload.to_string()).bind(request.identity.to_string()).bind(parent_id)
@@ -147,6 +144,22 @@ async fn admit_delete(
     }
     tx.commit().await?;
     Ok((id, true))
+}
+
+pub(crate) fn delete_request_id() -> Result<String, StorageRecoveryError> {
+    let mut nonce = [0u8; 16];
+    getrandom::fill(&mut nonce).map_err(|_| StorageRecoveryError::Randomness)?;
+    nonce[6] = (nonce[6] & 0x0f) | 0x40;
+    nonce[8] = (nonce[8] & 0x3f) | 0x80;
+    let hex: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    ))
 }
 
 pub(crate) fn normalize_delete_selection<'a>(
@@ -677,7 +690,7 @@ pub fn start_local_delete(
         if cancel.is_cancelled() {
             return Ok(false);
         }
-        delete_next_local(&pool, &local, user_id, &operation_id, &identity, None).await
+        delete_next_local(&pool, &local, user_id, &operation_id, &identity, None, None).await
     })
 }
 
@@ -688,6 +701,7 @@ async fn delete_next_local(
     operation_id: &str,
     identity: &serde_json::Value,
     remote_id: Option<i64>,
+    report: Option<&LocalReport>,
 ) -> Result<bool, StorageRecoveryError> {
     let expected_root = serde_json::from_value::<(u64, u64)>(identity["root_inode"].clone())
         .map_err(|_| StorageRecoveryError::IdentityChanged)?;
@@ -695,10 +709,14 @@ async fn delete_next_local(
     else {
         return Ok(false);
     };
+    let mut kind = None;
     let outcome = match relative_path(&item.path, false) {
         Some(path) => match local.delete_target(path.into(), expected_root) {
             Ok(effect) => match effect.wait().await {
-                Ok(Ok(())) => DeleteOutcome::Succeeded,
+                Ok(Ok(actual)) => {
+                    kind = Some(actual);
+                    DeleteOutcome::Succeeded
+                }
                 Ok(Err(TransferError::PublicationUncertain(_))) | Err(_) => DeleteOutcome::Unknown,
                 Ok(Err(TransferError::Io(error))) => match error.kind() {
                     std::io::ErrorKind::NotFound => DeleteOutcome::NotFound,
@@ -713,8 +731,14 @@ async fn delete_next_local(
         },
         None => DeleteOutcome::InvalidPath,
     };
-    record_settled(pool, user_id, operation_id, item.id, outcome).await
+    let settled = record_settled(pool, user_id, operation_id, item.id, outcome).await?;
+    if settled && let Some(report) = report {
+        let _ = report.try_send((outcome, kind));
+    }
+    Ok(settled)
 }
+
+pub(crate) type LocalReport = tokio::sync::mpsc::Sender<(DeleteOutcome, Option<&'static str>)>;
 
 pub(crate) struct LocalDeleteJobs {
     jobs: Owner,
@@ -879,9 +903,11 @@ impl DeleteTarget {
         operation: &str,
         identity: &serde_json::Value,
         remote_id: Option<i64>,
+        report: Option<&LocalReport>,
     ) -> Result<bool, StorageRecoveryError> {
         if let Self::Local(local) = self {
-            return delete_next_local(pool, local, user, operation, identity, remote_id).await;
+            return delete_next_local(pool, local, user, operation, identity, remote_id, report)
+                .await;
         }
         let rclone_snapshot = match self {
             Self::Rclone(target) => Some(&target.snapshot),
@@ -1026,6 +1052,7 @@ impl LocalDeleteJobs {
         config: Arc<crate::config::Config>,
         selection: LocalSelection,
         draining: CancellationToken,
+        report: Option<LocalReport>,
         notify: impl Fn(i64, &str) + Send + Sync + 'static,
     ) -> Result<String, StorageRecoveryError> {
         use StorageRecoveryError as Error;
@@ -1070,6 +1097,9 @@ impl LocalDeleteJobs {
                         }
                         let mut identity = remote_identity(&row)?;
                         let kind: String = row.try_get("storage_type")?;
+                        if report.is_some() && kind != "local" {
+                            return Err(Error::UnsupportedProvider);
+                        }
                         let base: Option<String> = row.try_get("base_path")?;
                         if kind == "rclone" {
                             let remote: String = row
@@ -1314,6 +1344,7 @@ impl LocalDeleteJobs {
                     },
                     selection.parent.as_ref(),
                     selection.remote_id,
+                    report.is_some(),
                 )
                 .await;
                 let (id, target) = match (admission, target) {
@@ -1352,7 +1383,14 @@ impl LocalDeleteJobs {
                             break;
                         }
                         let more = target
-                            .next(&pool, user, &id, &identity, selection.remote_id)
+                            .next(
+                                &pool,
+                                user,
+                                &id,
+                                &identity,
+                                selection.remote_id,
+                                report.as_ref(),
+                            )
                             .await?;
                         notify(user, &id);
                         if !more {

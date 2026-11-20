@@ -11,6 +11,7 @@ mod docker_lifecycle;
 mod encryption;
 pub use copy_removal::recover_copy_removals;
 mod ftp_sync;
+mod local_browser_delete;
 mod manual_sync;
 mod operations;
 mod overview;
@@ -308,7 +309,11 @@ pub fn router(state: HttpState) -> Router {
         )
         .route(
             "/api/v1/storage/local/files",
-            get(storage::list_local_files),
+            get(storage::list_local_files).delete(local_browser_delete::single),
+        )
+        .route(
+            "/api/v1/storage/local/files/bulk-delete",
+            post(local_browser_delete::bulk),
         )
         .route("/api/v1/storage/local/files/size", get(storage::local_size))
         .route(
@@ -325,7 +330,11 @@ pub fn router(state: HttpState) -> Router {
         )
         .route(
             "/api/v1/storage/{storage_id}/files",
-            get(storage::list_configured_files),
+            get(storage::list_configured_files).delete(local_browser_delete::single),
+        )
+        .route(
+            "/api/v1/storage/{storage_id}/files/bulk-delete",
+            post(local_browser_delete::bulk),
         )
         .route(
             "/api/v1/storage/{storage_id}/files/size",
