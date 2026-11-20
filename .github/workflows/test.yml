@@ -310,7 +310,7 @@ jobs:
       run: npm install --global "$(node -p "require('./package.json').packageManager")"
         
     - name: Run fail-closed npm audit with exact existing-debt exceptions
-      run: python backend/tests/check_npm_audit.py
+      run: cargo run --locked --package dockervault-tools --bin dockervault-npm-audit
 
     - name: Preserve the complete npm audit report
       if: always()
