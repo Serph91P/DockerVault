@@ -264,6 +264,26 @@ impl RecoveryGeneration<'_> {
     }
 }
 impl PreparationGuard {
+    pub(crate) fn prepared_generation(
+        &self,
+        generation: String,
+    ) -> Result<RecoveryGeneration<'_>, JournalError> {
+        if !matches!(self.kind, ClaimKind::Setup) {
+            return Err(JournalError::WrongClaim);
+        }
+        if generation.len() != 32
+            || !generation
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            return Err(JournalError::InvalidJournal);
+        }
+        Ok(RecoveryGeneration {
+            guard: self,
+            generation,
+        })
+    }
+
     /// Commit the preparation marker before creating any generation/key material.
     /// The caller retains this guard in its physical blocking owner through settlement.
     pub fn begin_recovery(&self) -> Result<RecoveryGeneration<'_>, JournalError> {
@@ -309,9 +329,6 @@ impl PreparationGuard {
             )
             .map_err(|_| JournalError::Io)?;
         transaction.commit().map_err(|_| JournalError::Io)?;
-        Ok(RecoveryGeneration {
-            guard: self,
-            generation,
-        })
+        self.prepared_generation(generation)
     }
 }
