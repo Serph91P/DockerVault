@@ -474,6 +474,24 @@ impl SftpEndpoint {
             .map_err(SftpDownloadError::Admission)
     }
 
+    pub(crate) async fn quota_upper_bound(
+        &self,
+        processes: &ProcessOwner,
+        cancel: &CancellationToken,
+        key: Option<File>,
+    ) -> Option<u64> {
+        let remote = remote_path(&self.host, self.port, &self.base, "").ok()?;
+        let mut spec = self.batch_spec().ok()?;
+        spec.input = format!("@df {}\n@quit\n", batch_path(&remote)).into_bytes();
+        spec.stdout_limit = 4096;
+        spec.timeout = Some(Duration::from_secs(10));
+        spec.env.push(("LC_ALL".into(), "C".into()));
+        let output = run_batch_holding(processes, spec, cancel, key).await.ok()?;
+        available_kib(&output.stdout)?
+            .checked_mul(1024)?
+            .checked_add(1023)
+    }
+
     fn batch_spec(&self) -> Result<ProcessSpec, ProcessError> {
         let (mut args, destination) = self.connection_args("-P")?;
         args.extend(["-b".into(), "-".into(), "--".into(), destination.into()]);
@@ -746,9 +764,47 @@ pub fn remote_path(host: &str, port: u16, base: &str, child: &str) -> io::Result
     }
 }
 
+fn available_kib(output: &[u8]) -> Option<u64> {
+    let mut lines = std::str::from_utf8(output)
+        .ok()?
+        .lines()
+        .filter(|line| !line.trim().is_empty());
+    if !lines
+        .next()?
+        .split_ascii_whitespace()
+        .eq(["Size", "Used", "Avail", "(root)", "%Capacity"])
+    {
+        return None;
+    }
+    let values: Vec<_> = lines.next()?.split_ascii_whitespace().collect();
+    if lines.next().is_some()
+        || values.len() != 5
+        || !values[4].ends_with('%')
+        || !values[..4]
+            .iter()
+            .all(|value| value.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return None;
+    }
+    values[2].parse().ok()
+}
+
 #[cfg(test)]
 mod listing_tests {
     use super::*;
+
+    #[test]
+    fn quota_only_accepts_the_user_available_column_in_openssh_output() {
+        assert_eq!(
+            available_kib(b"Size Used Avail (root) %Capacity\n100 98 1 2 98%\n"),
+            Some(1)
+        );
+        assert_eq!(
+            available_kib(b"Size Used Avail (root) %Capacity\n100 98 1 2 98%\nunexpected\n"),
+            None
+        );
+        assert_eq!(available_kib(b"unsupported extension\n"), None);
+    }
 
     #[test]
     fn rsync_upload_keeps_remote_path_as_one_protected_argument() {

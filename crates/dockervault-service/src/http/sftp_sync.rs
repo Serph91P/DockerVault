@@ -255,6 +255,34 @@ pub(super) async fn settle(
             let Ok((source, scratch)) = wait(work, cancel).await? else {
                 continue 'copies;
             };
+            if copy.storage_type == "ssh" {
+                let enabled = super::settings::quota_enabled(pool).await?;
+                if enabled {
+                    let probe_key = key
+                        .as_ref()
+                        .map(File::try_clone)
+                        .transpose()
+                        .map_err(Error::Io)?;
+                    if let Some(available) = endpoint
+                        .quota_upper_bound(processes, cancel, probe_key)
+                        .await
+                        && available < artifact.length
+                    {
+                        let gib = 1024_u64.pow(3) as f64;
+                        let error = format!(
+                            "Insufficient remote storage: {:.2} GB available, {:.2} GB required",
+                            available as f64 / gib,
+                            artifact.length as f64 / gib
+                        );
+                        sqlx::query("UPDATE backup_storage_syncs SET sync_status='failed',error_message=? WHERE id=? AND sync_status='running'")
+                            .bind(error).bind(row).execute(pool).await?;
+                        continue 'copies;
+                    }
+                }
+            }
+            if cancel.is_cancelled() {
+                return Ok(());
+            }
             let mut random = [0_u8; 16];
             getrandom::fill(&mut random)
                 .map_err(|_| Error::Protocol("SFTP staging identity unavailable".into()))?;

@@ -177,7 +177,7 @@ pub(super) async fn settle(
             let Some(source) = sources.as_ref().map(|files| files[index].clone()) else {
                 continue 'copies;
             };
-            let quota_enabled: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app_settings WHERE key='storage_check_quota_before_upload' AND value='true')").fetch_one(pool).await?;
+            let quota_enabled = super::settings::quota_enabled(pool).await?;
             if quota_enabled
                 && let Ok(work) = provider.quota_available()
                 && let Ok(Ok(Some(available))) = wait(work, cancel).await

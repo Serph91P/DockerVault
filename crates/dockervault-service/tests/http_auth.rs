@@ -583,6 +583,50 @@ async fn system_info_is_authenticated_and_redacts_configured_paths() {
 }
 
 #[tokio::test]
+async fn storage_quota_setting_is_authenticated_and_persists_false_explicitly() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let path = "/api/v1/settings/storage";
+    assert_eq!(server.request("GET", path, &[], None).await.0, 401);
+    assert_eq!(
+        server.request("GET", path, &headers, None).await.2,
+        json!({"check_quota_before_upload":false})
+    );
+    assert_eq!(
+        server
+            .request("PUT", path, &headers, Some(json!({})))
+            .await
+            .0,
+        422
+    );
+    for enabled in [true, false] {
+        let expected = json!({"check_quota_before_upload":enabled});
+        let (status, _, body) = server
+            .request("PUT", path, &headers, Some(expected.clone()))
+            .await;
+        assert_eq!((status, body), (200, expected.clone()));
+        assert_eq!(
+            server.request("GET", path, &headers, None).await.2,
+            expected
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT value FROM app_settings WHERE key='storage_check_quota_before_upload'"
+            )
+            .fetch_one(server.db.pool())
+            .await
+            .unwrap(),
+            enabled.to_string()
+        );
+    }
+    server.close().await;
+}
+
+#[tokio::test]
 async fn target_reads_include_relationships_and_legacy_repair_warnings() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

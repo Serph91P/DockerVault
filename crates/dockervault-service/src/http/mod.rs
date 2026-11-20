@@ -124,6 +124,10 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/retention/{id}/stats", get(retention::stats))
         .route("/api/v1/settings/system-info", get(settings::system_info))
         .route(
+            "/api/v1/settings/storage",
+            get(settings::storage).put(settings::update_storage),
+        )
+        .route(
             "/api/v1/targets",
             get(targets::list).post(target_write::create),
         )
