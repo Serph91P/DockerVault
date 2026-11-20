@@ -13,6 +13,7 @@ nix.workspace = true
 getrandom.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+time.workspace = true
 signal-hook.workspace = true
 dockervault-core = { path = "../dockervault-core", default-features = false }
 
