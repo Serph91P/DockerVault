@@ -796,6 +796,39 @@ async fn target_writes_validate_references_and_preserve_explicit_clears() {
 }
 
 #[tokio::test]
+async fn orphan_cleanup_does_not_delete_unowned_or_active_archives() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let root = server.path.join("backups");
+    let unknown = root.join("unregistered.tar");
+    let active = root.join("active.tar.gz");
+    std::fs::write(&unknown, b"unowned").unwrap();
+    std::fs::write(&active, b"reserved").unwrap();
+    let db = server.db.pool();
+    sqlx::query("INSERT INTO backup_targets(id,name,target_type) VALUES(83,'Fixture','path')")
+        .execute(db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO backups(id,target_id,backup_type,status,backup_metadata) VALUES(83,83,'FULL','RUNNING',?)")
+        .bind(json!({"active_artifacts":[active]}).to_string()).execute(db).await.unwrap();
+    let route = "/api/v1/retention/cleanup-orphaned";
+    assert_eq!(server.request("POST", route, &[], None).await.0, 401);
+    let (status, _, report) = server.request("POST", route, &headers, None).await;
+    assert_eq!(status, 200);
+    assert_eq!(report["protected"], 2);
+    assert_eq!(report["deleted"], 0);
+    assert_eq!(report["freed_bytes"], 0);
+    assert_eq!(report["scan_complete"], true);
+    assert_eq!(std::fs::read(unknown).unwrap(), b"unowned");
+    assert_eq!(std::fs::read(active).unwrap(), b"reserved");
+    server.close().await;
+}
+
+#[tokio::test]
 async fn retention_reads_preserve_policy_and_catalog_wire_contracts() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

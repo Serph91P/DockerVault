@@ -383,6 +383,75 @@ pub(crate) fn list_directory(
 
 type DirectoryStamp = (u64, u64, u32, i64, i64, i64, i64, i64);
 
+/// A filename is not proof of ownership. Count candidates without following links.
+pub(crate) fn protected_archives(root: &Path, cancelled: &dyn Fn() -> bool) -> (u64, u64) {
+    fn walk(
+        dir: &File,
+        depth: usize,
+        budget: &mut usize,
+        counts: &mut (u64, u64),
+        cancelled: &dyn Fn() -> bool,
+    ) -> io::Result<()> {
+        check(cancelled)?;
+        if depth >= 128 {
+            return Err(io::Error::other("Directory nesting limit exceeded"));
+        }
+        for entry in Dir::from_fd(dir.try_clone()?.into())?.iter() {
+            check(cancelled)?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    counts.1 += 1;
+                    continue;
+                }
+            };
+            let name = entry.file_name();
+            if matches!(name.to_bytes(), b"." | b"..") {
+                continue;
+            }
+            if *budget == 0 {
+                return Err(io::Error::other("Archive scan entry limit exceeded"));
+            }
+            *budget -= 1;
+            let stat = match fstatat(dir, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+                Ok(stat) => stat,
+                Err(_) => {
+                    counts.1 += 1;
+                    continue;
+                }
+            };
+            let kind = SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT;
+            if kind == SFlag::S_IFDIR {
+                let child = open_directory(dir, OsStr::from_bytes(name.to_bytes()));
+                if child
+                    .and_then(|child| walk(&child, depth + 1, budget, counts, cancelled))
+                    .is_err()
+                {
+                    counts.1 += 1;
+                    if *budget == 0 {
+                        break;
+                    }
+                }
+            } else if name.to_bytes().windows(4).any(|part| part == b".tar") {
+                counts.0 += 1;
+            }
+        }
+        Ok(())
+    }
+
+    let mut counts = (0, 0);
+    match std::path::absolute(root).and_then(|path| open_root(&path)) {
+        Ok(dir) => {
+            if walk(&dir, 0, &mut 100_000, &mut counts, cancelled).is_err() {
+                counts.1 += 1;
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => counts.1 += 1,
+    }
+    counts
+}
+
 fn directory_stamp(info: nix::sys::stat::FileStat) -> DirectoryStamp {
     (
         info.st_dev,

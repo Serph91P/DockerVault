@@ -25,6 +25,32 @@ pub(super) struct Selection {
 
 pub(super) const RECOVERY_PENDING: &str = "Recovery activation is incomplete";
 
+pub(super) async fn cleanup_orphaned(State(state): State<HttpState>) -> Response {
+    match crate::recovery_activation::recovery_pending(state.auth.pool()).await {
+        Ok(true) => return failure(StatusCode::SERVICE_UNAVAILABLE, RECOVERY_PENDING),
+        Err(_) => return internal(),
+        Ok(false) => {}
+    }
+    let root = std::path::PathBuf::from(&state.config.backup_base_path);
+    let Ok(work) = state.download_jobs.submit_blocking(move |cancel| {
+        crate::storage::local::protected_archives(&root, &|| cancel.is_cancelled())
+    }) else {
+        return failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Orphan scan capacity exhausted",
+        );
+    };
+    let Ok((protected, scan_errors)) = work.wait().await else {
+        return failure(StatusCode::SERVICE_UNAVAILABLE, "Orphan scan interrupted");
+    };
+    Json(
+        json!({"protected":protected, "deleted":0,"failed":0,"scan_errors":scan_errors,
+        "scan_complete":scan_errors==0,"outcome":if scan_errors==0 {"empty"}else{"failure"},
+        "freed_bytes":0,"freed_human":format_size(0)}),
+    )
+    .into_response()
+}
+
 pub(super) fn start_sweep(state: &HttpState) {
     let ctx = state.clone();
     match state.backup_jobs.submit_async(move |cancel| async move {
