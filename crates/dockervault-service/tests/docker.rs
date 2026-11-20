@@ -68,7 +68,8 @@ impl Server {
                             let (status,body)=if path.ends_with("/version") {(200,r#"{"ApiVersion":"1.53","MinAPIVersion":"1.44","Version":"PUBLIC"}"#.into())}
                             else if path.ends_with("/volumes") {(200,r#"{"Volumes":[{"Name":"data","Driver":"local","Mountpoint":"/volumes/data","Scope":"local","Labels":{"fixture":"yes"},"Options":{},"CreatedAt":"2025-01-01T00:00:00Z"},{"Name":"unused","Driver":"local","Mountpoint":"/volumes/unused","Scope":"local","Labels":null,"Options":{}}]}"#.into())}
                             else if path.contains("/containers/json?") && path.contains("all=true") {(200,r#"[{"Id":"stopped"},{"Id":"missing"}]"#.into())}
-                            else if path.ends_with("/containers/stopped/json") {(200,r#"{"Name":"/stopped","Mounts":[{"Type":"volume","Name":"data"},{"Type":"bind","Name":"unused"}]}"#.into())}
+                            else if path.contains("/containers/json?") && path.contains("all=false") {(200,"[]".into())}
+                            else if path.ends_with("/containers/stopped/json") {(200,r#"{"Id":"stopped","Name":"/stopped","Created":"2025-02-01T00:00:00Z","State":{"Status":"exited"},"Config":{"Image":"fixture:tag","Labels":{"backup.depends_on":" db, ,redis ","com.docker.compose.project":"fixture"}},"NetworkSettings":{"Networks":{"fixture-net":{}}},"Mounts":[{"Type":"volume","Name":"data"},{"Type":"bind","Name":"unused"}]}"#.into())}
                             else if path.contains("/missing/") {(404,r#"{"message":"No such container"}"#.into())}
                             else if path.contains("/json") {
                                 let status=shared.statuses.lock().unwrap().get(id).cloned().unwrap_or_else(||shared.status.lock().unwrap().clone());
@@ -115,6 +116,24 @@ async fn journal(server: &Server) -> (Database, Owner, Journal) {
     let journal = Journal::new(db.pool().clone()).unwrap();
     (db, owner, journal)
 }
+#[tokio::test]
+async fn container_inventory_uses_inspected_state_and_honors_all() {
+    let server = Server::start().await;
+    let docker = DockerClient::connect(server.path.to_str().unwrap())
+        .await
+        .unwrap();
+    assert!(docker.container_inventory(false).await.unwrap().is_empty());
+    let items = docker.container_inventory(true).await.unwrap();
+    assert_eq!(items, serde_json::json!([{
+        "id":"stopped","name":"stopped","image":"fixture:tag","status":"exited","state":"exited",
+        "created":"2025-02-01T00:00:00Z","labels":{"backup.depends_on":" db, ,redis ","com.docker.compose.project":"fixture"},
+        "mounts":[{"type":"volume","name":"data","source":null,"destination":null,"mode":null,"rw":null},{"type":"bind","name":"unused","source":null,"destination":null,"mode":null,"rw":null}],
+        "networks":["fixture-net"],"compose_project":"fixture","compose_service":null,"depends_on":["db","redis"]
+    }]).as_array().unwrap().clone());
+    docker.shutdown(None).await;
+    server.close().await;
+}
+
 #[tokio::test]
 async fn volume_inventory_keeps_metadata_and_stopped_container_usage() {
     let server = Server::start().await;

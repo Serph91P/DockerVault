@@ -96,38 +96,19 @@ impl DockerClient {
         Ok(names)
     }
     pub async fn volume_inventory(&self) -> Result<Vec<VolumeInventory>, DockerError> {
-        use bollard::{errors::Error, query_parameters::ListContainersOptionsBuilder};
         let volumes = self.volumes().await?;
-        let mut usage = self
-            .request(|api| async move {
-                let mut usage = std::collections::HashMap::<String, Vec<String>>::new();
-                let containers = api
-                    .list_containers(Some(
-                        ListContainersOptionsBuilder::default().all(true).build(),
-                    ))
-                    .await?;
-                for item in containers {
-                    let Some(id) = item.id else { continue };
-                    let container = match api.inspect_container(&id, None).await {
-                        Ok(container) => container,
-                        Err(Error::DockerResponseServerError {
-                            status_code: 404, ..
-                        }) => continue,
-                        Err(error) => return Err(error),
-                    };
-                    let Some(name) = container.name else { continue };
-                    let name = name.trim_start_matches('/');
-                    for mount in container.mounts.unwrap_or_default() {
-                        if mount.typ.as_deref() == Some("volume")
-                            && let Some(volume) = mount.name.filter(|name| !name.is_empty())
-                        {
-                            usage.entry(volume).or_default().push(name.to_owned());
-                        }
-                    }
+        let mut usage = std::collections::HashMap::<String, Vec<String>>::new();
+        for container in self.containers(true).await? {
+            let Some(name) = container.name else { continue };
+            let name = name.trim_start_matches('/');
+            for mount in container.mounts.unwrap_or_default() {
+                if mount.typ.as_deref() == Some("volume")
+                    && let Some(volume) = mount.name.filter(|name| !name.is_empty())
+                {
+                    usage.entry(volume).or_default().push(name.to_owned());
                 }
-                Ok(usage)
-            })
-            .await?;
+            }
+        }
         Ok(volumes
             .into_iter()
             .map(|volume| VolumeInventory {
@@ -139,6 +120,52 @@ impl DockerClient {
                 created_at: volume.created_at.unwrap_or_default(),
             })
             .collect())
+    }
+    async fn containers(
+        &self,
+        all: bool,
+    ) -> Result<Vec<bollard::models::ContainerInspectResponse>, DockerError> {
+        use bollard::{errors::Error, query_parameters::ListContainersOptionsBuilder};
+        self.request(move |api| async move {
+            let mut result = vec![];
+            let containers = api
+                .list_containers(Some(
+                    ListContainersOptionsBuilder::default().all(all).build(),
+                ))
+                .await?;
+            for item in containers {
+                let Some(id) = item.id else { continue };
+                match api.inspect_container(&id, None).await {
+                    Ok(container) => result.push(container),
+                    Err(Error::DockerResponseServerError {
+                        status_code: 404, ..
+                    }) => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(result)
+        })
+        .await
+    }
+    pub async fn container_inventory(
+        &self,
+        all: bool,
+    ) -> Result<Vec<serde_json::Value>, DockerError> {
+        use serde_json::json;
+        self.containers(all).await?.into_iter().map(|container| {
+            let id = container.id.ok_or(DockerError::InvalidResponse)?;
+            let name = container.name.as_deref().unwrap_or_default().trim_start_matches('/');
+            let status = container.state.and_then(|state| state.status).map(|status| status.to_string()).unwrap_or_default();
+            let config = container.config.unwrap_or_default();
+            let labels = config.labels.unwrap_or_default();
+            let depends_on: Vec<_> = labels.get("backup.depends_on").into_iter().flat_map(|value| value.split(',')).map(str::trim).filter(|value| !value.is_empty()).collect();
+            let mut networks: Vec<_> = container.network_settings.and_then(|value| value.networks).unwrap_or_default().into_keys().collect();
+            networks.sort();
+            let mounts: Vec<_> = container.mounts.unwrap_or_default().into_iter().map(|mount| json!({"type":mount.typ,"source":mount.source,"destination":mount.destination,"name":mount.name,"mode":mount.mode,"rw":mount.rw})).collect();
+            Ok(json!({"id":id,"name":name,"image":config.image.unwrap_or_default(),"status":status,"state":status,
+                "created":container.created.unwrap_or_default(),"labels":labels,"mounts":mounts,"networks":networks,
+                "compose_project":labels.get("com.docker.compose.project"),"compose_service":labels.get("com.docker.compose.service"),"depends_on":depends_on}))
+        }).collect()
     }
     pub async fn identity(&self, name: &str) -> Result<String, DockerError> {
         let name = name.to_owned();
