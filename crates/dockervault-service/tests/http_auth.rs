@@ -641,6 +641,63 @@ async fn target_reads_include_relationships_and_legacy_repair_warnings() {
 }
 
 #[tokio::test]
+async fn deleting_a_plan_tombstones_it_without_deleting_recovery_points() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let db = server.db.pool();
+    let archive = server.path.join("backups/historical.tar");
+    std::fs::write(&archive, b"historical archive").unwrap();
+    sqlx::query("INSERT INTO backup_targets(id,name,target_type,enabled,schedule_cron) VALUES(123,'History','path',1,'0 3 * * *')").execute(db).await.unwrap();
+    sqlx::query("INSERT INTO backups(id,target_id,backup_type,status,file_path) VALUES(123,123,'FULL','COMPLETED',?),(124,123,'FULL','PENDING',NULL)").bind(archive.to_str()).execute(db).await.unwrap();
+    let route = "/api/v1/targets/123";
+    assert_eq!(server.request("DELETE", route, &[], None).await.0, 401);
+    assert_eq!(
+        server.request("DELETE", route, &headers, None).await.2,
+        json!({"status":"removed","copies":"retained"})
+    );
+    let stored: (String, bool) =
+        sqlx::query_as("SELECT removed_at,enabled FROM backup_targets WHERE id=123")
+            .fetch_one(db)
+            .await
+            .unwrap();
+    assert!(!stored.1);
+    assert_eq!(server.request("GET", route, &headers, None).await.0, 404);
+    assert_eq!(
+        server.request("DELETE", route, &headers, None).await.2,
+        json!({"status":"already_removed","copies":"retained"})
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT removed_at FROM backup_targets WHERE id=123")
+            .fetch_one(db)
+            .await
+            .unwrap(),
+        stored.0
+    );
+    assert_eq!(
+        sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT status,file_path FROM backups WHERE id=123"
+        )
+        .fetch_one(db)
+        .await
+        .unwrap(),
+        ("COMPLETED".into(), Some(archive.to_str().unwrap().into()))
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT status FROM backups WHERE id=124")
+            .fetch_one(db)
+            .await
+            .unwrap(),
+        "FAILED"
+    );
+    assert_eq!(std::fs::read(archive).unwrap(), b"historical archive");
+    server.close().await;
+}
+
+#[tokio::test]
 async fn retention_reads_preserve_policy_and_catalog_wire_contracts() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

@@ -114,7 +114,7 @@ async fn projected(
     Ok(rows)
 }
 
-async fn reconcile(state: &HttpState) -> Result<(), Failure> {
+pub(super) async fn reconcile(state: &HttpState) -> Result<(), Failure> {
     let failed = || {
         failure(
             StatusCode::SERVICE_UNAVAILABLE,

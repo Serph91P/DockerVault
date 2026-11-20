@@ -45,6 +45,81 @@ pub(super) async fn detail(State(state): State<HttpState>, Path(id): Path<String
     read(&state, false, Some(id)).await
 }
 
+pub(super) async fn delete(State(state): State<HttpState>, Path(id): Path<String>) -> Response {
+    let Some(id) = super::operations::query_integer(&id) else {
+        return *auth::validation(vec![
+            json!({"field":"path.target_id","message":"Input should be a valid integer, unable to parse string as an integer"}),
+        ]);
+    };
+    match tombstone(&state, id).await {
+        Ok(Some(already)) => {
+            if let Err(error) = schedules::reconcile(&state).await {
+                return error.into_response();
+            }
+            Json(json!({"status":if already { "already_removed" } else { "removed" },"copies":"retained"})).into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"detail":"Target not found"})),
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"detail":"Could not remove plan"})),
+        )
+            .into_response(),
+    }
+}
+
+async fn tombstone(state: &HttpState, target: i64) -> Result<Option<bool>, sqlx::Error> {
+    let _claim = state
+        .backup_claims
+        .acquire([crate::jobs::Resource::target(target)], &state.draining)
+        .await
+        .map_err(|_| sqlx::Error::Protocol("Target claim interrupted".into()))?;
+    let mut tx = state.auth.pool().begin_with("BEGIN IMMEDIATE").await?;
+    let Some(already) = sqlx::query_scalar::<_, bool>(
+        "SELECT removed_at IS NOT NULL FROM backup_targets WHERE id=?",
+    )
+    .bind(target)
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        return Ok(None);
+    };
+    let result = sqlx::query("UPDATE backup_targets SET removed_at=coalesce(removed_at,strftime('%Y-%m-%d %H:%M:%f000','now')),enabled=0,updated_at=CASE WHEN enabled=0 AND removed_at IS NOT NULL THEN updated_at ELSE strftime('%Y-%m-%d %H:%M:%f000','now') END WHERE id=?")
+        .bind(target).execute(&mut *tx).await?;
+    if result.rows_affected() != 1 {
+        return Err(sqlx::Error::RowNotFound);
+    }
+    // Only settle unstarted rows; leave all durable operation and artifact custody intact.
+    const UNSTARTED: &str = "target_id=? AND status='PENDING' AND file_path IS NULL AND encryption_key_path IS NULL AND NOT EXISTS(SELECT 1 FROM workload_operations WHERE backup_id=backups.id AND state!='finished') AND NOT EXISTS(SELECT 1 FROM backup_storage_syncs WHERE backup_id=backups.id) AND CASE WHEN backup_metadata IS NULL THEN 1 WHEN json_valid(backup_metadata) THEN json_type(backup_metadata,'$.native_publication') IS NULL AND json_type(backup_metadata,'$.active_artifacts') IS NULL AND json_type(backup_metadata,'$.native_copy_removal') IS NULL ELSE 0 END";
+    let mut update = sqlx::QueryBuilder::new(
+        "UPDATE backups SET status='FAILED',error_message='Plan removed before backup started' WHERE ",
+    );
+    update
+        .push(UNSTARTED)
+        .build()
+        .bind(target)
+        .execute(&mut *tx)
+        .await?;
+    let mut pending = sqlx::QueryBuilder::new("SELECT EXISTS(SELECT 1 FROM backups WHERE ");
+    if pending
+        .push(UNSTARTED)
+        .push(")")
+        .build_query_scalar::<bool>()
+        .bind(target)
+        .fetch_one(&mut *tx)
+        .await?
+    {
+        return Err(sqlx::Error::Protocol(
+            "Queued backup transition not acknowledged".into(),
+        ));
+    }
+    tx.commit().await?;
+    Ok(Some(already))
+}
+
 async fn read(state: &HttpState, include: bool, id: Option<i64>) -> Response {
     match fetch(state, include, id).await {
         Ok(mut rows) if id.is_some() => rows.pop().map_or_else(
