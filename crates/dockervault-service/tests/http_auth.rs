@@ -669,6 +669,54 @@ async fn encryption_onboarding_status_distinguishes_deferral_from_key_custody() 
 }
 
 #[tokio::test]
+async fn encryption_toggle_requires_confirmed_key_custody() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let confirm = "/api/v1/encryption/confirm-setup";
+    let disable = "/api/v1/encryption/toggle?enabled=false";
+    let db = server.db.pool();
+    let (_, _, body) = server
+        .request("POST", confirm, &headers, Some(json!({"confirmed":true})))
+        .await;
+    assert_eq!(
+        body,
+        json!({"detail":"Encryption not set up. Call /setup first."})
+    );
+    sqlx::query("INSERT INTO encryption_config(id,public_key,setup_completed,encryption_enabled) VALUES(1,'synthetic-public-fixture',0,1)").execute(db).await.unwrap();
+    assert_eq!(server.request("POST", disable, &headers, None).await.0, 400);
+    assert_eq!(
+        server
+            .request("POST", confirm, &headers, Some(json!({"confirmed":false})))
+            .await
+            .0,
+        400
+    );
+    assert_eq!(
+        server
+            .request("POST", confirm, &headers, Some(json!({"confirmed":true})))
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        server.request("POST", disable, &headers, None).await.2,
+        json!({"message":"Encryption disabled for new backups."})
+    );
+    let stored: (String, bool, bool) = sqlx::query_as(
+        "SELECT public_key,setup_completed,encryption_enabled FROM encryption_config WHERE id=1",
+    )
+    .fetch_one(db)
+    .await
+    .unwrap();
+    assert_eq!(stored, ("synthetic-public-fixture".into(), true, false));
+    server.close().await;
+}
+
+#[tokio::test]
 async fn system_info_is_authenticated_and_redacts_configured_paths() {
     let server = Server::start("http://localhost:3000").await;
     let path = "/api/v1/settings/system-info";
