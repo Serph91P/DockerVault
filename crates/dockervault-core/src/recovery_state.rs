@@ -122,10 +122,12 @@ fn manifest_canonical(canonical: &[u8]) -> Result<Value> {
 }
 pub fn state_manifest(payload: &Value) -> Result<Value> {
     let raw = serde_json::to_vec(payload).map_err(|_| Invalid)?;
-    let canonical = PythonJson::parse(&raw)
-        .map_err(json_error)?
-        .canonical(&|| false)
-        .map_err(json_error)?;
+    state_manifest_json(&PythonJson::parse(&raw).map_err(json_error)?, &|| false)
+}
+
+/// Hash portable catalog records without converting opaque JSON to scalar-only Value.
+pub fn state_manifest_json(payload: &PythonJson, cancel: &dyn Fn() -> bool) -> Result<Value> {
+    let canonical = payload.canonical(cancel).map_err(json_error)?;
     manifest_canonical(&canonical)
 }
 fn check_cancel(cancel: &dyn Fn() -> bool) -> Result<()> {
@@ -213,18 +215,60 @@ pub fn parse_state_json(
     if !rclone_package::same(&expected_manifest, &payload["manifest"]) {
         return Err(Invalid);
     }
-    let tables = PortableTables::parse_json(raw["tables"].get().as_bytes()).map_err(|_| Invalid)?;
+    let mut tables =
+        PortableTables::parse_json(raw["tables"].get().as_bytes()).map_err(|_| Invalid)?;
     check_cancel(cancel)?;
     let storage_ids: BTreeSet<i64> = tables.remote_storages.iter().map(|s| s.id).collect();
+    let retired = |key: &str| {
+        matches!(
+            key,
+            "komodo_enabled" | "komodo_api_url" | "komodo_api_key" | "komodo_api_secret"
+        )
+    };
+    let mut setting_ids = BTreeSet::new();
+    let mut setting_keys = BTreeSet::new();
     for row in &tables.app_settings {
-        if ![
-            "storage_check_quota_before_upload",
-            "encryption_onboarding_deferred",
-        ]
-        .contains(&row.key.as_str())
+        if !(retired(&row.key)
+            || [
+                "storage_check_quota_before_upload",
+                "encryption_onboarding_deferred",
+            ]
+            .contains(&row.key.as_str()))
+            || !setting_ids.insert(row.id)
+            || !setting_keys.insert(row.key.as_str())
         {
             return Err(Invalid);
         }
+    }
+    if tables.app_settings.iter().any(|row| retired(&row.key)) {
+        // The original manifest has already been checked. Only the native import
+        // projection drops retired configuration; the source packet stays intact.
+        let mut raw_tables: IndexMap<String, Box<RawValue>> =
+            serde_json::from_str(raw["tables"].get()).map_err(|_| Invalid)?;
+        let rows: Vec<&RawValue> =
+            serde_json::from_str(raw_tables["app_settings"].get()).map_err(|_| Invalid)?;
+        let retained: Vec<_> = rows
+            .into_iter()
+            .zip(&tables.app_settings)
+            .filter_map(|(row, setting)| (!retired(&setting.key)).then_some(row))
+            .collect();
+        let settings = serde_json::to_string(&retained).map_err(|_| Invalid)?;
+        let canonical_settings = PythonJson::parse(settings.as_bytes())
+            .map_err(json_error)?
+            .canonical(cancel)
+            .map_err(json_error)?;
+        expected_manifest["tables"]["app_settings"] =
+            json!({"count":retained.len(),"sha256":sha(&canonical_settings)});
+        raw_tables.insert(
+            "app_settings".into(),
+            RawValue::from_string(settings).map_err(|_| Invalid)?,
+        );
+        raw.insert(
+            "tables".into(),
+            RawValue::from_string(serde_json::to_string(&raw_tables).map_err(|_| Invalid)?)
+                .map_err(|_| Invalid)?,
+        );
+        tables.app_settings.retain(|row| !retired(&row.key));
     }
     for expression in tables
         .schedules

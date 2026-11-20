@@ -136,32 +136,37 @@ async fn full_offline_state_validation_matches_actual_provider_and_normalizes_pu
             rclone_options: options.clone(),
         };
         let result = validate_state(case["payload"].clone(), context, &owner).await;
-        // The frozen Python oracle retains the old accept results. The retired
-        // settings are now subject to the same rejection as any unsupported key.
-        let retired = matches!(
-            case["name"].as_str().unwrap(),
-            "column-app_settings-key-'komodo_enabled'" | "column-app_settings-key-'komodo_api_key'"
-        );
         assert_eq!(
             result.is_ok(),
-            case["accepted"].as_bool().unwrap() && !retired,
+            case["accepted"].as_bool().unwrap(),
             "{}",
             case["name"]
         );
         if let Ok(state) = result {
-            assert_eq!(state.preview(), &case["preview"], "{}", case["name"]);
+            let payload = state.payload().unwrap();
+            let mut preview = case["preview"].clone();
+            let mut manifest = case["normalized_manifest"].clone();
+            if matches!(
+                case["name"].as_str().unwrap(),
+                "column-app_settings-key-'komodo_enabled'"
+                    | "column-app_settings-key-'komodo_api_key'"
+            ) {
+                // The unchanged Python oracle includes one retired row. Native
+                // staging accepts the bundle but must not retain that setting.
+                assert_eq!(payload["tables"]["app_settings"], serde_json::json!([]));
+                preview["counts"]["app_settings"] = serde_json::json!(0);
+                manifest["tables"]["app_settings"] = serde_json::json!({
+                    "count": 0,
+                    "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+                });
+            }
+            assert_eq!(state.preview(), &preview, "{}", case["name"]);
             assert_eq!(
-                state.payload().unwrap()["ssh_public_keys"],
-                case["normalized_ssh"],
+                payload["ssh_public_keys"], case["normalized_ssh"],
                 "{}",
                 case["name"]
             );
-            assert_eq!(
-                state.payload().unwrap()["manifest"],
-                case["normalized_manifest"],
-                "{}",
-                case["name"]
-            );
+            assert_eq!(payload["manifest"], manifest, "{}", case["name"]);
         }
         assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
         if case["filesystem"] == "file-parent" {
