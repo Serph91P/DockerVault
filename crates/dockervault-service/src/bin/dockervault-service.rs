@@ -138,6 +138,9 @@ async fn run() -> Result<(), &'static str> {
     .await
     .map_err(|_| "interrupted backup recovery")?;
     }
+    http::recover_key_change(db.pool())
+        .await
+        .map_err(|_| "SSH key recovery")?;
     let listener = TcpListener::bind(address).await.map_err(|_| "listener")?;
     let auth = AuthService::new(db.pool().clone());
     let state = HttpState::new(auth.clone(), config);

@@ -14,6 +14,288 @@ use std::{
 };
 
 const KEY_ROOT: &str = "/app/data/ssh_keys";
+const KEY_JOURNAL: &str = "native_ssh_key_change";
+
+#[derive(serde::Deserialize)]
+pub(super) struct Generate {
+    name: String,
+    comment: Option<String>,
+    #[serde(default)]
+    overwrite: bool,
+}
+
+pub(super) async fn generate(
+    State(state): State<HttpState>,
+    body: Result<Json<Generate>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(Json(input)) = body else {
+        return failure(StatusCode::UNPROCESSABLE_ENTITY, "Invalid SSH key request");
+    };
+    if !valid_name(&input.name) {
+        return bad_name();
+    }
+    let worker = state.clone();
+    let Ok(work) = state
+        .probe_jobs
+        .submit_async(move |cancel| async move { create_new(&worker, input, &cancel).await })
+    else {
+        return unavailable();
+    };
+    match work.wait().await {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err((status, detail))) => failure(status, detail),
+        Err(_) => unavailable(),
+    }
+}
+
+async fn create_new(
+    state: &HttpState,
+    input: Generate,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<serde_json::Value, (StatusCode, &'static str)> {
+    const ERROR: (StatusCode, &str) = (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Could not generate SSH key",
+    );
+    const CONFLICT: (StatusCode, &str) =
+        (StatusCode::CONFLICT, "Key with this name already exists");
+    let Generate {
+        name,
+        comment,
+        overwrite,
+    } = input;
+    let comment = comment
+        .filter(|c| !c.is_empty())
+        .unwrap_or_else(|| format!("dockervault-{name}"));
+    if comment.len() > 1024 || comment.contains(['\0', '\n', '\r']) {
+        return Err((StatusCode::BAD_REQUEST, "Invalid SSH key comment"));
+    }
+    let _claim = state.ssh_key_write.lock().await;
+    recover_key_change(state.auth.pool())
+        .await
+        .map_err(|_| ERROR)?;
+    if cancel.is_cancelled() {
+        return Err(ERROR);
+    }
+    let public = format!("{name}.pub");
+    let root = FsPath::new(KEY_ROOT);
+    let dir = crate::storage::local::open_root(root).map_err(|_| ERROR)?;
+    let anchored = std::path::PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd()));
+    let old = [
+        stamp(&anchored.join(&name)).map_err(|_| ERROR)?,
+        stamp(&anchored.join(&public)).map_err(|_| ERROR)?,
+    ];
+    if !overwrite && old.iter().any(Option::is_some) {
+        return Err(CONFLICT);
+    }
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random).map_err(|_| ERROR)?;
+    let stage_name = format!(".dv-key-{}", u128::from_ne_bytes(random));
+    nix::sys::stat::mkdirat(&dir, stage_name.as_str(), nix::sys::stat::Mode::S_IRWXU)
+        .map_err(|_| ERROR)?;
+    let mut stage = KeyStage(Some(anchored.join(&stage_name)));
+    let mut spec = crate::process::ProcessSpec::new(
+        "/usr/bin/ssh-keygen",
+        ["-q", "-t", "ed25519", "-N", "", "-C", &comment, "-f", "key"],
+    );
+    spec.working_directory = Some(root.join(&stage_name));
+    spec.timeout = Some(Duration::from_secs(10));
+    spec.discard_output = true;
+    let work = state
+        .probe_processes
+        .as_ref()
+        .ok_or(ERROR)?
+        .start(spec)
+        .map_err(|_| ERROR)?;
+    let output = work.wait().await.map_err(|_| ERROR)?.map_err(|_| ERROR)?;
+    if !output.status.success() || cancel.is_cancelled() {
+        return Err(ERROR);
+    }
+    use nix::{
+        fcntl::{OFlag, openat},
+        sys::stat::Mode,
+    };
+    let stage_dir = openat(
+        &dir,
+        stage_name.as_str(),
+        OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| ERROR)?;
+    let open = |name| {
+        let file = std::fs::File::from(
+            openat(
+                &stage_dir,
+                name,
+                OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|_| ERROR)?,
+        );
+        if file.metadata().map_err(|_| ERROR)?.is_file() {
+            Ok(file)
+        } else {
+            Err(ERROR)
+        }
+    };
+    let private = open("key")?;
+    let generated_public = open("key.pub")?;
+    use std::os::unix::fs::PermissionsExt;
+    private
+        .set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|_| ERROR)?;
+    generated_public
+        .set_permissions(std::fs::Permissions::from_mode(0o644))
+        .map_err(|_| ERROR)?;
+    private.sync_all().map_err(|_| ERROR)?;
+    generated_public.sync_all().map_err(|_| ERROR)?;
+    std::fs::File::from(stage_dir)
+        .sync_all()
+        .map_err(|_| ERROR)?;
+    dir.sync_all().map_err(|_| ERROR)?;
+    if cancel.is_cancelled() {
+        return Err(ERROR);
+    }
+    let change = KeyChange {
+        name: name.clone(),
+        stage: stage_name,
+        old,
+        new: [
+            identity(&private).map_err(|_| ERROR)?,
+            identity(&generated_public).map_err(|_| ERROR)?,
+        ],
+    };
+    let encoded = serde_json::to_string(&change).map_err(|_| ERROR)?;
+    sqlx::query("INSERT INTO app_settings(key,value) VALUES(?,?)")
+        .bind(KEY_JOURNAL)
+        .bind(&encoded)
+        .execute(state.auth.pool())
+        .await
+        .map_err(|_| ERROR)?;
+    // Once the decision is durable, restart (not request cancellation) owns settlement.
+    stage.0 = None;
+    settle_key_change(state.auth.pool(), &encoded, change)
+        .await
+        .map_err(|_| ERROR)?;
+    metadata(state, name).await.map_err(|_| ERROR)?.ok_or(ERROR)
+}
+
+struct KeyStage(Option<std::path::PathBuf>);
+
+impl Drop for KeyStage {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            let _ = std::fs::remove_file(path.join("key"));
+            let _ = std::fs::remove_file(path.join("key.pub"));
+            let _ = std::fs::remove_dir(path);
+        }
+    }
+}
+
+type Stamp = (u64, u64);
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct KeyChange {
+    name: String,
+    stage: String,
+    old: [Option<Stamp>; 2],
+    new: [Stamp; 2],
+}
+
+fn identity(file: &std::fs::File) -> std::io::Result<Stamp> {
+    file.metadata().map(|m| (m.dev(), m.ino()))
+}
+
+fn stamp(path: &FsPath) -> std::io::Result<Option<Stamp>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.is_file() => Ok(Some((m.dev(), m.ino()))),
+        Ok(_) => Err(std::io::Error::other("Not a regular key file")),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+pub async fn recover_key_change(pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
+    let row: Option<String> = sqlx::query_scalar("SELECT value FROM app_settings WHERE key=?")
+        .bind(KEY_JOURNAL)
+        .fetch_optional(pool)
+        .await?;
+    if let Some(row) = row {
+        let change = serde_json::from_str(&row)
+            .map_err(|_| sqlx::Error::Protocol("Invalid SSH key publication journal".into()))?;
+        settle_key_change(pool, &row, change)
+            .await
+            .map_err(|_| sqlx::Error::Protocol("SSH key publication remains unsettled".into()))?;
+    }
+    Ok(())
+}
+
+async fn settle_key_change(
+    pool: &sqlx::SqlitePool,
+    encoded: &str,
+    change: KeyChange,
+) -> Result<(), ()> {
+    let owner = tokio::task::spawn_blocking(move || publish_keys(&change))
+        .await
+        .map_err(|_| ())??;
+    let changed = sqlx::query("DELETE FROM app_settings WHERE key=? AND value=?")
+        .bind(KEY_JOURNAL)
+        .bind(encoded)
+        .execute(pool)
+        .await
+        .map_err(|_| ())?
+        .rows_affected();
+    if changed != 1 {
+        return Err(());
+    }
+    // Stage paths are anchored to the held descriptor until cleanup finishes.
+    drop(KeyStage(Some(owner.1)));
+    drop(owner.0);
+    Ok(())
+}
+
+fn publish_keys(change: &KeyChange) -> Result<(std::fs::File, std::path::PathBuf), ()> {
+    if !valid_name(&change.name)
+        || !change.stage.strip_prefix(".dv-key-").is_some_and(|suffix| {
+            !suffix.is_empty() && suffix.len() <= 39 && suffix.bytes().all(|b| b.is_ascii_digit())
+        })
+    {
+        return Err(());
+    }
+    let dir = crate::storage::local::open_root(FsPath::new(KEY_ROOT)).map_err(|_| ())?;
+    let root = std::path::PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd()));
+    let stage = root.join(&change.stage);
+    let public = format!("{}.pub", change.name);
+    let pairs = [("key", change.name.as_str()), ("key.pub", public.as_str())];
+    let stage_id = std::fs::symlink_metadata(&stage).map_err(|_| ())?;
+    if !stage_id.is_dir() {
+        return Err(());
+    }
+    // Check both sides before modifying either. A previously installed inode is already settled.
+    for (idx, (source, destination)) in pairs.iter().enumerate() {
+        let current = stamp(&root.join(destination)).map_err(|_| ())?;
+        if current != Some(change.new[idx])
+            && (current != change.old[idx]
+                || stamp(&stage.join(source)).map_err(|_| ())? != Some(change.new[idx]))
+        {
+            return Err(());
+        }
+    }
+    for (idx, (source, destination)) in pairs.iter().enumerate() {
+        let dst = root.join(destination);
+        if stamp(&dst).map_err(|_| ())? == Some(change.new[idx]) {
+            continue;
+        }
+        let src = stage.join(source);
+        if change.old[idx].is_some() {
+            std::fs::rename(src, dst).map_err(|_| ())?;
+        } else {
+            std::fs::hard_link(src, dst).map_err(|_| ())?;
+        }
+    }
+    dir.sync_all().map_err(|_| ())?;
+    Ok((dir, stage))
+}
 
 fn valid_name(name: &str) -> bool {
     (1..=40).contains(&name.len())

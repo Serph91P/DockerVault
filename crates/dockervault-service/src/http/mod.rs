@@ -25,6 +25,7 @@ pub mod security;
 mod settings;
 mod sftp_sync;
 mod ssh_keys;
+pub use ssh_keys::recover_key_change;
 mod storage;
 mod target_write;
 mod targets;
@@ -58,6 +59,7 @@ pub struct HttpState {
     live_backups: Arc<std::sync::Mutex<std::collections::HashMap<i64, &'static str>>>,
     removal_previews: Arc<std::sync::Mutex<copy_removal::Previews>>,
     backup_claims: crate::jobs::Claims,
+    ssh_key_write: Arc<tokio::sync::Mutex<()>>,
 }
 impl HttpState {
     pub fn new(auth: AuthService, config: Config) -> Self {
@@ -83,6 +85,7 @@ impl HttpState {
             live_backups: Arc::default(),
             removal_previews: Arc::default(),
             backup_claims: crate::jobs::Claims::default(),
+            ssh_key_write: Arc::default(),
         }
     }
 
@@ -291,7 +294,10 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/operations/{id}/retry", post(operations::retry))
         .route("/api/v1/recovery/status", get(recovery_status::status))
         .route("/api/v1/storage/types", get(storage::types))
-        .route("/api/v1/storage/ssh-keys", get(ssh_keys::list))
+        .route(
+            "/api/v1/storage/ssh-keys",
+            get(ssh_keys::list).post(ssh_keys::generate),
+        )
         .route("/api/v1/storage/ssh-keys/{name}", get(ssh_keys::detail))
         .route(
             "/api/v1/storage/ssh-keys/{name}/public",

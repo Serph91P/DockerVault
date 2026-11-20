@@ -49,6 +49,10 @@ fn check() -> Result<(), &'static str> {
             "SELECT EXISTS(SELECT 1 FROM backup_storage_syncs WHERE sync_status IS NULL OR sync_status NOT IN ('failed','completed'))",
             "remote sync is unsettled",
         ),
+        (
+            "SELECT EXISTS(SELECT 1 FROM app_settings WHERE key='native_ssh_key_change')",
+            "SSH key publication is unsettled",
+        ),
     ] {
         if db
             .query_row(query, [], |row| row.get::<_, bool>(0))
