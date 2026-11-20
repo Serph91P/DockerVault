@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+age.workspace = true
 aws-smithy-types.workspace = true
 aws-sdk-s3.workspace = true
 zeroize.workspace = true
@@ -46,7 +47,6 @@ dockervault-tools = { path = "../dockervault-tools" }
 workspace = true
 
 [dev-dependencies]
-age.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 bech32.workspace = true
 nix = { workspace = true, features = ["inotify"] }

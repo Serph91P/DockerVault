@@ -10,6 +10,78 @@ use serde_json::json;
 
 const DEFERRED: &str = "encryption_onboarding_deferred";
 
+fn recovery_instructions(public: &str) -> String {
+    format!(
+        "# DockerVault Backup Recovery Instructions\n\nPublic key: `{public}`\n\nKeep the exported private key and a trusted copy of `dockervault-recover` offline.\nTo decrypt without a running DockerVault instance:\n\n```sh\ndockervault-recover --identity private_key.txt --key backup.tar.gz.key --archive backup.tar.gz.enc --output backup.tar.gz\n```\n\nNever bypass an authentication error. For legacy CBC archives verify a separately trusted checksum before extraction.\n"
+    )
+}
+
+pub(super) async fn instructions(State(state): State<HttpState>) -> Response {
+    match sqlx::query_scalar::<_, String>(
+        "SELECT public_key FROM encryption_config ORDER BY id LIMIT 1",
+    )
+    .fetch_optional(state.auth.pool())
+    .await
+    {
+        Ok(Some(key)) => Json(json!({"public_key":key,"instructions":recovery_instructions(&key)}))
+            .into_response(),
+        Ok(None) => bad("Encryption not configured."),
+        Err(_) => internal(),
+    }
+}
+
+pub(super) async fn setup(
+    State(state): State<HttpState>,
+    request: axum::extract::Request,
+) -> Response {
+    if let Err(response) = super::security::rate_limit(&state, &request, "encryption-setup") {
+        return *response;
+    }
+    issue_key(&state).await.unwrap_or_else(|_| internal())
+}
+
+async fn issue_key(state: &HttpState) -> Result<Response, sqlx::Error> {
+    use age::secrecy::ExposeSecret;
+    let mut tx = state.auth.pool().begin_with("BEGIN IMMEDIATE").await?;
+    if crate::recovery_activation::recovery_pending_in(&mut *tx)
+        .await
+        .map_err(|_| sqlx::Error::Protocol("Cannot determine recovery activation".into()))?
+    {
+        return Ok((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"detail":"Recovery activation is incomplete"})),
+        )
+            .into_response());
+    }
+    let existing = sqlx::query_as::<_,(i64,String,bool)>("SELECT id,public_key,coalesce(setup_completed,0) FROM encryption_config ORDER BY id LIMIT 1").fetch_optional(&mut *tx).await?;
+    if let Some((_, key, completed)) = &existing {
+        if *completed {
+            return Ok(bad(
+                "Encryption already configured. Use /regenerate to create new keys (this will make existing backups unrecoverable!).",
+            ));
+        }
+        if !key.is_empty() {
+            return Ok((StatusCode::CONFLICT,Json(json!({"detail":"A pending key already exists. Use explicit regeneration if it was lost."}))).into_response());
+        }
+    }
+    let private = age::x25519::Identity::generate();
+    let public = private.to_public().to_string();
+    let result = if let Some((id, _, _)) = existing {
+        sqlx::query("UPDATE encryption_config SET public_key=?,setup_completed=0 WHERE id=?")
+            .bind(&public)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?
+    } else {
+        sqlx::query("INSERT INTO encryption_config(public_key,key_created_at,encryption_enabled,setup_completed,created_at,updated_at) VALUES(?,strftime('%Y-%m-%d %H:%M:%f000','now'),1,0,strftime('%Y-%m-%d %H:%M:%f000','now'),strftime('%Y-%m-%d %H:%M:%f000','now'))").bind(&public).execute(&mut *tx).await?
+    };
+    if result.rows_affected() != 1 {
+        return Err(sqlx::Error::RowNotFound);
+    }
+    tx.commit().await?;
+    Ok(([(axum::http::header::CACHE_CONTROL,"no-store")], Json(json!({"public_key":public,"private_key":private.to_string().expose_secret(),"recovery_instructions":recovery_instructions(&public)}))).into_response())
+}
+
 pub(super) async fn status(State(state): State<HttpState>) -> Response {
     match read_status(&state).await {
         Ok(value) => Json(value).into_response(),

@@ -117,6 +117,11 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/overview/summary", get(overview::summary))
         .route("/api/v1/encryption/status", get(encryption::status))
         .route("/api/v1/encryption/defer", post(encryption::defer))
+        .route("/api/v1/encryption/setup", post(encryption::setup))
+        .route(
+            "/api/v1/encryption/recovery-instructions",
+            get(encryption::instructions),
+        )
         .route(
             "/api/v1/encryption/confirm-setup",
             post(encryption::confirm),

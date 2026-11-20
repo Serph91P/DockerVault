@@ -92,11 +92,18 @@ impl RateLimits {
             start: now,
             count: 0,
         });
-        if window.count >= 5 {
+        if window.count >= route_limit(route) {
             return false;
         }
         window.count += 1;
         true
+    }
+}
+fn route_limit(route: &str) -> u8 {
+    if matches!(route, "encryption-setup" | "encryption-regenerate") {
+        3
+    } else {
+        5
     }
 }
 pub(super) fn rate_limit(
@@ -117,7 +124,7 @@ pub(super) fn rate_limit(
         Err(Box::new(
             (
                 StatusCode::TOO_MANY_REQUESTS,
-                Json(json!({"error":"Rate limit exceeded: 5 per 1 minute"})),
+                Json(json!({"error":format!("Rate limit exceeded: {} per 1 minute", route_limit(route))})),
             )
                 .into_response(),
         ))

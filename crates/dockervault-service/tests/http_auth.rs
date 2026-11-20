@@ -686,7 +686,25 @@ async fn encryption_toggle_requires_confirmed_key_custody() {
         body,
         json!({"detail":"Encryption not set up. Call /setup first."})
     );
-    sqlx::query("INSERT INTO encryption_config(id,public_key,setup_completed,encryption_enabled) VALUES(1,'synthetic-public-fixture',0,1)").execute(db).await.unwrap();
+    let (status, headers_out, issued) = server
+        .request("POST", "/api/v1/encryption/setup", &headers, None)
+        .await;
+    assert_eq!(status, 200);
+    assert!(
+        headers_out
+            .lines()
+            .any(|line| line.eq_ignore_ascii_case("cache-control: no-store"))
+    );
+    let public = issued["public_key"].as_str().unwrap();
+    let identity: age::x25519::Identity = issued["private_key"].as_str().unwrap().parse().unwrap();
+    assert_eq!(identity.to_public().to_string(), public);
+    assert_eq!(
+        server
+            .request("POST", "/api/v1/encryption/setup", &headers, None)
+            .await
+            .0,
+        409
+    );
     assert_eq!(server.request("POST", disable, &headers, None).await.0, 400);
     assert_eq!(
         server
@@ -712,7 +730,7 @@ async fn encryption_toggle_requires_confirmed_key_custody() {
     .fetch_one(db)
     .await
     .unwrap();
-    assert_eq!(stored, ("synthetic-public-fixture".into(), true, false));
+    assert_eq!(stored, (public.into(), true, false));
     server.close().await;
 }
 
