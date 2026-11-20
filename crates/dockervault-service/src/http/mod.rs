@@ -118,6 +118,11 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/overview/summary", get(overview::summary))
         .route("/api/v1/docker/health", get(docker_inventory::health))
         .route("/api/v1/docker/volumes", get(docker_inventory::volumes))
+        .route("/api/v1/docker/stacks", get(docker_inventory::stacks))
+        .route(
+            "/api/v1/docker/stacks/{name}/dependencies",
+            get(docker_inventory::stack_dependencies),
+        )
         .route(
             "/api/v1/docker/containers",
             get(docker_inventory::containers),
