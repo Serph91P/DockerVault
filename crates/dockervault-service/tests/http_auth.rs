@@ -1054,7 +1054,34 @@ async fn target_writes_validate_references_and_preserve_explicit_clears() {
             .unwrap(),
         0
     );
-    let (status, _, created) = server.request("POST",root,&headers,Some(json!({"name":"Native","target_type":"path","host_path":dir,"enabled":false,"schedule_id":177,"schedule_cron":" 0 4 * * * ","retention_policy_id":177,"include_paths":["one"]}))).await;
+    for (field, value, message) in [
+        ("name", Value::Null, "Input should be a valid string"),
+        ("name", json!(""), "String should have at least 1 character"),
+        (
+            "name",
+            json!("x".repeat(256)),
+            "String should have at most 255 characters",
+        ),
+        ("enabled", Value::Null, "Input should be a valid boolean"),
+        ("include_paths", Value::Null, "Input should be a valid list"),
+        (
+            "per_volume_rules",
+            Value::Null,
+            "Input should be a valid dictionary",
+        ),
+    ] {
+        let mut body = json!({"name":"Native","target_type":"path","host_path":dir});
+        body[field] = value;
+        let (status, _, response) = server.request("POST", root, &headers, Some(body)).await;
+        assert_eq!(
+            (status, response["errors"][0].clone()),
+            (
+                422,
+                json!({"field":format!("body.{field}"),"message":message})
+            )
+        );
+    }
+    let (status, _, created) = server.request("POST",root,&headers,Some(json!({"name":"Native","target_type":"path","host_path":dir,"enabled":0.0,"schedule_id":177.0,"schedule_cron":" 0 4 * * * ","retention_policy_id":177,"include_paths":["one"]}))).await;
     assert_eq!(status, 200, "{created}");
     assert_eq!(created["schedule_cron"], "0 4 * * *");
     assert_eq!(created["enabled"], false);

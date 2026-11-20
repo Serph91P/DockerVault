@@ -89,10 +89,12 @@ fn parse(input: &Value, create: bool) -> Result<Map<String, Value>, (String, Str
                 out.insert(key.into(), value);
                 continue;
             }
-            return Err((
-                "body".into(),
-                format!("Value error, {key} cannot be null; omit it to keep the current value"),
-            ));
+            if !create {
+                return Err((
+                    "body".into(),
+                    format!("Value error, {key} cannot be null; omit it to keep the current value"),
+                ));
+            }
         }
         let parsed = match key {
             "schedule_id" | "retention_policy_id" => {
@@ -121,12 +123,15 @@ fn parse(input: &Value, create: bool) -> Result<Map<String, Value>, (String, Str
                     "Input should be 'container', 'volume', 'path' or 'stack'",
                 ));
             }
-            "name"
-                if !value
+            "name" => {
+                let name = value
                     .as_str()
-                    .is_some_and(|s| (1..=255).contains(&s.chars().count())) =>
-            {
-                return Err(err(key, "Name must contain between 1 and 255 characters"));
+                    .ok_or_else(|| err(key, "Input should be a valid string"))?;
+                match name.chars().take(256).count() {
+                    0 => return Err(err(key, "String should have at least 1 character")),
+                    256 => return Err(err(key, "String should have at most 255 characters")),
+                    _ => value,
+                }
             }
             "pre_backup_command" | "post_backup_command" => {
                 let text = value
@@ -150,15 +155,21 @@ fn parse(input: &Value, create: bool) -> Result<Map<String, Value>, (String, Str
                     .ok_or_else(|| err(key, "Input should contain valid integers"))?
             ),
             "per_volume_rules" => {
-                if !value.as_object().is_some_and(|m| {
-                    m.values()
-                        .all(|v| v.as_object().is_some_and(|m| m.values().all(strings)))
-                }) {
+                let rules = value
+                    .as_object()
+                    .ok_or_else(|| err(key, "Input should be a valid dictionary"))?;
+                if !rules
+                    .values()
+                    .all(|v| v.as_object().is_some_and(|m| m.values().all(strings)))
+                {
                     return Err(err(key, "Input should map volumes to path rules"));
                 }
                 value
             }
             key if LISTS.contains(&key) => {
+                if !value.is_array() {
+                    return Err(err(key, "Input should be a valid list"));
+                }
                 if !strings(&value) {
                     return Err(err(key, "Input should be a list of strings"));
                 }
@@ -167,9 +178,9 @@ fn parse(input: &Value, create: bool) -> Result<Map<String, Value>, (String, Str
             key if BOOLS.iter().any(|(k, _)| *k == key) => {
                 let b = value
                     .as_bool()
-                    .or_else(|| match value.as_i64() {
-                        Some(0) => Some(false),
-                        Some(1) => Some(true),
+                    .or_else(|| match value.as_f64() {
+                        Some(0.0) => Some(false),
+                        Some(1.0) => Some(true),
                         _ => None,
                     })
                     .or_else(
@@ -197,6 +208,12 @@ fn parse(input: &Value, create: bool) -> Result<Map<String, Value>, (String, Str
 fn integer(value: &Value) -> Option<i64> {
     value
         .as_i64()
+        .or_else(|| {
+            value
+                .as_f64()
+                .filter(|v| v.fract() == 0.0 && *v >= i64::MIN as f64 && *v < -(i64::MIN as f64))
+                .map(|v| v as i64)
+        })
         .or_else(|| value.as_str().and_then(super::operations::query_integer))
         .or_else(|| value.as_bool().map(i64::from))
 }
