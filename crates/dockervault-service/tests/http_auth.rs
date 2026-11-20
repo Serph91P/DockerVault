@@ -631,6 +631,44 @@ async fn overview_reads_retained_catalog_without_treating_a_stale_row_as_live() 
 }
 
 #[tokio::test]
+async fn encryption_onboarding_status_distinguishes_deferral_from_key_custody() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let status = "/api/v1/encryption/status";
+    assert_eq!(server.request("GET", status, &[], None).await.0, 401);
+    let expected = |deferred| json!({"setup_completed":false,"encryption_enabled":false,"onboarding_deferred":deferred,"public_key":null,"key_created_at":null});
+    assert_eq!(
+        server.request("GET", status, &headers, None).await.2,
+        expected(false)
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            server
+                .request("POST", "/api/v1/encryption/defer", &headers, None)
+                .await
+                .2,
+            json!({"onboarding_deferred":true})
+        );
+    }
+    assert_eq!(
+        server.request("GET", status, &headers, None).await.2,
+        expected(true)
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM encryption_config")
+            .fetch_one(server.db.pool())
+            .await
+            .unwrap(),
+        0
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn system_info_is_authenticated_and_redacts_configured_paths() {
     let server = Server::start("http://localhost:3000").await;
     let path = "/api/v1/settings/system-info";
