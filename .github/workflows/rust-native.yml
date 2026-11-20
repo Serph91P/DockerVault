@@ -115,3 +115,5 @@ jobs:
               cmp /work/fixtures/pax-links.tar.gz /work/recovered.gz
             done
           '
+      - name: Recover an authenticated native backup after a service restart
+        run: bash docker/test-native-encrypted-roundtrip.sh dockervault-native-candidate-ci dockervault-recovery-ci
