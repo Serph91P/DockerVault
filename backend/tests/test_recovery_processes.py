@@ -60,8 +60,16 @@ def _bootstrap_worker(pipe, directory, key):
 def _running(pid):
     try:
         return Path(f"/proc/{pid}/stat").read_text().split(")", 1)[1].split()[0] != "Z"
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return False
+
+
+def test_running_probe_handles_reap_between_open_and_read(monkeypatch):
+    def reaped(_path):
+        raise ProcessLookupError(3, "No such process")
+
+    monkeypatch.setattr(Path, "read_text", reaped)
+    assert not _running(12345)
 
 
 def test_native_bootstrap_cannot_outlive_killed_recovery_owner(tmp_path):

@@ -1190,7 +1190,7 @@ async fn target_writes_validate_references_and_preserve_explicit_clears() {
 }
 
 #[tokio::test]
-async fn orphan_cleanup_does_not_delete_unowned_or_active_archives() {
+async fn orphan_cleanup_preserves_unknown_active_and_local_replica_archives() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
     let headers = [
@@ -1200,8 +1200,10 @@ async fn orphan_cleanup_does_not_delete_unowned_or_active_archives() {
     let root = server.path.join("backups");
     let unknown = root.join("unregistered.tar");
     let active = root.join("active.tar.gz");
+    let replica = root.join("replica.tar.gz");
     std::fs::write(&unknown, b"unowned").unwrap();
     std::fs::write(&active, b"reserved").unwrap();
+    std::fs::write(&replica, b"local replica").unwrap();
     let db = server.db.pool();
     sqlx::query("INSERT INTO backup_targets(id,name,target_type) VALUES(83,'Fixture','path')")
         .execute(db)
@@ -1209,16 +1211,36 @@ async fn orphan_cleanup_does_not_delete_unowned_or_active_archives() {
         .unwrap();
     sqlx::query("INSERT INTO backups(id,target_id,backup_type,status,backup_metadata) VALUES(83,83,'FULL','RUNNING',?)")
         .bind(json!({"active_artifacts":[active]}).to_string()).execute(db).await.unwrap();
+    sqlx::query(
+        "INSERT INTO backups(id,target_id,backup_type,status) VALUES(84,83,'FULL','COMPLETED')",
+    )
+    .execute(db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path) VALUES(84,'Fixture replica','local',1,?)")
+        .bind(root.to_str().unwrap()).execute(db).await.unwrap();
+    sqlx::query("INSERT INTO backup_storage_syncs(id,backup_id,storage_id,remote_path,sync_status) VALUES(84,84,84,'replica.tar.gz','completed')")
+        .execute(db).await.unwrap();
     let route = "/api/v1/retention/cleanup-orphaned";
     assert_eq!(server.request("POST", route, &[], None).await.0, 401);
-    let (status, _, report) = server.request("POST", route, &headers, None).await;
-    assert_eq!(status, 200);
-    assert_eq!(report["protected"], 2);
-    assert_eq!(report["deleted"], 0);
-    assert_eq!(report["freed_bytes"], 0);
-    assert_eq!(report["scan_complete"], true);
+    for _ in 0..2 {
+        let (status, _, report) = server.request("POST", route, &headers, None).await;
+        assert_eq!(status, 200);
+        assert_eq!(report["protected"], 3);
+        assert_eq!(report["deleted"], 0);
+        assert_eq!(report["freed_bytes"], 0);
+        assert_eq!(report["scan_complete"], true);
+    }
     assert_eq!(std::fs::read(unknown).unwrap(), b"unowned");
     assert_eq!(std::fs::read(active).unwrap(), b"reserved");
+    assert_eq!(std::fs::read(replica).unwrap(), b"local replica");
+    let sync: (i64, i64, String, String) = sqlx::query_as(
+        "SELECT backup_id,storage_id,remote_path,sync_status FROM backup_storage_syncs WHERE id=84",
+    )
+    .fetch_one(db)
+    .await
+    .unwrap();
+    assert_eq!(sync, (84, 84, "replica.tar.gz".into(), "completed".into()));
     server.close().await;
 }
 
