@@ -298,7 +298,10 @@ pub fn router(state: HttpState) -> Router {
             "/api/v1/storage/ssh-keys",
             get(ssh_keys::list).post(ssh_keys::generate),
         )
-        .route("/api/v1/storage/ssh-keys/{name}", get(ssh_keys::detail))
+        .route(
+            "/api/v1/storage/ssh-keys/{name}",
+            get(ssh_keys::detail).delete(ssh_keys::delete),
+        )
         .route(
             "/api/v1/storage/ssh-keys/{name}/public",
             get(ssh_keys::download_public),

@@ -158,12 +158,12 @@ async fn create_new(
     }
     let change = KeyChange {
         name: name.clone(),
-        stage: stage_name,
+        stage: Some(stage_name),
         old,
-        new: [
+        new: Some([
             identity(&private).map_err(|_| ERROR)?,
             identity(&generated_public).map_err(|_| ERROR)?,
-        ],
+        ]),
     };
     let encoded = serde_json::to_string(&change).map_err(|_| ERROR)?;
     sqlx::query("INSERT INTO app_settings(key,value) VALUES(?,?)")
@@ -197,9 +197,63 @@ type Stamp = (u64, u64);
 #[derive(serde::Deserialize, serde::Serialize)]
 struct KeyChange {
     name: String,
-    stage: String,
+    stage: Option<String>,
     old: [Option<Stamp>; 2],
-    new: [Stamp; 2],
+    new: Option<[Stamp; 2]>,
+}
+
+pub(super) async fn delete(State(state): State<HttpState>, Path(name): Path<String>) -> Response {
+    if !valid_name(&name) {
+        return bad_name();
+    }
+    let ctx = state.clone();
+    let Ok(work) = state.probe_jobs.submit_async(move |cancel| async move {
+        let _claim = ctx.ssh_key_write.lock().await;
+        let pool = ctx.auth.pool();
+        recover_key_change(pool).await.map_err(|_| ())?;
+        if cancel.is_cancelled() {
+            return Err(());
+        }
+        let dir = match crate::storage::local::open_root(FsPath::new(KEY_ROOT)) {
+            Ok(dir) => dir,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(_) => return Err(()),
+        };
+        let root = std::path::PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd()));
+        let old = [
+            stamp(&root.join(&name)).map_err(|_| ())?,
+            stamp(&root.join(format!("{name}.pub"))).map_err(|_| ())?,
+        ];
+        if old.iter().all(Option::is_none) {
+            return Ok(false);
+        }
+        let change = KeyChange {
+            name,
+            stage: None,
+            old,
+            new: None,
+        };
+        let encoded = serde_json::to_string(&change).map_err(|_| ())?;
+        sqlx::query("INSERT INTO app_settings(key,value) VALUES(?,?)")
+            .bind(KEY_JOURNAL)
+            .bind(&encoded)
+            .execute(pool)
+            .await
+            .map_err(|_| ())?;
+        settle_key_change(pool, &encoded, change).await?;
+        Ok(true)
+    }) else {
+        return unavailable();
+    };
+    match work.wait().await {
+        Ok(Ok(true)) => Json(json!({"success":true})).into_response(),
+        Ok(Ok(false)) => failure(StatusCode::NOT_FOUND, "SSH key not found"),
+        Ok(Err(())) => failure(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Could not delete SSH key",
+        ),
+        Err(_) => unavailable(),
+    }
 }
 
 fn identity(file: &std::fs::File) -> std::io::Result<Stamp> {
@@ -249,24 +303,48 @@ async fn settle_key_change(
         return Err(());
     }
     // Stage paths are anchored to the held descriptor until cleanup finishes.
-    drop(KeyStage(Some(owner.1)));
+    drop(KeyStage(owner.1));
     drop(owner.0);
     Ok(())
 }
 
-fn publish_keys(change: &KeyChange) -> Result<(std::fs::File, std::path::PathBuf), ()> {
-    if !valid_name(&change.name)
-        || !change.stage.strip_prefix(".dv-key-").is_some_and(|suffix| {
-            !suffix.is_empty() && suffix.len() <= 39 && suffix.bytes().all(|b| b.is_ascii_digit())
-        })
-    {
+fn publish_keys(change: &KeyChange) -> Result<(std::fs::File, Option<std::path::PathBuf>), ()> {
+    if !valid_name(&change.name) {
         return Err(());
     }
     let dir = crate::storage::local::open_root(FsPath::new(KEY_ROOT)).map_err(|_| ())?;
     let root = std::path::PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd()));
-    let stage = root.join(&change.stage);
     let public = format!("{}.pub", change.name);
     let pairs = [("key", change.name.as_str()), ("key.pub", public.as_str())];
+    if change.stage.is_none() && change.new.is_none() {
+        for (idx, (_, destination)) in pairs.iter().enumerate() {
+            let current = stamp(&root.join(destination)).map_err(|_| ())?;
+            if current.is_some() && current != change.old[idx] {
+                return Err(());
+            }
+        }
+        for (idx, (_, destination)) in pairs.iter().enumerate() {
+            let dst = root.join(destination);
+            match stamp(&dst).map_err(|_| ())? {
+                None => (),
+                current if current == change.old[idx] => {
+                    std::fs::remove_file(dst).map_err(|_| ())?
+                }
+                _ => return Err(()),
+            }
+        }
+        dir.sync_all().map_err(|_| ())?;
+        return Ok((dir, None));
+    }
+    let (Some(stage_name), Some(new)) = (&change.stage, change.new) else {
+        return Err(());
+    };
+    if !stage_name.strip_prefix(".dv-key-").is_some_and(|suffix| {
+        !suffix.is_empty() && suffix.len() <= 39 && suffix.bytes().all(|b| b.is_ascii_digit())
+    }) {
+        return Err(());
+    }
+    let stage = root.join(stage_name);
     let stage_id = std::fs::symlink_metadata(&stage).map_err(|_| ())?;
     if !stage_id.is_dir() {
         return Err(());
@@ -274,16 +352,16 @@ fn publish_keys(change: &KeyChange) -> Result<(std::fs::File, std::path::PathBuf
     // Check both sides before modifying either. A previously installed inode is already settled.
     for (idx, (source, destination)) in pairs.iter().enumerate() {
         let current = stamp(&root.join(destination)).map_err(|_| ())?;
-        if current != Some(change.new[idx])
+        if current != Some(new[idx])
             && (current != change.old[idx]
-                || stamp(&stage.join(source)).map_err(|_| ())? != Some(change.new[idx]))
+                || stamp(&stage.join(source)).map_err(|_| ())? != Some(new[idx]))
         {
             return Err(());
         }
     }
     for (idx, (source, destination)) in pairs.iter().enumerate() {
         let dst = root.join(destination);
-        if stamp(&dst).map_err(|_| ())? == Some(change.new[idx]) {
+        if stamp(&dst).map_err(|_| ())? == Some(new[idx]) {
             continue;
         }
         let src = stage.join(source);
@@ -294,7 +372,7 @@ fn publish_keys(change: &KeyChange) -> Result<(std::fs::File, std::path::PathBuf
         }
     }
     dir.sync_all().map_err(|_| ())?;
-    Ok((dir, stage))
+    Ok((dir, Some(stage)))
 }
 
 fn valid_name(name: &str) -> bool {
