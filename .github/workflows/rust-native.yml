@@ -46,6 +46,11 @@ jobs:
           test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = 'linux/${{ matrix.arch }}'
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$sha"
           sh docker/test-native-candidate.sh "$image"
+      - name: Exercise native policy routes through the packaged frontend
+        if: matrix.arch == 'amd64'
+        run: |
+          docker build -f backend/tests/browser.Dockerfile -t dockervault-native-browser-ci .
+          bash docker/test-native-policy-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci
       - name: Rehearse exclusive writer startup with fenced Python rollback
         shell: bash
         run: |
