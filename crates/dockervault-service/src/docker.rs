@@ -41,8 +41,14 @@ pub struct DockerClient {
 }
 impl DockerClient {
     pub async fn connect(socket: &str) -> Result<Self, DockerError> {
+        Self::connect_with_timeout(socket, 60).await
+    }
+    pub(crate) async fn connect_with_timeout(
+        socket: &str,
+        timeout: u64,
+    ) -> Result<Self, DockerError> {
         let client = Self {
-            api: Docker::connect_with_unix(socket, 60, API_DEFAULT_VERSION)
+            api: Docker::connect_with_unix(socket, timeout, API_DEFAULT_VERSION)
                 .map_err(|_| DockerError::Unavailable)?,
             owner: Owner::new(16)?,
         };
@@ -189,12 +195,19 @@ impl DockerClient {
             .ok_or(DockerError::InvalidResponse)
     }
     pub async fn stop(&self, id: &str) -> Result<(), DockerError> {
+        self.stop_with_timeout(id, 30).await
+    }
+    pub(crate) async fn stop_with_timeout(
+        &self,
+        id: &str,
+        timeout: i32,
+    ) -> Result<(), DockerError> {
         let id = id.to_owned();
         self.request(move |api| async move {
             api.stop_container(
                 &id,
                 Some(StopContainerOptions {
-                    t: Some(30),
+                    t: Some(timeout),
                     ..Default::default()
                 }),
             )

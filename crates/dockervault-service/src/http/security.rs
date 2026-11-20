@@ -102,6 +102,8 @@ impl RateLimits {
 fn route_limit(route: &str) -> u8 {
     if matches!(route, "encryption-setup" | "encryption-regenerate") {
         3
+    } else if matches!(route, "docker-start" | "docker-stop") {
+        10
     } else {
         5
     }

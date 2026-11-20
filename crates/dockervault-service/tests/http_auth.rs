@@ -853,6 +853,34 @@ async fn docker_health_is_distinct_from_application_health() {
 }
 
 #[tokio::test]
+async fn docker_lifecycle_requires_session_and_validates_stop_timeout() {
+    let server = Server::configured(
+        Config::from_pairs([("DOCKER_SOCKET", "/nonexistent/dockervault-synthetic.sock")]).unwrap(),
+    )
+    .await;
+    let cookie = server.setup().await;
+    let headers = [("cookie", cookie.as_str())];
+    let stop = "/api/v1/docker/containers/fixture/stop";
+    let start = "/api/v1/docker/containers/fixture/start";
+    assert_eq!(server.request("POST", stop, &[], None).await.0, 401);
+    for timeout in ["0", "301", "NaN"] {
+        let (code, _, body) = server
+            .request("POST", &format!("{stop}?timeout={timeout}"), &headers, None)
+            .await;
+        assert_eq!(code, 422);
+        assert_eq!(body["errors"][0]["field"], "query.timeout");
+    }
+    for (route, reason) in [
+        (stop, "Failed to stop container"),
+        (start, "Failed to start container"),
+    ] {
+        let (code, _, body) = server.request("POST", route, &headers, None).await;
+        assert_eq!((code, body), (500, json!({"detail":reason})));
+    }
+    server.close().await;
+}
+
+#[tokio::test]
 async fn backup_prerequisite_validation_reports_missing_source_without_starting_backup() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
