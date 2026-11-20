@@ -232,6 +232,10 @@ impl AuthService {
         &self.inner.crypto
     }
 
+    pub(crate) fn preparation_claims(&self) -> &PreparationClaims {
+        &self.inner.preparation
+    }
+
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.inner.pool
     }

@@ -2235,6 +2235,82 @@ async fn sftp_backup_durably_admits_the_copy_before_provider_io() {
 }
 
 #[tokio::test]
+async fn recovery_preview_is_private_read_only_and_available_only_before_setup() {
+    let server = Server::configured(Config::from_pairs([("TZ", "UTC")]).unwrap()).await;
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../dockervault-core/tests/fixtures/recovery-state.TEST_ONLY.json"
+    ))
+    .unwrap();
+    let baseline = &fixture["cases"][0];
+    let password = "PUBLIC_TEST_RECOVERY_PASSWORD_NOT_A_CREDENTIAL";
+    let encoded =
+        dockervault_core::recovery_bundle::encode_bundle(baseline["payload"].clone(), password)
+            .unwrap();
+    let bundle = String::from_utf8(encoded).unwrap();
+    let route = "/api/v1/recovery/preview";
+    let (status, headers, body) = server
+        .request(
+            "POST",
+            route,
+            &[],
+            Some(json!({"bundle":bundle,"password":password})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert!(headers.contains("cache-control: no-store"));
+    assert!(headers.contains("pragma: no-cache"));
+    assert_eq!(body, baseline["preview"]);
+    let (status, headers, body) = server
+        .request(
+            "POST",
+            route,
+            &[],
+            Some(json!({"bundle":bundle,"password":"wrong public fixture"})),
+        )
+        .await;
+    assert_eq!(status, 400);
+    assert!(headers.contains("cache-control: no-store"));
+    assert_eq!(
+        body,
+        json!({"detail":"Invalid or incompatible recovery bundle or password"})
+    );
+    let (status, _, body) = server
+        .request("POST", route, &[], Some(json!({"bundle":bundle})))
+        .await;
+    assert_eq!(status, 400);
+    assert_eq!(body, json!({"detail":"Invalid recovery request"}));
+    for query in [
+        "SELECT COUNT(*) FROM users",
+        "SELECT COUNT(*) FROM backup_targets",
+        "SELECT COUNT(*) FROM backups",
+        "SELECT COUNT(*) FROM remote_storages",
+    ] {
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(query)
+                .fetch_one(server.db.pool())
+                .await
+                .unwrap(),
+            0
+        );
+    }
+    assert!(
+        std::fs::read_dir(server.path.join("backups"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    server.setup().await;
+    let (status, headers, body) = server.request("POST", route, &[], None).await;
+    assert_eq!(status, 403);
+    assert!(headers.contains("cache-control: no-store"));
+    assert_eq!(
+        body,
+        json!({"detail":"Recovery is only available before initial setup"})
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn legacy_bulk_backup_delete_requires_frozen_confirmation() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

@@ -102,7 +102,10 @@ impl RateLimits {
 fn route_limit(route: &str) -> u8 {
     if matches!(route, "encryption-setup" | "encryption-regenerate") {
         3
-    } else if matches!(route, "docker-start" | "docker-stop" | "backup-bulk-delete") {
+    } else if matches!(
+        route,
+        "docker-start" | "docker-stop" | "backup-bulk-delete" | "recovery-preview"
+    ) {
         10
     } else {
         5
@@ -308,6 +311,7 @@ pub(super) async fn guard(
         "/api/v1/auth/status",
         "/api/v1/auth/setup",
         "/api/v1/auth/login",
+        "/api/v1/recovery/preview",
     ]
     .contains(&path)
         || path.starts_with("/ws/");
@@ -348,6 +352,23 @@ pub(super) async fn guard(
     };
     if allowed {
         cors(&mut response, origin.as_deref().unwrap_or_default());
+    }
+    response
+}
+
+pub(super) async fn recovery_privacy(request: Request, next: Next) -> Response {
+    let private = matches!(
+        request.uri().path(),
+        "/api/v1/recovery/preview" | "/api/v1/recovery/status"
+    );
+    let mut response = next.run(request).await;
+    if private {
+        response
+            .headers_mut()
+            .insert("cache-control", HeaderValue::from_static("no-store"));
+        response
+            .headers_mut()
+            .insert("pragma", HeaderValue::from_static("no-cache"));
     }
     response
 }

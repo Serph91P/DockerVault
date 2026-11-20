@@ -417,6 +417,10 @@ pub(super) struct Cron {
     cancel: tokio_util::sync::CancellationToken,
 }
 impl Cron {
+    pub(super) fn into_clock(self) -> (Timestamp, TimeZone) {
+        (self.now, self.zone)
+    }
+
     pub(super) fn load(state: &HttpState) -> Result<Self, Failure> {
         let name = &state.config.tz;
         if name.is_empty()
