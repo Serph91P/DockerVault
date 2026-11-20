@@ -107,24 +107,24 @@ fn canonical_reference(value: &str) -> Result<Option<String>> {
     if !parsed.path.starts_with('/') {
         return Err(Invalid);
     }
-    let prefix = if parsed.path.starts_with("//") && !parsed.path.starts_with("///") {
+    if normalized_local_path(&parsed.path) != parsed.path {
+        return Err(Invalid);
+    }
+    Ok(None)
+}
+fn normalized_local_path(path: &str) -> String {
+    let prefix = if path.starts_with("//") && !path.starts_with("///") {
         "//"
     } else {
         "/"
     };
-    let canonical = format!(
+    format!(
         "{prefix}{}",
-        parsed
-            .path
-            .split('/')
+        path.split('/')
             .filter(|p| !p.is_empty() && *p != ".")
             .collect::<Vec<_>>()
             .join("/")
-    );
-    if canonical != parsed.path {
-        return Err(Invalid);
-    }
-    Ok(None)
+    )
 }
 fn space_list(value: &str) -> Result<Vec<String>> {
     if value.is_empty() || value.contains(['\n', '\r']) {
@@ -582,6 +582,36 @@ pub fn assemble_canonical(
         })
         .collect();
     Ok(json!({"schema_version":1,"roots":output_roots,"remotes":selected,"files":all_files}))
+}
+
+/// Normalize absolute, purely local wrapper paths without touching the filesystem.
+/// Override/inline backends are not resolved at this boundary.
+pub fn normalize_external_paths(config: &mut Value, cancel: &dyn Fn() -> bool) -> Result<()> {
+    for node in config.as_object_mut().ok_or(Invalid)?.values_mut() {
+        if cancel() {
+            return Err(RcloneError::Cancelled);
+        }
+        if !matches!(
+            node["type"].as_str(),
+            Some("alias" | "crypt" | "chunker" | "compress" | "hasher" | "archive" | "cache")
+        ) {
+            continue;
+        }
+        let Some(value) = node["remote"].as_str() else {
+            continue;
+        };
+        let Ok(path) = rclone_path::parse(value) else {
+            continue;
+        };
+        if path.name.is_none()
+            && path.path.starts_with('/')
+            && !path.path.contains(['\0', '\\'])
+            && !path.path.split('/').any(|part| part == "..")
+        {
+            node["remote"] = json!(normalized_local_path(&path.path));
+        }
+    }
+    Ok(())
 }
 
 /// Combine already normalized snapshots without conflating same-named remotes.

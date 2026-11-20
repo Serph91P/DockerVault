@@ -280,7 +280,7 @@ async fn run(
             .wait()
             .await
             .map_err(|_| INTERNAL)??;
-        let (remotes, options) = if let Some(file) = file {
+        let (mut remotes, options) = if let Some(file) = file {
             let processes = state.probe_processes.as_ref().ok_or(INVALID)?;
             let binary = Path::new("/usr/local/bin/rclone");
             let remotes = crate::rclone::external_config_dump(
@@ -299,6 +299,10 @@ async fn run(
         } else {
             (json!({}), Default::default())
         };
+        dockervault_core::rclone_package::normalize_external_paths(&mut remotes, &|| {
+            cancel.is_cancelled()
+        })
+        .map_err(|_| INVALID)?;
         let empty = json!({});
         let package = dockervault_core::rclone_package::assemble_canonical(
             &remotes,
