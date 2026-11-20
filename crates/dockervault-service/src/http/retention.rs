@@ -25,6 +25,42 @@ pub(super) struct Selection {
 
 pub(super) const RECOVERY_PENDING: &str = "Recovery activation is incomplete";
 
+pub(super) fn start_sweep(state: &HttpState) {
+    let ctx = state.clone();
+    match state.backup_jobs.submit_async(move |cancel| async move {
+        let targets: Vec<i64> = match sqlx::query_scalar(
+            "SELECT id FROM backup_targets WHERE removed_at IS NULL ORDER BY id",
+        )
+        .fetch_all(ctx.auth.pool())
+        .await
+        {
+            Ok(targets) => targets,
+            Err(error) => {
+                tracing::warn!(%error, "Could not enumerate retention targets");
+                return;
+            }
+        };
+        for target in targets {
+            if cancel.is_cancelled() || ctx.draining.is_cancelled() {
+                break;
+            }
+            if let Err(message) = super::copy_removal::retain_local(&ctx, target, &cancel).await {
+                if message == RECOVERY_PENDING {
+                    break;
+                }
+                tracing::warn!(
+                    target_id = target,
+                    message,
+                    "Retention sweep did not settle target"
+                );
+            }
+        }
+    }) {
+        Ok(work) => work.detach(),
+        Err(_) => tracing::warn!("Retention sweep capacity exhausted"),
+    }
+}
+
 pub(super) async fn select(
     db: &mut sqlx::SqliteConnection,
     target: i64,

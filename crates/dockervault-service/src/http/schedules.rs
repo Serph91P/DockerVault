@@ -17,6 +17,27 @@ use time::{UtcDateTime, format_description::well_known::Rfc3339};
 
 const CONTRACT: &str = "Five fields: minute hour day month weekday. Monday=0, Sunday=6; prefer mon..sun. Day-of-month AND weekday must both match. Times use the server timezone and native APScheduler wall-clock/DST behavior; macros are not supported.";
 
+#[cfg(test)]
+mod maintenance_tests {
+    use super::*;
+
+    #[test]
+    fn daily_retention_and_hourly_session_cleanup_follow_server_wall_time() {
+        let start = Timestamp::parse("2025-03-30T00:30:00Z").unwrap();
+        let zone =
+            TimeZone::from_tz_data(&std::fs::read("/usr/share/zoneinfo/Europe/Berlin").unwrap())
+                .unwrap();
+        let mut jobs = maintenance_jobs(start, &zone);
+        assert_eq!(jobs[0].next.timestamp.api(), "2025-03-30T03:00:00+02:00");
+        assert_eq!(jobs[1].next.timestamp.api(), "2025-03-30T03:15:00+02:00");
+        let retention_now = Timestamp::parse("2025-03-30T01:00:00.100Z").unwrap();
+        assert!(jobs[0].take_due(retention_now, &zone));
+        assert!(!jobs[0].take_due(retention_now, &zone));
+        assert_eq!(jobs[0].next.timestamp.api(), "2025-03-31T03:00:00+02:00");
+        assert!(jobs[1].take_due(Timestamp::parse("2025-03-30T01:15:00.100Z").unwrap(), &zone));
+    }
+}
+
 #[derive(Default)]
 pub(super) struct LiveScheduler {
     jobs: tokio::sync::Mutex<BTreeMap<i64, LiveJob>>,
@@ -28,6 +49,43 @@ struct LiveJob {
     expression: String,
     schedule: Schedule,
     next: dockervault_core::cron::FireTime,
+}
+
+struct MaintenanceJob {
+    schedule: Schedule,
+    next: dockervault_core::cron::FireTime,
+}
+
+impl MaintenanceJob {
+    fn take_due(&mut self, now: Timestamp, zone: &TimeZone) -> bool {
+        let Some((now_us, due_us)) = now.unix_micros().zip(self.next.timestamp.unix_micros())
+        else {
+            return false;
+        };
+        if now_us < due_us {
+            return false;
+        }
+        let next = if now_us == due_us {
+            self.schedule.next_after_fire(self.next, zone, &|| false)
+        } else {
+            self.schedule.next(now, zone, &|| false)
+        };
+        let Ok(next) = next else {
+            return false;
+        };
+        self.next = next;
+        now_us - due_us <= 1_000_000
+    }
+}
+
+fn maintenance_jobs(now: Timestamp, zone: &TimeZone) -> [MaintenanceJob; 2] {
+    ["0 3 * * *", "15 * * * *"].map(|expression| {
+        let schedule = Schedule::parse(expression).expect("valid maintenance schedule");
+        let next = schedule
+            .next(now, zone, &|| false)
+            .expect("maintenance schedule recurs");
+        MaintenanceJob { schedule, next }
+    })
 }
 
 const EFFECTIVE: &str = "SELECT t.id,t.name,CASE WHEN s.id IS NULL THEN t.schedule_cron WHEN s.enabled=1 THEN s.cron_expression END
@@ -122,13 +180,29 @@ pub(super) async fn start(state: &HttpState) {
     }
     let state = state.clone();
     *worker = Some(tokio::spawn(async move {
+        let mut maintenance = Cron::load(&state).ok().map(|cron| {
+            let jobs = maintenance_jobs(cron.now, &cron.zone);
+            (cron.zone, jobs)
+        });
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 biased;
                 _ = state.draining.cancelled() => break,
-                _ = interval.tick() => dispatch_due(&state).await,
+                _ = interval.tick() => {
+                    dispatch_due(&state).await;
+                    if let Some((zone, [retention, sessions])) = &mut maintenance {
+                        let now = now();
+                        if retention.take_due(now, zone) {
+                            super::retention::start_sweep(&state);
+                        }
+                        if sessions.take_due(now, zone)
+                            && let Err(error) = sqlx::query("DELETE FROM sessions WHERE expires_at<?").bind(now.sql()).execute(state.auth.pool()).await {
+                            tracing::warn!(%error,"Expired session cleanup did not finish");
+                        }
+                    }
+                }
             }
         }
     }));
