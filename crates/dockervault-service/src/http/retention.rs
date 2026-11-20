@@ -23,12 +23,20 @@ pub(super) struct Selection {
     pub expired: Vec<i64>,
 }
 
+pub(super) const RECOVERY_PENDING: &str = "Recovery activation is incomplete";
+
 pub(super) async fn select(
     db: &mut sqlx::SqliteConnection,
     target: i64,
     now: i64,
 ) -> Result<Selection, &'static str> {
     use dockervault_core::retention::{Policy, keep};
+    if crate::recovery_activation::recovery_pending_in(&mut *db)
+        .await
+        .map_err(|_| "Could not read retention selection")?
+    {
+        return Err(RECOVERY_PENDING);
+    }
     let (removed, policy_id): (bool, Option<i64>) = sqlx::query_as(
         "SELECT removed_at IS NOT NULL, retention_policy_id FROM backup_targets WHERE id=?",
     )
@@ -84,6 +92,9 @@ pub(super) async fn apply(
         Err(message @ ("Target not found" | "Plan removed" | "No policy found")) => {
             failure(StatusCode::BAD_REQUEST, message)
         }
+        Err(
+            message @ (RECOVERY_PENDING | "Retention interrupted" | "Retention capacity exhausted"),
+        ) => failure(StatusCode::SERVICE_UNAVAILABLE, message),
         Err(_) => internal(),
     }
 }

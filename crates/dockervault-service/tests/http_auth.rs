@@ -1580,6 +1580,19 @@ async fn retention_applies_only_to_expired_local_copies_and_counts_settled_chang
         .request("POST", "/api/v1/retention/2/apply", &headers, None)
         .await;
     assert_eq!(removed, json!({"detail":"Plan removed"}));
+    sqlx::query("INSERT INTO app_settings(key,value) VALUES('recovery_activation','{}')")
+        .execute(db)
+        .await
+        .unwrap();
+    assert_eq!(
+        server.request("POST", endpoint, &headers, None).await.0,
+        503
+    );
+    assert!(archive(3).exists() && key(3).exists() && archive(4).exists());
+    sqlx::query("DELETE FROM app_settings WHERE key='recovery_activation'")
+        .execute(db)
+        .await
+        .unwrap();
     let (status, _, result) = server.request("POST", endpoint, &headers, None).await;
     assert_eq!((status, result), (200, json!({"kept":2,"deleted":2})));
     for id in [1, 2, 5, 6] {
