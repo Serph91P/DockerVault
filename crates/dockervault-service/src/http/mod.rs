@@ -5,6 +5,7 @@ mod backup_restore;
 mod backup_submit;
 mod backups;
 mod copy_removal;
+mod docker_inventory;
 mod encryption;
 pub use copy_removal::recover_copy_removals;
 mod ftp_sync;
@@ -115,6 +116,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/overview/summary", get(overview::summary))
+        .route("/api/v1/docker/health", get(docker_inventory::health))
         .route("/api/v1/encryption/status", get(encryption::status))
         .route("/api/v1/encryption/defer", post(encryption::defer))
         .route("/api/v1/encryption/setup", post(encryption::setup))

@@ -771,6 +771,26 @@ async fn encryption_toggle_requires_confirmed_key_custody() {
 }
 
 #[tokio::test]
+async fn docker_health_is_distinct_from_application_health() {
+    let server = Server::configured(
+        Config::from_pairs([("DOCKER_SOCKET", "/nonexistent/dockervault-synthetic.sock")]).unwrap(),
+    )
+    .await;
+    let cookie = server.setup().await;
+    let route = "/api/v1/docker/health";
+    assert_eq!(server.request("GET", route, &[], None).await.0, 401);
+    let (status, _, body) = server
+        .request("GET", route, &[("Cookie", &cookie)], None)
+        .await;
+    assert_eq!(
+        (status, body),
+        (503, json!({"detail":"Docker is not accessible"}))
+    );
+    assert_eq!(server.request("GET", "/health", &[], None).await.0, 200);
+    server.close().await;
+}
+
+#[tokio::test]
 async fn system_info_is_authenticated_and_redacts_configured_paths() {
     let server = Server::start("http://localhost:3000").await;
     let path = "/api/v1/settings/system-info";
