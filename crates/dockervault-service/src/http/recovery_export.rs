@@ -165,13 +165,15 @@ async fn run(
         let public = setting("recovery_ssh_public_keys", 2_i64 * 1024 * 1024)?;
         let has_rclone = catalog.remote_storages.iter().any(|row| row.storage_type == "rclone");
         let managed = if has_rclone {
-            let raw = Zeroizing::new(setting("recovery_rclone", 8_i64 * 1024 * 1024)?.ok_or(INVALID)?);
-            Some(serde_json::from_str::<serde_json::Value>(&raw).map_err(|_| INVALID)?)
+            setting("recovery_rclone", 8_i64 * 1024 * 1024)?
+                .filter(|raw| !raw.is_empty())
+                .map(|raw| serde_json::from_str::<serde_json::Value>(&Zeroizing::new(raw)).map_err(|_| INVALID))
+                .transpose()?
         } else {
             None
         };
         tx.commit().map_err(|_| INTERNAL)?;
-        let needs_cipher = has_rclone || catalog.remote_storages.iter().any(|row| [&row.password, &row.s3_access_key, &row.s3_secret_key].into_iter().flatten().any(|secret| secret.starts_with("fernet:")));
+        let needs_cipher = managed.is_some() || catalog.remote_storages.iter().any(|row| [&row.password, &row.s3_access_key, &row.s3_secret_key].into_iter().flatten().any(|secret| secret.starts_with("fernet:")));
         let cipher = if needs_cipher {
             let cipher = load_delete_cipher(Path::new("/app/data/.credential_key"), config.credential_encryption_key.expose(), cancelled).map_err(|_| INVALID)?;
             for row in &mut catalog.remote_storages {
@@ -233,6 +235,38 @@ async fn run(
             }
             outcome = &mut waiting => outcome.map_err(|_| INTERNAL)?.map_err(|_| INVALID)?,
         }
+    } else if catalog
+        .remote_storages
+        .iter()
+        .any(|row| row.storage_type == "rclone")
+    {
+        match std::fs::symlink_metadata(&state.config.rclone_config) {
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+                ) => {}
+            // A present external configuration has not been safely normalized yet.
+            _ => return Err(INVALID),
+        }
+        let empty = json!({});
+        let package = dockervault_core::rclone_package::assemble_canonical(
+            &empty,
+            &empty,
+            &catalog.remote_storages,
+            &json!([]),
+            &Default::default(),
+            &|| cancel.is_cancelled(),
+        )
+        .map_err(|_| INVALID)?;
+        dockervault_core::rclone_package::validate(
+            &package,
+            &catalog.remote_storages,
+            &Default::default(),
+            &|| cancel.is_cancelled(),
+        )
+        .map_err(|_| INVALID)?;
+        package
     } else {
         json!({"schema_version":1,"roots":[],"remotes":{},"files":{}})
     };
