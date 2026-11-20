@@ -15,7 +15,7 @@ use std::{
 use zeroize::Zeroizing;
 
 const MAX_BUNDLE: usize = 32 * 1024 * 1024;
-const MAX_PAYLOAD: usize = 24 * 1024 * 1024 - 1024;
+pub const MAX_PAYLOAD: usize = 24 * 1024 * 1024 - 1024;
 static KDF_BUSY: AtomicBool = AtomicBool::new(false);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BundleError {
