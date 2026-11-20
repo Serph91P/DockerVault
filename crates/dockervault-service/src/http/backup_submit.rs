@@ -185,6 +185,14 @@ async fn run_accepted(
     target_id: i64,
     cancel: &CancellationToken,
 ) -> bool {
+    struct Observation<'a>(&'a HttpState, i64);
+    impl Drop for Observation<'_> {
+        fn drop(&mut self) {
+            self.0.live_backups.lock().unwrap().remove(&self.1);
+        }
+    }
+    worker.live_backups.lock().unwrap().insert(id, "starting");
+    let _observation = Observation(worker, id);
     let started = std::time::Instant::now();
     let executed = execute(worker, id, target_id, cancel).await.is_ok();
     if !executed && record_failure(worker.auth.pool(), id).await.is_err() {

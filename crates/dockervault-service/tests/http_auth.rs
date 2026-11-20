@@ -594,6 +594,43 @@ async fn scheduler_projects_retained_plans_when_recovery_gate_reopens() {
 }
 
 #[tokio::test]
+async fn overview_reads_retained_catalog_without_treating_a_stale_row_as_live() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [("Cookie", cookie.as_str())];
+    let db = server.db.pool();
+    sqlx::raw_sql("INSERT INTO schedules(id,name,cron_expression,enabled) VALUES(40,'Paused','0 3 * * *',0); INSERT INTO backup_targets(id,name,target_type,enabled,schedule_id,schedule_cron) VALUES(40,'Paused','path',1,40,'0 4 * * *'),(41,'Manual','path',1,NULL,NULL); INSERT INTO backups(id,target_id,backup_type,status) VALUES(40,40,'FULL','RUNNING');").execute(db).await.unwrap();
+    let route = "/api/v1/overview/summary";
+    assert_eq!(server.request("GET", route, &[], None).await.0, 401);
+    assert_eq!(
+        server
+            .request("GET", &format!("{route}?limit=0"), &headers, None)
+            .await
+            .0,
+        422
+    );
+    let (status, _, body) = server
+        .request("GET", &format!("{route}?limit=1"), &headers, None)
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["plans"]["automatic_enabled"], 0);
+    assert_eq!(body["plans"]["automatic_paused"], 1);
+    assert_eq!(body["plans"]["without_recorded_completed_run"]["total"], 2);
+    assert_eq!(
+        body["plans"]["without_recorded_completed_run"]["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        body["backup_activity"],
+        json!({"recorded_pending":0,"recorded_running":1,"live":0,"total":1,"items":[{"backup_id":40,"plan_id":40,"name":"Paused","catalog_status":"running","live_worker":false,"stage":null}]})
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn system_info_is_authenticated_and_redacts_configured_paths() {
     let server = Server::start("http://localhost:3000").await;
     let path = "/api/v1/settings/system-info";

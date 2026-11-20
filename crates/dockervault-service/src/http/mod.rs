@@ -8,6 +8,7 @@ mod copy_removal;
 pub use copy_removal::recover_copy_removals;
 mod ftp_sync;
 mod operations;
+mod overview;
 mod retention;
 mod s3_sync;
 mod schedules;
@@ -44,6 +45,7 @@ pub struct HttpState {
     backup_jobs: crate::ownership::Owner,
     scheduler: Arc<schedules::LiveScheduler>,
     backup_metrics: Arc<std::sync::Mutex<backup_metrics::Metrics>>,
+    live_backups: Arc<std::sync::Mutex<std::collections::HashMap<i64, &'static str>>>,
     removal_previews: Arc<std::sync::Mutex<copy_removal::Previews>>,
     backup_claims: crate::jobs::Claims,
 }
@@ -68,6 +70,7 @@ impl HttpState {
             backup_jobs: crate::ownership::Owner::new(4).expect("positive backup capacity"),
             scheduler: Arc::default(),
             backup_metrics: Arc::default(),
+            live_backups: Arc::default(),
             removal_previews: Arc::default(),
             backup_claims: crate::jobs::Claims::default(),
         }
@@ -110,6 +113,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/auth/login", post(auth::login))
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/me", get(auth::me))
+        .route("/api/v1/overview/summary", get(overview::summary))
         .route("/api/v1/auth/change-password", post(auth::change_password))
         .route(
             "/api/v1/retention",
