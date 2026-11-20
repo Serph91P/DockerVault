@@ -334,7 +334,11 @@ pub(crate) async fn settle_verified_copies(
             return Ok(());
         }
     }
-    sqlx::query("UPDATE backups SET backup_metadata=json_remove(backup_metadata,'$.native_local_sync','$.native_s3_effects','$.native_webdav_effects') WHERE id=? AND json_extract(backup_metadata,'$.native_local_sync')=json(?)")
+    sqlx::query("UPDATE backups SET backup_metadata=CASE WHEN json_type(backup_metadata,'$.native_manual_sync_original') IS NOT NULL
+        AND json_remove(backup_metadata,'$.native_local_sync','$.native_manual_sync_original')=json(coalesce(json_extract(backup_metadata,'$.native_manual_sync_original'),'{}'))
+        THEN json_extract(backup_metadata,'$.native_manual_sync_original')
+        ELSE json_remove(backup_metadata,'$.native_local_sync','$.native_s3_effects','$.native_webdav_effects','$.native_manual_sync_original') END
+        WHERE id=? AND json_extract(backup_metadata,'$.native_local_sync')=json(?)")
         .bind(id).bind(receipt).execute(&mut *tx).await?;
     tx.commit().await
 }

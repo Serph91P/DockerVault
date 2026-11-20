@@ -5,7 +5,8 @@ pub mod s3;
 pub mod ssh;
 mod sync;
 pub(crate) use sync::{
-    FtpCopy, LocalCopy, S3Copy, SftpCopy, WebDavCopy, complete_publication, settle_verified_copies,
+    FtpCopy, LocalCopy, S3Copy, SftpCopy, WebDavCopy, complete_publication, settle_local_copies,
+    settle_verified_copies,
 };
 mod upload;
 pub mod webdav;
@@ -62,6 +63,30 @@ pub(crate) struct PublishedArtifact {
 }
 
 impl PublishedArtifact {
+    pub(crate) fn snapshot(
+        root: &Path,
+        path: &Path,
+        cancel: &dyn Fn() -> bool,
+    ) -> io::Result<Self> {
+        let relative = path.strip_prefix(root).map_err(io::Error::other)?;
+        let mut file = local::open_download_source(root, relative)?;
+        let identity = FileIdentity::read(&file.metadata()?)?;
+        let digest = digest_hex(&hash_reader(&mut file, cancel)?);
+        if FileIdentity::read(&file.metadata()?)? != identity
+            || FileIdentity::read(&local::open_download_source(root, relative)?.metadata()?)?
+                != identity
+        {
+            return Err(invalid("Transfer source changed during snapshot"));
+        }
+        Ok(Self {
+            path: path.to_owned(),
+            length: identity.length,
+            digest,
+            device: identity.device,
+            inode: identity.inode,
+        })
+    }
+
     pub(crate) fn open_verified(&self, cancel: &dyn Fn() -> bool) -> io::Result<VerifiedSource> {
         let source = VerifiedSource::open(&self.path, cancel)?;
         if source.identity.device != self.device

@@ -11,6 +11,7 @@ mod docker_lifecycle;
 mod encryption;
 pub use copy_removal::recover_copy_removals;
 mod ftp_sync;
+mod manual_sync;
 mod operations;
 mod overview;
 mod recovery_export;
@@ -323,6 +324,10 @@ pub fn router(state: HttpState) -> Router {
             get(storage::configured_download),
         )
         .route("/api/v1/storage/test-config", post(storage::test_config))
+        .route(
+            "/api/v1/storage/{storage_id}/sync/{backup_id}",
+            post(manual_sync::sync),
+        )
         .route(
             "/api/v1/storage/{storage_id}/test",
             post(storage::test_saved),

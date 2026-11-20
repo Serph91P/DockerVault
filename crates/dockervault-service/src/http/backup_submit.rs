@@ -655,7 +655,7 @@ fn parse_filter(raw: Option<String>) -> Result<Option<Vec<String>>, ()> {
         .map_err(|_| ())
 }
 
-fn safe_name(name: &str) -> String {
+pub(super) fn safe_name(name: &str) -> String {
     let mut result = String::new();
     for c in name.chars() {
         let c = if "<>:\"/\\|?*".contains(c) || c.is_ascii_control() {
