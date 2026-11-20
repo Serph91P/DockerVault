@@ -27,7 +27,11 @@ try {
   await button('Set Up Encryption').click()
   const custody = page.getByRole('dialog', { name: 'Save Your Private Key' })
   await expect(button('I have saved my private key', custody)).toBeDisabled()
-  await Promise.all([page.waitForEvent('download'), button('Download Private Key File', custody).click()])
+  const [, keyFile] = await download(button('Download Private Key File', custody))
+  const savedInstructions = keyFile.toString().split('# Recovery Instructions:\n')[1]
+  assert.ok(savedInstructions, 'key export must carry recovery instructions')
+  assert.ok(savedInstructions.includes(mode === 'native' ? '/recovery-tools/manifest.json' : '/recover_backup.py'),
+    'key export must identify the matching recovery download')
   await button('I have saved my private key', custody).click()
   await expect(custody).toBeHidden()
   await button('View Recovery Instructions').click()

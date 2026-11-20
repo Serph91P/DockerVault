@@ -12,7 +12,7 @@ const DEFERRED: &str = "encryption_onboarding_deferred";
 
 fn recovery_instructions(public: &str) -> String {
     format!(
-        "# DockerVault Backup Recovery Instructions\n\nPublic key: `{public}`\n\nKeep the exported private key and a trusted copy of `dockervault-recover` offline.\nTo decrypt without a running DockerVault instance:\n\n```sh\ndockervault-recover --identity private_key.txt --key backup.tar.gz.key --archive backup.tar.gz.enc --output backup.tar.gz\n```\n\nNever bypass an authentication error. For legacy CBC archives verify a separately trusted checksum before extraction.\n"
+        "# DockerVault Backup Recovery Instructions\n\nPublic key: `{public}`\n\nFrom your trusted DockerVault installation, save `/recovery-tools/dockervault-recover` and `/recovery-tools/manifest.json` with the exported private key before going offline. The manifest records the server image's Linux architecture, source revision and SHA-256. Check that the architecture matches your recovery machine and compare the SHA-256 before running the tool. A compatible C runtime and OpenSSL 3 libcrypto are required.\n\nTo decrypt without a running DockerVault instance:\n\n```sh\nchmod 700 dockervault-recover\n./dockervault-recover --identity private_key.txt --key backup.tar.gz.key --archive backup.tar.gz.enc --output backup.tar.gz\n```\n\nNever bypass an authentication error. For legacy CBC archives verify a separately trusted checksum before extraction.\n"
     )
 }
 
