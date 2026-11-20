@@ -27,6 +27,10 @@ The runner checks both image revision labels and architectures. It submits an en
 
 These checks do not qualify remote-only restore, runtime Docker socket/GID or trusted proxy handling, active-job shutdown or worker drain, recovery downloads, performance, or a deployment cutover.
 
+## Release gate bootstrap before cutover (R14)
+
+GitHub runs the `workflow_run` listener from the default branch, not from the tested `develop` revision it checks out. Before changing the Dockerfile default, verify that the **active default-branch** listener either requires both native architecture jobs on the selected SHA before publication or explicitly builds the Python target. Landing the new admission gate and a Rust Dockerfile default on `develop` together does not protect against an older listener. Verify the gate bootstrap and the image cutover separately; use the release-source and release-admission fixture tests without triggering a publication workflow.
+
 ## Rehearsal-only Python rollback image (R14)
 
 The unmodified Python image is a control, not a rollback target. Build the separate rollback stage from the verified historical source on the platform being tested. The stage keeps the Python application, original entrypoint, schema and data format unchanged.
