@@ -69,6 +69,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && useradd -u 1000 -g 1000 -m dockervault
 COPY --from=native-builder /src/target/release/dockervault-service /src/target/release/dockervault-recover /usr/local/bin/
 COPY --from=native-builder /src/target/release/dockervault-process-guard /src/target/release/dockervault-archive-worker /usr/local/libexec/
+COPY --from=native-builder /src/target/release/dockervault-nginx-realip /usr/local/libexec/
 COPY --from=native-rclone /usr/local/bin/rclone /usr/local/bin/rclone
 COPY --from=frontend-builder /app/dist /usr/share/nginx/html
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
