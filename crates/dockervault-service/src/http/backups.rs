@@ -15,7 +15,7 @@ use super::{
 };
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{Path, Query, Request, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -164,6 +164,44 @@ fn detail(status: StatusCode, message: &str) -> Response {
 }
 fn internal() -> Response {
     detail(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
+}
+
+pub(super) async fn reject_unconfirmed_bulk_delete(
+    State(state): State<HttpState>,
+    Query(values): Query<HashMap<String, String>>,
+    request: Request,
+) -> Response {
+    if let Err(error) = required_user(&state, request.headers()).await {
+        return *error;
+    }
+    let mut f = Filters {
+        values,
+        errors: vec![],
+    };
+    f.integer("target_id", None, None);
+    for field in ["delete_local", "delete_remote"] {
+        if f.values.get(field).is_some_and(|raw| {
+            !matches!(
+                raw.to_ascii_lowercase().as_str(),
+                "0" | "1" | "off" | "on" | "false" | "true" | "f" | "t" | "no" | "yes" | "n" | "y"
+            )
+        }) {
+            f.error(
+                field,
+                "Input should be a valid boolean, unable to interpret input",
+            );
+        }
+    }
+    if !f.errors.is_empty() {
+        return *validation(f.errors);
+    }
+    if let Err(error) = super::security::rate_limit(&state, &request, "backup-bulk-delete") {
+        return *error;
+    }
+    detail(
+        StatusCode::CONFLICT,
+        "Review POST /backups/removal/preview, then execute its token; unconfirmed bulk deletion is disabled",
+    )
 }
 
 pub(super) async fn list(

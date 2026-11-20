@@ -2235,6 +2235,78 @@ async fn sftp_backup_durably_admits_the_copy_before_provider_io() {
 }
 
 #[tokio::test]
+async fn legacy_bulk_backup_delete_requires_frozen_confirmation() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let db = server.db.pool();
+    let archive = server.path.join("backups/legacy.tar");
+    std::fs::write(&archive, b"retained fixture").unwrap();
+    sqlx::query(
+        "INSERT INTO backup_targets(id,name,target_type,enabled) VALUES(1,'Fixture','path',1)",
+    )
+    .execute(db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO backups(id,target_id,backup_type,status,file_path) VALUES(1,1,'FULL','COMPLETED',?)")
+        .bind(archive.to_str().unwrap()).execute(db).await.unwrap();
+    let route = "/api/v1/backups";
+    let (status, _, _) = server.request("DELETE", route, &[], None).await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let (first, _, body) = server.request("DELETE", route, &headers, None).await;
+    assert_eq!(first, 409);
+    assert_eq!(status, 401);
+    assert_eq!(
+        body,
+        json!({"detail":"Review POST /backups/removal/preview, then execute its token; unconfirmed bulk deletion is disabled"})
+    );
+    let (status, _, body) = server
+        .request(
+            "DELETE",
+            "/api/v1/backups?target_id=no&delete_local=maybe&delete_remote=off",
+            &headers,
+            None,
+        )
+        .await;
+    assert_eq!(status, 422);
+    assert_eq!(
+        body,
+        json!({"detail":"Validation error","errors":[{"field":"query.target_id","message":"Input should be a valid integer, unable to parse string as an integer"},{"field":"query.delete_local","message":"Input should be a valid boolean, unable to interpret input"}]})
+    );
+    for _ in 0..9 {
+        assert_eq!(
+            server
+                .request(
+                    "DELETE",
+                    "/api/v1/backups?target_id=1.0&delete_local=OFF&delete_remote=Yes",
+                    &headers,
+                    None
+                )
+                .await
+                .0,
+            409
+        );
+    }
+    let (status, _, body) = server.request("DELETE", route, &headers, None).await;
+    assert_eq!(status, 429);
+    assert_eq!(
+        body,
+        json!({"error":"Rate limit exceeded: 10 per 1 minute"})
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT file_path FROM backups WHERE id=1")
+            .fetch_one(db)
+            .await
+            .unwrap(),
+        archive.to_str().unwrap()
+    );
+    assert_eq!(std::fs::read(archive).unwrap(), b"retained fixture");
+    server.close().await;
+}
+
+#[tokio::test]
 async fn removal_preview_selects_all_matching_copies_without_writing() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
