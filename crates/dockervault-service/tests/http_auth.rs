@@ -583,6 +583,64 @@ async fn system_info_is_authenticated_and_redacts_configured_paths() {
 }
 
 #[tokio::test]
+async fn target_reads_include_relationships_and_legacy_repair_warnings() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [("Cookie", cookie.as_str())];
+    let db = server.db.pool();
+    sqlx::raw_sql("INSERT INTO schedules(id,name,cron_expression,enabled) VALUES(70,'Week','0 3 * * 0',0); INSERT INTO retention_policies(id,name,keep_last,keep_daily,keep_weekly,keep_monthly,keep_yearly,max_age_days) VALUES(71,'GFS',2,0,1,0,0,365); INSERT INTO backup_targets(id,name,target_type,schedule_id,retention_policy_id,remote_storage_ids,created_at,enabled,stop_container,compression_enabled) VALUES(72,'Active','path',70,71,'[700,701]','2025-01-01 00:00:00.123456',0,0,0); INSERT INTO backup_targets(id,name,target_type,removed_at,enabled,stop_container,compression_enabled) VALUES(73,'Removed','path','2025-01-01 00:00:00',0,0,0);").execute(db).await.unwrap();
+    assert_eq!(
+        server.request("GET", "/api/v1/targets", &[], None).await.0,
+        401
+    );
+    let (status, _, list) = server
+        .request("GET", "/api/v1/targets", &headers, None)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    let active = &list[0];
+    assert_eq!(
+        active["schedule"],
+        json!({"id":70,"name":"Week","cron_expression":"0 3 * * 0"})
+    );
+    assert_eq!(
+        active["retention_policy"],
+        json!({"id":71,"name":"GFS","keep_last":2,"keep_daily":0,"keep_weekly":1,"keep_monthly":0})
+    );
+    assert_eq!(active["created_at"], "2025-01-01T00:00:00.123456Z");
+    assert_eq!(
+        active["validation_errors"],
+        json!([
+            "remote_storage_id 700 does not exist",
+            "remote_storage_id 701 does not exist"
+        ])
+    );
+    assert_eq!(active["cron_warnings"].as_array().unwrap().len(), 1);
+    assert_eq!(active["dependencies"], json!([]));
+    assert_eq!(active["per_volume_rules"], json!({}));
+    assert_eq!(
+        server
+            .request("GET", "/api/v1/targets/72", &headers, None)
+            .await
+            .2,
+        *active
+    );
+    let (status, _, listed) = server
+        .request("GET", "/api/v1/targets?include_removed=yes", &headers, None)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(listed[1]["removed_at"], "2025-01-01T00:00:00Z");
+    let (status, _, missing) = server
+        .request("GET", "/api/v1/targets/73", &headers, None)
+        .await;
+    assert_eq!(
+        (status, missing),
+        (404, json!({"detail":"Target not found"}))
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn retention_reads_preserve_policy_and_catalog_wire_contracts() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

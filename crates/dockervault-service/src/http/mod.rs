@@ -15,6 +15,7 @@ pub mod security;
 mod settings;
 mod sftp_sync;
 mod storage;
+mod targets;
 pub use s3_sync::recover_s3_copies;
 mod webdav_sync;
 pub mod ws;
@@ -121,6 +122,8 @@ pub fn router(state: HttpState) -> Router {
         )
         .route("/api/v1/retention/{id}/stats", get(retention::stats))
         .route("/api/v1/settings/system-info", get(settings::system_info))
+        .route("/api/v1/targets", get(targets::list))
+        .route("/api/v1/targets/{id}", get(targets::detail))
         .route("/api/v1/retention/{id}/apply", post(retention::apply))
         .route(
             "/api/v1/schedules",

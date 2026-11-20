@@ -304,13 +304,13 @@ fn now() -> Timestamp {
     .expect("valid current UTC timestamp")
 }
 
-struct Cron {
+pub(super) struct Cron {
     zone: TimeZone,
     now: Timestamp,
     cancel: tokio_util::sync::CancellationToken,
 }
 impl Cron {
-    fn load(state: &HttpState) -> Result<Self, Failure> {
+    pub(super) fn load(state: &HttpState) -> Result<Self, Failure> {
         let name = &state.config.tz;
         if name.is_empty()
             || !FsPath::new(name)
@@ -335,7 +335,7 @@ impl Cron {
             .next(self.now, &self.zone, &|| self.cancel.is_cancelled())
             .map(|run| run.timestamp.api())
     }
-    fn inspect(&self, expression: &str) -> (Option<String>, Vec<String>) {
+    pub(super) fn inspect(&self, expression: &str) -> (Option<String>, Vec<String>) {
         if expression.is_empty() {
             return (None, vec![]);
         }
