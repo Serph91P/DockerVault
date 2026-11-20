@@ -310,6 +310,9 @@ jobs:
       run: npm install --global "$(node -p "require('./package.json').packageManager")"
         
     - name: Run fail-closed npm audit with exact existing-debt exceptions
+      env:
+        # Install the repository-pinned toolchain independently of the runner image.
+        RUSTUP_HOME: ${{ runner.temp }}/dockervault-audit-rustup
       run: cargo run --locked --package dockervault-tools --bin dockervault-npm-audit
 
     - name: Preserve the complete npm audit report
