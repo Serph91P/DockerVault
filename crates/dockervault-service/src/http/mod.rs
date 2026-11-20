@@ -19,6 +19,7 @@ mod schedules;
 pub mod security;
 mod settings;
 mod sftp_sync;
+mod ssh_keys;
 mod storage;
 mod target_write;
 mod targets;
@@ -276,6 +277,10 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/operations/{id}/cancel", post(operations::cancel))
         .route("/api/v1/operations/{id}/retry", post(operations::retry))
         .route("/api/v1/storage/types", get(storage::types))
+        .route(
+            "/api/v1/storage/ssh-keys/{name}/public",
+            get(ssh_keys::download_public),
+        )
         .route(
             "/api/v1/storage/local/files",
             get(storage::list_local_files),

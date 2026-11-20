@@ -1440,6 +1440,36 @@ async fn schedule_target_trigger_admits_only_an_enabled_non_removed_plan() {
 }
 
 #[tokio::test]
+async fn ssh_public_key_download_requires_auth_and_checks_the_key_name() {
+    let server = Server::start("http://localhost:3000").await;
+    let missing = "/api/v1/storage/ssh-keys/_missing_fixture_/public";
+    let cookie = server.setup().await;
+    assert_eq!(server.request("GET", missing, &[], None).await.0, 401);
+    let headers = [("cookie", cookie.as_str())];
+    let (status, _, body) = server.request("GET", missing, &headers, None).await;
+    assert_eq!(
+        (status, body),
+        (404, json!({"detail":"Public key not found"}))
+    );
+    let (status, _, body) = server
+        .request(
+            "GET",
+            "/api/v1/storage/ssh-keys/bad.name/public",
+            &headers,
+            None,
+        )
+        .await;
+    assert_eq!(
+        (status, body),
+        (
+            400,
+            json!({"detail":"Key name must be 1-40 chars: letters, digits, '_' or '-'."})
+        )
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn schedule_batch_runs_enabled_targets_sequentially() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
