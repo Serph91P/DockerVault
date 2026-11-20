@@ -2660,6 +2660,50 @@ async fn retention_applies_only_to_expired_local_copies_and_counts_settled_chang
 }
 
 #[tokio::test]
+async fn legacy_delete_removes_only_the_selected_local_copy() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let selected = server.path.join("backups/selected.tar");
+    let retained = server.path.join("backups/retained.tar");
+    std::fs::write(&selected, b"disposable selected archive").unwrap();
+    std::fs::write(&retained, b"separate retained archive").unwrap();
+    let db = server.db.pool();
+    sqlx::query(
+        "INSERT INTO backup_targets(id,name,target_type,enabled) VALUES(1,'Fixture','path',1)",
+    )
+    .execute(db)
+    .await
+    .unwrap();
+    for (id, path) in [(1, &selected), (2, &retained)] {
+        sqlx::query("INSERT INTO backups(id,target_id,backup_type,status,file_path) VALUES(?,1,'FULL','COMPLETED',?)")
+            .bind(id).bind(path.to_str().unwrap()).execute(db).await.unwrap();
+    }
+    let route = "/api/v1/backups/1?delete_local=true&delete_remote=false";
+    assert_eq!(server.request("DELETE", route, &[], None).await.0, 401);
+    assert!(selected.exists());
+    let (status, _, result) = server.request("DELETE", route, &headers, None).await;
+    assert_eq!(status, 200);
+    assert_eq!(result["succeeded"], 1);
+    assert_eq!(result["failed"], 0);
+    assert!(!selected.exists());
+    assert_eq!(
+        std::fs::read(retained).unwrap(),
+        b"separate retained archive"
+    );
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM backups ORDER BY id")
+        .fetch_all(db)
+        .await
+        .unwrap();
+    assert_eq!(ids, [2]);
+    assert_eq!(server.request("DELETE", route, &headers, None).await.0, 404);
+    server.close().await;
+}
+
+#[tokio::test]
 async fn removal_keeps_durable_intent_when_catalog_acknowledgment_fails() {
     removal_acknowledgment_failure(true, false).await;
 }

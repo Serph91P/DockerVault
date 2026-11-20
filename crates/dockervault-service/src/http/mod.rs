@@ -235,7 +235,10 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/backups/history", get(backups::history))
         .route("/api/v1/backups/{id}/retry-sync", post(s3_sync::retry))
         .route("/api/v1/backups/history/{id}", get(backups::history_detail))
-        .route("/api/v1/backups/{id}", get(backups::get))
+        .route(
+            "/api/v1/backups/{id}",
+            get(backups::get).delete(copy_removal::legacy_delete),
+        )
         .route("/api/v1/backups/{id}/logs", get(backups::logs))
         .route(
             "/api/v1/backups/{id}/validate",

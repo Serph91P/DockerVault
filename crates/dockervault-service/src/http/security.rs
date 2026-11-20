@@ -100,7 +100,9 @@ impl RateLimits {
     }
 }
 fn route_limit(route: &str) -> u8 {
-    if matches!(route, "encryption-setup" | "encryption-regenerate") {
+    if route == "backup-single-delete" {
+        20
+    } else if matches!(route, "encryption-setup" | "encryption-regenerate") {
         3
     } else if matches!(
         route,

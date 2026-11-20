@@ -1,11 +1,12 @@
 use super::{
     HttpState,
     auth::{required_user, validation},
+    security,
 };
 use crate::storage::{FileIdentity, local::open_download_source};
 use axum::{
     Json,
-    extract::State,
+    extract::{Path as RoutePath, Query, Request, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -219,6 +220,75 @@ pub(super) async fn preview(
             json!({"field":"body","message":"Invalid removal selection"}),
         ]);
     };
+    match preview_selection(&state, selection, false).await {
+        Ok(value) => Json(value).into_response(),
+        Err(response) => *response,
+    }
+}
+
+pub(super) async fn legacy_delete(
+    State(state): State<HttpState>,
+    RoutePath(id): RoutePath<i64>,
+    Query(query): Query<HashMap<String, String>>,
+    request: Request,
+) -> Response {
+    if let Err(response) = required_user(&state, request.headers()).await {
+        return *response;
+    }
+    if let Err(response) = security::rate_limit(&state, &request, "backup-single-delete") {
+        return *response;
+    }
+    let flag = |key: &str| match query
+        .get(key)
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        None | Some("1" | "true" | "t" | "on" | "yes" | "y") => Some(true),
+        Some("0" | "false" | "f" | "off" | "no" | "n") => Some(false),
+        _ => None,
+    };
+    let scope = match (flag("delete_local"), flag("delete_remote")) {
+        (Some(true), Some(true)) => Scope::All,
+        (Some(true), Some(false)) => Scope::Local,
+        (Some(false), Some(true)) => Scope::Remote,
+        (Some(false), Some(false)) => {
+            return detail(
+                StatusCode::BAD_REQUEST,
+                "At least one of delete_local or delete_remote must be true.",
+            );
+        }
+        _ => {
+            return *validation(vec![
+                json!({"field":"query","message":"Invalid removal scope"}),
+            ]);
+        }
+    };
+    if id <= 0 {
+        return detail(StatusCode::NOT_FOUND, "Backup not found");
+    }
+    let selection = Selection {
+        scope,
+        backup_ids: Some(vec![id]),
+        target_id: None,
+        status: None,
+    };
+    match preview_selection(&state, selection, true).await {
+        Ok(value) => match value["token"].as_str() {
+            Some(token) => execution::execute_token(state, token).await,
+            None => detail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not allocate removal preview",
+            ),
+        },
+        Err(response) => *response,
+    }
+}
+
+async fn preview_selection(
+    state: &HttpState,
+    selection: Selection,
+    single: bool,
+) -> Result<Value, Box<Response>> {
     let ids = selection
         .backup_ids
         .as_ref()
@@ -233,9 +303,9 @@ pub(super) async fn preview(
             !["pending", "running", "completed", "failed", "cancelled"].contains(&status)
         })
     {
-        return *validation(vec![
+        return Err(validation(vec![
             json!({"field":"body","message":"Invalid removal selection"}),
-        ]);
+        ]));
     }
     let result = async {
         let mut db = state.auth.pool().begin().await?;
@@ -269,17 +339,20 @@ pub(super) async fn preview(
     }.await;
     let (archive_count, items, retained) = match result {
         Ok(Some(result)) => result,
+        Ok(None) if single => {
+            return Err(Box::new(detail(StatusCode::NOT_FOUND, "Backup not found")));
+        }
         Ok(None) => {
-            return detail(
+            return Err(Box::new(detail(
                 StatusCode::CONFLICT,
                 "Selection changed: archive not found; review again",
-            );
+            )));
         }
         Err(_) => {
-            return detail(
+            return Err(Box::new(detail(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Could not read copy inventory",
-            );
+            )));
         }
     };
     let root = PathBuf::from(&state.config.backup_base_path);
@@ -298,16 +371,16 @@ pub(super) async fn preview(
         }
         items
     }) else {
-        return detail(
+        return Err(Box::new(detail(
             StatusCode::SERVICE_UNAVAILABLE,
             "Removal preview capacity exhausted",
-        );
+        )));
     };
     let Ok(items) = work.wait().await else {
-        return detail(
+        return Err(Box::new(detail(
             StatusCode::SERVICE_UNAVAILABLE,
             "Removal preview interrupted",
-        );
+        )));
     };
     match state.removal_previews.lock().unwrap().remember(
         selection.scope,
@@ -315,14 +388,14 @@ pub(super) async fn preview(
         items,
         retained,
     ) {
-        Ok(response) => Json(response).into_response(),
-        Err(StatusCode::TOO_MANY_REQUESTS) => detail(
+        Ok(response) => Ok(response),
+        Err(StatusCode::TOO_MANY_REQUESTS) => Err(Box::new(detail(
             StatusCode::TOO_MANY_REQUESTS,
             "Too many removal previews; wait for expiry",
-        ),
-        Err(_) => detail(
+        ))),
+        Err(_) => Err(Box::new(detail(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Could not allocate removal preview",
-        ),
+        ))),
     }
 }
