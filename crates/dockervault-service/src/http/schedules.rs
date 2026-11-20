@@ -581,6 +581,182 @@ pub(super) async fn trigger_all(
     Ok(super::backup_submit::trigger_batch(&state, id, enabled, skipped).await)
 }
 
+pub(super) async fn create(
+    State(state): State<HttpState>,
+    request: Request,
+) -> Result<Json<Value>, Failure> {
+    save(state, None, request).await
+}
+
+pub(super) async fn update(
+    State(state): State<HttpState>,
+    Path(id): Path<String>,
+    request: Request,
+) -> Result<Json<Value>, Failure> {
+    save(state, Some(schedule_id(&id)?), request).await
+}
+
+fn schedule_id(id: &str) -> Result<i64, Failure> {
+    id.bytes()
+        .all(|b| b.is_ascii_digit())
+        .then(|| id.parse().ok())
+        .flatten()
+        .ok_or_else(|| failure(StatusCode::NOT_FOUND, "Not Found"))
+}
+
+async fn save(
+    state: HttpState,
+    id: Option<i64>,
+    mut request: Request,
+) -> Result<Json<Value>, Failure> {
+    let body = auth::json_body(&state, &mut request)
+        .await
+        .map_err(Failure)?;
+    let mut errors = Vec::new();
+    let mut text = |key: &str, required: bool| match body.get(key) {
+        Some(Value::String(value)) => Some(value.clone()),
+        value if !required && value.is_none_or(Value::is_null) => None,
+        value => {
+            let message = if value.is_none() {
+                "Field required"
+            } else {
+                "Input should be a valid string"
+            };
+            errors.push(json!({"field":format!("body.{key}"),"message":message}));
+            None
+        }
+    };
+    let name = text("name", id.is_none());
+    let expression = text("cron_expression", id.is_none());
+    let description = text("description", false);
+    let enabled = match body.get("enabled") {
+        None => id.is_none().then_some(true),
+        Some(Value::Null) if id.is_some() => None,
+        Some(Value::Bool(value)) => Some(*value),
+        Some(value) => {
+            let parsed = if let Some(text) = value.as_str() {
+                match text.to_ascii_lowercase().as_str() {
+                    "1" | "true" | "t" | "yes" | "y" | "on" => Some(true),
+                    "0" | "false" | "f" | "no" | "n" | "off" => Some(false),
+                    _ => None,
+                }
+            } else {
+                value
+                    .as_f64()
+                    .filter(|n| *n == 0.0 || *n == 1.0)
+                    .map(|n| n == 1.0)
+            };
+            if parsed.is_none() {
+                let message = if value.is_string() || value.is_number() {
+                    "Input should be a valid boolean, unable to interpret input"
+                } else {
+                    "Input should be a valid boolean"
+                };
+                errors.push(json!({"field":"body.enabled","message":message}));
+            }
+            parsed
+        }
+    };
+    if !errors.is_empty() {
+        return Err(Failure(auth::validation(errors)));
+    }
+    if let Some(check) = expression.clone() {
+        let _ = blocking(state.clone(), move |_, cron| {
+            Schedule::parse(&check)
+                .and_then(|schedule| cron.next(&schedule))
+                .map_err(|e| {
+                    failure(
+                        StatusCode::BAD_REQUEST,
+                        format!("Invalid cron expression: {e}"),
+                    )
+                })?;
+            Ok(Value::Null)
+        })
+        .await?;
+    }
+    let mut tx = state
+        .auth
+        .pool()
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(db_error)?;
+    let write = if let Some(id) = id {
+        sqlx::query_scalar("UPDATE schedules SET name=coalesce(?,name),cron_expression=coalesce(?,cron_expression),description=coalesce(?,description),enabled=coalesce(?,enabled),updated_at=? WHERE id=? RETURNING id")
+            .bind(&name).bind(expression).bind(description).bind(enabled).bind(now().sql()).bind(id)
+    } else {
+        let stamp = now().sql();
+        sqlx::query_scalar("INSERT INTO schedules(name,cron_expression,description,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?) RETURNING id")
+            .bind(&name).bind(expression).bind(description).bind(enabled).bind(stamp.clone()).bind(stamp)
+    };
+    let saved: i64 = write
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| {
+            if e.as_database_error()
+                .is_some_and(|e| e.is_unique_violation())
+            {
+                failure(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "Schedule with name '{}' already exists",
+                        name.unwrap_or_default()
+                    ),
+                )
+            } else {
+                db_error(e)
+            }
+        })?
+        .ok_or_else(|| failure(StatusCode::NOT_FOUND, "Schedule not found"))?;
+    let row = sqlx::query(SCHEDULES)
+        .bind(saved)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db_error)?;
+    tx.commit().await.map_err(db_error)?;
+    reconcile(&state).await?;
+    blocking(state, move |_, cron| {
+        let mut response = schedule(&row, &cron).map_err(db_error)?;
+        if id.is_none() {
+            response["next_run"] = Value::Null;
+        }
+        Ok(response)
+    })
+    .await
+}
+
+pub(super) async fn delete(
+    State(state): State<HttpState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, Failure> {
+    let id = schedule_id(&id)?;
+    let mut tx = state
+        .auth
+        .pool()
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(db_error)?;
+    let unlinked = sqlx::query("UPDATE backup_targets SET schedule_id=NULL WHERE schedule_id=?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?
+        .rows_affected();
+    let deleted = sqlx::query("DELETE FROM schedules WHERE id=?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?
+        .rows_affected();
+    if deleted != 1 {
+        return Err(failure(StatusCode::NOT_FOUND, "Schedule not found"));
+    }
+    tx.commit().await.map_err(db_error)?;
+    reconcile(&state).await?;
+    Ok(Json(
+        json!({"status":"deleted","unlinked_targets":unlinked}),
+    ))
+}
+
 pub(super) async fn help(State(state): State<HttpState>) -> Json<Value> {
     Json(
         json!({"format":"minute hour day month weekday","contract":CONTRACT,"timezone":state.config.tz,

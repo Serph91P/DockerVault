@@ -117,8 +117,16 @@ pub fn router(state: HttpState) -> Router {
                 .delete(retention::delete),
         )
         .route("/api/v1/retention/{id}/stats", get(retention::stats))
-        .route("/api/v1/schedules", get(schedules::list))
-        .route("/api/v1/schedules/{id}", get(schedules::detail))
+        .route(
+            "/api/v1/schedules",
+            get(schedules::list).post(schedules::create),
+        )
+        .route(
+            "/api/v1/schedules/{id}",
+            get(schedules::detail)
+                .put(schedules::update)
+                .delete(schedules::delete),
+        )
         .route("/api/v1/schedules/preview", post(schedules::preview))
         .route(
             "/api/v1/schedules/compatibility/inventory",

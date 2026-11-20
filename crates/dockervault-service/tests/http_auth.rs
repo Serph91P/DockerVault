@@ -407,6 +407,99 @@ async fn live_schedule_reload_exposes_only_installed_jobs_and_repairs_failures()
 }
 
 #[tokio::test]
+async fn schedule_crud_reports_saved_reconcile_failure_and_unlinks_removed_targets() {
+    let server = Server::configured(Config::from_pairs([("TZ", "UTC")]).unwrap()).await;
+    let cookie = server.setup().await;
+    let headers = [("cookie", cookie.as_str())];
+    let db = server.db.pool();
+    let root = "/api/v1/schedules";
+    let (status, _, body) = server
+        .request(
+            "POST",
+            root,
+            &headers,
+            Some(json!({"name":"Fixture","cron_expression":"@daily"})),
+        )
+        .await;
+    assert_eq!(
+        (status, body),
+        (
+            400,
+            json!({"detail":"Invalid cron expression: Wrong number of fields; got 1, expected 5"})
+        )
+    );
+    sqlx::query("INSERT INTO backup_targets(id,name,target_type,schedule_cron,enabled) VALUES (30,'Broken legacy','path','@daily',1)").execute(db).await.unwrap();
+    let (status, _, body) = server
+        .request(
+            "POST",
+            root,
+            &headers,
+            Some(json!({"name":"Fixture","cron_expression":"0 3 * * mon","description":"keep"})),
+        )
+        .await;
+    assert_eq!(
+        (status, body),
+        (
+            503,
+            json!({"detail":"Configuration saved; scheduler reconciliation failed. Retry POST /api/v1/schedules/reload."})
+        )
+    );
+    let id: i64 = sqlx::query_scalar("SELECT id FROM schedules WHERE name='Fixture'")
+        .fetch_one(db)
+        .await
+        .unwrap();
+    sqlx::raw_sql("UPDATE backup_targets SET enabled=0 WHERE id=30;")
+        .execute(db)
+        .await
+        .unwrap();
+    assert_eq!(
+        server
+            .request("POST", "/api/v1/schedules/reload", &headers, None)
+            .await
+            .0,
+        200
+    );
+    let path = format!("{root}/{id}");
+    let (status, _, body) = server
+        .request(
+            "PUT",
+            &path,
+            &headers,
+            Some(json!({"enabled":false,"description":null,"cron_expression":null})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        (
+            body["enabled"].clone(),
+            body["description"].clone(),
+            body["cron_expression"].clone(),
+            body["next_run"].clone()
+        ),
+        (
+            json!(false),
+            json!("keep"),
+            json!("0 3 * * mon"),
+            Value::Null
+        )
+    );
+    sqlx::query("INSERT INTO backup_targets(id,name,target_type,schedule_id,enabled,removed_at) VALUES(31,'Removed','path',?,1,'2025-01-01 00:00:00.000000')").bind(id).execute(db).await.unwrap();
+    let (status, _, body) = server.request("DELETE", &path, &headers, None).await;
+    assert_eq!(
+        (status, body),
+        (200, json!({"status":"deleted","unlinked_targets":1}))
+    );
+    let row: (Option<i64>, Option<String>) =
+        sqlx::query_as("SELECT schedule_id,removed_at FROM backup_targets WHERE id=31")
+            .fetch_one(db)
+            .await
+            .unwrap();
+    assert_eq!(row, (None, Some("2025-01-01 00:00:00.000000".into())));
+    assert_eq!(server.request("GET", &path, &headers, None).await.0, 404);
+    server.close().await;
+}
+
+#[tokio::test]
 async fn started_scheduler_dispatches_and_rechecks_targets_before_admission() {
     let server = Server::configured(Config::from_pairs([("TZ", "UTC")]).unwrap()).await;
     let cookie = server.setup().await;
