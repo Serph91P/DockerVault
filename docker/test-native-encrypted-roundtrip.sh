@@ -59,6 +59,10 @@ for ((attempt=0; attempt<30; attempt++)); do
 done
 test "$status" = completed || { printf 'Native backup did not complete: %s\n' "$status" >&2; exit 1; }
 
+docker exec -u 1000:1000 "$app" sh -ec '
+    printf "Source changed after backup\n" > /tmp/dv-encrypted-roundtrip/content
+    test "$(cat /tmp/dv-encrypted-roundtrip/content)" = "Source changed after backup"
+'
 inode=$(docker exec "$app" stat -c %i /app/data/backup.db)
 docker stop --time 30 "$app" >/dev/null
 test "$(docker inspect -f '{{.State.ExitCode}}' "$app")" = 0

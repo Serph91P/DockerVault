@@ -12,7 +12,20 @@ The smoke runs with no network other than the container's loopback, no published
 
 The worker is packaged as a root-owned executable, **not** delegated via sudo: its current request allows the caller to supply source prefixes. Mode 0755 alone is not a privilege grant. The production authorization of sources needs a trusted boundary before a service-to-root rule can be qualified. No recovery executable is served at the legacy Python URL. The native recovery CLI's presence and startup are checked here; this does not qualify packaged offline restoration.
 
-This does not qualify runtime Docker socket/GID or trusted proxy handling, rclone packaging, authenticated backup/restore, active-job shutdown or worker drain, recovery downloads, performance, or a deployment cutover.
+## Authenticated encrypted backup and offline recovery
+
+Build the separate recovery image from the same checkout and for the same architecture as the application image above. The test runner requires Bash, Docker, and `jq`:
+
+```sh
+docker build --platform linux/amd64 -f docker/recover.Dockerfile \
+  --build-arg VCS_REF="$(git rev-parse HEAD)" -t dockervault:native-recovery .
+bash docker/test-native-encrypted-roundtrip.sh \
+  dockervault:native-candidate dockervault:native-recovery
+```
+
+The runner checks both image revision labels and architectures. It submits an encrypted path backup through authenticated HTTP, changes the source, restarts the app, and verifies that it reopens the same SQLite file. It then stops the app and recovers the original payload byte-for-byte in the separate network-disabled recovery image. The runner creates its own synthetic identity; no production key, copied database, or host mount is needed. The native CI matrix includes this check on Linux amd64 and arm64.
+
+These checks do not qualify remote-only restore, runtime Docker socket/GID or trusted proxy handling, active-job shutdown or worker drain, recovery downloads, performance, or a deployment cutover.
 
 ## Rehearsal-only Python rollback image (R14)
 
