@@ -43,6 +43,22 @@ RUN cargo fetch --locked && cargo build --release --locked --offline --bins \
 FROM scratch AS rollback-preflight
 COPY --from=native-builder /src/target/release/dockervault-rollback-preflight /
 
+# Match the accepted runtime's pinned rclone without adding an extractor to the image.
+FROM debian@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS native-rclone
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip
+RUN set -eu; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) arch=amd64; checksum=b5c9b2fb6ada8a400c5fc5d48cd112dc1adea21a3b73b03857059374dd8a78d0 ;; \
+      arm64) arch=arm64; checksum=66ce9c7fbdf6ba38991fa2ac193ed051bd6d04aeec693900c848154bf549484f ;; \
+      *) exit 1 ;; \
+    esac; \
+    archive="rclone-v1.72.1-linux-${arch}"; \
+    curl --fail --silent --show-error --location \
+      "https://downloads.rclone.org/v1.72.1/${archive}.zip" --output /tmp/rclone.zip; \
+    printf '%s  %s\n' "$checksum" /tmp/rclone.zip | sha256sum --check -; \
+    unzip -p /tmp/rclone.zip "${archive}/rclone" > /tmp/rclone; \
+    install -m 0755 /tmp/rclone /usr/local/bin/rclone
+
 FROM debian@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS native-candidate
 ARG COMMIT_SHA=unknown
 LABEL org.opencontainers.image.revision="${COMMIT_SHA}"
@@ -53,6 +69,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && useradd -u 1000 -g 1000 -m dockervault
 COPY --from=native-builder /src/target/release/dockervault-service /src/target/release/dockervault-recover /usr/local/bin/
 COPY --from=native-builder /src/target/release/dockervault-process-guard /src/target/release/dockervault-archive-worker /usr/local/libexec/
+COPY --from=native-rclone /usr/local/bin/rclone /usr/local/bin/rclone
 COPY --from=frontend-builder /app/dist /usr/share/nginx/html
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
 RUN sed -i '/^    location \/ {/i\    location = /recover_backup.py { return 404; }' /etc/nginx/conf.d/default.conf

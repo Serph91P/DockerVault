@@ -26,6 +26,8 @@ docker exec "$container" sh -eu -c '
     test "$(stat -c %u:%a /app/data/ssh_known_hosts)" = 1000:600
     test "$(stat -c %u:%a /app/data/ssh_keys)" = 1000:700
     curl -fsS http://127.0.0.1/ >/dev/null
+    test "$(rclone version | sed -n "1p")" = "rclone v1.72.1"
+    rclone --config /dev/null --ask-password=false config providers >/dev/null
     for cmd in python python3 uvicorn supervisord; do
         if command -v "$cmd"; then exit 1; fi
     done
