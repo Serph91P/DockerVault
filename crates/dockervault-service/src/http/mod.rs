@@ -12,6 +12,7 @@ mod retention;
 mod s3_sync;
 mod schedules;
 pub mod security;
+mod settings;
 mod sftp_sync;
 mod storage;
 pub use s3_sync::recover_s3_copies;
@@ -29,6 +30,7 @@ use std::sync::Arc;
 pub struct HttpState {
     pub auth: AuthService,
     pub config: Arc<Config>,
+    started: std::time::Instant,
     limits: Arc<security::RateLimits>,
     pub notifications: Arc<ws::Notifications>,
     draining: tokio_util::sync::CancellationToken,
@@ -48,6 +50,7 @@ impl HttpState {
         Self {
             auth,
             config: Arc::new(config),
+            started: std::time::Instant::now(),
             limits: Arc::new(security::RateLimits::default()),
             notifications: Arc::new(ws::Notifications::default()),
             draining: tokio_util::sync::CancellationToken::new(),
@@ -117,6 +120,7 @@ pub fn router(state: HttpState) -> Router {
                 .delete(retention::delete),
         )
         .route("/api/v1/retention/{id}/stats", get(retention::stats))
+        .route("/api/v1/settings/system-info", get(settings::system_info))
         .route("/api/v1/retention/{id}/apply", post(retention::apply))
         .route(
             "/api/v1/schedules",

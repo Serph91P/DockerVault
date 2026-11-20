@@ -561,6 +561,28 @@ async fn started_scheduler_dispatches_and_rechecks_targets_before_admission() {
 }
 
 #[tokio::test]
+async fn system_info_is_authenticated_and_redacts_configured_paths() {
+    let server = Server::start("http://localhost:3000").await;
+    let path = "/api/v1/settings/system-info";
+    let cookie = server.setup().await;
+    assert_eq!(server.request("GET", path, &[], None).await.0, 401);
+    let (status, _, info) = server
+        .request("GET", path, &[("Cookie", &cookie)], None)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(info["backup_dir"], "[configured]");
+    assert_eq!(info["database_path"], "[configured]");
+    assert_eq!(info["disk_status"], "available");
+    assert!(info["disk_total"].as_u64().unwrap() > 0);
+    assert_eq!(info["backup_count"], 0);
+    assert_eq!(info["target_count"], 0);
+    assert_eq!(info["timezone"], server.state.config.tz);
+    assert!(info["uptime_seconds"].is_u64());
+    assert_eq!(info["app_version"], "1.0.0");
+    server.close().await;
+}
+
+#[tokio::test]
 async fn retention_reads_preserve_policy_and_catalog_wire_contracts() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
