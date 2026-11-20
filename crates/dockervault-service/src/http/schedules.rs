@@ -724,7 +724,7 @@ pub(super) async fn trigger_target(
     State(state): State<HttpState>,
     Path(id): Path<String>,
 ) -> Response {
-    let Ok(id) = id.trim().parse() else {
+    let Some(id) = super::operations::query_integer(&id) else {
         return *auth::validation(vec![
             json!({"field":"path.target_id","message":"Input should be a valid integer, unable to parse string as an integer"}),
         ]);
@@ -736,7 +736,7 @@ pub(super) async fn trigger_all(
     State(state): State<HttpState>,
     Path(id): Path<String>,
 ) -> Result<Response, Failure> {
-    let Ok(id) = id.trim().parse::<i64>() else {
+    let Some(id) = super::operations::query_integer(&id) else {
         return Err(Failure(auth::validation(vec![
             json!({"field":"path.schedule_id","message":"Input should be a valid integer, unable to parse string as an integer"}),
         ])));

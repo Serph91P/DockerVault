@@ -1400,6 +1400,18 @@ async fn schedule_target_trigger_admits_only_an_enabled_non_removed_plan() {
         let (actual, _, body) = server.request("POST", &endpoint(id), &headers, None).await;
         assert_eq!((actual, body), (status, json!({"detail":detail})), "{id}");
     }
+    let (status, _, body) = server
+        .request(
+            "POST",
+            "/api/v1/schedules/target/22.0/trigger",
+            &headers,
+            None,
+        )
+        .await;
+    assert_eq!(
+        (status, body),
+        (409, json!({"detail":"Target is disabled"}))
+    );
     let (status, _, body) = server.request("POST", &endpoint(21), &headers, None).await;
     assert_eq!((status, body), (200, json!({"status":"triggered"})));
     let results = tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -1452,7 +1464,7 @@ async fn schedule_batch_runs_enabled_targets_sequentially() {
     let endpoint = "/api/v1/schedules/31/trigger-all";
     assert_eq!(server.request("POST", endpoint, &[], None).await.0, 401);
     let (status, _, body) = server
-        .request("POST", "/api/v1/schedules/99/trigger-all", &headers, None)
+        .request("POST", "/api/v1/schedules/99.0/trigger-all", &headers, None)
         .await;
     assert_eq!(
         (status, body),
