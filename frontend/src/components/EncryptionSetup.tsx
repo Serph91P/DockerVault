@@ -31,7 +31,7 @@ interface SetupResponse {
   recovery_instructions: string;
 }
 
-const nativeRecovery = import.meta.env.VITE_NATIVE_RECOVERY === 'true'
+const nativeRecovery = import.meta.env.VITE_NATIVE_BACKEND === 'true'
 const nativeRecoveryCheck = 'sha256sum dockervault-recover\n# Compare against sha256 in manifest.json before continuing.\nchmod 700 dockervault-recover'
 const nativeRecoveryCommand = './dockervault-recover --identity private_key.txt --key backup.tar.gz.key --archive backup.tar.gz.enc --output backup.tar.gz'
 

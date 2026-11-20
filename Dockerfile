@@ -35,7 +35,7 @@ FROM frontend-source AS frontend-builder
 RUN npm run build
 
 FROM frontend-source AS native-frontend-builder
-RUN VITE_NATIVE_RECOVERY=true npm run build
+RUN VITE_NATIVE_BACKEND=true npm run build
 
 # Opt-in local candidate only. Keep production as the default final stage.
 FROM rust@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS native-builder

@@ -46,6 +46,12 @@ fi
 app=$(docker create --pull=never --network none -e TZ=America/New_York "${volumes[@]}" "$id")
 docker start "$app" >/dev/null
 ready "$app"
+if [[ "$mode" == policy ]]; then
+    orphan=/backups/orphan-browser-fixture.tar
+    docker exec -u 1000:1000 "$app" sh -ec 'umask 077; printf "unregistered synthetic archive\n" > "$1"' sh "$orphan"
+    orphan_state() { docker exec "$app" sh -ec 'sha256sum "$1"; stat -c %i:%s:%a "$1"' sh "$orphan"; }
+    original_orphan=$(orphan_state)
+fi
 if [[ "$mode" == python ]]; then
     test "$(docker exec "$app" stat -c %d:%i /app/data/backup.db)" = "$inode"
 fi
@@ -54,6 +60,9 @@ browser=$(docker create --pull=never --network "container:$app" --entrypoint nod
 docker cp "$(dirname "$0")/$script" "$browser:/runner/$script"
 docker start -a "$browser"
 test "$(docker inspect -f '{{.State.ExitCode}}' "$browser")" = 0
+if [[ "$mode" == policy ]]; then
+    test "$(orphan_state)" = "$original_orphan"
+fi
 if [[ "$mode" == python ]]; then
     test "$(docker exec "$app" stat -c %d:%i /app/data/backup.db)" = "$inode"
 fi

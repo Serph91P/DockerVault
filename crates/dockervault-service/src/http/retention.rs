@@ -43,10 +43,11 @@ pub(super) async fn cleanup_orphaned(State(state): State<HttpState>) -> Response
     let Ok((protected, scan_errors)) = work.wait().await else {
         return failure(StatusCode::SERVICE_UNAVAILABLE, "Orphan scan interrupted");
     };
-    Json(
-        json!({"protected":protected, "deleted":0,"failed":0,"scan_errors":scan_errors,
+    (
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Json(json!({"mode":"scan_only","protected":protected, "deleted":0,"failed":0,"scan_errors":scan_errors,
         "scan_complete":scan_errors==0,"outcome":if scan_errors==0 {"empty"}else{"failure"},
-        "freed_bytes":0,"freed_human":format_size(0)}),
+        "freed_bytes":0,"freed_human":format_size(0)})),
     )
     .into_response()
 }

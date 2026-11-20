@@ -376,6 +376,7 @@ export const schedulesApi = {
 
 // Retention API
 export interface CleanupResult {
+  mode?: 'scan_only'
   outcome: 'empty' | 'success' | 'partial' | 'failure'
   deleted: number
   failed: number
@@ -395,6 +396,7 @@ export const retentionApi = {
   applyRetention: (targetId: number) => api.post(`/retention/${targetId}/apply`),
   getStats: (targetId: number) => api.get(`/retention/${targetId}/stats`),
   cleanupOrphaned: () => api.post<CleanupResult>('/retention/cleanup-orphaned'),
+  scanOrphaned: () => api.get<CleanupResult>('/retention/cleanup-orphaned'),
 }
 
 // Remote Storage Types

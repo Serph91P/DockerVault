@@ -72,5 +72,21 @@ try {
   await page.reload()
   await named('link','Edit').click()
   await expect(named('spinbutton','Keep Last')).toHaveValue('1')
-  console.log(JSON.stringify({revision,image,chromium:browser.version(),invalid_cron_did_not_save:true,displayed_timezone_agrees:true,dst_offsets_match:true,schedule_clear_persisted:true,retention_policy_persisted:true}))
+  await page.goto(base+'/protection/retention')
+  await named('button','Scan Orphaned Files').click()
+  const scan=page.getByRole('dialog',{name:'Scan Orphaned Files',exact:true})
+  await expect(scan).toContainText('No files will be deleted.')
+  const [scanResponse]=await Promise.all([
+    page.waitForResponse(r=>r.url().endsWith('/api/v1/retention/cleanup-orphaned') && r.request().method()==='GET'),
+    scan.getByRole('button',{name:'Scan',exact:true}).click(),
+  ])
+  assert.equal(scanResponse.status(),200)
+  const scanResult=await scanResponse.json()
+  assert.equal(scanResult.mode,'scan_only')
+  assert.equal(scanResult.protected,1)
+  assert.equal(scanResult.deleted,0)
+  assert.equal(scanResult.freed_bytes,0)
+  assert.equal(scanResult.scan_complete,true)
+  await expect(scan.getByRole('status')).toContainText('Scan only: no files were deleted.')
+  console.log(JSON.stringify({revision,image,chromium:browser.version(),invalid_cron_did_not_save:true,displayed_timezone_agrees:true,dst_offsets_match:true,schedule_clear_persisted:true,retention_policy_persisted:true,orphan_scan_only:true}))
 } finally { await browser.close() }

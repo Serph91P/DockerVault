@@ -1224,11 +1224,12 @@ async fn orphan_cleanup_preserves_unknown_active_and_local_replica_archives() {
     sqlx::query("INSERT INTO backup_storage_syncs(id,backup_id,storage_id,remote_path,sync_status) VALUES(84,84,84,'replica.tar.gz','completed')")
         .execute(db).await.unwrap();
     let route = "/api/v1/retention/cleanup-orphaned";
-    assert_eq!(server.request("POST", route, &[], None).await.0, 401);
-    for _ in 0..2 {
-        let (status, _, report) = server.request("POST", route, &headers, None).await;
+    for method in ["GET", "POST", "POST"] {
+        assert_eq!(server.request(method, route, &[], None).await.0, 401);
+        let (status, _, report) = server.request(method, route, &headers, None).await;
         assert_eq!(status, 200);
         assert_eq!(report["protected"], 3);
+        assert_eq!(report["mode"], "scan_only");
         assert_eq!(report["deleted"], 0);
         assert_eq!(report["freed_bytes"], 0);
         assert_eq!(report["scan_complete"], true);

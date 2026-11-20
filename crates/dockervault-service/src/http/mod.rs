@@ -184,7 +184,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/retention/{id}/stats", get(retention::stats))
         .route(
             "/api/v1/retention/cleanup-orphaned",
-            post(retention::cleanup_orphaned),
+            post(retention::cleanup_orphaned).get(retention::cleanup_orphaned),
         )
         .route("/api/v1/settings/system-info", get(settings::system_info))
         .route(
