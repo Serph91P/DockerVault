@@ -2300,6 +2300,15 @@ async fn ftp_backup_durably_admits_unique_catalog_path_before_provider_io() {
 
 #[tokio::test]
 async fn webdav_backup_durably_admits_the_copy_before_provider_io() {
+    webdav_admission(false).await;
+}
+
+#[tokio::test]
+async fn webdav_known_insufficient_quota_prevents_upload() {
+    webdav_admission(true).await;
+}
+
+async fn webdav_admission(check_quota: bool) {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
     let source = server.path.join("dav-source");
@@ -2307,6 +2316,9 @@ async fn webdav_backup_durably_admits_the_copy_before_provider_io() {
     std::fs::write(source.join("data"), b"synthetic WebDAV admission fixture").unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let pool = server.db.pool();
+    if check_quota {
+        sqlx::query("INSERT INTO app_settings(key,value) VALUES('storage_check_quota_before_upload','true')").execute(pool).await.unwrap();
+    }
     sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,webdav_url,base_path) VALUES(7,'DAV fixture','webdav',1,?,'/copies')")
         .bind(format!("http://{}/dav", listener.local_addr().unwrap())).execute(pool).await.unwrap();
     sqlx::query("INSERT INTO backup_targets(id,name,target_type,host_path,enabled,sync_to_remote,remote_storage_ids) VALUES(1,'DavTarget','path',?,1,1,'[7]')")
@@ -2333,7 +2345,39 @@ async fn webdav_backup_durably_admits_the_copy_before_provider_io() {
     .await
     .unwrap();
     assert_eq!(intent, "running");
-    drop(socket);
+    if check_quota {
+        let mut socket = socket;
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            assert!(request.len() < 8192);
+            request.push(socket.read_u8().await.unwrap());
+        }
+        assert!(
+            request.starts_with(b"PROPFIND "),
+            "{}",
+            String::from_utf8_lossy(&request)
+        );
+        let body = r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/dav/copies/</d:href><d:propstat><d:prop><d:quota-available-bytes>0</d:quota-available-bytes></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#;
+        socket.write_all(format!("HTTP/1.1 207 Multi-Status\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(4),async {
+            loop {
+                let (status,archive,uncertain):(String,String,bool) = sqlx::query_as("SELECT s.sync_status,b.file_path,json_type(b.backup_metadata,'$.native_webdav_effects') IS NOT NULL FROM backup_storage_syncs s JOIN backups b ON b.id=s.backup_id WHERE s.backup_id=?").bind(id).fetch_one(pool).await.unwrap();
+                if status == "failed" {
+                    assert!(std::path::Path::new(&archive).is_file());
+                    assert!(!uncertain);
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        }).await.unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), listener.accept())
+                .await
+                .is_err()
+        );
+    } else {
+        drop(socket);
+    }
     drop(listener);
     server.close().await;
 }

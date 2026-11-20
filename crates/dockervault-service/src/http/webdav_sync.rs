@@ -177,6 +177,25 @@ pub(super) async fn settle(
             let Some(source) = sources.as_ref().map(|files| files[index].clone()) else {
                 continue 'copies;
             };
+            let quota_enabled: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM app_settings WHERE key='storage_check_quota_before_upload' AND value='true')").fetch_one(pool).await?;
+            if quota_enabled
+                && let Ok(work) = provider.quota_available()
+                && let Ok(Ok(Some(available))) = wait(work, cancel).await
+                && available < artifact.length
+            {
+                let gib = (1024_u64.pow(3)) as f64;
+                let error = format!(
+                    "Insufficient remote storage: {:.2} GB available, {:.2} GB required",
+                    available as f64 / gib,
+                    artifact.length as f64 / gib
+                );
+                sqlx::query("UPDATE backup_storage_syncs SET sync_status='failed',error_message=? WHERE id=? AND sync_status='running'")
+                    .bind(error).bind(row).execute(pool).await?;
+                continue 'copies;
+            }
+            if cancel.is_cancelled() {
+                return Ok(());
+            }
             let changed=sqlx::query("UPDATE backups SET backup_metadata=json_set(backup_metadata,?,json('{}')) WHERE id=? AND status='COMPLETED' AND json_type(backup_metadata,?) IS NULL AND json_extract(backup_metadata,'$.native_local_sync')=json(?) AND EXISTS(SELECT 1 FROM backup_storage_syncs s JOIN remote_storages r ON r.id=s.storage_id WHERE s.id=? AND s.backup_id=backups.id AND s.remote_path=? AND s.sync_status='running' AND r.enabled=1 AND r.storage_type='webdav' AND r.webdav_url=? AND r.base_path IS ? AND r.username IS ?)")
                 .bind(&effect).bind(id).bind(&effect).bind(&receipt).bind(row).bind(&copy.archive).bind(&copy.endpoint).bind(&copy.prefix).bind(&copy.username).execute(pool).await?;
             if changed.rows_affected() != 1 {
