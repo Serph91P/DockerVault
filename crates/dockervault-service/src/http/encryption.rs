@@ -37,10 +37,34 @@ pub(super) async fn setup(
     if let Err(response) = super::security::rate_limit(&state, &request, "encryption-setup") {
         return *response;
     }
-    issue_key(&state).await.unwrap_or_else(|_| internal())
+    issue_key(&state, false)
+        .await
+        .unwrap_or_else(|_| internal())
 }
 
-async fn issue_key(state: &HttpState) -> Result<Response, sqlx::Error> {
+pub(super) async fn regenerate(
+    State(state): State<HttpState>,
+    mut request: axum::extract::Request,
+) -> Response {
+    let body = match super::auth::json_body(&state, &mut request).await {
+        Ok(body) => body,
+        Err(err) => return *err,
+    };
+    if let Err(response) = super::security::rate_limit(&state, &request, "encryption-regenerate") {
+        return *response;
+    }
+    match body.get("confirm_data_loss").and_then(boolean) {
+        Some(true) => issue_key(&state, true).await.unwrap_or_else(|_| internal()),
+        Some(false) => {
+            bad("You must confirm that you understand existing backups will become unrecoverable.")
+        }
+        None => *super::auth::validation(vec![
+            json!({"field":"body.confirm_data_loss","message":if body.get("confirm_data_loss").is_some(){"Input should be a valid boolean"}else{"Field required"}}),
+        ]),
+    }
+}
+
+async fn issue_key(state: &HttpState, regenerate: bool) -> Result<Response, sqlx::Error> {
     use age::secrecy::ExposeSecret;
     let mut tx = state.auth.pool().begin_with("BEGIN IMMEDIATE").await?;
     if crate::recovery_activation::recovery_pending_in(&mut *tx)
@@ -54,7 +78,7 @@ async fn issue_key(state: &HttpState) -> Result<Response, sqlx::Error> {
             .into_response());
     }
     let existing = sqlx::query_as::<_,(i64,String,bool)>("SELECT id,public_key,coalesce(setup_completed,0) FROM encryption_config ORDER BY id LIMIT 1").fetch_optional(&mut *tx).await?;
-    if let Some((_, key, completed)) = &existing {
+    if !regenerate && let Some((_, key, completed)) = &existing {
         if *completed {
             return Ok(bad(
                 "Encryption already configured. Use /regenerate to create new keys (this will make existing backups unrecoverable!).",

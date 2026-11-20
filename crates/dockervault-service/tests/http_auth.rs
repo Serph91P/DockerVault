@@ -731,6 +731,42 @@ async fn encryption_toggle_requires_confirmed_key_custody() {
     .await
     .unwrap();
     assert_eq!(stored, (public.into(), true, false));
+    let rotate = "/api/v1/encryption/regenerate";
+    assert_eq!(
+        server
+            .request(
+                "POST",
+                rotate,
+                &headers,
+                Some(json!({"confirm_data_loss":false}))
+            )
+            .await
+            .0,
+        400
+    );
+    let (status, headers_out, regenerated) = server
+        .request(
+            "POST",
+            rotate,
+            &headers,
+            Some(json!({"confirm_data_loss":true})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert!(
+        headers_out
+            .lines()
+            .any(|line| line.eq_ignore_ascii_case("cache-control: no-store"))
+    );
+    let new_public = regenerated["public_key"].as_str().unwrap();
+    assert_ne!(new_public, public);
+    let stored: (String, bool, bool) = sqlx::query_as(
+        "SELECT public_key,setup_completed,encryption_enabled FROM encryption_config WHERE id=1",
+    )
+    .fetch_one(db)
+    .await
+    .unwrap();
+    assert_eq!(stored, (new_public.into(), false, false));
     server.close().await;
 }
 
