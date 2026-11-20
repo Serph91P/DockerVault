@@ -523,6 +523,103 @@ pub(super) async fn download_public(
     )
 }
 
+#[derive(serde::Deserialize)]
+pub(super) struct Install {
+    host: String,
+    port: Option<u16>,
+    username: String,
+    password: String,
+    method: Option<String>,
+}
+
+pub(super) async fn install(
+    State(state): State<HttpState>,
+    Path(name): Path<String>,
+    body: Result<Json<Install>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    if !valid_name(&name) {
+        return bad_name();
+    }
+    let Ok(Json(input)) = body else {
+        return failure(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Invalid SSH install request",
+        );
+    };
+    let filename = format!("{name}.pub");
+    let Ok(read) = state
+        .auth
+        .blocking()
+        .submit_blocking(move |_| read_public(FsPath::new(KEY_ROOT), FsPath::new(&filename)))
+    else {
+        return unavailable();
+    };
+    let mut key = match read.wait().await {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return failure(StatusCode::NOT_FOUND, "Public key not found"),
+        Err(_) => return unavailable(),
+    };
+    if !key.ends_with(b"\n") {
+        key.push(b'\n');
+    }
+    let port = input.port.unwrap_or(22);
+    let method = match input.method.as_deref().unwrap_or("auto") {
+        "auto" if port == 23 && input.host.ends_with(".your-storagebox.de") => "hetzner",
+        "hetzner" => "hetzner",
+        "auto" | "authorized_keys" => "authorized_keys",
+        other => {
+            let detail = if valid_name(other) && !input.password.contains(other) {
+                format!("Unknown install method: {other}")
+            } else {
+                "Unknown install method".to_owned()
+            };
+            return failure(StatusCode::BAD_REQUEST, &detail);
+        }
+    };
+    if input.password.is_empty() || input.password.len() > 4096 || input.password.contains('\0') {
+        return failure(StatusCode::BAD_REQUEST, "Invalid SSH install password");
+    }
+    let endpoint = crate::storage::ssh::SftpEndpoint {
+        host: input.host,
+        username: input.username,
+        port,
+        base: String::new(),
+        known_hosts: "/app/data/ssh_known_hosts".into(),
+        identity: None,
+        password: Some(input.password),
+    };
+    let Some(processes) = state.probe_processes.clone() else {
+        return unavailable();
+    };
+    let command = if method == "hetzner" {
+        "install-ssh-key"
+    } else {
+        concat!(
+            "set -e; umask 077; mkdir -p ~/.ssh; chmod 700 ~/.ssh; ",
+            "touch ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys; ",
+            "key=$(cat); grep -qxF -- \"$key\" ~/.ssh/authorized_keys || ",
+            "printf '%s\\n' \"$key\" >> ~/.ssh/authorized_keys"
+        )
+    };
+    let Ok(work) = state.probe_jobs.submit_async(move |cancel| async move {
+        endpoint
+            .install_public_key(&processes, command, key, &cancel)
+            .await
+    }) else {
+        return unavailable();
+    };
+    match work.wait().await {
+        Ok(Ok(())) => {
+            Json(json!({"success":true,"method":method,"message":"Key installed"})).into_response()
+        }
+        Ok(Err(_)) => failure(
+            StatusCode::BAD_REQUEST,
+            "Install failed: SSH did not confirm key installation",
+        ),
+        Err(_) => unavailable(),
+    }
+}
+
 pub(super) fn export_public(
     restored: Option<&str>,
     cancel: &tokio_util::sync::CancellationToken,

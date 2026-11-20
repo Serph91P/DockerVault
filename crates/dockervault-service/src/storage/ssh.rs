@@ -96,6 +96,29 @@ pub(crate) fn key_file(path: &Path, allowed: &[PathBuf]) -> Option<File> {
 }
 
 impl SftpEndpoint {
+    pub(crate) async fn install_public_key(
+        &self,
+        processes: &ProcessOwner,
+        command: &str,
+        public_key: Vec<u8>,
+        cancel: &CancellationToken,
+    ) -> Result<(), SftpDownloadError> {
+        let (mut args, destination) = self
+            .connection_args("-p")
+            .map_err(SftpDownloadError::Process)?;
+        args.extend([
+            "-oNumberOfPasswordPrompts=1".into(),
+            "--".into(),
+            destination.into(),
+            command.into(),
+        ]);
+        let mut spec = self.wrap_password("/usr/bin/ssh", args);
+        spec.input = public_key;
+        spec.timeout = Some(Duration::from_secs(60));
+        spec.discard_output = true;
+        run_batch(processes, spec, cancel).await.map(|_| ())
+    }
+
     /// The process exit status, not command admission, reports the probe result.
     pub fn probe(
         &self,

@@ -308,6 +308,10 @@ pub fn router(state: HttpState) -> Router {
             get(ssh_keys::download_public),
         )
         .route(
+            "/api/v1/storage/ssh-keys/{name}/install",
+            post(ssh_keys::install),
+        )
+        .route(
             "/api/v1/storage/local/files",
             get(storage::list_local_files).delete(local_browser_delete::single),
         )
