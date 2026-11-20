@@ -1486,6 +1486,60 @@ async fn ssh_key_metadata_routes_use_the_legacy_empty_and_missing_replies() {
 }
 
 #[tokio::test]
+async fn recovery_status_reads_the_committed_legacy_result_without_writing() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let path = "/api/v1/recovery/status";
+    let headers = [("cookie", cookie.as_str())];
+    assert_eq!(server.request("GET", path, &[], None).await.0, 401);
+    let (status, _, result) = server.request("GET", path, &headers, None).await;
+    assert_eq!((status, result), (200, Value::Null));
+    let result = json!({
+        "counts":{"backup_targets":1,"schedules":0,"retention_policies":0,"remote_storages":1,"encryption_config":0,"app_settings":0,"backups":1,"backup_schedules":0,"backup_storage_syncs":1},
+        "storages":[{"id":2,"type":"sftp","state":"credentials_required"}],
+        "catalog":[{"id":1,"local":"unavailable","copies":[{"storage_id":2,"state":"credentials_required"}]}],
+        "archives_modified":false,
+        "ssh_public_keys":[]
+    });
+    let refs = json!([{"name":"original","public_key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC7G8BfNXfsH4jQXzdy06W3u7i3BPlMrZ1E9QXuTLfPb"}]);
+    let pool = server.db.pool();
+    let write = "INSERT INTO app_settings(key,value) VALUES(?,?)";
+    sqlx::query(write)
+        .bind("recovery_result")
+        .bind(result.to_string())
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(write)
+        .bind("recovery_ssh_public_keys")
+        .bind(refs.to_string())
+        .execute(pool)
+        .await
+        .unwrap();
+    let mut expected = result.clone();
+    expected["ssh_public_keys"] = refs;
+    let (status, _, actual) = server.request("GET", path, &headers, None).await;
+    assert_eq!((status, actual), (200, expected));
+    let saved: String =
+        sqlx::query_scalar("SELECT value FROM app_settings WHERE key='recovery_result'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(saved, result.to_string());
+    sqlx::query("UPDATE app_settings SET value=? WHERE key='recovery_ssh_public_keys'")
+        .bind(r#"[{"name":"original","public_key":"TEST_ONLY_NON_PUBLIC"}]"#)
+        .execute(pool)
+        .await
+        .unwrap();
+    let (status, _, invalid) = server.request("GET", path, &headers, None).await;
+    assert_eq!(
+        (status, invalid),
+        (500, json!({"detail":"Internal server error"}))
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn schedule_batch_runs_enabled_targets_sequentially() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;

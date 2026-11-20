@@ -13,6 +13,7 @@ pub use copy_removal::recover_copy_removals;
 mod ftp_sync;
 mod operations;
 mod overview;
+mod recovery_status;
 mod retention;
 mod s3_sync;
 mod schedules;
@@ -276,6 +277,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/operations/{id}", get(operations::detail))
         .route("/api/v1/operations/{id}/cancel", post(operations::cancel))
         .route("/api/v1/operations/{id}/retry", post(operations::retry))
+        .route("/api/v1/recovery/status", get(recovery_status::status))
         .route("/api/v1/storage/types", get(storage::types))
         .route("/api/v1/storage/ssh-keys", get(ssh_keys::list))
         .route("/api/v1/storage/ssh-keys/{name}", get(ssh_keys::detail))
