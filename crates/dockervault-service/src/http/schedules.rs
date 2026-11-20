@@ -185,7 +185,7 @@ async fn dispatch_due(state: &HttpState) {
             && target.first().and_then(|(_, _, value)| value.as_deref())
                 == Some(expression.as_str())
         {
-            let response = super::backup_submit::trigger_full(state, id).await;
+            let response = super::backup_submit::trigger_scheduled(state, id).await;
             if !response.status().is_success() {
                 tracing::warn!(target_id=id,status=%response.status(),"Scheduled backup was not admitted");
             }

@@ -30,7 +30,7 @@ pub(in crate::http) async fn apply_retention(
     recv.await.map_err(|_| "Retention interrupted")?
 }
 
-async fn retain_local(
+pub(in crate::http) async fn retain_local(
     state: &HttpState,
     target: i64,
     cancel: &CancellationToken,

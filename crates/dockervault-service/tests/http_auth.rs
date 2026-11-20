@@ -515,6 +515,10 @@ async fn started_scheduler_dispatches_and_rechecks_targets_before_admission() {
     .execute(db)
     .await
     .unwrap();
+    let expired = server.path.join("backups/scheduled-expired.tar");
+    std::fs::write(&expired, b"expired backup").unwrap();
+    sqlx::raw_sql("INSERT INTO retention_policies(id,name,keep_last,keep_daily,keep_weekly,keep_monthly,keep_yearly,max_age_days) VALUES(61,'Schedule fixture',1,0,0,0,0,1); UPDATE backup_targets SET retention_policy_id=61 WHERE id=61;").execute(db).await.unwrap();
+    sqlx::query("INSERT INTO backups(id,target_id,backup_type,status,file_path,created_at) VALUES(61,61,'FULL','COMPLETED',?,'2020-01-01T00:00:00')").bind(expired.to_str()).execute(db).await.unwrap();
     server.state.start_scheduler().await;
     let headers = [("cookie", cookie.as_str())];
     let (status, _, jobs) = server
@@ -530,7 +534,7 @@ async fn started_scheduler_dispatches_and_rechecks_targets_before_admission() {
         tokio::time::timeout(std::time::Duration::from_secs(75), async {
             loop {
                 if let Some(row) = sqlx::query_as(
-                    "SELECT target_id,file_path FROM backups WHERE status='COMPLETED'",
+                    "SELECT target_id,file_path FROM backups WHERE status='COMPLETED' AND id!=61 AND NOT EXISTS(SELECT 1 FROM backups WHERE id=61)",
                 )
                 .fetch_optional(db)
                 .await
@@ -544,6 +548,7 @@ async fn started_scheduler_dispatches_and_rechecks_targets_before_admission() {
         .await
         .unwrap();
     assert_eq!(completed, 61);
+    assert!(!expired.exists());
     assert!(std::path::Path::new(&archive).is_file());
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM backups WHERE target_id=62")

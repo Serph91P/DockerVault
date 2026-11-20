@@ -77,12 +77,21 @@ pub(super) async fn submit(
 }
 
 pub(super) async fn trigger_full(state: &HttpState, target_id: i64) -> Response {
-    match enqueue(
+    trigger(state, target_id, false).await
+}
+
+pub(super) async fn trigger_scheduled(state: &HttpState, target_id: i64) -> Response {
+    trigger(state, target_id, true).await
+}
+
+async fn trigger(state: &HttpState, target_id: i64, scheduled: bool) -> Response {
+    match enqueue_with_retention(
         state,
         Submit {
             target_id,
             backup_type: RunType::Full,
         },
+        scheduled,
     )
     .await
     {
@@ -92,6 +101,14 @@ pub(super) async fn trigger_full(state: &HttpState, target_id: i64) -> Response 
 }
 
 async fn enqueue(state: &HttpState, input: Submit) -> Result<Value, Failure> {
+    enqueue_with_retention(state, input, false).await
+}
+
+async fn enqueue_with_retention(
+    state: &HttpState,
+    input: Submit,
+    scheduled: bool,
+) -> Result<Value, Failure> {
     let worker = state.clone();
     let (admitted, reply) = tokio::sync::oneshot::channel();
     let result = state.backup_jobs.submit_async(move |cancel| async move {
@@ -103,7 +120,18 @@ async fn enqueue(state: &HttpState, input: Submit) -> Result<Value, Failure> {
             }
         };
         let _ = admitted.send(Ok(response));
-        run_accepted(&worker, id, input.target_id, &cancel).await;
+        if run_accepted(&worker, id, input.target_id, &cancel).await
+            && scheduled
+            && let Err(message) =
+                super::copy_removal::retain_local(&worker, input.target_id, &cancel).await
+        {
+            tracing::warn!(
+                backup_id = id,
+                target_id = input.target_id,
+                message,
+                "Scheduled retention did not run"
+            );
+        }
     });
     let Ok(work) = result else {
         return Err((StatusCode::SERVICE_UNAVAILABLE, "Backup capacity exhausted"));
@@ -151,11 +179,15 @@ pub(super) async fn trigger_batch(
     }
 }
 
-async fn run_accepted(worker: &HttpState, id: i64, target_id: i64, cancel: &CancellationToken) {
+async fn run_accepted(
+    worker: &HttpState,
+    id: i64,
+    target_id: i64,
+    cancel: &CancellationToken,
+) -> bool {
     let started = std::time::Instant::now();
-    if execute(worker, id, target_id, cancel).await.is_err()
-        && record_failure(worker.auth.pool(), id).await.is_err()
-    {
+    let executed = execute(worker, id, target_id, cancel).await.is_ok();
+    if !executed && record_failure(worker.auth.pool(), id).await.is_err() {
         tracing::error!(backup_id = id, "Failed to record interrupted backup state");
     }
     match sqlx::query_as::<_, (String, Option<i64>)>(
@@ -171,12 +203,16 @@ async fn run_accepted(worker: &HttpState, id: i64, target_id: i64, cancel: &Canc
                 started.elapsed().as_secs_f64(),
                 (status == "COMPLETED").then(|| size.unwrap_or_default()),
             );
+            executed && status == "COMPLETED"
         }
-        Ok(_) => {}
-        Err(_) => tracing::warn!(
-            backup_id = id,
-            "Could not read backup settlement for metrics"
-        ),
+        Ok(_) => false,
+        Err(_) => {
+            tracing::warn!(
+                backup_id = id,
+                "Could not read backup settlement for metrics"
+            );
+            false
+        }
     }
 }
 
@@ -205,8 +241,7 @@ async fn plan(state: &HttpState, id: i64) -> Result<Plan, Failure> {
           coalesce(sync_to_remote,0) AS sync_to_remote,
           coalesce(delete_local_after_sync,0) AS delete_local_after_sync,
           coalesce(remote_storage_ids,'[]') AS remote_storage_ids,
-          retention_policy_id IS NOT NULL
-          OR coalesce(pre_backup_command,'')<>'' OR coalesce(post_backup_command,'')<>''
+          coalesce(pre_backup_command,'')<>'' OR coalesce(post_backup_command,'')<>''
           OR coalesce(dependencies,'[]') NOT IN ('[]','null') AS unsupported,
           (SELECT public_key FROM encryption_config WHERE encryption_enabled=1 ORDER BY id LIMIT 1) AS recipient
         FROM backup_targets WHERE id=? AND removed_at IS NULL")
