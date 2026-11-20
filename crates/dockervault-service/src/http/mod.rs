@@ -117,6 +117,7 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/overview/summary", get(overview::summary))
         .route("/api/v1/docker/health", get(docker_inventory::health))
+        .route("/api/v1/docker/volumes", get(docker_inventory::volumes))
         .route("/api/v1/encryption/status", get(encryption::status))
         .route("/api/v1/encryption/defer", post(encryption::defer))
         .route("/api/v1/encryption/setup", post(encryption::setup))

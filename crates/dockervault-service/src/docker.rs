@@ -24,6 +24,16 @@ impl From<WorkError> for DockerError {
         Self::Owner
     }
 }
+#[derive(serde::Serialize)]
+pub struct VolumeInventory {
+    name: String,
+    driver: String,
+    mountpoint: String,
+    labels: std::collections::HashMap<String, String>,
+    created_at: bollard::models::BollardDate,
+    used_by: Vec<String>,
+}
+
 #[derive(Clone)]
 pub struct DockerClient {
     api: Docker,
@@ -65,20 +75,70 @@ impl DockerClient {
         self.request(|api| async move { api.ping().await.map(|_| ()) })
             .await
     }
-    pub async fn volume_names(&self) -> Result<Vec<String>, DockerError> {
-        let mut names: Vec<_> = self
+    async fn volumes(&self) -> Result<Vec<bollard::models::Volume>, DockerError> {
+        Ok(self
             .request(|api| async move {
                 api.list_volumes(None::<bollard::query_parameters::ListVolumesOptions>)
                     .await
             })
             .await?
             .volumes
-            .unwrap_or_default()
+            .unwrap_or_default())
+    }
+    pub async fn volume_names(&self) -> Result<Vec<String>, DockerError> {
+        let mut names: Vec<_> = self
+            .volumes()
+            .await?
             .into_iter()
             .map(|volume| volume.name)
             .collect();
         names.sort();
         Ok(names)
+    }
+    pub async fn volume_inventory(&self) -> Result<Vec<VolumeInventory>, DockerError> {
+        use bollard::{errors::Error, query_parameters::ListContainersOptionsBuilder};
+        let volumes = self.volumes().await?;
+        let mut usage = self
+            .request(|api| async move {
+                let mut usage = std::collections::HashMap::<String, Vec<String>>::new();
+                let containers = api
+                    .list_containers(Some(
+                        ListContainersOptionsBuilder::default().all(true).build(),
+                    ))
+                    .await?;
+                for item in containers {
+                    let Some(id) = item.id else { continue };
+                    let container = match api.inspect_container(&id, None).await {
+                        Ok(container) => container,
+                        Err(Error::DockerResponseServerError {
+                            status_code: 404, ..
+                        }) => continue,
+                        Err(error) => return Err(error),
+                    };
+                    let Some(name) = container.name else { continue };
+                    let name = name.trim_start_matches('/');
+                    for mount in container.mounts.unwrap_or_default() {
+                        if mount.typ.as_deref() == Some("volume")
+                            && let Some(volume) = mount.name.filter(|name| !name.is_empty())
+                        {
+                            usage.entry(volume).or_default().push(name.to_owned());
+                        }
+                    }
+                }
+                Ok(usage)
+            })
+            .await?;
+        Ok(volumes
+            .into_iter()
+            .map(|volume| VolumeInventory {
+                used_by: usage.remove(&volume.name).unwrap_or_default(),
+                name: volume.name,
+                driver: volume.driver,
+                mountpoint: volume.mountpoint,
+                labels: volume.labels,
+                created_at: volume.created_at.unwrap_or_default(),
+            })
+            .collect())
     }
     pub async fn identity(&self, name: &str) -> Result<String, DockerError> {
         let name = name.to_owned();

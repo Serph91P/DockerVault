@@ -840,6 +840,15 @@ async fn docker_health_is_distinct_from_application_health() {
         (503, json!({"detail":"Docker is not accessible"}))
     );
     assert_eq!(server.request("GET", "/health", &[], None).await.0, 200);
+    let volumes = "/api/v1/docker/volumes";
+    assert_eq!(server.request("GET", volumes, &[], None).await.0, 401);
+    let (status, _, body) = server
+        .request("GET", volumes, &[("Cookie", &cookie)], None)
+        .await;
+    assert_eq!(
+        (status, body),
+        (500, json!({"detail":"Internal server error"}))
+    );
     server.close().await;
 }
 

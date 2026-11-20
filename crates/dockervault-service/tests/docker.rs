@@ -66,6 +66,9 @@ impl Server {
                             let path=line.split_whitespace().nth(1).unwrap();
                             let id=path.split("/containers/").nth(1).and_then(|suffix|suffix.split('/').next()).unwrap_or("");
                             let (status,body)=if path.ends_with("/version") {(200,r#"{"ApiVersion":"1.53","MinAPIVersion":"1.44","Version":"PUBLIC"}"#.into())}
+                            else if path.ends_with("/volumes") {(200,r#"{"Volumes":[{"Name":"data","Driver":"local","Mountpoint":"/volumes/data","Scope":"local","Labels":{"fixture":"yes"},"Options":{},"CreatedAt":"2025-01-01T00:00:00Z"},{"Name":"unused","Driver":"local","Mountpoint":"/volumes/unused","Scope":"local","Labels":null,"Options":{}}]}"#.into())}
+                            else if path.contains("/containers/json?") && path.contains("all=true") {(200,r#"[{"Id":"stopped"},{"Id":"missing"}]"#.into())}
+                            else if path.ends_with("/containers/stopped/json") {(200,r#"{"Name":"/stopped","Mounts":[{"Type":"volume","Name":"data"},{"Type":"bind","Name":"unused"}]}"#.into())}
                             else if path.contains("/missing/") {(404,r#"{"message":"No such container"}"#.into())}
                             else if path.contains("/json") {
                                 let status=shared.statuses.lock().unwrap().get(id).cloned().unwrap_or_else(||shared.status.lock().unwrap().clone());
@@ -112,6 +115,28 @@ async fn journal(server: &Server) -> (Database, Owner, Journal) {
     let journal = Journal::new(db.pool().clone()).unwrap();
     (db, owner, journal)
 }
+#[tokio::test]
+async fn volume_inventory_keeps_metadata_and_stopped_container_usage() {
+    let server = Server::start().await;
+    let docker = DockerClient::connect(server.path.to_str().unwrap())
+        .await
+        .unwrap();
+    let inventory = docker
+        .volume_inventory()
+        .await
+        .unwrap_or_else(|error| panic!("{error}: {:?}", server.state.calls.lock().unwrap()));
+    let volumes = serde_json::to_value(inventory).unwrap();
+    assert_eq!(
+        volumes,
+        serde_json::json!([
+            {"name":"data","driver":"local","mountpoint":"/volumes/data","labels":{"fixture":"yes"},"created_at":"2025-01-01T00:00:00Z","used_by":["stopped"]},
+            {"name":"unused","driver":"local","mountpoint":"/volumes/unused","labels":{},"created_at":"","used_by":[]}
+        ])
+    );
+    docker.shutdown(None).await;
+    server.close().await;
+}
+
 #[tokio::test]
 async fn recovery_settles_unconfirmed_stop_then_restarts_once_and_never_replays_finished_work() {
     let server = Server::start().await;
