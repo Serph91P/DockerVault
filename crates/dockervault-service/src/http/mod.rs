@@ -176,6 +176,7 @@ pub fn router(state: HttpState) -> Router {
                 .delete(schedules::delete),
         )
         .route("/api/v1/schedules/preview", post(schedules::preview))
+        .route("/api/v1/schedules/estimate", post(schedules::estimate))
         .route(
             "/api/v1/schedules/compatibility/inventory",
             get(schedules::inventory),

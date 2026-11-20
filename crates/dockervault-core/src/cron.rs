@@ -39,6 +39,22 @@ pub struct FireTime {
     pub timestamp: Timestamp,
     pub fold: bool,
 }
+impl FireTime {
+    /// Python's aware datetime + timedelta adds in local wall time and resets fold.
+    pub fn wall_end(self, seconds: i64, zone: &TimeZone) -> Result<Timestamp> {
+        let date = self
+            .timestamp
+            .naive
+            .checked_add(time::Duration::seconds(seconds))
+            .filter(|date| (1..=9999).contains(&date.year()))
+            .ok_or(CronError::NoFuture)?;
+        let end = resolve(zone, date, false)?;
+        Ok(Timestamp {
+            naive: date,
+            offset: Some(i64::from(end.offset) * 1_000_000),
+        })
+    }
+}
 #[derive(Clone, Copy)]
 struct Wall {
     date: PlainDateTime,

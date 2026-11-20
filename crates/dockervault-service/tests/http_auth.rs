@@ -359,6 +359,59 @@ async fn schedule_preview_count_matches_python_integer_coercion() {
 }
 
 #[tokio::test]
+async fn schedule_estimate_uses_recent_completed_history_and_live_conflicts() {
+    let server = Server::configured(Config::from_pairs([("TZ", "UTC")]).unwrap()).await;
+    let cookie = server.setup().await;
+    let headers = [("cookie", cookie.as_str())];
+    let db = server.db.pool();
+    sqlx::raw_sql("INSERT INTO backup_targets(id,name,target_type,schedule_cron,enabled) VALUES (20,'Fixture','path','0 0 1 1 *',1),(21,'No history','path',NULL,0);
+        INSERT INTO backups(target_id,backup_type,status,duration_seconds,created_at) VALUES
+        (20,'FULL','COMPLETED',2000,'2025-01-01'),(20,'FULL','COMPLETED',20,'2025-01-02'),
+        (20,'FULL','COMPLETED',25,'2025-01-03'),(20,'FULL','COMPLETED',30,'2025-01-04'),
+        (20,'FULL','COMPLETED',35,'2025-01-05'),(20,'FULL','COMPLETED',40,'2025-01-06'),
+        (20,'FULL','FAILED',2000,'2025-01-07'),(20,'FULL','COMPLETED',NULL,'2025-01-08');")
+        .execute(db).await.unwrap();
+    assert_eq!(
+        server
+            .request("POST", "/api/v1/schedules/reload", &headers, None)
+            .await
+            .0,
+        200
+    );
+    let route = "/api/v1/schedules/estimate";
+    let request = |id| Some(json!({"target_id":id,"cron_expression":"0 0 1 1 *"}));
+    assert_eq!(server.request("POST", route, &[], request(20)).await.0, 401);
+    let (status, _, estimate) = server.request("POST", route, &headers, request(20)).await;
+    assert_eq!(status, 200);
+    assert_eq!(estimate["duration_seconds"], 36);
+    let start = estimate["start_time"].as_str().unwrap();
+    assert!(start.ends_with("-01-01T00:00:00+00:00"));
+    assert_eq!(
+        estimate["estimated_end_time"],
+        format!("{}-01-01T00:00:36+00:00", &start[..4])
+    );
+    assert_eq!(
+        estimate["conflicts"],
+        json!([{"job_id":"backup_target_20","job_name":"Backup: Fixture","scheduled_time":start}])
+    );
+    let (status, _, default) = server.request("POST", route, &headers, request(21)).await;
+    assert_eq!((status, &default["duration_seconds"]), (200, &json!(60)));
+    let (status, _, missing) = server.request("POST", route, &headers, request(99)).await;
+    assert_eq!(
+        (status, missing),
+        (404, json!({"detail":"Target not found"}))
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM backups")
+            .fetch_one(db)
+            .await
+            .unwrap(),
+        8
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn live_schedule_reload_exposes_only_installed_jobs_and_repairs_failures() {
     let server = Server::configured(Config::from_pairs([("TZ", "UTC")]).unwrap()).await;
     let cookie = server.setup().await;

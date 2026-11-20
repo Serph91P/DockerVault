@@ -22,6 +22,33 @@ mod maintenance_tests {
     use super::*;
 
     #[test]
+    fn estimate_wall_end_matches_python_across_gap_and_fold() {
+        let zone =
+            TimeZone::from_tz_data(&std::fs::read("/usr/share/zoneinfo/Europe/Berlin").unwrap())
+                .unwrap();
+        for (start, fold, seconds, expected) in [
+            (
+                "2025-03-30T01:59:00+01:00",
+                false,
+                120,
+                "2025-03-30T02:01:00+01:00",
+            ),
+            (
+                "2025-10-26T02:30:00+01:00",
+                true,
+                60,
+                "2025-10-26T02:31:00+02:00",
+            ),
+        ] {
+            let fire = dockervault_core::cron::FireTime {
+                timestamp: Timestamp::parse(start).unwrap(),
+                fold,
+            };
+            assert_eq!(fire.wall_end(seconds, &zone).unwrap().api(), expected);
+        }
+    }
+
+    #[test]
     fn daily_retention_and_hourly_session_cleanup_follow_server_wall_time() {
         let start = Timestamp::parse("2025-03-30T00:30:00Z").unwrap();
         let zone =
@@ -293,6 +320,70 @@ pub(super) async fn jobs(State(state): State<HttpState>) -> Json<Value> {
 pub(super) async fn reload(State(state): State<HttpState>) -> Result<Json<Value>, Failure> {
     reconcile(&state).await?;
     Ok(Json(json!({"status":"reloaded"})))
+}
+
+pub(super) async fn estimate(
+    State(state): State<HttpState>,
+    mut request: Request,
+) -> Result<Json<Value>, Failure> {
+    let body = auth::json_body(&state, &mut request)
+        .await
+        .map_err(Failure)?;
+    let id = match body.get("target_id") {
+        None => Err("Field required"),
+        Some(Value::String(v)) => super::operations::query_integer(v)
+            .ok_or("Input should be a valid integer, unable to parse string as an integer"),
+        Some(Value::Bool(v)) => Ok(i64::from(*v)),
+        Some(Value::Number(v)) => v
+            .as_i64()
+            .or_else(|| {
+                v.as_f64()
+                    .filter(|n| {
+                        n.fract() == 0.0 && *n >= i64::MIN as f64 && *n < -(i64::MIN as f64)
+                    })
+                    .map(|n| n as i64)
+            })
+            .ok_or("Input should be a valid integer, got a number with a fractional part"),
+        _ => Err("Input should be a valid integer"),
+    };
+    let expression = body.get("cron_expression").and_then(Value::as_str);
+    let mut errors = vec![];
+    if let Err(message) = id {
+        errors.push(json!({"field":"body.target_id","message":message}));
+    }
+    if expression.is_none() {
+        errors.push(json!({"field":"body.cron_expression","message":if body.get("cron_expression").is_some() {"Input should be a valid string"} else {"Field required"}}));
+    }
+    if !errors.is_empty() {
+        return Err(Failure(auth::validation(errors)));
+    }
+    let id = id.expect("validated id");
+    let expression = expression.expect("validated expression").to_owned();
+    let row: Option<(Option<f64>,)> = sqlx::query_as("SELECT (SELECT AVG(duration_seconds) FROM (SELECT duration_seconds FROM backups WHERE target_id=?1 AND status='COMPLETED' AND duration_seconds IS NOT NULL ORDER BY created_at DESC LIMIT 5)) FROM backup_targets WHERE id=?1")
+        .bind(id).fetch_optional(state.auth.pool()).await.map_err(db_error)?;
+    let (average,) = row.ok_or_else(|| failure(StatusCode::NOT_FOUND, "Target not found"))?;
+    let duration = average.map_or(60, |value| (value * 1.2) as i64);
+    let jobs = {
+        let jobs = state.scheduler.jobs.lock().await;
+        let mut jobs: Vec<_> = jobs
+            .iter()
+            .map(|(&id, job)| (id, job.name.clone(), job.next.timestamp))
+            .collect();
+        jobs.sort_by_key(|(id, _, time)| (time.unix_micros(), *id));
+        jobs
+    };
+    blocking(state, move |_, cron| {
+        let start = Schedule::parse(&expression).and_then(|s| s.next(cron.now, &cron.zone, &|| cron.cancel.is_cancelled())).map_err(|_| internal())?;
+        let end = start.wall_end(duration, &cron.zone).map_err(|_| internal())?;
+        // Python compares aware datetimes in the same ZoneInfo by wall clock, including folds.
+        let start_wall = start.timestamp.sql();
+        let end_wall = end.sql();
+        let conflicts: Vec<_> = jobs.into_iter().filter_map(|(id,name,time)| {
+            let wall = time.sql();
+            (start_wall <= wall && wall <= end_wall).then(|| json!({"job_id":format!("backup_target_{id}"),"job_name":format!("Backup: {name}"),"scheduled_time":time}))
+        }).collect();
+        Ok(json!({"start_time":start.timestamp,"estimated_end_time":end,"duration_seconds":duration,"conflicts":conflicts}))
+    }).await
 }
 
 pub(super) struct Failure(Box<Response>);
