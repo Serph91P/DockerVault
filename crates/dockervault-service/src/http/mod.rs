@@ -3,6 +3,7 @@ mod auth;
 mod backup_metrics;
 mod backup_restore;
 mod backup_submit;
+mod backup_validate;
 mod backups;
 mod copy_removal;
 mod docker_inventory;
@@ -216,6 +217,10 @@ pub fn router(state: HttpState) -> Router {
         .route("/api/v1/backups/history/{id}", get(backups::history_detail))
         .route("/api/v1/backups/{id}", get(backups::get))
         .route("/api/v1/backups/{id}/logs", get(backups::logs))
+        .route(
+            "/api/v1/backups/{id}/validate",
+            post(backup_validate::validate),
+        )
         .route(
             "/api/v1/backups/removal/preview",
             post(copy_removal::preview),

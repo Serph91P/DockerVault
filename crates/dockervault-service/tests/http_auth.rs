@@ -853,6 +853,53 @@ async fn docker_health_is_distinct_from_application_health() {
 }
 
 #[tokio::test]
+async fn backup_prerequisite_validation_reports_missing_source_without_starting_backup() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [("cookie", cookie.as_str())];
+    let source = server.path.join("missing-source");
+    let db = server.db.pool();
+    sqlx::query(
+        "INSERT INTO backup_targets(id,name,target_type,host_path) VALUES(91,'Fixture','path',?)",
+    )
+    .bind(source.to_str().unwrap())
+    .execute(db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO backups(id,target_id,backup_type,status) VALUES(91,91,'FULL','COMPLETED')",
+    )
+    .execute(db)
+    .await
+    .unwrap();
+    let route = "/api/v1/backups/91/validate";
+    assert_eq!(server.request("POST", route, &[], None).await.0, 401);
+    let (status, _, body) = server.request("POST", route, &headers, None).await;
+    assert_eq!(
+        (status, body),
+        (
+            200,
+            json!({"valid":false,"issues":[format!("Path '{}' not found",source.display())]})
+        )
+    );
+    std::fs::create_dir(&source).unwrap();
+    let (status, _, body) = server.request("POST", route, &headers, None).await;
+    assert_eq!((status, body), (200, json!({"valid":true,"issues":[]})));
+    let (status, _, body) = server
+        .request("POST", "/api/v1/backups/92/validate", &headers, None)
+        .await;
+    assert_eq!((status, body), (404, json!({"detail":"Backup not found"})));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM backups")
+            .fetch_one(db)
+            .await
+            .unwrap(),
+        1
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn system_info_is_authenticated_and_redacts_configured_paths() {
     let server = Server::start("http://localhost:3000").await;
     let path = "/api/v1/settings/system-info";
