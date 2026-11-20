@@ -120,7 +120,7 @@ async fn tombstone(state: &HttpState, target: i64) -> Result<Option<bool>, sqlx:
     Ok(Some(already))
 }
 
-async fn read(state: &HttpState, include: bool, id: Option<i64>) -> Response {
+pub(super) async fn read(state: &HttpState, include: bool, id: Option<i64>) -> Response {
     match fetch(state, include, id).await {
         Ok(mut rows) if id.is_some() => rows.pop().map_or_else(
             || {

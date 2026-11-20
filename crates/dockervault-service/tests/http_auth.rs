@@ -698,6 +698,60 @@ async fn deleting_a_plan_tombstones_it_without_deleting_recovery_points() {
 }
 
 #[tokio::test]
+async fn target_writes_validate_references_and_preserve_explicit_clears() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let dir = server.path.join("target-source");
+    std::fs::create_dir(&dir).unwrap();
+    let db = server.db.pool();
+    sqlx::raw_sql("INSERT INTO schedules(id,name,cron_expression,enabled) VALUES(177,'Shared','0 3 * * *',1); INSERT INTO retention_policies(id,name,keep_last,keep_daily,keep_weekly,keep_monthly,keep_yearly,max_age_days) VALUES(177,'Policy',2,1,0,0,0,30);").execute(db).await.unwrap();
+    let root = "/api/v1/targets";
+    let bad =
+        json!({"name":"Rejected","target_type":"path","host_path":dir,"remote_storage_ids":[999]});
+    let (status, _, body) = server.request("POST", root, &headers, Some(bad)).await;
+    assert_eq!(
+        (status, body),
+        (
+            400,
+            json!({"detail":{"message":"Invalid target references","errors":["remote_storage_id 999 does not exist"]}})
+        )
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM backup_targets")
+            .fetch_one(db)
+            .await
+            .unwrap(),
+        0
+    );
+    let (status, _, created) = server.request("POST",root,&headers,Some(json!({"name":"Native","target_type":"path","host_path":dir,"enabled":false,"schedule_id":177,"schedule_cron":" 0 4 * * * ","retention_policy_id":177,"include_paths":["one"]}))).await;
+    assert_eq!(status, 200, "{created}");
+    assert_eq!(created["schedule_cron"], "0 4 * * *");
+    assert_eq!(created["enabled"], false);
+    let route = format!("{root}/{}", created["id"]);
+    let (status, _, _) = server
+        .request("PUT", &route, &headers, Some(json!({"enabled":null})))
+        .await;
+    assert_eq!(status, 422);
+    let (status, _, edited) = server.request("PUT", &route, &headers, Some(json!({"schedule_id":null,"schedule_cron":null,"retention_policy_id":null,"include_paths":[],"compression_enabled":false}))).await;
+    assert_eq!(status, 200, "{edited}");
+    for key in ["schedule_id", "schedule_cron", "retention_policy_id"] {
+        assert!(edited[key].is_null());
+    }
+    assert_eq!(edited["include_paths"], json!([]));
+    assert_eq!(edited["compression_enabled"], false);
+    assert_eq!(edited["enabled"], false);
+    assert_eq!(
+        server.request("GET", &route, &headers, None).await.2,
+        edited
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn retention_reads_preserve_policy_and_catalog_wire_contracts() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
