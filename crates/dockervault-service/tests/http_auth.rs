@@ -149,6 +149,61 @@ impl Server {
 }
 
 #[tokio::test]
+async fn schedule_static_and_numeric_routes_across_session_lifecycle() {
+    let server = Server::start("http://localhost:3000").await;
+    let jobs = "/api/v1/schedules/jobs";
+    let help = "/api/v1/schedules/cron-help";
+    let base = "/api/v1/schedules";
+    for path in [jobs, help] {
+        assert_eq!(server.request("GET", path, &[], None).await.0, 403);
+    }
+    let cookie = server.setup().await;
+    let headers = [("cookie", cookie.as_str())];
+    let (status, _, body) = server.request("GET", jobs, &headers, None).await;
+    assert_eq!((status, body), (200, json!([])));
+    let (status, _, body) = server.request("GET", help, &headers, None).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["format"], "minute hour day month weekday");
+    assert!(body["contract"].as_str().unwrap().contains("Monday=0"));
+    assert!(
+        body["examples"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|example| { example["expression"] == "0 3 * * sun" })
+    );
+    let (status, _, row) = server
+        .request(
+            "POST",
+            base,
+            &headers,
+            Some(json!({"name": "owned", "cron_expression": "0 2 * * *"})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let id = row["id"].as_i64().unwrap();
+    let (status, _, body) = server
+        .request("GET", &format!("{base}/{id}"), &headers, None)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["id"], id);
+    for suffix in ["999999", "not-an-id"] {
+        let path = format!("{base}/{suffix}");
+        assert_eq!(server.request("GET", &path, &headers, None).await.0, 404);
+    }
+    assert_eq!(server.request("GET", base, &headers, None).await.0, 200);
+    assert_eq!(
+        server
+            .request("POST", "/api/v1/auth/logout", &headers, None)
+            .await
+            .0,
+        200
+    );
+    assert_eq!(server.request("GET", jobs, &headers, None).await.0, 401);
+    server.close().await;
+}
+
+#[tokio::test]
 async fn schedule_reads_and_preview_preserve_the_existing_database() {
     let config = Config::from_pairs([("TZ", "Europe/Berlin")]).unwrap();
     let server = Server::configured(config.clone()).await;
