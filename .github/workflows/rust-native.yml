@@ -53,6 +53,10 @@ jobs:
           docker build -f backend/tests/browser.Dockerfile -t dockervault-native-browser-ci .
           bash docker/test-native-policy-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci
 
+      - name: Exercise truthful frontend state and persisted effects in Chromium
+        if: matrix.arch == 'amd64'
+        run: bash docker/test-native-truthful-states-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci
+
       - name: Exercise TLS WebSocket session and origin boundaries in Chromium
         if: matrix.arch == 'amd64'
         run: bash docker/test-native-websocket-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci
