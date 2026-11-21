@@ -165,6 +165,79 @@ async fn s3_listing_consumes_all_pages_and_preserves_wire_metadata() {
     tasks.shutdown(None).await;
 }
 #[tokio::test]
+async fn s3_listing_keeps_over_a_thousand_distinct_keys_across_an_empty_final_page() {
+    use std::fmt::Write as _;
+    let mut names: Vec<_> = (0..1001)
+        .map(|index| format!("file-{index:04}.tar"))
+        .collect();
+    names.extend(["a/same.tar".into(), "b/same.tar".into()]);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let tasks = Owner::new(1).unwrap();
+    let storage = configured(listener.local_addr().unwrap(), tasks.clone());
+    let expected = names.clone();
+    let server = tokio::spawn(async move {
+        for (keys, incoming, outgoing) in [
+            (&names[..1000], None, Some("page-two")),
+            (&names[1000..], Some("page-two"), Some("page-end")),
+            (&[][..], Some("page-end"), None),
+        ] {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_headers(&mut socket).await;
+            let path = request.split_whitespace().nth(1).unwrap();
+            let (_, query) = path.split_once('?').unwrap();
+            assert!(
+                query
+                    .split('&')
+                    .any(|part| part == "prefix=PUBLIC-prefix%2Fsub%2F")
+            );
+            assert_eq!(
+                query
+                    .split('&')
+                    .find_map(|part| part.strip_prefix("continuation-token=")),
+                incoming
+            );
+            let mut body = format!(
+                "<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><IsTruncated>{}</IsTruncated>",
+                outgoing.is_some()
+            );
+            if let Some(token) = outgoing {
+                write!(
+                    body,
+                    "<NextContinuationToken>{token}</NextContinuationToken>"
+                )
+                .unwrap();
+            }
+            for name in keys {
+                write!(body, "<Contents><Key>PUBLIC-prefix/sub/{name}</Key><Size>17</Size><LastModified>2024-01-02T03:04:05.500Z</LastModified></Contents>").unwrap();
+            }
+            body.push_str("</ListBucketResult>");
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/xml\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        }
+    });
+    let entries = storage
+        .list_files("sub".to_owned())
+        .unwrap()
+        .wait()
+        .await
+        .unwrap()
+        .unwrap();
+    server.await.unwrap();
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.size == 17 && entry.modified == 1704164645.5 && !entry.is_dir)
+    );
+    assert_eq!(
+        entries
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect::<Vec<_>>(),
+        expected
+    );
+    tasks.shutdown(None).await;
+}
+
+#[tokio::test]
 async fn s3_listing_rejects_missing_and_repeated_continuations_without_partial_success() {
     use dockervault_service::storage::s3::S3Error;
     for repeated in [false, true] {
