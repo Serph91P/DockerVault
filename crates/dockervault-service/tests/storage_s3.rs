@@ -276,6 +276,45 @@ async fn s3_listing_rejects_missing_and_repeated_continuations_without_partial_s
 }
 
 #[tokio::test]
+async fn s3_listing_preserves_provider_denial_before_and_after_a_successful_page() {
+    use dockervault_service::storage::s3::S3Error;
+
+    for failed_page in [0, 1] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tasks = Owner::new(1).unwrap();
+        let storage = configured(listener.local_addr().unwrap(), tasks.clone());
+        let server = tokio::spawn(async move {
+            for index in 0..=failed_page {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let request = read_headers(&mut socket).await;
+                assert_eq!(request.contains("continuation-token=next"), index > 0);
+                let (status, body) = if index == failed_page {
+                    ("403 Forbidden", "<Error><Code>AccessDenied</Code></Error>")
+                } else {
+                    (
+                        "200 OK",
+                        "<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>next</NextContinuationToken><Contents><Key>PUBLIC-prefix/partial.txt</Key><Size>1</Size></Contents></ListBucketResult>",
+                    )
+                };
+                socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: application/xml\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            }
+        });
+        let result = storage
+            .list_files(String::new())
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, Err(S3Error::Provider { status: Some(403), code }) if code == "AccessDenied")
+        );
+        server.await.unwrap();
+        assert_eq!(tasks.active(), 0);
+        tasks.shutdown(None).await;
+    }
+}
+
+#[tokio::test]
 async fn s3_delete_denial_preserves_status_without_disclosing_response_secrets() {
     use dockervault_service::storage::s3::S3Error;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
