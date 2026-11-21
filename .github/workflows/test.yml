@@ -185,9 +185,9 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v4
       
-    - name: Build Docker image
+    - name: Build explicit Python reference for the legacy integration oracles
       run: |
-        docker build -t dockervault:test .
+        docker build --target production -t dockervault:test .
 
     - name: Check runtime binaries
       run: |

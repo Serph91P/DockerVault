@@ -1,9 +1,9 @@
 # Local native image candidate (R13)
 
-`native-candidate` is opt-in. The final `production` stage is still the Python reference, including its original recovery download. Do not deploy the candidate, reuse production data directories, or mount a host Docker socket for this smoke test.
+Building this checkout without `--target` selects the final `native-production` stage, which inherits `native-candidate`. The explicit `--target production` still builds the Python reference, including its original recovery download. Neither a local build nor a green PR check changes the published image. Do not deploy the candidate, reuse production data directories, or mount a host Docker socket for this smoke test.
 
 ```sh
-docker build --platform linux/amd64 --target native-candidate \
+docker build --platform linux/amd64 \
   --build-arg COMMIT_SHA="$(git rev-parse HEAD)" -t dockervault:native-candidate .
 sh docker/test-native-candidate.sh dockervault:native-candidate
 ```
@@ -23,13 +23,13 @@ bash docker/test-native-encrypted-roundtrip.sh \
   dockervault:native-candidate dockervault:native-recovery
 ```
 
-The runner checks both image revision labels and architectures. It submits an encrypted path backup through authenticated HTTP, changes the source, restarts the app, and verifies that it reopens the same SQLite file. It then stops the app and recovers the original payload byte-for-byte in the separate network-disabled recovery image. The runner creates its own synthetic identity; no production key, copied database, or host mount is needed. The native CI matrix includes this check on Linux amd64 and arm64.
+The runner checks both image revision labels and architectures. It submits an encrypted path backup through authenticated HTTP, changes the source, restarts the app, and verifies that it reopens the same SQLite file. It then stops the app and recovers the original payload byte-for-byte in the separate network-disabled recovery image. The runner creates its own synthetic identity; no production key, copied database, or host mount is needed. The native CI matrix builds without a target and includes this check on Linux amd64 and arm64. Legacy Python integration checks explicitly build `production` from the candidate tree; that image is not fenced and is not the rollback image below.
 
 These checks do not qualify remote-only restore, runtime Docker socket/GID or trusted proxy handling, active-job shutdown or worker drain, recovery downloads, performance, or a deployment cutover.
 
 ## Release gate bootstrap before cutover (R14)
 
-GitHub runs the `workflow_run` listener from the default branch, not from the tested `develop` revision it checks out. Before changing the Dockerfile default, verify that the **active default-branch** listener either requires both native architecture jobs on the selected SHA before publication or explicitly builds the Python target. Landing the new admission gate and a Rust Dockerfile default on `develop` together does not protect against an older listener. Verify the gate bootstrap and the image cutover separately; use the release-source and release-admission fixture tests without triggering a publication workflow.
+GitHub runs the `workflow_run` listener from the default branch, not from the tested `develop` revision it checks out. The transition safeguard [#266](https://github.com/Serph91P/DockerVault/pull/266) on `main` explicitly pins `target: production`. Keep that safeguard active until a separately authorized cutover; a change in the draft does not update the live listener. The candidate release workflow uses the Dockerfile default and requires successful push Tests and both native architecture jobs on the selected SHA. Integration-branch pushes can trigger that workflow directly, so keep this change on the draft branch until integration and publication are authorized. The release-source and release-admission fixtures check the candidate wiring without publishing. They do not prove registry attestations or a successful Rust release.
 
 ## Rehearsal-only Python rollback image (R14)
 

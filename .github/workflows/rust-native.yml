@@ -37,11 +37,11 @@ jobs:
               cargo test --workspace --locked --offline
               cargo clippy --workspace --all-targets --locked --offline -- -D warnings
             '
-      - name: Build and start the opt-in native application image
+      - name: Build and start the default application image (no target)
         run: |
           sha=$(git rev-parse HEAD)
           image=dockervault-native-candidate-ci
-          docker build --platform 'linux/${{ matrix.arch }}' --target native-candidate \
+          docker build --platform 'linux/${{ matrix.arch }}' \
             --build-arg "COMMIT_SHA=$sha" -t "$image" .
           test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = 'linux/${{ matrix.arch }}'
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$sha"

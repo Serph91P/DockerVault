@@ -27,9 +27,10 @@ fixture = <<~'JS'
   const script = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
   const sha = 'a'.repeat(40), other = 'b'.repeat(40);
   const run = overrides => ({id:42, head_sha:sha, head_branch:'develop', event:'push', status:'completed', conclusion:'success', ...overrides});
+  const nativeRun = overrides => run({id:43, ...overrides});
   const matrix = ['amd64', 'arm64'].map(arch => ({name:`Native workspace and offline recovery (${arch})`, head_sha:sha, status:'completed', conclusion:'success'}));
   const execute = new (Object.getPrototypeOf(async function(){}).constructor)('github','context','core','process','setTimeout',script);
-  async function trial({ref='refs/heads/develop', tests=run(), native=run(), jobs=matrix, pending=null} = {}) {
+  async function trial({ref='refs/heads/develop', tests=run(), native=nativeRun(), jobs=matrix, pending=null} = {}) {
     let retries=0, failed=false;
     const github={rest:{actions:{listWorkflowRuns:async request => {
       assert.equal(request.head_sha,sha);
@@ -37,7 +38,7 @@ fixture = <<~'JS'
       const selected={'test.yml':tests,'rust-native.yml':retries===0 && pending ? pending : native}[request.workflow_id];
       return {data:{workflow_runs:selected ? [selected] : []}};
     },listJobsForWorkflowRun:async request => {
-      assert.equal(request.run_id,42);
+      assert.equal(request.run_id,43);
       return {data:{jobs}};
     }}}};
     await execute(github,{repo:{owner:'fixture',repo:'dockervault'},sha:other},
@@ -47,13 +48,14 @@ fixture = <<~'JS'
   (async()=>{
     assert.equal(await trial(),true);
     assert.equal(await trial({ref:'refs/tags/v1.2.3'}),true);
-    assert.equal(await trial({pending:run({status:'in_progress',conclusion:null})}),true);
+    assert.equal(await trial({ref:'refs/heads/main', tests:run({head_branch:'main'}), native:nativeRun({head_branch:'main'})}),true);
+    assert.equal(await trial({pending:nativeRun({status:'in_progress',conclusion:null})}),true);
     for (const settings of [
-      {native:run({conclusion:'failure'})}, {tests:run({conclusion:'failure'})}, {native:null},
-      {ref:'refs/tags/v1.2.3',native:run({event:'pull_request'})},
-      {native:run({head_sha:other})}, {tests:run({head_branch:'main'})},
+      {native:nativeRun({conclusion:'failure'})}, {tests:run({conclusion:'failure'})}, {native:null},
+      {ref:'refs/tags/v1.2.3',native:nativeRun({event:'pull_request'})},
+      {native:nativeRun({head_sha:other})}, {tests:run({head_sha:other})}, {tests:run({head_branch:'main'})},
       {jobs:[matrix[0]]}, {jobs:[matrix[0],{...matrix[1],conclusion:'skipped'}]},
-      {jobs:[matrix[0],{...matrix[1],head_sha:other}]},
+      {jobs:[matrix[0],{...matrix[1],head_sha:other}]}, {jobs:[...matrix,matrix[1]]},
     ]) assert.equal(await trial(settings),false,JSON.stringify(settings));
     console.log('PASS: exact-SHA release admission, both native architectures, no publication');
   })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -1,4 +1,5 @@
-# Frozen workflow_run context: the event ref is main, but Tests ran on develop.
+# Frozen future workflow_run context: the event ref is main, but Tests ran on
+# develop with the native draft source. This is not a real integration event.
 # This test inspects publish inputs and runs only the local source-selection step.
 require 'yaml'
 require 'open3'
@@ -7,8 +8,8 @@ require 'tempfile'
 jobs = YAML.safe_load_file(ARGV.fetch(0, '.github/workflows/release.yml')).fetch('jobs')
 prepare = jobs.fetch('prepare')
 source = prepare.fetch('steps').find { |s| s['id'] == 'source' } or abort 'prepare does not select a shared source'
-tested = '39124ea3a98963b6307a69a0fbaf5902a17cde3d'
-default = 'c985b370223124f3ce1f8158a060802d3a01c607'
+tested = '683f53bc06b711e0678f69c1273f70e776285be4'
+default = 'bec4c670b3d3f91cddefebe8e090d5035cbfc22a'
 context = {
   "github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha" => tested,
   "github.event_name == 'workflow_run' && format('refs/heads/{0}', github.event.workflow_run.head_branch) || github.ref" => 'refs/heads/develop',
@@ -47,10 +48,13 @@ develop_tags = meta.fetch('tags').lines.filter_map do |line|
     abort "unrecognized Docker tag rule: #{line}"
   end
 end
-abort 'develop Docker tags differ' unless develop_tags == ['dev', '${{ steps.version.outputs.version }}', 'sha-39124ea']
+abort 'develop Docker tags differ' unless develop_tags == ['dev', '${{ steps.version.outputs.version }}', 'sha-683f53b']
 abort 'OCI revision is not bound to the source' unless meta.fetch('labels').include?('org.opencontainers.image.revision=${{ steps.source.outputs.sha }}')
 build = jobs.fetch('build-and-push').fetch('steps').find { |s| s.fetch('uses', '').start_with?('docker/build-push-action@') }.fetch('with')
+abort 'release build must use the tested checkout as its context' unless build.fetch('context') == '.'
+abort 'candidate release must build the same Dockerfile default as native CI' if build.key?('target') || build.key?('file')
+abort 'release must request SBOM and provenance' unless build['sbom'] == true && build['provenance'] == 'mode=min'
 abort 'build args are not bound to the source' unless build.fetch('build-args').include?("COMMIT_SHA=#{sha}\nBRANCH=${{ needs.prepare.outputs.source_name }}")
 release = jobs.fetch('create-release').fetch('steps').find { |s| s.fetch('uses', '').start_with?('softprops/action-gh-release@') }.fetch('with')
 abort 'release target is not bound to the tested SHA' unless release.fetch('target_commitish') == sha
-puts 'PASS: divergent develop workflow_run source and publish inputs (no publication)'
+puts 'PASS: divergent develop workflow_run source, SHA binding and Dockerfile default (no publication)'

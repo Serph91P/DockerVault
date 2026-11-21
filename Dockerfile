@@ -37,7 +37,7 @@ RUN npm run build
 FROM frontend-source AS native-frontend-builder
 RUN VITE_NATIVE_BACKEND=true npm run build
 
-# Opt-in local candidate only. Keep production as the default final stage.
+# Native application stages; the final stage selects the standard image.
 FROM rust@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS native-builder
 RUN cargo install --locked cargo-auditable --version 0.7.7
 WORKDIR /src
@@ -123,7 +123,7 @@ RUN pip install --no-cache-dir --upgrade pip==25.3 && \
     pip install --no-cache-dir -r requirements.txt
 
 # =============================================================================
-# Stage 4: Production Image
+# Stage 4: Explicit Python reference image (transition only)
 # =============================================================================
 FROM python:3.14-slim AS production
 
@@ -259,3 +259,6 @@ VOLUME ["/app/data", "/backups"]
 
 # Entrypoint handles docker group setup and starts supervisord
 ENTRYPOINT ["/entrypoint.sh"]
+
+# Plain builds use Rust; the transition listener still names the Python target.
+FROM native-candidate AS native-production

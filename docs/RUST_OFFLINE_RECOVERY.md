@@ -8,7 +8,7 @@ published Python download endpoint has already changed.
 
 ## Save the native candidate's recovery tool
 
-The opt-in native application serves `/recovery-tools/manifest.json` and
+The native application built from this checkout serves `/recovery-tools/manifest.json` and
 `/recovery-tools/dockervault-recover`. Save both from the same trusted candidate
 before disconnecting. The manifest identifies the executable's SHA-256, source
 revision and platform (`linux/amd64` or `linux/arm64`); the download matches the
