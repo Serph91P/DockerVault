@@ -399,10 +399,11 @@ async fn execute(
     let (source, source_claim) = state
         .auth
         .blocking()
-        .submit_blocking(move |_| {
+        .submit_blocking_wait(cancel, move |_| {
             let identity = std::fs::canonicalize(source)?;
             Ok::<_, io::Error>((identity.clone(), Resource::existing_path(&identity)?))
         })
+        .await
         .map_err(|_| ())?
         .wait()
         .await
@@ -469,7 +470,7 @@ async fn execute(
     let result = state
         .auth
         .blocking()
-        .submit_blocking(move |owner_cancel| {
+        .submit_blocking_wait(cancel, move |owner_cancel| {
             let cancelled = || job_cancel.is_cancelled() || owner_cancel.is_cancelled();
             if cancelled()
                 || source.starts_with(&root)
@@ -527,6 +528,7 @@ async fn execute(
             publish(&parent, &archive, Path::new(&output))?;
             Ok(proof)
         })
+        .await
         .map_err(|_| ())?
         .wait()
         .await

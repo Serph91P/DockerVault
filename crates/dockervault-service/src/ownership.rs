@@ -11,6 +11,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 pub enum WorkError {
     Busy,
     Closed,
+    Cancelled,
     WorkerFailed,
     InvalidCapacity,
 }
@@ -20,6 +21,7 @@ impl std::fmt::Display for WorkError {
         f.write_str(match self {
             Self::Busy => "Work capacity exhausted",
             Self::Closed => "Work owner is closed",
+            Self::Cancelled => "Work was cancelled before admission",
             Self::WorkerFailed => "Owned worker failed",
             Self::InvalidCapacity => "Invalid work capacity",
         })
@@ -151,18 +153,50 @@ impl Owner {
         T: Send + 'static,
         F: FnOnce(CancellationToken) -> T + Send + 'static,
     {
+        self.start_blocking(None, operation)
+    }
+
+    /// Wait for a physical slot only from work already bounded by an outer owner.
+    pub async fn submit_blocking_wait<T, F>(
+        &self,
+        cancel: &CancellationToken,
+        operation: F,
+    ) -> Result<Work<T>, WorkError>
+    where
+        T: Send + 'static,
+        F: FnOnce(CancellationToken) -> T + Send + 'static,
+    {
+        let permit = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(WorkError::Cancelled),
+            permit = self.inner.slots.clone().acquire_owned() => permit.map_err(|_| WorkError::Closed)?,
+        };
+        self.start_blocking(Some(permit), operation)
+    }
+
+    fn start_blocking<T, F>(
+        &self,
+        permit: Option<OwnedSemaphorePermit>,
+        operation: F,
+    ) -> Result<Work<T>, WorkError>
+    where
+        T: Send + 'static,
+        F: FnOnce(CancellationToken) -> T + Send + 'static,
+    {
         tokio::runtime::Handle::try_current().map_err(|_| WorkError::WorkerFailed)?;
         let closed = self.inner.closed.lock().map_err(|_| WorkError::Closed)?;
         if *closed {
             return Err(WorkError::Closed);
         }
-        let permit: Arc<OwnedSemaphorePermit> = Arc::new(
-            self.inner
+        let permit = Arc::new(match permit {
+            Some(permit) => permit,
+            None => self
+                .inner
                 .slots
                 .clone()
                 .try_acquire_owned()
                 .map_err(|_| WorkError::Busy)?,
-        );
+        });
         let physical_permit = permit.clone();
         let cancel = self.inner.cancel.child_token();
         let worker_cancel = cancel.clone();
@@ -191,6 +225,7 @@ impl Owner {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *closed = true;
+        self.inner.slots.close();
         self.inner.tracker.close();
     }
 

@@ -5,6 +5,42 @@ use std::sync::{
 };
 use std::time::Duration;
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
+
+#[tokio::test]
+async fn bounded_caller_waits_for_physical_capacity_and_can_cancel_or_close() {
+    for exit in [None, Some(WorkError::Cancelled), Some(WorkError::Closed)] {
+        let owner = Owner::new(1).unwrap();
+        let (release, gate) = oneshot::channel();
+        let held = owner
+            .submit_blocking(move |_| gate.blocking_recv().unwrap())
+            .unwrap();
+        let cancel = CancellationToken::new();
+        let pending = owner.submit_blocking_wait(&cancel, |_| 42);
+        tokio::pin!(pending);
+        assert!(futures_util::poll!(&mut pending).is_pending());
+        assert!(matches!(
+            owner.submit_blocking(|_| ()),
+            Err(WorkError::Busy)
+        ));
+        match exit {
+            Some(WorkError::Cancelled) => cancel.cancel(),
+            Some(WorkError::Closed) => owner.close(),
+            None => {
+                release.send(()).unwrap();
+                assert_eq!(pending.await.unwrap().wait().await.unwrap(), 42);
+                held.wait().await.unwrap();
+                continue;
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(pending.await.err(), exit);
+        assert_eq!(owner.active(), 1);
+        release.send(()).unwrap();
+        held.wait().await.unwrap();
+        owner.shutdown(None).await;
+    }
+}
 
 #[tokio::test]
 async fn accepted_background_work_remains_owned_after_request_departure() {

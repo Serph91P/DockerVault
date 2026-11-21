@@ -185,7 +185,7 @@ pub(crate) async fn settle_verified_copies(
         let artifacts = proof.artifacts.clone();
         let copy = copy.clone();
         let result = owner
-            .submit_blocking(move |worker_cancel| {
+            .submit_blocking_wait(cancel, move |worker_cancel| {
                 let cancelled = || job_cancel.is_cancelled() || worker_cancel.is_cancelled();
                 check(&cancelled)?;
                 // Validate both artifacts against the publication receipt before writing even a sidecar.
@@ -213,6 +213,7 @@ pub(crate) async fn settle_verified_copies(
                 }
                 Ok::<_, io::Error>(())
             })
+            .await
             .map_err(work_error)?
             .wait()
             .await

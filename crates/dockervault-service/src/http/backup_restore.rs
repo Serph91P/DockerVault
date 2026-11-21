@@ -94,7 +94,7 @@ pub(super) async fn review(
             "Invalid restore destination",
         ));
     };
-    match impact(&state, id, &selection).await {
+    match impact(&state, id, &selection, None).await {
         Ok(value) => Json(value.public).into_response(),
         Err(e) => error(e),
     }
@@ -141,7 +141,12 @@ pub(super) async fn restore(
     }
 }
 
-async fn impact(state: &HttpState, id: i64, selection: &Selection) -> Result<Impact, Failure> {
+async fn impact(
+    state: &HttpState,
+    id: i64,
+    selection: &Selection,
+    cancel: Option<&CancellationToken>,
+) -> Result<Impact, Failure> {
     if !matches!(
         selection.destination_type.as_deref(),
         None | Some("original")
@@ -184,18 +189,21 @@ async fn impact(state: &HttpState, id: i64, selection: &Selection) -> Result<Imp
             .ok_or(UNSUPPORTED)?,
     );
     let backup_root = PathBuf::from(&state.config.backup_base_path);
-    let (destination, identity) = state
-        .auth
-        .blocking()
-        .submit_blocking(move |_| {
-            let canonical = std::fs::canonicalize(&original)?;
-            let backups = std::fs::canonicalize(backup_root)?;
-            if canonical.starts_with(&backups) || backups.starts_with(&canonical) {
-                return Err(io::Error::other("Destination overlaps archive storage"));
-            }
-            let root = local::open_root(&canonical)?;
-            Ok::<_, io::Error>((canonical, dir_identity(&root)?))
-        })
+    let resolve = move |_| {
+        let canonical = std::fs::canonicalize(&original)?;
+        let backups = std::fs::canonicalize(backup_root)?;
+        if canonical.starts_with(&backups) || backups.starts_with(&canonical) {
+            return Err(io::Error::other("Destination overlaps archive storage"));
+        }
+        let root = local::open_root(&canonical)?;
+        Ok::<_, io::Error>((canonical, dir_identity(&root)?))
+    };
+    let owner = state.auth.blocking();
+    let work = match cancel {
+        Some(cancel) => owner.submit_blocking_wait(cancel, resolve).await,
+        None => owner.submit_blocking(resolve),
+    };
+    let (destination, identity) = work
         .map_err(|_| INTERNAL)?
         .wait()
         .await
@@ -255,7 +263,7 @@ async fn execute(
     selection: &Selection,
     cancel: &CancellationToken,
 ) -> Result<Value, Failure> {
-    let initial = impact(state, id, selection).await?;
+    let initial = impact(state, id, selection, Some(cancel)).await?;
     let _target = state
         .backup_claims
         .acquire([Resource::target(initial.target)], cancel)
@@ -265,7 +273,8 @@ async fn execute(
     let claim = state
         .auth
         .blocking()
-        .submit_blocking(move |_| Resource::existing_path(&path))
+        .submit_blocking_wait(cancel, move |_| Resource::existing_path(&path))
+        .await
         .map_err(|_| INTERNAL)?
         .wait()
         .await
@@ -276,7 +285,7 @@ async fn execute(
         .acquire([claim], cancel)
         .await
         .map_err(|_| INTERNAL)?;
-    let reviewed = impact(state, id, selection).await?;
+    let reviewed = impact(state, id, selection, Some(cancel)).await?;
     if reviewed.public["fingerprint"] != initial.public["fingerprint"]
         || selection
             .review_fingerprint
@@ -321,22 +330,26 @@ async fn execute(
     let private = private.cloned();
     let writer_journal = journal.clone();
     let runtime = tokio::runtime::Handle::current();
-    let worker = state.auth.blocking().submit_blocking(move |owner_cancel| {
-        let cancelled = || token.is_cancelled() || owner_cancel.is_cancelled();
-        restore_path(
-            &reviewed,
-            &root,
-            input,
-            private.as_ref().map(|key| key.as_str()),
-            &cancelled,
-            || {
-                runtime
-                    .block_on(writer_journal.phase(key, RESTORE_WRITE_PHASE))
-                    .map_err(io::Error::other)
-            },
-        )?;
-        Ok::<_, Failure>(reviewed.public)
-    });
+    let worker = state
+        .auth
+        .blocking()
+        .submit_blocking_wait(cancel, move |owner_cancel| {
+            let cancelled = || token.is_cancelled() || owner_cancel.is_cancelled();
+            restore_path(
+                &reviewed,
+                &root,
+                input,
+                private.as_ref().map(|key| key.as_str()),
+                &cancelled,
+                || {
+                    runtime
+                        .block_on(writer_journal.phase(key, RESTORE_WRITE_PHASE))
+                        .map_err(io::Error::other)
+                },
+            )?;
+            Ok::<_, Failure>(reviewed.public)
+        })
+        .await;
     let result = match worker {
         Ok(work) => work.wait().await.unwrap_or(Err(INTERNAL)),
         Err(_) => Err(INTERNAL),
@@ -379,7 +392,7 @@ async fn restore_input(
         let input = state
             .auth
             .blocking()
-            .submit_blocking(move |owner| {
+            .submit_blocking_wait(cancel, move |owner| {
                 let open = |path: &str| {
                     let absolute = std::path::absolute(path)?;
                     let relative = absolute.strip_prefix(&root).map_err(io::Error::other)?;
@@ -404,6 +417,7 @@ async fn restore_input(
                     gzip: gzip(&path),
                 }))
             })
+            .await
             .map_err(|_| INTERNAL)?
             .wait()
             .await
