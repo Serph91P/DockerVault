@@ -58,9 +58,35 @@ docker run --rm --pull=never --network none --cpus 2 --memory 6g -e CARGO_BUILD_
     docker exec -i "$container" sh -ec 'umask 077; cat > /work/private_key.txt; cp /work/private_key.txt /work/my-private-identity.txt'
 while IFS=$'\t' read -r -a command; do
     for variant in '' .legacy; do
-        docker exec -w /work "$container" sh -ec 'cp "fixtures/pax-links.tar.gz$1.enc" backup.tar.gz.enc; cp "fixtures/pax-links.tar.gz$1.key.TEST_ONLY" backup.tar.gz.key' sh "$variant"
+        restore_fixture() {
+            docker exec -w /work "$container" sh -ec 'cp "fixtures/pax-links.tar.gz$1.enc" backup.tar.gz.enc; cp "fixtures/pax-links.tar.gz$1.key.TEST_ONLY" backup.tar.gz.key' sh "$variant"
+        }
+        restore_fixture
         docker exec -w /work "$container" ./dockervault-recover "${command[@]:1}"
-        docker exec -w /work "$container" sh -ec 'cmp fixtures/pax-links.tar.gz backup.tar.gz; tar -tzf backup.tar.gz >/dev/null; rm backup.tar.gz'
+        docker exec -w /work "$container" sh -ec 'cmp fixtures/pax-links.tar.gz backup.tar.gz; tar -tzf backup.tar.gz >/dev/null; test "$(stat -c %a backup.tar.gz)" = 600'
         printf 'Offline recovery matched exact bytes and readable TAR: %s %s\n' "${command[0]}" "${variant:-v1}"
+        faults=(archive sidecar)
+        if [[ -z "$variant" ]]; then faults+=(truncated); fi
+        for fault in "${faults[@]}"; do
+            restore_fixture
+            docker exec -w /work "$container" sh -ec '
+                case "$1" in
+                    archive) printf invalid > backup.tar.gz.enc ;;
+                    sidecar) printf invalid > backup.tar.gz.key ;;
+                    truncated) truncate -s -1 backup.tar.gz.enc ;;
+                    *) exit 2 ;;
+                esac
+            ' sh "$fault"
+            status=0
+            docker exec -w /work "$container" ./dockervault-recover "${command[@]:1}" >/dev/null 2>&1 || status=$?
+            [[ "$status" == 1 ]]
+            docker exec -w /work "$container" sh -ec '
+                cmp fixtures/pax-links.tar.gz backup.tar.gz
+                test "$(stat -c %a backup.tar.gz)" = 600
+                test -z "$(find . -name ".dockervault-crypto-*" -print -quit)"
+            '
+            printf 'Offline recovery rejected damaged input without replacing output: %s %s %s\n' "${command[0]}" "${variant:-v1}" "$fault"
+        done
+        docker exec -w /work "$container" rm backup.tar.gz
     done
 done < "$scratch/commands"
