@@ -282,6 +282,7 @@ Start Caddy in the same Docker network as DockerVault, and it handles TLS certif
 |----------|---------|-------------|
 | `CORS_ORIGINS` | `http://localhost` | Comma-separated list of allowed CORS origins |
 | `COOKIE_SECURE` | `false` | Set session cookie `Secure` flag. Set to `true` behind a TLS-terminating reverse proxy |
+| `ENABLE_DOCS` | `false` | Serve authenticated OpenAPI, Swagger UI, and ReDoc on the internal backend listener only; the public frontend proxy does not expose them |
 | `CREDENTIAL_ENCRYPTION_KEY` | Auto-generated | Fernet key for encrypting remote storage credentials at rest. If empty, a key is generated and saved to `/app/data/.credential_key` |
 | `ALLOWED_HOOK_COMMANDS` | `pg_dump,pg_dumpall,mysqldump,mongodump,redis-cli,mariadb-dump` | Comma-separated allowlist of binaries permitted in pre/post backup hooks |
 | `LOG_FORMAT` | `text` | Log output format: `text` or `json` (structured logging for production) |

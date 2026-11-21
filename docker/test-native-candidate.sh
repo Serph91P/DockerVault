@@ -79,4 +79,6 @@ test "$(docker inspect -f '{{.State.ExitCode}}' "$container")" = 0
 docker start "$container" >/dev/null
 ready
 docker exec "$container" sh -ec 'test "$(stat -c %i /app/data/backup.db)" = "$(cat /app/data/smoke-db-inode)"'
+bash "$(dirname "$0")/test-native-docs.sh" "$image"
+bash "$(dirname "$0")/test-native-logging.sh" "$image"
 printf 'Native candidate smoke passed: %s\n' "$(docker inspect -f '{{.Image}}' "$container")"

@@ -1,4 +1,5 @@
 //! Native service process. Packaging and the cross-runtime writer handoff are separate.
+mod service_logging;
 use dockervault_service::{
     auth::AuthService,
     config::Config,
@@ -55,6 +56,11 @@ async fn run() -> Result<(), &'static str> {
         return Err("unexpected argument");
     }
     let config = Config::load().map_err(|_| "configuration")?;
+    service_logging::configure(&config)?;
+    tracing::info!("Starting DockerVault backend");
+    if !config.cookie_secure {
+        tracing::warn!("COOKIE_SECURE=False: session cookies may be sent over HTTP");
+    }
     let path = config
         .database_url
         .strip_prefix("sqlite+aiosqlite:///")
@@ -95,6 +101,7 @@ async fn run() -> Result<(), &'static str> {
     let db = Database::open(&database_path, parent.join("migration-backups"), &owner)
         .await
         .map_err(|_| "database migration")?;
+    tracing::debug!("Database opened and migrations checked");
     settle_interrupted(db.pool())
         .await
         .map_err(|_| "storage recovery")?;
@@ -155,6 +162,7 @@ async fn run() -> Result<(), &'static str> {
     })?;
     let router = http::router(state.clone());
     state.start_scheduler().await;
+    tracing::info!("DockerVault backend ready");
     let shutdown = state.clone();
     let result = axum::serve(
         listener,
@@ -162,6 +170,7 @@ async fn run() -> Result<(), &'static str> {
     )
     .with_graceful_shutdown(async move {
         tokio::select! { _ = terminate.recv() => {}, _ = interrupt.recv() => {} }
+        tracing::info!("Shutting down DockerVault backend");
         shutdown.begin_shutdown();
     })
     .await;
@@ -171,5 +180,7 @@ async fn run() -> Result<(), &'static str> {
     owner.shutdown(grace).await;
     db.close().await;
     storage.map_err(|_| "storage settlement")?;
-    result.map_err(|_| "serving HTTP")
+    result.map_err(|_| "serving HTTP")?;
+    tracing::info!("DockerVault backend stopped");
+    Ok(())
 }

@@ -8,6 +8,7 @@ mod backups;
 mod copy_removal;
 mod docker_inventory;
 mod docker_lifecycle;
+mod docs;
 mod encryption;
 pub use copy_removal::recover_copy_removals;
 mod ftp_sync;
@@ -117,7 +118,7 @@ impl HttpState {
     }
 }
 pub fn router(state: HttpState) -> Router {
-    Router::new()
+    let app = Router::new()
         .route(
             "/health",
             get(|| async { Json(json!({"status":"healthy"})) }),
@@ -364,18 +365,23 @@ pub fn router(state: HttpState) -> Router {
                 .put(storage::update)
                 .delete(storage::delete),
         )
-        .route("/ws/updates", get(ws::updates))
-        .fallback(|| async {
-            (
-                axum::http::StatusCode::NOT_FOUND,
-                Json(json!({"detail":"Not Found"})),
-            )
-                .into_response()
-        })
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            security::guard,
-        ))
-        .layer(middleware::from_fn(security::recovery_privacy))
-        .with_state(state)
+        .route("/ws/updates", get(ws::updates));
+    let app = if state.config.enable_docs {
+        app.merge(docs::routes())
+    } else {
+        app
+    };
+    app.fallback(|| async {
+        (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(json!({"detail":"Not Found"})),
+        )
+            .into_response()
+    })
+    .layer(middleware::from_fn_with_state(
+        state.clone(),
+        security::guard,
+    ))
+    .layer(middleware::from_fn(security::recovery_privacy))
+    .with_state(state)
 }
