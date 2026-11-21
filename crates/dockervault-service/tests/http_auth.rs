@@ -7590,6 +7590,85 @@ async fn actual_websocket_preserves_control_messages_and_broadcast_bytes() {
     server.close().await;
 }
 #[tokio::test]
+async fn stalled_websocket_does_not_hold_healthy_delivery_or_http_health() {
+    use futures_util::StreamExt;
+    use std::time::Duration;
+    use tokio_tungstenite::{MaybeTlsStream, tungstenite::client::IntoClientRequest};
+
+    let server = Server::start("http://localhost").await;
+    let cookie = server.setup().await;
+    let origin = format!("http://{}", server.address);
+    let mut request = format!("ws://{}/ws/updates", server.address)
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("cookie", cookie.parse().unwrap());
+    request
+        .headers_mut()
+        .insert("origin", origin.parse().unwrap());
+    let tcp = tokio::net::TcpSocket::new_v4().unwrap();
+    tcp.set_recv_buffer_size(8192).unwrap();
+    let tcp = tcp.connect(server.address).await.unwrap();
+    let (mut slow, _) = tokio_tungstenite::client_async(request, MaybeTlsStream::Plain(tcp))
+        .await
+        .unwrap();
+    assert!(
+        frame(&mut slow)
+            .await
+            .into_text()
+            .unwrap()
+            .contains("connected")
+    );
+
+    // An ordinary consumer that does not read: one bounded synthetic notification
+    // cannot fit in its TCP receive window. Do not poll this WebSocket yet.
+    server.notifications.broadcast(&json!({
+        "type": "backup_progress", "progress": 50, "message": "x".repeat(8 * 1024 * 1024)
+    }));
+    let MaybeTlsStream::Plain(tcp) = slow.get_ref() else {
+        unreachable!()
+    };
+    tokio::time::timeout(Duration::from_secs(2), tcp.readable())
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut healthy = socket(&server, Some(&cookie), Some(&origin), None)
+        .await
+        .unwrap();
+    let _ = frame(&mut healthy).await;
+    server
+        .notifications
+        .broadcast(&json!({"type":"backup_progress","progress":100}));
+    let health = tokio::time::timeout(
+        Duration::from_secs(1),
+        server.request("GET", "/health", &[], None),
+    );
+    let (health, terminal) = tokio::join!(health, frame(&mut healthy));
+    assert_eq!(health.unwrap().0, 200);
+    assert_eq!(
+        terminal.into_text().unwrap(),
+        "{\"type\": \"backup_progress\", \"progress\": 100}"
+    );
+
+    // The socket stays unread for the real send deadline. A partial frame may
+    // prevent delivery of the close code, but it must never see terminal progress.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    tokio::time::timeout(Duration::from_secs(8), async {
+        while let Some(Ok(message)) = slow.next().await {
+            if let Ok(text) = message.into_text() {
+                assert_ne!(text, "{\"type\": \"backup_progress\", \"progress\": 100}");
+            }
+        }
+    })
+    .await
+    .unwrap();
+    healthy.close(None).await.unwrap();
+    server.close().await;
+}
+
+#[tokio::test]
 async fn actual_open_websockets_revoke_on_logout_password_expiry_and_deleted_rows() {
     for (cause, idle) in [
         ("logout", false),
