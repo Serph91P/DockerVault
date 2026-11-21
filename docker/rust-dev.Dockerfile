@@ -9,4 +9,6 @@ COPY --chown=1000:1000 crates ./crates
 COPY --chown=1000:1000 docs/contracts ./docs/contracts
 COPY --chown=1000:1000 backend/tests/fixtures/legacy_pre_schedule.sql ./backend/tests/fixtures/legacy_pre_schedule.sql
 RUN cargo fetch --locked
+COPY --chown=1000:1000 Dockerfile ./Dockerfile
+COPY --chown=1000:1000 frontend/package.json ./frontend/package.json
 CMD ["cargo", "test", "--workspace", "--locked", "--offline"]
