@@ -4,7 +4,7 @@ Original archive/sidecar fixtures are byte-for-byte copies of the frozen Python
 control corpus for revision `18d8c3d`. All identities, DEKs, passwords and credentials here are
 **PUBLIC SYNTHETIC TEST MATERIAL**, never operator or production keys.
 
-The four `*.key.TEST_ONLY` files contain **age-encrypted sidecar ciphertext**, not
+The `*.key.TEST_ONLY` files contain **age-encrypted sidecar ciphertext**, not
 private identities. The explicit test-only suffix distinguishes fixture storage
 from live key-file paths for repository tooling. To map them to the original
 frozen corpus, remove only the final `.TEST_ONLY` from `*.key.TEST_ONLY`.
@@ -23,6 +23,14 @@ the offline CLI accepts an explicit sidecar filename via `--key`.
 
 No original frozen control, manifest, assertion or scanner configuration is
 changed by these fixture copies.
+
+The additional `pax-links.ascii.tar.gz*` ciphertexts use the same original gzip
+input and public gzip recipient but a second synthetic test-vector DEK: 32 ASCII
+`A` bytes. They were captured in the isolated Python `production` reference at
+`c7a5594432c82d46c20e2d17068a1e85e8b23957`: its `encrypt_file`/`encrypt_dek` for
+v1, and OpenSSL `enc -aes-256-cbc -pbkdf2 -iter 100000` with the hex DEK plus an
+ordinary raw-DEK `age -a` sidecar for legacy. Native CI consumes only these
+frozen expectations, not Python to regenerate them.
 
 `credential-framing.TEST_ONLY.json` contains 2,478 transformation recipes and
 actual results from the unchanged accepted #143 provider `fc1b339` on Python

@@ -51,32 +51,45 @@ container=$(docker run -d --pull=never --network none --read-only \
 docker exec -i "$container" sh -ec 'umask 077; mkdir /work/fixtures; cat > /work/dockervault-recover; chmod 700 /work/dockervault-recover' < "$scratch/dockervault-recover"
 [[ $(docker exec "$container" sha256sum /work/dockervault-recover | cut -d' ' -f1) == "$hash" ]]
 a=pax-links.tar.gz
-tar -C "$root/crates/dockervault-core/tests/fixtures" -cf - "$a" "$a.enc" "$a.legacy.enc" "$a.key.TEST_ONLY" "$a.legacy.key.TEST_ONLY" |
+tar -C "$root/crates/dockervault-core/tests/fixtures" -cf - "$a" "$a.enc" "$a.legacy.enc" "$a.key.TEST_ONLY" "$a.legacy.key.TEST_ONLY" \
+    pax-links.ascii.tar.gz{,.legacy}.enc pax-links.ascii.tar.gz{,.legacy}.key.TEST_ONLY |
     docker exec -i "$container" tar -xf - -C /work/fixtures
 docker run --rm --pull=never --network none --cpus 2 --memory 6g -e CARGO_BUILD_JOBS=2 "$dev" \
     cargo run --quiet --example public_fixture_identity -p dockervault-tools --locked --offline -- gzip |
     docker exec -i "$container" sh -ec 'umask 077; cat > /work/private_key.txt; cp /work/private_key.txt /work/my-private-identity.txt'
+restore_fixture() {
+    docker exec -w /work "$container" sh -ec 'cp "fixtures/$1.enc" backup.tar.gz.enc; cp "fixtures/$1.key.TEST_ONLY" backup.tar.gz.key' sh "$1"
+}
 while IFS=$'\t' read -r -a command; do
+  for dek in binary ascii; do
+    base=$a
+    if [[ "$dek" == ascii ]]; then base=pax-links.ascii.tar.gz; fi
     for variant in '' .legacy; do
-        restore_fixture() {
-            docker exec -w /work "$container" sh -ec 'cp "fixtures/pax-links.tar.gz$1.enc" backup.tar.gz.enc; cp "fixtures/pax-links.tar.gz$1.key.TEST_ONLY" backup.tar.gz.key' sh "$variant"
-        }
-        restore_fixture
+        restore_fixture "$base$variant"
         docker exec -w /work "$container" ./dockervault-recover "${command[@]:1}"
         docker exec -w /work "$container" sh -ec 'cmp fixtures/pax-links.tar.gz backup.tar.gz; tar -tzf backup.tar.gz >/dev/null; test "$(stat -c %a backup.tar.gz)" = 600'
-        printf 'Offline recovery matched exact bytes and readable TAR: %s %s\n' "${command[0]}" "${variant:-v1}"
+        printf 'Offline recovery matched exact bytes and readable TAR: %s %s %s\n' "${command[0]}" "$dek" "${variant:-v1}"
         faults=(archive sidecar)
-        if [[ -z "$variant" ]]; then faults+=(truncated); fi
+        if [[ -z "$variant" ]]; then faults+=(flipped truncated wrong-format); fi
         for fault in "${faults[@]}"; do
-            restore_fixture
+            restore_fixture "$base$variant"
             docker exec -w /work "$container" sh -ec '
                 case "$1" in
                     archive) printf invalid > backup.tar.gz.enc ;;
                     sidecar) printf invalid > backup.tar.gz.key ;;
+                    flipped)
+                        byte=$(od -An -tu1 -j32 -N1 backup.tar.gz.enc)
+                        printf "\\$(printf "%03o" "$((byte ^ 1))")" |
+                            dd of=backup.tar.gz.enc bs=1 seek=32 conv=notrunc status=none
+                        ;;
                     truncated) truncate -s -1 backup.tar.gz.enc ;;
+                    wrong-format)
+                        # Pair the other frozen archive format with the v1 envelope.
+                        cp "fixtures/$2.legacy.enc" backup.tar.gz.enc
+                        ;;
                     *) exit 2 ;;
                 esac
-            ' sh "$fault"
+            ' sh "$fault" "$base"
             status=0
             docker exec -w /work "$container" ./dockervault-recover "${command[@]:1}" >/dev/null 2>&1 || status=$?
             [[ "$status" == 1 ]]
@@ -85,8 +98,9 @@ while IFS=$'\t' read -r -a command; do
                 test "$(stat -c %a backup.tar.gz)" = 600
                 test -z "$(find . -name ".dockervault-crypto-*" -print -quit)"
             '
-            printf 'Offline recovery rejected damaged input without replacing output: %s %s %s\n' "${command[0]}" "${variant:-v1}" "$fault"
+            printf 'Offline recovery rejected damaged input without replacing output: %s %s %s %s\n' "${command[0]}" "$dek" "${variant:-v1}" "$fault"
         done
         docker exec -w /work "$container" rm backup.tar.gz
     done
+  done
 done < "$scratch/commands"

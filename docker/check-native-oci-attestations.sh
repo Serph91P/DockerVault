@@ -7,14 +7,16 @@ revision=${3:?Expected source revision required}
 [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
 blob() {
     local digest=$1
-    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
     tar -xOf "$archive" "blobs/sha256/${digest#sha256:}"
 }
-verified_blob() {
+verify_digest() {
     local sum
-    # Hash the exact bytes first, without shell command substitution trimming a newline.
-    sum=$(blob "$1" | sha256sum)
+    sum=$(blob "$1" | sha256sum) || return 1
     [[ "sha256:${sum%% *}" == "$1" ]]
+}
+verified_blob() {
+    verify_digest "$1" || return 1
     blob "$1"
 }
 index=$(tar -xOf "$archive" index.json)
@@ -30,6 +32,11 @@ attestation=$(jq -er --arg image "$image" '
     select(length==1)|.[0].digest' <<< "$index")
 manifest=$(verified_blob "$image")
 config=$(verified_blob "$(jq -er '.config.digest' <<< "$manifest")")
+layers=$(jq -er '.layers | select(type=="array" and all(.[]; .digest|type=="string")) | map(.digest) | join("\n")' <<< "$manifest")
+[[ -n "$layers" ]]
+while IFS= read -r layer; do
+    verify_digest "$layer"
+done <<< "$layers"
 jq -e --arg arch "$arch" --arg rev "$revision" '
     .os=="linux" and .architecture==$arch and .config.Labels["org.opencontainers.image.revision"]==$rev' <<< "$config" >/dev/null
 att=$(verified_blob "$attestation")
@@ -49,4 +56,4 @@ for kind in spdx provenance; do
         (if $kind=="spdx" then (.predicate.spdxVersion|startswith("SPDX-")) and (.predicate.packages|length>0)
          else ((.predicate.buildDefinition.buildType // .predicate.buildType)|type=="string") end)' >/dev/null
 done
-printf 'Verified linked SPDX and provenance metadata for %s linux/%s %s\n' "$image" "$arch" "$revision"
+printf 'Verified image layer digests and linked SPDX and provenance metadata for %s linux/%s %s\n' "$image" "$arch" "$revision"
