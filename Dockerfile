@@ -89,8 +89,9 @@ RUN set -eu; \
     install -d -m 0755 /usr/share/nginx/html/recovery-tools; \
     printf '{"os":"linux","arch":"%s","revision":"%s","file":"dockervault-recover","sha256":"%s"}\n' \
       "$arch" "$COMMIT_SHA" "${digest%% *}" > /usr/share/nginx/html/recovery-tools/manifest.json
-COPY --chmod=755 docker/native-entrypoint.sh /usr/local/sbin/dockervault-init
-COPY --chmod=755 docker/native-services/ /etc/dockervault/services/
+COPY docker/native-entrypoint.sh /usr/local/sbin/dockervault-init
+COPY docker/native-services/ /etc/dockervault/services/
+RUN chmod 0755 /usr/local/sbin/dockervault-init /etc/dockervault/services/*/run
 WORKDIR /app
 ENV DATABASE_URL=sqlite:////app/data/backup.db BACKUP_BASE_PATH=/backups TZ=UTC
 EXPOSE 80

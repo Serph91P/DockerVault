@@ -32,7 +32,8 @@ docker exec "$container" sh -eu -c '
         if command -v "$cmd"; then exit 1; fi
     done
     test "$(curl -sS -o /dev/null -w "%{http_code}" http://127.0.0.1/recover_backup.py)" = 404
-    for file in /usr/local/libexec/dockervault-process-guard /usr/local/libexec/dockervault-archive-worker /usr/local/bin/dockervault-recover; do
+    for file in /usr/local/sbin/dockervault-init /etc/dockervault/services/*/run \
+        /usr/local/libexec/dockervault-process-guard /usr/local/libexec/dockervault-archive-worker /usr/local/bin/dockervault-recover; do
         test "$(stat -c %u:%g:%a "$file")" = 0:0:755
     done
 '
