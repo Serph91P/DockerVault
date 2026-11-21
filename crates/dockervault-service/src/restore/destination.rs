@@ -21,6 +21,8 @@ use std::{
     path::Path,
 };
 const MAX_PATH: usize = 1024 * 1024;
+const SYNC_BATCH: usize = 32;
+const SYNC_WORKERS: usize = 8;
 #[derive(Clone)]
 struct Node {
     kind: MemberKind,
@@ -78,6 +80,31 @@ impl IndexedArchive {
         }
         check(cancel)?;
         before_mutation()?;
+        let mut pending_sync = Vec::with_capacity(SYNC_BATCH);
+        let result = self.apply_steps(root, cancel, &mut pending_sync);
+        // Drain opened files even after cancellation or a later write fails.
+        result.and(sync_files(&mut pending_sync))?;
+        // Python applies directory timestamps after descendants; modes/owners are ignored.
+        let mut statement=self.db.prepare("SELECT path,mtime FROM restore_steps WHERE kind=1 AND mtime IS NOT NULL GROUP BY path HAVING ord=MAX(ord) ORDER BY length(path) DESC,ord DESC").map_err(db_error)?;
+        let mut rows = statement.query([]).map_err(db_error)?;
+        while let Some(row) = rows.next().map_err(db_error)? {
+            check(cancel)?;
+            let path: Vec<u8> = row.get(0).map_err(db_error)?;
+            let mtime: f64 = row.get(1).map_err(db_error)?;
+            let directory = open_dir(root, &path)?;
+            set_file_attrs(&directory, None, Some(mtime))?;
+            directory.sync_all()?;
+        }
+        root.sync_all()?;
+        check(cancel)
+    }
+
+    fn apply_steps(
+        &mut self,
+        root: &File,
+        cancel: &dyn Fn() -> bool,
+        pending_sync: &mut Vec<File>,
+    ) -> io::Result<()> {
         let mut last = 0i64;
         loop {
             let step = self
@@ -102,6 +129,9 @@ impl IndexedArchive {
             let Some(step) = step else { break };
             last = step.order;
             check(cancel)?;
+            if step.kind != 0 {
+                sync_files(pending_sync)?;
+            }
             match step.kind {
                 0 => {
                     let (parent, name) = parent_fd(root, &step.path)?;
@@ -117,7 +147,10 @@ impl IndexedArchive {
                         cancel,
                     )?;
                     set_file_attrs(&file, step.mode, step.mtime)?;
-                    file.sync_all()?;
+                    pending_sync.push(file);
+                    if pending_sync.len() == SYNC_BATCH {
+                        sync_files(pending_sync)?;
+                    }
                 }
                 1 => {
                     if step.path != b"." {
@@ -198,20 +231,42 @@ impl IndexedArchive {
                 _ => return Err(invalid("Invalid destination operation")),
             }
         }
-        // Python applies directory timestamps after descendants; modes/owners are ignored.
-        let mut statement=self.db.prepare("SELECT path,mtime FROM restore_steps WHERE kind=1 AND mtime IS NOT NULL GROUP BY path HAVING ord=MAX(ord) ORDER BY length(path) DESC,ord DESC").map_err(db_error)?;
-        let mut rows = statement.query([]).map_err(db_error)?;
-        while let Some(row) = rows.next().map_err(db_error)? {
-            check(cancel)?;
-            let path: Vec<u8> = row.get(0).map_err(db_error)?;
-            let mtime: f64 = row.get(1).map_err(db_error)?;
-            let directory = open_dir(root, &path)?;
-            set_file_attrs(&directory, None, Some(mtime))?;
-            directory.sync_all()?;
-        }
-        root.sync_all()?;
-        check(cancel)
+        Ok(())
     }
+}
+
+fn sync_files(files: &mut Vec<File>) -> io::Result<()> {
+    fn sync_chunk(files: &[File]) -> io::Result<()> {
+        let mut result = Ok(());
+        for file in files {
+            result = result.and(file.sync_all());
+        }
+        result
+    }
+    // Writes are ordered; only the durability calls on already-open files overlap.
+    let result = if files.len() < SYNC_WORKERS {
+        sync_chunk(files)
+    } else {
+        std::thread::scope(|scope| {
+            let mut workers = Vec::with_capacity(SYNC_WORKERS);
+            let mut result = Ok(());
+            for chunk in files.chunks(files.len().div_ceil(SYNC_WORKERS)) {
+                match std::thread::Builder::new().spawn_scoped(scope, || sync_chunk(chunk)) {
+                    Ok(worker) => workers.push(worker),
+                    Err(_) => result = result.and(sync_chunk(chunk)),
+                }
+            }
+            for worker in workers {
+                let synced = worker
+                    .join()
+                    .unwrap_or_else(|_| Err(io::Error::other("Restore sync worker panicked")));
+                result = result.and(synced);
+            }
+            result
+        })
+    };
+    files.clear();
+    result
 }
 impl Planner<'_> {
     fn put(&self, path: &[u8], kind: MemberKind, link: Option<&[u8]>) -> io::Result<()> {

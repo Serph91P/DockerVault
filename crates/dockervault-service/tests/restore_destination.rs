@@ -154,6 +154,43 @@ fn complete_destination_effects_match_independent_python_controls_without_partia
     }
 }
 #[test]
+fn restore_sync_batches_preserve_ordered_duplicates_and_hardlinks() {
+    let root = Fixture::new();
+    let target = root.0.join("target");
+    let mut entries: Vec<_> = (0..75)
+        .map(|i| serde_json::json!(["file", format!("batch-{i}"), "old"]))
+        .collect();
+    entries.extend([
+        serde_json::json!(["file", "batch-3", "replacement"]),
+        serde_json::json!(["hard", "alias", "batch-3"]),
+    ]);
+    let mut index = IndexedArchive::prepare(
+        Cursor::new(archive(&serde_json::Value::Array(entries))),
+        false,
+        &fs::File::open(&root.0).unwrap(),
+        None,
+        &|| false,
+    )
+    .unwrap();
+    index
+        .restore_into(&fs::File::open(&target).unwrap(), &|| false)
+        .unwrap();
+    assert_eq!(fs::read_dir(&target).unwrap().count(), 76);
+    for i in 0..75 {
+        let path = target.join(format!("batch-{i}"));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            if i == 3 { "replacement" } else { "old" }
+        );
+        assert_eq!(fs::metadata(path).unwrap().mode() & 0o777, 0o640);
+    }
+    assert_eq!(
+        fs::metadata(target.join("alias")).unwrap().ino(),
+        fs::metadata(target.join("batch-3")).unwrap().ino()
+    );
+}
+
+#[test]
 fn hardlink_to_same_path_preserves_the_existing_file_and_inode() {
     let root = Fixture::new();
     let target = root.0.join("target");
