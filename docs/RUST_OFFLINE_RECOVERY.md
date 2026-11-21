@@ -1,10 +1,9 @@
 # Native offline archive recovery (candidate)
 
-This is the native replacement target for the existing single-archive recovery
-helper. It is **not** a system recovery bundle, setup/activation protocol, or the
-separate full recovery-bundle feature. Service/API/frontend migration remains
-pending the reviewed live-base integration; do not infer that the currently
-published Python download endpoint has already changed.
+This is the Rust standard image's single-archive recovery tool. It is **not** a
+system recovery bundle, setup/activation protocol, or the separate full
+recovery-bundle feature. The published Python releases still use their own
+recovery script; a draft or local build does not change those releases.
 
 ## Save the native candidate's recovery tool
 
@@ -21,13 +20,19 @@ the candidate.
 
 ## Recover an existing backup
 
+After verifying the manifest and checksum, make the downloaded file executable
+(`chmod 700 dockervault-recover`). Then run:
+
 ```sh
-dockervault-recover \
+./dockervault-recover \
   --archive backup.tar.gz.enc \
   --output backup.tar.gz \
   --identity my-private-identity.txt \
   --key backup.tar.gz.key
 ```
+
+Extract the recovered archive only after exit status 0. Verify legacy CBC
+archives against an independently trusted original checksum before extraction.
 
 The identity file accepts ordinary age X25519 identities, comments, and multiple
 identities. Private identities are read locally, not placed in arguments, sent to

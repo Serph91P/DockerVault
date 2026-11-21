@@ -159,7 +159,18 @@ DockerVault supports end-to-end encryption for your backups using **AES-256-CBC*
 
 **Without DockerVault (Disaster Recovery):**
 
-If you lose access to DockerVault, you can still recover encrypted backups using standard command-line tools:
+For a native Rust installation, save `/recovery-tools/manifest.json` and
+`/recovery-tools/dockervault-recover` from the same trusted server before you
+need them. Check the manifest's revision, SHA-256 and Linux architecture against
+the downloaded tool and your recovery machine. Keep the archive, its `.key`
+sidecar and your private age identity. Follow the [native offline recovery command](docs/RUST_OFFLINE_RECOVERY.md#recover-an-existing-backup);
+it needs no running DockerVault, database or network.
+
+**Python reference and fenced rollback images only:**
+
+Save `/recover_backup.py` from that Python installation, or save
+`backend/app/recovery.py` from its trusted release source under that name.
+The Rust image does not serve this URL.
 
 ```bash
 # Prerequisites: age, openssl, Python 3 and recover_backup.py (see below)
@@ -190,10 +201,6 @@ tar xzf backup.tar.gz
 > [!TIP]
 > The downloaded private key file includes these recovery instructions.
 
-Save the standalone script from `/recover_backup.py` on your DockerVault instance
-with your key export, or obtain `backend/app/recovery.py` from the trusted release
-source and save it as `recover_backup.py`. It uses only Python's standard library,
-age and OpenSSL; no running app, database or Python package install is needed.
 New versioned archives authenticate content before output/extraction. Legacy CBC
 archives remain readable with their original raw-DEK sidecars, but have no
 cryptographic authenticity guarantee: compare against an independently trusted
