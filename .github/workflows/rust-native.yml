@@ -128,3 +128,8 @@ jobs:
           '
       - name: Recover an authenticated native backup after a service restart
         run: bash docker/test-native-encrypted-roundtrip.sh dockervault-native-candidate-ci dockervault-recovery-ci
+      - name: Restore plain and encrypted backups from isolated S3 after restart
+        run: |
+          provider=chrislusf/seaweedfs@sha256:6f10079ef97a3fc24574725911e138b9f02eb397aeb69e6b0b9dd09b09d0e0bd
+          docker pull --platform 'linux/${{ matrix.arch }}' "$provider"
+          bash docker/test-native-s3-restart.sh dockervault-native-candidate-ci "$provider"

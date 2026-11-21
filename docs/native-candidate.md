@@ -25,7 +25,9 @@ bash docker/test-native-encrypted-roundtrip.sh \
 
 The runner checks both image revision labels and architectures. It submits an encrypted path backup through authenticated HTTP, changes the source, restarts the app, and verifies that it reopens the same SQLite file. It then stops the app and recovers the original payload byte-for-byte in the separate network-disabled recovery image. The runner creates its own synthetic identity; no production key, copied database, or host mount is needed. The native CI matrix builds without a target and includes this check on Linux amd64 and arm64. Legacy Python integration checks explicitly build `production` from the candidate tree; that image is not fenced and is not the rollback image below.
 
-These checks do not qualify remote-only restore, runtime Docker socket/GID or trusted proxy handling, active-job shutdown or worker drain, recovery downloads, performance, or a deployment cutover.
+`docker/test-native-s3-restart.sh` separately checks plain and encrypted S3-only restore after restart on both native CI architectures, using digest-pinned SeaweedFS on isolated loopback. It requires automatic removal of the local originals after verified sync, unchanged remote archive/sidecar bytes, and restoration of the original bytes, mode and mtime. This is not external provider, remote delete or crash-settlement acceptance.
+
+These checks do not qualify runtime Docker socket/GID or trusted proxy handling, active-job shutdown or worker drain, browser recovery downloads, performance, or a deployment cutover.
 
 ## Release gate bootstrap before cutover (R14)
 
