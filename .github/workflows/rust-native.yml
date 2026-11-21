@@ -46,12 +46,12 @@ jobs:
           test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = 'linux/${{ matrix.arch }}'
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$sha"
           sh docker/test-native-candidate.sh "$image"
-      - name: Exercise policy routes and recovery downloads through the packaged frontend
+      - name: Exercise policy routes through the packaged frontend
         if: matrix.arch == 'amd64'
         run: |
           docker build -f backend/tests/browser.Dockerfile -t dockervault-native-browser-ci .
           bash docker/test-native-policy-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci
-          bash docker/test-native-policy-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci native
+
       - name: Exercise TLS WebSocket session and origin boundaries in Chromium
         if: matrix.arch == 'amd64'
         run: bash docker/test-native-websocket-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci
@@ -97,6 +97,9 @@ jobs:
           test "$(docker image inspect --format '{{.Architecture}}' dockervault-recovery-ci)" = '${{ matrix.arch }}'
       - name: Verify embedded dependencies in shipped native binaries
         run: sh docker/test-native-rust-inventory.sh dockervault-native-candidate-ci dockervault-recovery-ci
+      - name: Execute the downloaded tool with all three documented recovery commands offline
+        if: matrix.arch == 'amd64'
+        run: bash docker/test-native-policy-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci native dockervault-recovery-ci dockervault-rust-ci
       - name: Recover original v1 and legacy bytes without network or Python
         shell: bash
         run: |

@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 # Run the independent browser consumer against the packaged app over isolated loopback.
 set -euo pipefail
-image=${1:?Usage: bash docker/test-native-policy-browser.sh APP_IMAGE BROWSER_IMAGE [policy|native|python [NATIVE_SEED_IMAGE]]}
+image=${1:?Usage: bash docker/test-native-policy-browser.sh APP_IMAGE BROWSER_IMAGE [policy | native [RECOVERY_IMAGE DEV_IMAGE] | python NATIVE_SEED_IMAGE]}
 browser_image=${2:?Browser image required}
 mode=${3:-policy}
+offline_image=
+capture=
 case "$mode" in
     policy) script=native-policy-browser.mjs ;;
-    native|python) script=recovery-download-browser.mjs ;;
+    native)
+        script=recovery-download-browser.mjs
+        offline_image=${4:-}
+        if [[ -n "$offline_image" ]]; then capture=offline; fi
+        ;;
+    python) script=recovery-download-browser.mjs ;;
     *) exit 2 ;;
 esac
 rev=$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")
@@ -56,7 +63,7 @@ if [[ "$mode" == python ]]; then
     test "$(docker exec "$app" stat -c %d:%i /app/data/backup.db)" = "$inode"
 fi
 browser=$(docker create --pull=never --network "container:$app" --entrypoint node \
-    "$browser_image" "/runner/$script" "$id" "$rev" "$mode" "$(docker image inspect -f '{{.Architecture}}' "$id")")
+    "$browser_image" "/runner/$script" "$id" "$rev" "$mode" "$(docker image inspect -f '{{.Architecture}}' "$id")" "$capture")
 docker cp "$(dirname "$0")/$script" "$browser:/runner/$script"
 docker start -a "$browser"
 test "$(docker inspect -f '{{.State.ExitCode}}' "$browser")" = 0
@@ -67,3 +74,7 @@ if [[ "$mode" == python ]]; then
     test "$(docker exec "$app" stat -c %d:%i /app/data/backup.db)" = "$inode"
 fi
 docker stop --time 15 "$app" >/dev/null
+if [[ -n "$offline_image" ]]; then
+    test "$(docker inspect -f '{{.State.Running}}:{{.State.ExitCode}}' "$app")" = false:0
+    bash "$(dirname "$0")/test-native-recovery-instructions.sh" "$browser" "$offline_image" "${5:?Rust development image required}" "$rev"
+fi
