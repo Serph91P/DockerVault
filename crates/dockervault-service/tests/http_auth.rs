@@ -5115,11 +5115,22 @@ async fn configured_s3_listing_preserves_nested_keys_and_reports_rejection() {
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     sqlx::query("INSERT INTO remote_storages(id,name,storage_type,enabled,base_path,s3_bucket,s3_endpoint_url,s3_access_key,s3_secret_key) VALUES (44,'fixture','s3',1,'base','fixture-bucket',?,'fixture-access','fixture-secret')")
         .bind(endpoint).execute(server.db.pool()).await.unwrap();
+    let names: Vec<_> = (0..1001)
+        .map(|index| format!("file-{index:04}.tar"))
+        .chain(["a/same.tar".into(), "b/same.tar".into()])
+        .collect();
+    let first_page = s3_listing_fixture_page(&names[..1000], true);
+    let last_page = s3_listing_fixture_page(&names[1000..], false);
     let provider = tokio::spawn(async move {
         let success = "<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>base/folder/sub/archive.tar</Key><LastModified>2024-01-01T00:00:00Z</LastModified><Size>7</Size></Contents></ListBucketResult>";
-        for (status, body) in [
-            ("200 OK", success),
-            ("403 Forbidden", "<Error><Code>AccessDenied</Code></Error>"),
+        let denied = "<Error><Code>AccessDenied</Code></Error>";
+        for (continuation, status, body) in [
+            (false, "200 OK", success),
+            (false, "403 Forbidden", denied),
+            (false, "200 OK", first_page.as_str()),
+            (true, "200 OK", last_page.as_str()),
+            (false, "200 OK", first_page.as_str()),
+            (true, "403 Forbidden", denied),
         ] {
             let (stream, _) = listener.accept().await.unwrap();
             let mut stream = BufReader::new(stream);
@@ -5128,6 +5139,7 @@ async fn configured_s3_listing_preserves_nested_keys_and_reports_rejection() {
             assert!(line.starts_with("GET /fixture-bucket"));
             assert!(line.contains("list-type=2"));
             assert!(line.contains("prefix=base%2Ffolder%2F"));
+            assert_eq!(line.contains("continuation-token=page-two"), continuation);
             loop {
                 line.clear();
                 assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
@@ -5152,8 +5164,33 @@ async fn configured_s3_listing_preserves_nested_keys_and_reports_rejection() {
         (status, body),
         (502, json!({"detail":"Remote listing failed"}))
     );
+    let (status, _, body) = server.request("GET", path, &headers, None).await;
+    assert_eq!(status, 200);
+    let files: Vec<_> = names
+        .iter()
+        .map(|name| json!({"name":name,"size":17,"is_dir":false,"modified":1704067200.0}))
+        .collect();
+    assert_eq!(body, json!({"path":"folder","files":files}));
+    let (status, _, body) = server.request("GET", path, &headers, None).await;
+    assert_eq!(
+        (status, body),
+        (502, json!({"detail":"Remote listing failed"}))
+    );
     provider.await.unwrap();
     server.close().await;
+}
+
+fn s3_listing_fixture_page(names: &[String], truncated: bool) -> String {
+    use std::fmt::Write as _;
+    let mut body = format!("<ListBucketResult><IsTruncated>{truncated}</IsTruncated>");
+    if truncated {
+        body.push_str("<NextContinuationToken>page-two</NextContinuationToken>");
+    }
+    for name in names {
+        write!(body, "<Contents><Key>base/folder/{name}</Key><LastModified>2024-01-01T00:00:00Z</LastModified><Size>17</Size></Contents>").unwrap();
+    }
+    body.push_str("</ListBucketResult>");
+    body
 }
 
 #[tokio::test]
