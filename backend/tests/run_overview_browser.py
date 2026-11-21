@@ -57,7 +57,6 @@ def main():
             entrypoint=["python", "/app/data/runtime_overview_app.py"],
             environment={
                 "COOKIE_SECURE": "false",
-                "KOMODO_ENABLED": "false",
                 "PYTHONPATH": "/app",
             },
             labels={"dockervault.test": "overview188"},

@@ -11,7 +11,7 @@ const browser = await chromium.launch({ args: ['--no-sandbox','--disable-dev-shm
 const context = await browser.newContext({ acceptDownloads:true, locale:'en-US', viewport:{width:390,height:844} })
 const page = await context.newPage(); page.setDefaultTimeout(15000)
 const check = (value,label) => { assert.ok(value,label); checks.push(label); console.log('PASS '+label) }
-const secrets = [seed, ...['account','bundle','replacement','komodo:key','komodo:secret','pre-hook','post-hook','crypt:password','crypt:salt'].map(marker), ...['local','ssh','sftp','webdav','s3','ftp','rclone'].flatMap(kind=>['password','s3_access_key','s3_secret_key'].map(field=>marker(kind+':'+field)))]
+const secrets = [seed, ...['account','bundle','replacement','pre-hook','post-hook','crypt:password','crypt:salt'].map(marker), ...['local','ssh','sftp','webdav','s3','ftp','rclone'].flatMap(kind=>['password','s3_access_key','s3_secret_key'].map(field=>marker(kind+':'+field)))]
 let ageKey = '', exports = 0, imports = 0, encryptionSetups = 0
 page.on('request', r => { if(r.method()==='POST'){if(r.url().endsWith('/recovery/export'))exports++;if(r.url().endsWith('/recovery/restore'))imports++;if(r.url().endsWith('/encryption/setup'))encryptionSetups++} })
 async function api(path, method='GET', data) { const response=await context.request.fetch(base+'/api/v1'+path,{method,data}); assert.ok(response.ok(),`${method} ${path}: HTTP${response.status()}`); return response.json() }
@@ -126,7 +126,6 @@ try {
   await expect(page.getByRole('heading',{name:'Configuration restored',exact:true})).toBeFocused({timeout:60000})
   check(imports===1,'single actual restore activation request despite double click')
   check(await page.getByText('Storage 7 (rclone): Connected (read observation)',{exact:true}).isVisible(),'contained crypt credentials really read the retained native rclone depot')
-  check(await page.getByText('Komodo: Connected (read observation)',{exact:true}).isVisible(),'contained Komodo credentials really authenticate to isolated HTTP peer')
   await widths('result')
   await page.getByRole('button',{name:'Continue to DockerVault',exact:true}).click()
   await expect(page.getByRole('region',{name:'System recovery',exact:true})).toBeVisible()

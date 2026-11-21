@@ -84,10 +84,6 @@ def service():
 @pytest.fixture
 async def populated(db_session, monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "BACKUP_BASE_PATH", str(tmp_path / "archives"))
-    monkeypatch.setattr(settings, "KOMODO_ENABLED", True)
-    monkeypatch.setattr(settings, "KOMODO_API_URL", "https://komodo.example.invalid")
-    monkeypatch.setattr(settings, "KOMODO_API_KEY", "synthetic-env-key")
-    monkeypatch.setattr(settings, "KOMODO_API_SECRET", "synthetic-env-secret")
     db_session.add(
         db.RetentionPolicy(
             id=7,
@@ -226,7 +222,6 @@ async def populated(db_session, monkeypatch, tmp_path):
             updated_at=NOW,
         )
     )
-    # DB presence, including explicit empty values, wins over environment.
     db_session.add(
         db.AppSettings(id=13, key="komodo_api_secret", value="", updated_at=NOW)
     )
@@ -340,10 +335,10 @@ async def test_every_portable_table_roundtrips_under_new_local_key(
                 row.key: row.value
                 for row in (await session.execute(select(db.AppSettings))).scalars()
             }
-            assert credentials.decrypt_value(values["komodo_api_key"]) == SECRET
-            assert values["komodo_api_secret"] == ""
-            assert values["komodo_api_url"] == "https://komodo.example.invalid"
-            assert values["komodo_enabled"] == "true"
+            assert values == {
+                "storage_check_quota_before_upload": "true",
+                "encryption_onboarding_deferred": "false",
+            }
     finally:
         await destination.dispose()
 

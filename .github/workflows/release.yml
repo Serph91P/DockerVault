@@ -15,88 +15,102 @@ env:
   IMAGE_NAME: ${{ github.repository_owner }}/dockervault
 
 jobs:
-  # Wait for tests to complete when triggered by push
-  wait-for-tests:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
-    outputs:
-      tests_passed: ${{ steps.check.outputs.passed }}
-    steps:
-      - name: Wait for Tests workflow
-        id: check
-        uses: actions/github-script@v9
-        with:
-          script: |
-            // Wait up to 10 minutes for Tests workflow to complete
-            const maxWait = 600000; // 10 minutes
-            const checkInterval = 15000; // 15 seconds
-            let waited = 0;
-            
-            while (waited < maxWait) {
-              const runs = await github.rest.actions.listWorkflowRuns({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: 'test.yml',
-                head_sha: context.sha,
-                per_page: 1
-              });
-              
-              if (runs.data.workflow_runs.length > 0) {
-                const run = runs.data.workflow_runs[0];
-                console.log(`Tests workflow status: ${run.status}, conclusion: ${run.conclusion}`);
-                
-                if (run.status === 'completed') {
-                  if (run.conclusion === 'success') {
-                    core.setOutput('passed', 'true');
-                    return;
-                  } else {
-                    core.setOutput('passed', 'false');
-                    core.setFailed(`Tests failed with conclusion: ${run.conclusion}`);
-                    return;
-                  }
-                }
-              }
-              
-              console.log(`Waiting for Tests workflow... (${waited/1000}s)`);
-              await new Promise(r => setTimeout(r, checkInterval));
-              waited += checkInterval;
-            }
-            
-            core.setFailed('Timed out waiting for Tests workflow');
-            core.setOutput('passed', 'false');
-
   prepare:
     runs-on: ubuntu-latest
-    needs: [wait-for-tests]
+    permissions:
+      actions: read
+      contents: read
     if: |
-      always() && (
-        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
-        (github.event_name == 'push' && needs.wait-for-tests.outputs.tests_passed == 'true') ||
-        (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
-      )
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success')
     outputs:
       version: ${{ steps.version.outputs.version }}
       is_prerelease: ${{ steps.version.outputs.is_prerelease }}
       build_env: ${{ steps.version.outputs.build_env }}
-      branch_name: ${{ steps.version.outputs.branch_name }}
+      source_ref: ${{ steps.source.outputs.ref }}
+      source_sha: ${{ steps.source.outputs.sha }}
+      source_name: ${{ steps.source.outputs.name }}
       docker_tags: ${{ steps.docker_meta.outputs.tags }}
       docker_labels: ${{ steps.docker_meta.outputs.labels }}
     steps:
+      - name: Select release source
+        id: source
+        env:
+          SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          SOURCE_REF: ${{ github.event_name == 'workflow_run' && format('refs/heads/{0}', github.event.workflow_run.head_branch) || github.ref }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          case "$SOURCE_REF" in
+            refs/heads/main|refs/heads/develop|refs/tags/v*) ;;
+            *) exit 1 ;;
+          esac
+          printf 'sha=%s\nref=%s\nname=%s\n' "$SOURCE_SHA" "$SOURCE_REF" "${SOURCE_REF#refs/*/}" >> "$GITHUB_OUTPUT"
+      - name: Require successful Tests and both native architectures on the release SHA
+        id: admission
+        uses: actions/github-script@v9
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          SOURCE_REF: ${{ steps.source.outputs.ref }}
+        with:
+          script: |
+            const {SOURCE_SHA: sha, SOURCE_REF: ref} = process.env;
+            const branches = ref.startsWith('refs/tags/v') ? ['main', 'develop'] : [ref.slice('refs/heads/'.length)];
+            const repository = {owner: context.repo.owner, repo: context.repo.repo};
+            const workflows = ['test.yml', 'rust-native.yml'];
+            const completed = runs => runs.every(run => run?.status === 'completed');
+
+            // Native package builds and tests can outlast the former Tests-only wait.
+            for (let attempt = 0; attempt < 120; attempt++) {
+              const runs = await Promise.all(workflows.map(async workflow_id => {
+                const {data} = await github.rest.actions.listWorkflowRuns({
+                  ...repository, workflow_id, head_sha: sha, event: 'push', per_page: 100
+                });
+                return data.workflow_runs.find(run =>
+                  run.head_sha === sha && run.event === 'push' && branches.includes(run.head_branch));
+              }));
+              for (const [index, run] of runs.entries()) {
+                if (run?.status === 'completed' && run.conclusion !== 'success') {
+                  core.setFailed(`${workflows[index]} did not pass for ${sha}: ${run.conclusion}`);
+                  return;
+                }
+              }
+              if (completed(runs)) {
+                const native = runs[1];
+                const {data} = await github.rest.actions.listJobsForWorkflowRun({
+                  ...repository, run_id: native.id, filter: 'latest', per_page: 100
+                });
+                for (const arch of ['amd64', 'arm64']) {
+                  const name = `Native workspace and offline recovery (${arch})`;
+                  const matches = data.jobs.filter(job => job.name === name);
+                  if (matches.length !== 1 || matches[0].head_sha !== sha ||
+                      matches[0].status !== 'completed' || matches[0].conclusion !== 'success') {
+                    core.setFailed(`${name} did not pass for ${sha}`);
+                    return;
+                  }
+                }
+                core.info(`Release validation passed for ${sha}: Tests run ${runs[0].id}, native run ${native.id}`);
+                return;
+              }
+              if (attempt < 119) await new Promise(resolve => setTimeout(resolve, 15000));
+            }
+            core.setFailed(`Timed out waiting for successful release validation on ${sha}`);
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ steps.source.outputs.sha }}
 
       - name: Determine version
         id: version
+        env:
+          REF: ${{ steps.source.outputs.ref }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
         run: |
-          REF="${{ github.event_name == 'workflow_run' && format('refs/heads/{0}', github.event.workflow_run.head_branch) || github.ref }}"
-          BRANCH="${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref_name }}"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           
           if [[ "$REF" == refs/tags/v* ]]; then
             # Manual tag push - use the tag version directly
-            VERSION=${GITHUB_REF#refs/tags/v}
+            VERSION=${REF#refs/tags/v}
             if [[ "$VERSION" == *-dev* ]] || [[ "$VERSION" == dev.* ]]; then
               IS_PRERELEASE=true
               BUILD_ENV=development
@@ -186,27 +200,26 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
           echo "build_env=${BUILD_ENV}" >> $GITHUB_OUTPUT
-          echo "branch_name=${BRANCH}" >> $GITHUB_OUTPUT
-          echo "Version: ${VERSION}, Prerelease: ${IS_PRERELEASE}, Build Env: ${BUILD_ENV}, Branch: ${BRANCH}"
+          echo "Version: ${VERSION}, Prerelease: ${IS_PRERELEASE}, Build Env: ${BUILD_ENV}, Ref: ${REF}"
 
       - name: Docker metadata
         id: docker_meta
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          context: git
+          labels: |
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
+            org.opencontainers.image.ref.name=${{ steps.source.outputs.name }}
           tags: |
-            # For tagged releases
-            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{major}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            # For main branch
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=stable,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=${{ steps.version.outputs.version }},enable=${{ github.ref == 'refs/heads/main' }}
-            # For develop branch
-            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/develop' }}
-            type=raw,value=${{ steps.version.outputs.version }},enable=${{ github.ref == 'refs/heads/develop' }}
-            # SHA for all
+            type=semver,pattern={{version}},value=${{ steps.source.outputs.name }},enable=${{ startsWith(steps.source.outputs.ref, 'refs/tags/v') }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.source.outputs.name }},enable=${{ startsWith(steps.source.outputs.ref, 'refs/tags/v') }}
+            type=semver,pattern={{major}},value=${{ steps.source.outputs.name }},enable=${{ startsWith(steps.source.outputs.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=${{ steps.source.outputs.ref == 'refs/heads/main' }}
+            type=raw,value=stable,enable=${{ steps.source.outputs.ref == 'refs/heads/main' }}
+            type=raw,value=${{ steps.version.outputs.version }},enable=${{ steps.source.outputs.ref == 'refs/heads/main' }}
+            type=raw,value=dev,enable=${{ steps.source.outputs.ref == 'refs/heads/develop' }}
+            type=raw,value=${{ steps.version.outputs.version }},enable=${{ steps.source.outputs.ref == 'refs/heads/develop' }}
             type=sha,prefix=sha-
 
   build-and-push:
@@ -220,7 +233,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ needs.prepare.outputs.source_sha }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -241,14 +254,16 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          sbom: true
+          provenance: mode=min
           tags: ${{ needs.prepare.outputs.docker_tags }}
           labels: ${{ needs.prepare.outputs.docker_labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
             VERSION=${{ needs.prepare.outputs.version }}
-            COMMIT_SHA=${{ github.sha }}
-            BRANCH=${{ github.ref_name }}
+            COMMIT_SHA=${{ needs.prepare.outputs.source_sha }}
+            BRANCH=${{ needs.prepare.outputs.source_name }}
             BUILD_ENV=${{ needs.prepare.outputs.build_env }}
 
   create-release:
@@ -263,13 +278,14 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ needs.prepare.outputs.source_sha }}
 
       - name: Generate Changelog
         id: changelog
+        env:
+          BRANCH: ${{ needs.prepare.outputs.source_name }}
         run: |
           CURRENT_VERSION="${{ needs.prepare.outputs.version }}"
-          BRANCH="${{ github.ref_name }}"
           
           # Find the last tag for changelog comparison
           if [[ "$BRANCH" == "develop" ]]; then
@@ -370,12 +386,12 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}', needs.prepare.outputs.version) }}
-          target_commitish: ${{ github.sha }}
+          tag_name: ${{ startsWith(needs.prepare.outputs.source_ref, 'refs/tags/') && needs.prepare.outputs.source_name || format('v{0}', needs.prepare.outputs.version) }}
+          target_commitish: ${{ needs.prepare.outputs.source_sha }}
           name: ${{ needs.prepare.outputs.is_prerelease == 'true' && format('Development Build {0}', needs.prepare.outputs.version) || format('Release {0}', needs.prepare.outputs.version) }}
           body_path: release_notes.md
           draft: false
           prerelease: ${{ needs.prepare.outputs.is_prerelease }}
-          make_latest: ${{ needs.prepare.outputs.branch_name == 'main' }}
+          make_latest: ${{ needs.prepare.outputs.source_ref == 'refs/heads/main' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

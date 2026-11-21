@@ -57,7 +57,7 @@ def main():
                     auto_remove=True,
                     detach=True,
                     network_mode="none",
-                    environment={"COOKIE_SECURE": "false", "KOMODO_ENABLED": "false"},
+                    environment={"COOKIE_SECURE": "false"},
                     labels={"dockervault.test": "storage-142-recovery"},
                 )
                 for _ in range(90):

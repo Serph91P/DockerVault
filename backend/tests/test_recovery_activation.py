@@ -79,10 +79,6 @@ async def test_session_can_be_staged_without_committing_account(db_session):
 async def file_database(tmp_path, monkeypatch):
     from app.config import settings
 
-    monkeypatch.setattr(settings, "KOMODO_ENABLED", False)
-    monkeypatch.setattr(settings, "KOMODO_API_URL", "")
-    monkeypatch.setattr(settings, "KOMODO_API_KEY", "")
-    monkeypatch.setattr(settings, "KOMODO_API_SECRET", "")
     monkeypatch.setattr(settings, "BACKUP_BASE_PATH", str(tmp_path / "archives"))
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'live.db'}")
     async with engine.begin() as conn:

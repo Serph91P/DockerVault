@@ -28,7 +28,6 @@ def main():
             entrypoint=["python", "/app/data/runtime_protection_app.py"],
             environment={
                 "COOKIE_SECURE": "false",
-                "KOMODO_ENABLED": "false",
                 "PYTHONPATH": "/app",
                 "ALLOWED_HOOK_COMMANDS": "pg_dump,/usr/bin/touch",
             },

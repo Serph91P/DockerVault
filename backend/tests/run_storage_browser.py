@@ -64,7 +64,7 @@ def main():
         auto_remove=True,
         network_mode="none",
         labels={"dockervault.test": "storage-141"},
-        environment={"COOKIE_SECURE": "false", "KOMODO_ENABLED": "false"},
+        environment={"COOKIE_SECURE": "false"},
     )
     try:
         for _ in range(60):

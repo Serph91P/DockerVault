@@ -1,0 +1,1006 @@
+{
+  "source": "fc1b3392fec6ecf9562ef88875ab143858d637bf",
+  "tables": {
+    "retention_policies": [
+      {
+        "name": "id",
+        "type": "Integer",
+        "nullable": false,
+        "primary_key": true,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "name",
+        "type": "String",
+        "nullable": false,
+        "primary_key": false,
+        "length": 255,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "description",
+        "type": "Text",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "keep_last",
+        "type": "Integer",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "keep_daily",
+        "type": "Integer",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "keep_weekly",
+        "type": "Integer",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "keep_monthly",
+        "type": "Integer",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "keep_yearly",
+        "type": "Integer",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "max_age_days",
+        "type": "Integer",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "created_at",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "updated_at",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      }
+    ],
+    "schedules": [
+      {
+        "name": "id",
+        "type": "Integer",
+        "nullable": false,
+        "primary_key": true,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "name",
+        "type": "String",
+        "nullable": false,
+        "primary_key": false,
+        "length": 255,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "cron_expression",
+        "type": "String",
+        "nullable": false,
+        "primary_key": false,
+        "length": 100,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "description",
+        "type": "Text",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "enabled",
+        "type": "Boolean",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "created_at",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "updated_at",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      }
+    ],
+    "remote_storages": [
+      {
+        "name": "id",
+        "type": "Integer",
+        "nullable": false,
+        "primary_key": true,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "name",
+        "type": "String",
+        "nullable": false,
+        "primary_key": false,
+        "length": 255,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "storage_type",
+        "type": "String",
+        "nullable": false,
+        "primary_key": false,
+        "length": 50,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "enabled",
+        "type": "Boolean",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "host",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 255,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "port",
+        "type": "Integer",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "username",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 255,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "password",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 255,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "base_path",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 1024,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "ssh_key_path",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 1024,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "s3_bucket",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 255,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "s3_region",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 50,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "s3_access_key",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 255,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "s3_secret_key",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 255,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "s3_endpoint_url",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 1024,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "webdav_url",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 1024,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "rclone_remote",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 255,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "created_at",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "updated_at",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      }
+    ],
+    "encryption_config": [
+      {
+        "name": "id",
+        "type": "Integer",
+        "nullable": false,
+        "primary_key": true,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "public_key",
+        "type": "Text",
+        "nullable": false,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "key_created_at",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "encryption_enabled",
+        "type": "Boolean",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "setup_completed",
+        "type": "Boolean",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "created_at",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "updated_at",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      }
+    ],
+    "app_settings": [
+      {
+        "name": "id",
+        "type": "Integer",
+        "nullable": false,
+        "primary_key": true,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "key",
+        "type": "String",
+        "nullable": false,
+        "primary_key": false,
+        "length": 100,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "value",
+        "type": "Text",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "updated_at",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      }
+    ],
+    "backup_targets": [
+      {
+        "name": "id",
+        "type": "Integer",
+        "nullable": false,
+        "primary_key": true,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "name",
+        "type": "String",
+        "nullable": false,
+        "primary_key": false,
+        "length": 255,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "target_type",
+        "type": "String",
+        "nullable": false,
+        "primary_key": false,
+        "length": 50,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "container_id",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 255,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "container_name",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 255,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "volume_name",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 255,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "host_path",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 1024,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "stack_name",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 255,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "schedule_id",
+        "type": "Integer",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": [
+          "schedules.id"
+        ]
+      },
+      {
+        "name": "schedule_cron",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 100,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "enabled",
+        "type": "Boolean",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "removed_at",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "retention_policy_id",
+        "type": "Integer",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": [
+          "retention_policies.id"
+        ]
+      },
+      {
+        "name": "dependencies",
+        "type": "JSON",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "selected_volumes",
+        "type": "JSON",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "include_paths",
+        "type": "JSON",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "exclude_paths",
+        "type": "JSON",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "per_volume_rules",
+        "type": "JSON",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "pre_backup_command",
+        "type": "Text",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "post_backup_command",
+        "type": "Text",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "stop_container",
+        "type": "Boolean",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "compression_enabled",
+        "type": "Boolean",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "sync_to_remote",
+        "type": "Boolean",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "remote_storage_ids",
+        "type": "JSON",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "delete_local_after_sync",
+        "type": "Boolean",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "created_at",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "updated_at",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      }
+    ],
+    "backups": [
+      {
+        "name": "id",
+        "type": "Integer",
+        "nullable": false,
+        "primary_key": true,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "target_id",
+        "type": "Integer",
+        "nullable": false,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": [
+          "backup_targets.id"
+        ]
+      },
+      {
+        "name": "backup_type",
+        "type": "Enum",
+        "nullable": true,
+        "primary_key": false,
+        "length": 11,
+        "enum_values": [
+          "full",
+          "incremental"
+        ],
+        "foreign_keys": []
+      },
+      {
+        "name": "status",
+        "type": "Enum",
+        "nullable": true,
+        "primary_key": false,
+        "length": 9,
+        "enum_values": [
+          "pending",
+          "running",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "foreign_keys": []
+      },
+      {
+        "name": "file_path",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 1024,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "file_size",
+        "type": "Integer",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "checksum",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 64,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "encrypted",
+        "type": "Boolean",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "encryption_key_path",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 1024,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "started_at",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "completed_at",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "duration_seconds",
+        "type": "Integer",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "error_message",
+        "type": "Text",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "retry_count",
+        "type": "Integer",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "backup_metadata",
+        "type": "JSON",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "created_at",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      }
+    ],
+    "backup_schedules": [
+      {
+        "name": "id",
+        "type": "Integer",
+        "nullable": false,
+        "primary_key": true,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "target_id",
+        "type": "Integer",
+        "nullable": false,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": [
+          "backup_targets.id"
+        ]
+      },
+      {
+        "name": "cron_expression",
+        "type": "String",
+        "nullable": false,
+        "primary_key": false,
+        "length": 100,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "next_run",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "last_run",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "enabled",
+        "type": "Boolean",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "created_at",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "updated_at",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      }
+    ],
+    "backup_storage_syncs": [
+      {
+        "name": "id",
+        "type": "Integer",
+        "nullable": false,
+        "primary_key": true,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "backup_id",
+        "type": "Integer",
+        "nullable": false,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": [
+          "backups.id"
+        ]
+      },
+      {
+        "name": "storage_id",
+        "type": "Integer",
+        "nullable": false,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": [
+          "remote_storages.id"
+        ]
+      },
+      {
+        "name": "remote_path",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 1024,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "synced_at",
+        "type": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "sync_status",
+        "type": "String",
+        "nullable": true,
+        "primary_key": false,
+        "length": 50,
+        "enum_values": null,
+        "foreign_keys": []
+      },
+      {
+        "name": "error_message",
+        "type": "Text",
+        "nullable": true,
+        "primary_key": false,
+        "length": null,
+        "enum_values": null,
+        "foreign_keys": []
+      }
+    ]
+  },
+  "portable_settings": [
+    "encryption_onboarding_deferred",
+    "komodo_api_key",
+    "komodo_api_secret",
+    "komodo_api_url",
+    "komodo_enabled",
+    "storage_check_quota_before_upload"
+  ]
+}

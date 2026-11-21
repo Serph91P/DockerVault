@@ -1,0 +1,1709 @@
+{
+  "scope": "isolated synthetic migration only, not service startup/recovery",
+  "schema": [
+    {
+      "type": "index",
+      "name": "ix_storage_operation_items_operation_id",
+      "tbl_name": "storage_operation_items",
+      "sql": "CREATE INDEX ix_storage_operation_items_operation_id ON storage_operation_items (operation_id)"
+    },
+    {
+      "type": "index",
+      "name": "ix_storage_operations_storage_id",
+      "tbl_name": "storage_operations",
+      "sql": "CREATE INDEX ix_storage_operations_storage_id ON storage_operations (storage_id)"
+    },
+    {
+      "type": "index",
+      "name": "ix_storage_operations_user_id",
+      "tbl_name": "storage_operations",
+      "sql": "CREATE INDEX ix_storage_operations_user_id ON storage_operations (user_id)"
+    },
+    {
+      "type": "table",
+      "name": "app_settings",
+      "tbl_name": "app_settings",
+      "sql": "CREATE TABLE app_settings (\n\tid INTEGER NOT NULL,\n\t\"key\" VARCHAR(100) NOT NULL,\n\tvalue TEXT,\n\tupdated_at DATETIME,\n\tPRIMARY KEY (id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "backup_logs",
+      "tbl_name": "backup_logs",
+      "sql": "CREATE TABLE backup_logs (\n\tid INTEGER NOT NULL,\n\tbackup_id INTEGER NOT NULL,\n\tlevel VARCHAR(7),\n\tstep VARCHAR(50) NOT NULL,\n\tmessage TEXT NOT NULL,\n\tdetails JSON,\n\tcreated_at DATETIME,\n\tPRIMARY KEY (id),\n\tFOREIGN KEY(backup_id) REFERENCES backups (id) ON DELETE CASCADE\n)"
+    },
+    {
+      "type": "table",
+      "name": "backup_schedules",
+      "tbl_name": "backup_schedules",
+      "sql": "CREATE TABLE backup_schedules (\n\tid INTEGER NOT NULL,\n\ttarget_id INTEGER NOT NULL,\n\tcron_expression VARCHAR(100) NOT NULL,\n\tnext_run DATETIME,\n\tlast_run DATETIME,\n\tenabled BOOLEAN,\n\tcreated_at DATETIME,\n\tupdated_at DATETIME,\n\tPRIMARY KEY (id),\n\tFOREIGN KEY(target_id) REFERENCES backup_targets (id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "backup_storage_syncs",
+      "tbl_name": "backup_storage_syncs",
+      "sql": "CREATE TABLE backup_storage_syncs (\n\tid INTEGER NOT NULL,\n\tbackup_id INTEGER NOT NULL,\n\tstorage_id INTEGER NOT NULL,\n\tremote_path VARCHAR(1024),\n\tsynced_at DATETIME,\n\tsync_status VARCHAR(50),\n\terror_message TEXT,\n\tPRIMARY KEY (id),\n\tFOREIGN KEY(backup_id) REFERENCES backups (id) ON DELETE CASCADE,\n\tFOREIGN KEY(storage_id) REFERENCES remote_storages (id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "backup_targets",
+      "tbl_name": "backup_targets",
+      "sql": "CREATE TABLE \"backup_targets\" (\n\tid INTEGER NOT NULL,\n\tname VARCHAR(255) NOT NULL,\n\ttarget_type VARCHAR(50) NOT NULL,\n\tcontainer_id VARCHAR(255),\n\tcontainer_name VARCHAR(255),\n\tvolume_name VARCHAR(255),\n\thost_path VARCHAR(1024),\n\tstack_name VARCHAR(255),\n\tschedule_cron VARCHAR(100),\n\tenabled BOOLEAN,\n\tdependencies JSON,\n\tpre_backup_command TEXT,\n\tpost_backup_command TEXT,\n\tstop_container BOOLEAN,\n\tcompression_enabled BOOLEAN,\n\tsync_to_remote BOOLEAN,\n\tremote_storage_ids JSON,\n\tcreated_at DATETIME,\n\tupdated_at DATETIME, schedule_id INTEGER, retention_policy_id INTEGER, selected_volumes JSON DEFAULT '[]', include_paths JSON DEFAULT '[]', exclude_paths JSON DEFAULT '[]', per_volume_rules JSON DEFAULT '{}', delete_local_after_sync BOOLEAN DEFAULT 0, removed_at DATETIME,\n\tPRIMARY KEY (id)\n, FOREIGN KEY (\"schedule_id\") REFERENCES \"schedules\" (id), FOREIGN KEY (\"retention_policy_id\") REFERENCES \"retention_policies\" (id))"
+    },
+    {
+      "type": "table",
+      "name": "backups",
+      "tbl_name": "backups",
+      "sql": "CREATE TABLE backups (\n\tid INTEGER NOT NULL,\n\ttarget_id INTEGER NOT NULL,\n\tbackup_type VARCHAR(11),\n\tstatus VARCHAR(9),\n\tfile_path VARCHAR(1024),\n\tfile_size INTEGER,\n\tchecksum VARCHAR(64),\n\tstarted_at DATETIME,\n\tcompleted_at DATETIME,\n\tduration_seconds INTEGER,\n\terror_message TEXT,\n\tretry_count INTEGER,\n\tbackup_metadata JSON,\n\tcreated_at DATETIME, encrypted BOOLEAN DEFAULT 0, encryption_key_path VARCHAR(1024),\n\tPRIMARY KEY (id),\n\tFOREIGN KEY(target_id) REFERENCES backup_targets (id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "catalog_quarantine",
+      "tbl_name": "catalog_quarantine",
+      "sql": "CREATE TABLE catalog_quarantine (table_name TEXT NOT NULL, row_id INTEGER NOT NULL, row_json TEXT NOT NULL, reason TEXT NOT NULL, PRIMARY KEY (table_name, row_id))"
+    },
+    {
+      "type": "table",
+      "name": "encryption_config",
+      "tbl_name": "encryption_config",
+      "sql": "CREATE TABLE encryption_config (\n\tid INTEGER NOT NULL,\n\tpublic_key TEXT NOT NULL,\n\tkey_created_at DATETIME,\n\tencryption_enabled BOOLEAN,\n\tsetup_completed BOOLEAN,\n\tcreated_at DATETIME,\n\tupdated_at DATETIME,\n\tPRIMARY KEY (id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "remote_storages",
+      "tbl_name": "remote_storages",
+      "sql": "CREATE TABLE remote_storages (\n\tid INTEGER NOT NULL,\n\tname VARCHAR(255) NOT NULL,\n\tstorage_type VARCHAR(50) NOT NULL,\n\tenabled BOOLEAN,\n\thost VARCHAR(255),\n\tport INTEGER,\n\tusername VARCHAR(255),\n\tpassword VARCHAR(255),\n\tbase_path VARCHAR(1024),\n\tssh_key_path VARCHAR(1024),\n\ts3_bucket VARCHAR(255),\n\ts3_region VARCHAR(50),\n\ts3_access_key VARCHAR(255),\n\ts3_secret_key VARCHAR(255),\n\ts3_endpoint_url VARCHAR(1024),\n\twebdav_url VARCHAR(1024),\n\trclone_remote VARCHAR(255),\n\tcreated_at DATETIME,\n\tupdated_at DATETIME,\n\tPRIMARY KEY (id),\n\tUNIQUE (name)\n)"
+    },
+    {
+      "type": "table",
+      "name": "retention_policies",
+      "tbl_name": "retention_policies",
+      "sql": "CREATE TABLE retention_policies (\n\tid INTEGER NOT NULL,\n\tname VARCHAR(255) NOT NULL,\n\tdescription TEXT,\n\tkeep_daily INTEGER,\n\tkeep_weekly INTEGER,\n\tkeep_monthly INTEGER,\n\tkeep_yearly INTEGER,\n\tmax_age_days INTEGER,\n\tcreated_at DATETIME,\n\tupdated_at DATETIME, keep_last INTEGER DEFAULT 0,\n\tPRIMARY KEY (id),\n\tUNIQUE (name)\n)"
+    },
+    {
+      "type": "table",
+      "name": "schedules",
+      "tbl_name": "schedules",
+      "sql": "CREATE TABLE schedules (\n\tid INTEGER NOT NULL,\n\tname VARCHAR(255) NOT NULL,\n\tcron_expression VARCHAR(100) NOT NULL,\n\tdescription TEXT,\n\tenabled BOOLEAN,\n\tcreated_at DATETIME,\n\tupdated_at DATETIME,\n\tPRIMARY KEY (id),\n\tUNIQUE (name)\n)"
+    },
+    {
+      "type": "table",
+      "name": "schema_migrations",
+      "tbl_name": "schema_migrations",
+      "sql": "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+    },
+    {
+      "type": "table",
+      "name": "sessions",
+      "tbl_name": "sessions",
+      "sql": "CREATE TABLE sessions (\n\tid INTEGER NOT NULL,\n\tuser_id INTEGER NOT NULL,\n\ttoken VARCHAR(255) NOT NULL,\n\texpires_at DATETIME NOT NULL,\n\tcreated_at DATETIME,\n\tPRIMARY KEY (id),\n\tFOREIGN KEY(user_id) REFERENCES users (id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "storage_operation_items",
+      "tbl_name": "storage_operation_items",
+      "sql": "CREATE TABLE storage_operation_items (\n\tid INTEGER NOT NULL, \n\toperation_id VARCHAR(36) NOT NULL, \n\tpath VARCHAR(1024) NOT NULL, \n\tstate VARCHAR(16) NOT NULL, \n\terror VARCHAR(255), \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(operation_id) REFERENCES storage_operations (id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "storage_operations",
+      "tbl_name": "storage_operations",
+      "sql": "CREATE TABLE storage_operations (\n\tid VARCHAR(36) NOT NULL, \n\tuser_id INTEGER NOT NULL, \n\trequest_id VARCHAR(36) NOT NULL, \n\tpayload JSON NOT NULL, \n\tstorage_identity JSON NOT NULL, \n\tparent_id VARCHAR(36), \n\taction VARCHAR(32) NOT NULL, \n\tstorage_id VARCHAR(32) NOT NULL, \n\tpath VARCHAR(1024) NOT NULL, \n\tstate VARCHAR(16) NOT NULL, \n\tstage VARCHAR(32) NOT NULL, \n\ttotal INTEGER NOT NULL, \n\tcompleted INTEGER NOT NULL, \n\tsucceeded INTEGER NOT NULL, \n\tfailed INTEGER NOT NULL, \n\tskipped INTEGER NOT NULL, \n\tunknown INTEGER NOT NULL, \n\tcancel_requested BOOLEAN NOT NULL, \n\tcreated_at DATETIME NOT NULL, \n\tupdated_at DATETIME NOT NULL, \n\tfinished_at DATETIME, \n\tPRIMARY KEY (id), \n\tUNIQUE (user_id, request_id), \n\tFOREIGN KEY(user_id) REFERENCES users (id), \n\tFOREIGN KEY(parent_id) REFERENCES storage_operations (id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "users",
+      "tbl_name": "users",
+      "sql": "CREATE TABLE users (\n\tid INTEGER NOT NULL,\n\tusername VARCHAR(255) NOT NULL,\n\tpassword_hash VARCHAR(255) NOT NULL,\n\tis_admin BOOLEAN,\n\tcreated_at DATETIME,\n\tupdated_at DATETIME,\n\tlast_login DATETIME,\n\tPRIMARY KEY (id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "workload_operations",
+      "tbl_name": "workload_operations",
+      "sql": "CREATE TABLE workload_operations (\n\tid INTEGER NOT NULL, \n\tbackup_id INTEGER, \n\tkind VARCHAR(16) NOT NULL, \n\tphase VARCHAR(32) NOT NULL, \n\tstate VARCHAR(32) NOT NULL, \n\tresources JSON NOT NULL, \n\terror TEXT, \n\tcreated_at DATETIME, \n\tPRIMARY KEY (id), \n\tFOREIGN KEY(backup_id) REFERENCES backups (id) ON DELETE SET NULL\n)"
+    }
+  ],
+  "tables": {
+    "app_settings": {
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "key",
+          "type": "VARCHAR(100)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "value",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "updated_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ],
+      "foreign_keys": [],
+      "rows": []
+    },
+    "backup_logs": {
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "backup_id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "level",
+          "type": "VARCHAR(7)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "step",
+          "type": "VARCHAR(50)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "message",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "details",
+          "type": "JSON",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ],
+      "foreign_keys": [
+        {
+          "id": 0,
+          "seq": 0,
+          "table": "backups",
+          "from": "backup_id",
+          "to": "id",
+          "on_update": "NO ACTION",
+          "on_delete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "rows": []
+    },
+    "backup_schedules": {
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "target_id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "cron_expression",
+          "type": "VARCHAR(100)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "next_run",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "last_run",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "enabled",
+          "type": "BOOLEAN",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "updated_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ],
+      "foreign_keys": [
+        {
+          "id": 0,
+          "seq": 0,
+          "table": "backup_targets",
+          "from": "target_id",
+          "to": "id",
+          "on_update": "NO ACTION",
+          "on_delete": "NO ACTION",
+          "match": "NONE"
+        }
+      ],
+      "rows": []
+    },
+    "backup_storage_syncs": {
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "backup_id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "storage_id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "remote_path",
+          "type": "VARCHAR(1024)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "synced_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "sync_status",
+          "type": "VARCHAR(50)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "error_message",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ],
+      "foreign_keys": [
+        {
+          "id": 0,
+          "seq": 0,
+          "table": "remote_storages",
+          "from": "storage_id",
+          "to": "id",
+          "on_update": "NO ACTION",
+          "on_delete": "NO ACTION",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "seq": 0,
+          "table": "backups",
+          "from": "backup_id",
+          "to": "id",
+          "on_update": "NO ACTION",
+          "on_delete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "rows": []
+    },
+    "backup_targets": {
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "name",
+          "type": "VARCHAR(255)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "target_type",
+          "type": "VARCHAR(50)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "container_id",
+          "type": "VARCHAR(255)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "container_name",
+          "type": "VARCHAR(255)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "volume_name",
+          "type": "VARCHAR(255)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "host_path",
+          "type": "VARCHAR(1024)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "stack_name",
+          "type": "VARCHAR(255)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "schedule_cron",
+          "type": "VARCHAR(100)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "enabled",
+          "type": "BOOLEAN",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "dependencies",
+          "type": "JSON",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "pre_backup_command",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 12,
+          "name": "post_backup_command",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 13,
+          "name": "stop_container",
+          "type": "BOOLEAN",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 14,
+          "name": "compression_enabled",
+          "type": "BOOLEAN",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 15,
+          "name": "sync_to_remote",
+          "type": "BOOLEAN",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 16,
+          "name": "remote_storage_ids",
+          "type": "JSON",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 17,
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 18,
+          "name": "updated_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 19,
+          "name": "schedule_id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 20,
+          "name": "retention_policy_id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 21,
+          "name": "selected_volumes",
+          "type": "JSON",
+          "notnull": 0,
+          "dflt_value": "'[]'",
+          "pk": 0
+        },
+        {
+          "cid": 22,
+          "name": "include_paths",
+          "type": "JSON",
+          "notnull": 0,
+          "dflt_value": "'[]'",
+          "pk": 0
+        },
+        {
+          "cid": 23,
+          "name": "exclude_paths",
+          "type": "JSON",
+          "notnull": 0,
+          "dflt_value": "'[]'",
+          "pk": 0
+        },
+        {
+          "cid": 24,
+          "name": "per_volume_rules",
+          "type": "JSON",
+          "notnull": 0,
+          "dflt_value": "'{}'",
+          "pk": 0
+        },
+        {
+          "cid": 25,
+          "name": "delete_local_after_sync",
+          "type": "BOOLEAN",
+          "notnull": 0,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 26,
+          "name": "removed_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ],
+      "foreign_keys": [
+        {
+          "id": 0,
+          "seq": 0,
+          "table": "retention_policies",
+          "from": "retention_policy_id",
+          "to": "id",
+          "on_update": "NO ACTION",
+          "on_delete": "NO ACTION",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "seq": 0,
+          "table": "schedules",
+          "from": "schedule_id",
+          "to": "id",
+          "on_update": "NO ACTION",
+          "on_delete": "NO ACTION",
+          "match": "NONE"
+        }
+      ],
+      "rows": []
+    },
+    "backups": {
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "target_id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "backup_type",
+          "type": "VARCHAR(11)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "status",
+          "type": "VARCHAR(9)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "file_path",
+          "type": "VARCHAR(1024)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "file_size",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "checksum",
+          "type": "VARCHAR(64)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "started_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "completed_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "duration_seconds",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "error_message",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "retry_count",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 12,
+          "name": "backup_metadata",
+          "type": "JSON",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 13,
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 14,
+          "name": "encrypted",
+          "type": "BOOLEAN",
+          "notnull": 0,
+          "dflt_value": "0",
+          "pk": 0
+        },
+        {
+          "cid": 15,
+          "name": "encryption_key_path",
+          "type": "VARCHAR(1024)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ],
+      "foreign_keys": [
+        {
+          "id": 0,
+          "seq": 0,
+          "table": "backup_targets",
+          "from": "target_id",
+          "to": "id",
+          "on_update": "NO ACTION",
+          "on_delete": "NO ACTION",
+          "match": "NONE"
+        }
+      ],
+      "rows": []
+    },
+    "catalog_quarantine": {
+      "columns": [
+        {
+          "cid": 0,
+          "name": "table_name",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "row_id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 2
+        },
+        {
+          "cid": 2,
+          "name": "row_json",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "reason",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ],
+      "foreign_keys": [],
+      "rows": []
+    },
+    "encryption_config": {
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "public_key",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "key_created_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "encryption_enabled",
+          "type": "BOOLEAN",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "setup_completed",
+          "type": "BOOLEAN",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "updated_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ],
+      "foreign_keys": [],
+      "rows": []
+    },
+    "remote_storages": {
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "name",
+          "type": "VARCHAR(255)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "storage_type",
+          "type": "VARCHAR(50)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "enabled",
+          "type": "BOOLEAN",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "host",
+          "type": "VARCHAR(255)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "port",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "username",
+          "type": "VARCHAR(255)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "password",
+          "type": "VARCHAR(255)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "base_path",
+          "type": "VARCHAR(1024)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "ssh_key_path",
+          "type": "VARCHAR(1024)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "s3_bucket",
+          "type": "VARCHAR(255)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "s3_region",
+          "type": "VARCHAR(50)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 12,
+          "name": "s3_access_key",
+          "type": "VARCHAR(255)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 13,
+          "name": "s3_secret_key",
+          "type": "VARCHAR(255)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 14,
+          "name": "s3_endpoint_url",
+          "type": "VARCHAR(1024)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 15,
+          "name": "webdav_url",
+          "type": "VARCHAR(1024)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 16,
+          "name": "rclone_remote",
+          "type": "VARCHAR(255)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 17,
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 18,
+          "name": "updated_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ],
+      "foreign_keys": [],
+      "rows": []
+    },
+    "retention_policies": {
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "name",
+          "type": "VARCHAR(255)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "description",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "keep_daily",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "keep_weekly",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "keep_monthly",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "keep_yearly",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "max_age_days",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "updated_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "keep_last",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": "0",
+          "pk": 0
+        }
+      ],
+      "foreign_keys": [],
+      "rows": []
+    },
+    "schedules": {
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "name",
+          "type": "VARCHAR(255)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "cron_expression",
+          "type": "VARCHAR(100)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "description",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "enabled",
+          "type": "BOOLEAN",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "updated_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ],
+      "foreign_keys": [],
+      "rows": []
+    },
+    "schema_migrations": {
+      "columns": [
+        {
+          "cid": 0,
+          "name": "version",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "applied_at",
+          "type": "TEXT",
+          "notnull": 1,
+          "dflt_value": "CURRENT_TIMESTAMP",
+          "pk": 0
+        }
+      ],
+      "foreign_keys": [],
+      "rows": [
+        {
+          "version": 1,
+          "applied_at": "2026-11-09 08:22:14"
+        },
+        {
+          "version": 2,
+          "applied_at": "2026-11-09 08:22:14"
+        },
+        {
+          "version": 3,
+          "applied_at": "2026-11-09 08:22:14"
+        },
+        {
+          "version": 4,
+          "applied_at": "2026-11-09 08:22:14"
+        },
+        {
+          "version": 5,
+          "applied_at": "2026-11-09 08:22:14"
+        },
+        {
+          "version": 6,
+          "applied_at": "2026-11-09 08:22:14"
+        },
+        {
+          "version": 7,
+          "applied_at": "2026-11-09 08:22:14"
+        }
+      ]
+    },
+    "sessions": {
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "user_id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "token",
+          "type": "VARCHAR(255)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "expires_at",
+          "type": "DATETIME",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ],
+      "foreign_keys": [
+        {
+          "id": 0,
+          "seq": 0,
+          "table": "users",
+          "from": "user_id",
+          "to": "id",
+          "on_update": "NO ACTION",
+          "on_delete": "NO ACTION",
+          "match": "NONE"
+        }
+      ],
+      "rows": []
+    },
+    "storage_operation_items": {
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "operation_id",
+          "type": "VARCHAR(36)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "path",
+          "type": "VARCHAR(1024)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "state",
+          "type": "VARCHAR(16)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "error",
+          "type": "VARCHAR(255)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ],
+      "foreign_keys": [
+        {
+          "id": 0,
+          "seq": 0,
+          "table": "storage_operations",
+          "from": "operation_id",
+          "to": "id",
+          "on_update": "NO ACTION",
+          "on_delete": "NO ACTION",
+          "match": "NONE"
+        }
+      ],
+      "rows": []
+    },
+    "storage_operations": {
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "VARCHAR(36)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "user_id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "request_id",
+          "type": "VARCHAR(36)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "payload",
+          "type": "JSON",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "storage_identity",
+          "type": "JSON",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "parent_id",
+          "type": "VARCHAR(36)",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "action",
+          "type": "VARCHAR(32)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "storage_id",
+          "type": "VARCHAR(32)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 8,
+          "name": "path",
+          "type": "VARCHAR(1024)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 9,
+          "name": "state",
+          "type": "VARCHAR(16)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 10,
+          "name": "stage",
+          "type": "VARCHAR(32)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 11,
+          "name": "total",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 12,
+          "name": "completed",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 13,
+          "name": "succeeded",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 14,
+          "name": "failed",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 15,
+          "name": "skipped",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 16,
+          "name": "unknown",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 17,
+          "name": "cancel_requested",
+          "type": "BOOLEAN",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 18,
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 19,
+          "name": "updated_at",
+          "type": "DATETIME",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 20,
+          "name": "finished_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ],
+      "foreign_keys": [
+        {
+          "id": 0,
+          "seq": 0,
+          "table": "storage_operations",
+          "from": "parent_id",
+          "to": "id",
+          "on_update": "NO ACTION",
+          "on_delete": "NO ACTION",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "seq": 0,
+          "table": "users",
+          "from": "user_id",
+          "to": "id",
+          "on_update": "NO ACTION",
+          "on_delete": "NO ACTION",
+          "match": "NONE"
+        }
+      ],
+      "rows": []
+    },
+    "users": {
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "username",
+          "type": "VARCHAR(255)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "password_hash",
+          "type": "VARCHAR(255)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "is_admin",
+          "type": "BOOLEAN",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "updated_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "last_login",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ],
+      "foreign_keys": [],
+      "rows": []
+    },
+    "workload_operations": {
+      "columns": [
+        {
+          "cid": 0,
+          "name": "id",
+          "type": "INTEGER",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 1
+        },
+        {
+          "cid": 1,
+          "name": "backup_id",
+          "type": "INTEGER",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 2,
+          "name": "kind",
+          "type": "VARCHAR(16)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 3,
+          "name": "phase",
+          "type": "VARCHAR(32)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 4,
+          "name": "state",
+          "type": "VARCHAR(32)",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 5,
+          "name": "resources",
+          "type": "JSON",
+          "notnull": 1,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 6,
+          "name": "error",
+          "type": "TEXT",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        },
+        {
+          "cid": 7,
+          "name": "created_at",
+          "type": "DATETIME",
+          "notnull": 0,
+          "dflt_value": null,
+          "pk": 0
+        }
+      ],
+      "foreign_keys": [
+        {
+          "id": 0,
+          "seq": 0,
+          "table": "backups",
+          "from": "backup_id",
+          "to": "id",
+          "on_update": "NO ACTION",
+          "on_delete": "SET NULL",
+          "match": "NONE"
+        }
+      ],
+      "rows": []
+    }
+  },
+  "integrity": "ok",
+  "fk_violations": []
+}

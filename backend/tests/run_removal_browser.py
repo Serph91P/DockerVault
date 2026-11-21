@@ -45,7 +45,6 @@ def main():
             "DATABASE_URL": "sqlite+aiosqlite:////app/data/removal-fixture/db.sqlite",
             "BACKUP_BASE_PATH": "/app/data/removal-fixture",
             "COOKIE_SECURE": "false",
-            "KOMODO_ENABLED": "false",
         },
     )
     try:

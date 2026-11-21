@@ -4,7 +4,7 @@ import { server } from '../../test/mocks/server'
 import { recoveryApi, recoveryTables, parseRecoveryResult } from '../recovery'
 
 const counts = Object.fromEntries(Object.keys(recoveryTables).map(key => [key, 0]))
-const result = () => ({ counts: { ...counts }, storages: [{ id: 1, type: 'local', state: 'connected' }], komodo: { state: 'disabled' }, catalog: [{ id: 1, local: 'available', copies: [{ storage_id: 1, state: 'unavailable' }] }], archives_modified: false })
+const result = () => ({ counts: { ...counts }, storages: [{ id: 1, type: 'local', state: 'connected' }], catalog: [{ id: 1, local: 'available', copies: [{ storage_id: 1, state: 'unavailable' }] }], archives_modified: false })
 
 it.each(['local', 'ssh', 'sftp', 'webdav', 's3', 'ftp', 'rclone'])('accepts the actual product provider %s in preview and canonical result', async type => {
   server.use(http.post('/api/v1/recovery/preview', () => HttpResponse.json({ counts, storages: [{ id: 1, type, state: 'not_tested' }], exported_at: '2026-11-09T12:00:00+00:00', archives_included: false, archive_private_keys_included: false })))
@@ -21,7 +21,6 @@ it.each([
   { ...result(), storages: [{ id: 0, type: 'local', state: 'connected' }] },
   { ...result(), storages: [{ id: 1, type: 'unknown', state: 'connected' }] },
   { ...result(), storages: [{ id: 1, type: 'local', state: 'maybe' }] },
-  { ...result(), komodo: { state: 'maybe' } },
   { ...result(), catalog: null },
   { ...result(), catalog: [{ id: 1, local: 'maybe', copies: [] }] },
   { ...result(), catalog: [{ id: 1, local: 'available', copies: null }] },

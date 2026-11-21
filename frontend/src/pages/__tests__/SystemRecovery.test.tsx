@@ -13,7 +13,7 @@ import { clearSession, queryClient } from '../../store/session'
 const user = { id: 1, username: 'operator', is_admin: true, created_at: '', last_login: null }
 const counts = { backup_targets: 2, schedules: 1, retention_policies: 1, backups: 3, remote_storages: 1, backup_storage_syncs: 1, backup_schedules: 1, encryption_config: 1, app_settings: 2 }
 const preview = { counts, exported_at: '2026-11-09T12:00:00+00:00', storages: [{ id: 1, type: 'ssh', state: 'credentials_required' }], archives_included: false, archive_private_keys_included: false }
-const result = { counts, storages: [{ id: 1, type: 'ssh', state: 'credentials_required' }], komodo: { state: 'disabled' }, catalog: [{ id: 1, local: 'unavailable', copies: [{ storage_id: 1, state: 'offline' }] }], archives_modified: false }
+const result = { counts, storages: [{ id: 1, type: 'ssh', state: 'credentials_required' }], catalog: [{ id: 1, local: 'unavailable', copies: [{ storage_id: 1, state: 'offline' }] }], archives_modified: false }
 function mount(element: React.ReactNode, entry = '/') { return render(<QueryClientProvider client={queryClient}><MemoryRouter initialEntries={[entry]}>{element}</MemoryRouter></QueryClientProvider>) }
 beforeEach(() => { clearSession(); useAuthStore.setState({ user, isAuthenticated: true, isLoading: false, setupRequired: false }); server.use(http.get('/api/v1/recovery/status', () => HttpResponse.json(null))) })
 afterEach(() => { cleanup(); clearSession(); vi.restoreAllMocks() })

@@ -1,16 +1,13 @@
 """#190 native SQLite/auth/age/key files with named local transport doubles.
 
-No production socket, mounts, data or remote provider. Komodo is a synthetic
-loopback HTTP server; SSH transport executes the generic remote script locally
+No production socket, mounts, data or remote provider. SSH transport executes
+the generic remote script locally
 under an owned HOME, not against an external SSH installation.
 """
 
 import asyncio
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import json
 import os
 from pathlib import Path
-import secrets
 import sqlite3
 import subprocess
 import sys
@@ -27,47 +24,9 @@ os.environ.update(
     COOKIE_SECURE="false",
     DOCKER_SOCKET=str(root / "absent.sock"),
     ALLOWED_SSH_KEY_DIRS=str(root / "ssh_keys"),
-    KOMODO_ENABLED="true",
-    KOMODO_API_URL="http://127.0.0.1:9100/env",
-    KOMODO_ALLOWED_HOSTS="127.0.0.1",
     LOG_LEVEL="WARNING",
 )
-os.environ.setdefault("KOMODO_API_KEY", secrets.token_hex(24))
-os.environ.setdefault("KOMODO_API_SECRET", secrets.token_hex(24))
-observations = {
-    "requests": 0,
-    "path": "",
-    "headers_present": False,
-    "install_methods": [],
-}
-fake_mode = "good"
-
-
-class SyntheticKomodo(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass
-
-    def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
-        observations.update(
-            requests=observations["requests"] + 1,
-            path=self.path,
-            headers_present=bool(
-                self.headers.get("x-api-key") and self.headers.get("x-api-secret")
-            ),
-        )
-        content = json.dumps(
-            {"version": "synthetic-190"} if body.get("type") == "GetVersion" else []
-        ).encode()
-        self.send_response(200 if fake_mode == "good" else 401)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(content)))
-        self.end_headers()
-        self.wfile.write(content)
-
-
-server = ThreadingHTTPServer(("127.0.0.1", 9100), SyntheticKomodo)
-threading.Thread(target=server.serve_forever, daemon=True).start()
+observations = {"install_methods": []}
 from app import credential_encryption
 from app.api import storage
 
@@ -104,26 +63,15 @@ async def synthetic_ssh(cmd, env=None, input_bytes=None):
 
 storage._run = synthetic_ssh
 from app.main import app
-from app.komodo import komodo_client
-from app.komodo_config import load_komodo_config
 import uvicorn
-
-
-@app.post("/api/v1/test-settings190/komodo/{mode}")
-async def set_mode(mode: str):
-    global fake_mode
-    assert mode in ("good", "failed")
-    fake_mode = mode
-    return {"synthetic_mode": mode}
 
 
 @app.get("/api/v1/test-settings190/effects")
 async def effects():
-    config = await load_komodo_config()
     with sqlite3.connect(root / "backup.db") as db:
         settings = dict(
             db.execute(
-                "select key,value from app_settings where key in ('storage_check_quota_before_upload','komodo_enabled','komodo_api_url')"
+                "select key,value from app_settings where key = 'storage_check_quota_before_upload'"
             )
         )
         foreign_keys = db.execute("pragma foreign_key_check").fetchall()
@@ -139,10 +87,6 @@ async def effects():
     return {
         "settings": settings,
         "foreign_key_errors": foreign_keys,
-        "client_matches_effective": komodo_client.enabled == config.enabled
-        and komodo_client.api_url == config.api_url
-        and komodo_client.api_key == config.api_key
-        and komodo_client.api_secret == config.api_secret,
         "transport": observations,
         "ssh_files": [p.name for p in key_files],
         "installed_public_bytes_equal": expected is not None

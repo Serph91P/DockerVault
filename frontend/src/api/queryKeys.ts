@@ -27,7 +27,7 @@ export const queryKeys = {
   volumes: family('volumes'),
   stacks: family('stacks'),
   systemInfo: ['system-info'] as const,
-  settings: { storage: ['settings', 'storage'] as const, komodo: ['settings', 'komodo'] as const },
+  settings: { storage: ['settings', 'storage'] as const },
   sshKeys: family('ssh-keys'),
   storageFiles: (id: number | 'local', path: string, root: string, owner: number) => ['storage-files', id, path, root, owner] as const,
   storageSize: (id: number | 'local', root: string, path: string, revision: number, owner: number) => ['storage-size', id, root, path, revision, owner] as const,

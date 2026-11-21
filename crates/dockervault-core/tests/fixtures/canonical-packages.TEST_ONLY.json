@@ -1,0 +1,635 @@
+{
+  "source": "actual unchanged accepted143 fc1b339 package_rclone on canonical accepted import controls; explicit source_files and options; no filesystem/ambient credentials",
+  "cases": [
+    {
+      "name": "local",
+      "indices": [
+        0
+      ],
+      "sha256": "5dae2627719b4282603cfd58e14b17d58a887ab4ef06189c73ec502037f4f925"
+    },
+    {
+      "name": "missing",
+      "indices": [
+        0
+      ],
+      "sha256": "402818d5f10f758c843899459c513194fff9528d446bdfa3ec31c8f8cf84d7d8"
+    },
+    {
+      "name": "alias",
+      "indices": [
+        0
+      ],
+      "sha256": "f0346fcaa52b2cfa3a8478714e6c7ebda3ff3f8816fd99128c4d642d8574f744"
+    },
+    {
+      "name": "inline",
+      "indices": [
+        0
+      ],
+      "sha256": "0bbf4a3c45ba407898c8b2016a002f81422ba56c31cfe6aea1b0de78d2da7643"
+    },
+    {
+      "name": "local-path",
+      "indices": [
+        0
+      ],
+      "sha256": "e59d32b73d7313b512ca877f1c2186c50c76b1e2117c657cdeecfa12ac94b277"
+    },
+    {
+      "name": "union",
+      "indices": [
+        0
+      ],
+      "sha256": "cce59b9baced3a31de5243e03e0a6cbe9da7faf794c28b842b834cb5ad2160e1"
+    },
+    {
+      "name": "combine",
+      "indices": [
+        0
+      ],
+      "sha256": "a15f0e55d83b176cf99d4b18862aca1305e5b193ebcb7b886e32ca5e1b3c2da0"
+    },
+    {
+      "name": "s3-environment",
+      "indices": [
+        0
+      ],
+      "sha256": "9aa4902f8033da1f6f856505aec06a79ac7504274a5ca3d7c29fb62482d3f3d9"
+    },
+    {
+      "name": "sftp-required",
+      "indices": [
+        0
+      ],
+      "sha256": "ca269ffea97d36b1f3a279d53ea33c8cd9df127765e7c9e9ca994e6f25f1df85"
+    },
+    {
+      "name": "oracle-environment",
+      "indices": [
+        0
+      ],
+      "sha256": "9b259e6611ef545adaa0906d0e8075433897314540e376b97c8f7fe4f0598929"
+    },
+    {
+      "name": "external-command",
+      "indices": [
+        0
+      ],
+      "sha256": "8ff1736b79992f41a993c3ef5f6c5e7911ac91f5bed3fd937f035cc29f0babeb"
+    },
+    {
+      "name": "drive-file",
+      "indices": [
+        0
+      ],
+      "sha256": "8a22977f8750596de172fe63afa3e34d4b2f50e2910ebdef6502d917372b2824"
+    },
+    {
+      "name": "provider-alias",
+      "indices": [
+        0
+      ],
+      "sha256": "e1ce5ef79c2918b77b464ba5bba2d4d88611c9b8c9f2f4d275b9dad916952318"
+    },
+    {
+      "name": "provider-archive",
+      "indices": [
+        0
+      ],
+      "sha256": "e1ce5ef79c2918b77b464ba5bba2d4d88611c9b8c9f2f4d275b9dad916952318"
+    },
+    {
+      "name": "provider-azureblob",
+      "indices": [
+        0
+      ],
+      "sha256": "94d5c56bf15d926e20318ee1b880d2b90f15f55d5360a4bc3ba3687f8b36d5fe"
+    },
+    {
+      "name": "provider-azurefiles",
+      "indices": [
+        0
+      ],
+      "sha256": "876c4275ae18323b13053962d24a6240d64f540368a51b18dc4219c4043e3007"
+    },
+    {
+      "name": "provider-b2",
+      "indices": [
+        0
+      ],
+      "sha256": "2e80335e8682d070517ec9cda08aaf4cdd71946c65ddcf731314b1bd6f3850fc"
+    },
+    {
+      "name": "provider-box",
+      "indices": [
+        0
+      ],
+      "sha256": "32613c76c8a54e92a23d6244f7fbffe4a07b2d815c2e411f7ef40ef9b414e875"
+    },
+    {
+      "name": "provider-cache",
+      "indices": [
+        0
+      ],
+      "sha256": "e1ce5ef79c2918b77b464ba5bba2d4d88611c9b8c9f2f4d275b9dad916952318"
+    },
+    {
+      "name": "provider-chunker",
+      "indices": [
+        0
+      ],
+      "sha256": "e1ce5ef79c2918b77b464ba5bba2d4d88611c9b8c9f2f4d275b9dad916952318"
+    },
+    {
+      "name": "provider-cloudinary",
+      "indices": [
+        0
+      ],
+      "sha256": "a7bcf8e0ae5832c89f711d08e4281a92423391b0f04465197b5c4d5318fc710f"
+    },
+    {
+      "name": "provider-combine",
+      "indices": [
+        0
+      ],
+      "sha256": "e1ce5ef79c2918b77b464ba5bba2d4d88611c9b8c9f2f4d275b9dad916952318"
+    },
+    {
+      "name": "provider-compress",
+      "indices": [
+        0
+      ],
+      "sha256": "e1ce5ef79c2918b77b464ba5bba2d4d88611c9b8c9f2f4d275b9dad916952318"
+    },
+    {
+      "name": "provider-crypt",
+      "indices": [
+        0
+      ],
+      "sha256": "e1ce5ef79c2918b77b464ba5bba2d4d88611c9b8c9f2f4d275b9dad916952318"
+    },
+    {
+      "name": "provider-doi",
+      "indices": [
+        0
+      ],
+      "sha256": "989a6a232ce560284f598970e2774e11b5e2f3b3c79eb7e17e3212983e549c65"
+    },
+    {
+      "name": "provider-drive",
+      "indices": [
+        0
+      ],
+      "sha256": "505f60da5c3d6097aa9e341c94761037dae7701f53ef335851e223008fd0cf3d"
+    },
+    {
+      "name": "provider-dropbox",
+      "indices": [
+        0
+      ],
+      "sha256": "5ea6e510b5039efaf04ea22091bdfd6ba1bb5b79c969e5b3ba10b40d5eff023b"
+    },
+    {
+      "name": "provider-fichier",
+      "indices": [
+        0
+      ],
+      "sha256": "7a761c7bdc59d006a07f99d95b2509ba279a0ddf4473c1ab2fd9c0ed1aaa8339"
+    },
+    {
+      "name": "provider-filefabric",
+      "indices": [
+        0
+      ],
+      "sha256": "e2fb703552e80f893540b6722a9490eb5aeb8fd1934d70342f6530c840489a7b"
+    },
+    {
+      "name": "provider-filelu",
+      "indices": [
+        0
+      ],
+      "sha256": "16f4409396549ba74c09b76e2d746db7260fdf0f935ef6061fadc7e61d6ec858"
+    },
+    {
+      "name": "provider-filescom",
+      "indices": [
+        0
+      ],
+      "sha256": "0380132154b77ea0402aba0c771abbb420e8aa3a549cbf188691acd8d73a756a"
+    },
+    {
+      "name": "provider-ftp",
+      "indices": [
+        0
+      ],
+      "sha256": "e8aa48e4a01486aef4b1760918bbfb3bcfaf749be5088d9a264acbd2c126bddb"
+    },
+    {
+      "name": "provider-gofile",
+      "indices": [
+        0
+      ],
+      "sha256": "d46140921463b4fb780ea49c5f550c68c899c314621306a2ef24628aabb6f6fe"
+    },
+    {
+      "name": "provider-google cloud storage",
+      "indices": [
+        0
+      ],
+      "sha256": "879617baed3397e6e1dec5158834363be29ea7eaa7f253cb9a2e283dc0126147"
+    },
+    {
+      "name": "provider-google photos",
+      "indices": [
+        0
+      ],
+      "sha256": "d25ab0107e2d4244674efd8533030d70dd151228f9208e571682e1cd119991ae"
+    },
+    {
+      "name": "provider-hasher",
+      "indices": [
+        0
+      ],
+      "sha256": "e1ce5ef79c2918b77b464ba5bba2d4d88611c9b8c9f2f4d275b9dad916952318"
+    },
+    {
+      "name": "provider-hdfs",
+      "indices": [
+        0
+      ],
+      "sha256": "93fcc6efdb5dd7b312b375ed2f678632dddd8ca05dfbd6f76f0b9e10fd2bcbf8"
+    },
+    {
+      "name": "provider-hidrive",
+      "indices": [
+        0
+      ],
+      "sha256": "94cd8d115d96cb1c853ae6187259ffc58b5519d1b59b9fd3182921cff4a8c62d"
+    },
+    {
+      "name": "provider-http",
+      "indices": [
+        0
+      ],
+      "sha256": "e649744cacdab94effe7c109bd4d243aea7f117609dd3950a0f06094b0171784"
+    },
+    {
+      "name": "provider-iclouddrive",
+      "indices": [
+        0
+      ],
+      "sha256": "3ee9ca9f5a9c19a4b7a34a3a56363b1a7b74d8b24d64450f1161462ad85b4b73"
+    },
+    {
+      "name": "provider-imagekit",
+      "indices": [
+        0
+      ],
+      "sha256": "faee5605a371c4f63268617b5ff88925a37c60a3be220b20058836079b7a7bda"
+    },
+    {
+      "name": "provider-internetarchive",
+      "indices": [
+        0
+      ],
+      "sha256": "8f8fa756927ceec5d1f3cdfc4e1d99da3298a063020e13bddb184eeba49c2b05"
+    },
+    {
+      "name": "provider-jottacloud",
+      "indices": [
+        0
+      ],
+      "sha256": "5c4ab124ee4113de8927ea4fb7bb8d5adf56ae5a6b550a0b727f6d2e8c4259a4"
+    },
+    {
+      "name": "provider-koofr",
+      "indices": [
+        0
+      ],
+      "sha256": "8fc8070e7c93386af0b2bbf28ead5911d50445b6995b8ad4e253eeeb80d6d73c"
+    },
+    {
+      "name": "provider-linkbox",
+      "indices": [
+        0
+      ],
+      "sha256": "a49b85216194d88803d9c92c0e2619e10e40d7388e5e329de717229c9ed14f03"
+    },
+    {
+      "name": "provider-local",
+      "indices": [
+        0
+      ],
+      "sha256": "5dae2627719b4282603cfd58e14b17d58a887ab4ef06189c73ec502037f4f925"
+    },
+    {
+      "name": "provider-mailru",
+      "indices": [
+        0
+      ],
+      "sha256": "659f802acac174260c342f8a074cdcab19ebe74d0c9b5e8736f3c090560e4934"
+    },
+    {
+      "name": "provider-mega",
+      "indices": [
+        0
+      ],
+      "sha256": "44515ef1e482064104f66438089c942ce09aab09a506d3a6383f552b6e3c4b5a"
+    },
+    {
+      "name": "provider-memory",
+      "indices": [
+        0
+      ],
+      "sha256": "516c73bca17f074cbf233be5c362905a57ec3daba1081d458e3011f84b97964c"
+    },
+    {
+      "name": "provider-netstorage",
+      "indices": [
+        0
+      ],
+      "sha256": "92930b31d9a5250637c036762eee48bcf7022de94283446d95e32a547e43b773"
+    },
+    {
+      "name": "provider-onedrive",
+      "indices": [
+        0
+      ],
+      "sha256": "3138eedd33036bf0b4308b8c5868787f78a8374b429ed1084f43579ee783686f"
+    },
+    {
+      "name": "provider-opendrive",
+      "indices": [
+        0
+      ],
+      "sha256": "f68bbc8c6fded9a90f52f5ef423fb03afe890a1cbbb6d520f85ec354df20c959"
+    },
+    {
+      "name": "provider-oracleobjectstorage",
+      "indices": [
+        0
+      ],
+      "sha256": "aa911df09e955686c524fff171db8862be9d5c5a4a35829883ac11311e3ce9a3"
+    },
+    {
+      "name": "provider-pcloud",
+      "indices": [
+        0
+      ],
+      "sha256": "9493c84c8148dc97c5162a9f1f08c2bd241d6b88bafd92ec4fb3b9345b281ea1"
+    },
+    {
+      "name": "provider-pikpak",
+      "indices": [
+        0
+      ],
+      "sha256": "ce131f3a7f99c4bf0069c72b35edfb4d7cce3c448ca5df8fabdb0d92ee07753b"
+    },
+    {
+      "name": "provider-pixeldrain",
+      "indices": [
+        0
+      ],
+      "sha256": "d4ea4b4d7c0a8f7019827395eda3ee2de2e3093cc54245f582204db6410f2df2"
+    },
+    {
+      "name": "provider-premiumizeme",
+      "indices": [
+        0
+      ],
+      "sha256": "5cd5d058cb5aa0669f8917c80401be7138f0880d7b7933d8c3fa9948a409b2e2"
+    },
+    {
+      "name": "provider-protondrive",
+      "indices": [
+        0
+      ],
+      "sha256": "2ce3e22ed223019347c101944971c2c8ef770c6f68156fcdd9ae6c7163437c62"
+    },
+    {
+      "name": "provider-putio",
+      "indices": [
+        0
+      ],
+      "sha256": "64382be0af37a075638b7d6197189468b537e80639618d268ff30fac7e776fc5"
+    },
+    {
+      "name": "provider-qingstor",
+      "indices": [
+        0
+      ],
+      "sha256": "0746fa6318c9e271471dd41764366fbfa08afdafe5e54d7725ba79cb77789e87"
+    },
+    {
+      "name": "provider-quatrix",
+      "indices": [
+        0
+      ],
+      "sha256": "15d647b267456558ab5236ce70a02aa208c6d513a99243a03336683b8d739def"
+    },
+    {
+      "name": "provider-s3",
+      "indices": [
+        0
+      ],
+      "sha256": "3cea026b9d0ec5d61c320f2d6a073724f2a04d350fb1caec46b030ad9a3cd9e9"
+    },
+    {
+      "name": "provider-seafile",
+      "indices": [
+        0
+      ],
+      "sha256": "e3e5c4e6fa40a844fbb05a7cbf322ba832b6b2acb463292715e82ab70f602b3d"
+    },
+    {
+      "name": "provider-sftp",
+      "indices": [
+        0
+      ],
+      "sha256": "8b0f9cef94a351f882b856b4d784e32da4c33f77fc343e4f8a3220108b7ecf4e"
+    },
+    {
+      "name": "provider-sharefile",
+      "indices": [
+        0
+      ],
+      "sha256": "c776bd96171ac86bf5c63e5702fc7b6ad49fb5442c6af28883324fa989441cf7"
+    },
+    {
+      "name": "provider-sia",
+      "indices": [
+        0
+      ],
+      "sha256": "4174d71b44d5a883c91cefc2848e0cb0bbf2e7b1f92363d95300c60212caf9dc"
+    },
+    {
+      "name": "provider-smb",
+      "indices": [
+        0
+      ],
+      "sha256": "d4519cb40377a2f05ae845a78ca707cd77fba30e7cec9e5c7acf84649051e141"
+    },
+    {
+      "name": "provider-storj",
+      "indices": [
+        0
+      ],
+      "sha256": "48e5c90e39449fcbb94336f224aa6aa0473585bc672a3fbe740632f0a14dd301"
+    },
+    {
+      "name": "provider-sugarsync",
+      "indices": [
+        0
+      ],
+      "sha256": "3c341134c56ddc1f06ed52dfd827a8b4f50646b18df181ba04ca6388a1b127a4"
+    },
+    {
+      "name": "provider-swift",
+      "indices": [
+        0
+      ],
+      "sha256": "e12a995f65bf4ef249d2a6054efa5758f4b8caa8d4c4bd3adba5ec46e0f2fcc3"
+    },
+    {
+      "name": "provider-tardigrade",
+      "indices": [
+        0
+      ],
+      "sha256": "6109d4bcbbd3095c356982d5b97d7d2bd658f4be3de99fa91231f109e4c4703f"
+    },
+    {
+      "name": "provider-ulozto",
+      "indices": [
+        0
+      ],
+      "sha256": "8bb95c3399dda72abb285a69e8c48a24160676c4ddb8854b4047b1f8be90c8c6"
+    },
+    {
+      "name": "provider-union",
+      "indices": [
+        0
+      ],
+      "sha256": "e1ce5ef79c2918b77b464ba5bba2d4d88611c9b8c9f2f4d275b9dad916952318"
+    },
+    {
+      "name": "provider-uptobox",
+      "indices": [
+        0
+      ],
+      "sha256": "f689d4bf0fabd6167bfdff0645e34b04323c59b57f81b4b25a46b0d540e600a5"
+    },
+    {
+      "name": "provider-webdav",
+      "indices": [
+        0
+      ],
+      "sha256": "694f869e4cfe830cf19731b64cb5fa8991600bc8b8213cacd457ed5bb938024a"
+    },
+    {
+      "name": "provider-yandex",
+      "indices": [
+        0
+      ],
+      "sha256": "82685e2b0c87e1f4c7e0ef3387aeedeb933fc982026261964c34f8d7a77896ad"
+    },
+    {
+      "name": "provider-zoho",
+      "indices": [
+        0
+      ],
+      "sha256": "21d0095468bffa32d8660b9b68a37a0aea7abb84d5c8d2d8b9a1e605fad63765"
+    },
+    {
+      "name": "nested-drive-file",
+      "indices": [
+        0
+      ],
+      "sha256": "decd594b03b5c8ab9f7965650180f7876559130c3242770f24f7878138724ac8"
+    },
+    {
+      "name": "false-file-option",
+      "indices": [
+        0
+      ],
+      "sha256": "e25b8ace200e67ba9ccde43d35f03c658abc82db642d3fdabc500dc399c30fcc"
+    },
+    {
+      "name": "depth32",
+      "indices": [
+        0
+      ],
+      "sha256": "e12267ae0a71cb93cb5948174b2258d67018826591889bf270f431548057318f"
+    },
+    {
+      "name": "sftp-pubkey_file",
+      "indices": [
+        0
+      ],
+      "sha256": "f2558b95d52bb3c8df61a515d85808f5805dda223e6953dabfcfcc3d96369647"
+    },
+    {
+      "name": "sftp-known_hosts_file",
+      "indices": [
+        0
+      ],
+      "sha256": "b64a8aa4b754a5669caa2621e94af65a563d8542625ec9720950a3bc3f396f17"
+    },
+    {
+      "name": "shared-file-roots",
+      "indices": [
+        0,
+        1
+      ],
+      "sha256": "473e55355d3892ca5f2fa16d5d7d0483e297a8a1b62caae9011ec281211fe8aa"
+    },
+    {
+      "name": "shared-file-roots",
+      "indices": [],
+      "sha256": "693ee766a8fb97fe79ec28e0652a15eb3fb385096fa6d6c66c6e0b474534b50e"
+    },
+    {
+      "name": "shared-file-roots",
+      "indices": [
+        0
+      ],
+      "sha256": "8a22977f8750596de172fe63afa3e34d4b2f50e2910ebdef6502d917372b2824"
+    },
+    {
+      "name": "shared-file-roots",
+      "indices": [
+        1
+      ],
+      "sha256": "ef2387d5b12578f8f4339f1db168725fa439b5731ed36d31b84a5fba2f786f61"
+    },
+    {
+      "name": "mixed-roots",
+      "indices": [
+        0,
+        1
+      ],
+      "sha256": "9b725d95bc19b0111553da9e50c8ad4033c5e0212525078f1795b7f29b2d9158"
+    },
+    {
+      "name": "root-id-bool",
+      "indices": [
+        0
+      ],
+      "sha256": "5dae2627719b4282603cfd58e14b17d58a887ab4ef06189c73ec502037f4f925"
+    },
+    {
+      "name": "root-id-float",
+      "indices": [
+        0
+      ],
+      "sha256": "5dae2627719b4282603cfd58e14b17d58a887ab4ef06189c73ec502037f4f925"
+    },
+    {
+      "name": "oracle-environment-adverse-boundary",
+      "indices": [
+        0
+      ],
+      "sha256": "9b259e6611ef545adaa0906d0e8075433897314540e376b97c8f7fe4f0598929"
+    }
+  ]
+}

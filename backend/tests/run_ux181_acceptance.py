@@ -52,7 +52,6 @@ try:
                 "BACKUP_BASE_PATH": "/backups",
                 "COOKIE_SECURE": "true",
                 "CORS_ORIGINS": "https://127.0.0.1:8443",
-                "KOMODO_ENABLED": "false",
                 # Harmless synthetic hook roundtrip; no production allowlist change.
                 "ALLOWED_HOOK_COMMANDS": "true",
                 "LOG_LEVEL": "WARNING",

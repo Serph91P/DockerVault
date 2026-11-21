@@ -33,6 +33,7 @@ graphify-out/
 **/*.py[cod]
 
 # Build outputs
+/target/
 **/build/
 **/dist/
 **/out/

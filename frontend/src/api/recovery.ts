@@ -11,7 +11,7 @@ export interface RecoveryStorage { id: number; type: string; state: ConnectionSt
 export interface RecoveryPreview { counts: RecoveryCounts; exported_at: string; storages: RecoveryStorage[]; archives_included: false; archive_private_keys_included: false }
 export interface RecoveryResult {
   ssh_public_keys: { name: string; public_key: string }[];
-  counts: RecoveryCounts; storages: RecoveryStorage[]; komodo: { state: ConnectionState | 'disabled' };
+  counts: RecoveryCounts; storages: RecoveryStorage[];
   catalog: { id: number; local: 'available' | 'unavailable' | 'credentials_required'; copies: { storage_id: number; state: 'available' | 'unavailable' | 'offline' | 'credentials_required' }[] }[];
   archives_modified: false
 }
@@ -52,7 +52,7 @@ function publicReferences(value: unknown): RecoveryResult['ssh_public_keys'] {
 export function parseRecoveryResult(value: unknown): RecoveryResult {
   const data = object(value)
   if (data.archives_modified !== false || !Array.isArray(data.catalog)) return invalid()
-  return { ssh_public_keys: publicReferences(data.ssh_public_keys), counts: counts(data.counts), storages: storages(data.storages, false), komodo: { state: member(object(data.komodo).state, ['connected', 'offline', 'credentials_required', 'disabled']) }, catalog: data.catalog.map(item => {
+  return { ssh_public_keys: publicReferences(data.ssh_public_keys), counts: counts(data.counts), storages: storages(data.storages, false), catalog: data.catalog.map(item => {
     const entry = object(item)
     if (!Array.isArray(entry.copies)) return invalid()
     return { id: id(entry.id), local: member(entry.local, ['available', 'unavailable', 'credentials_required']), copies: entry.copies.map(item => {

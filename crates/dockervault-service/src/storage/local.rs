@@ -1,0 +1,1149 @@
+//! FD-rooted local/network transfer; workers retain capacity through fsync and readback.
+use super::{FileIdentity, VerifiedSource, check, invalid};
+use crate::ownership::{Owner, Work, WorkError};
+use nix::{
+    dir::Dir,
+    fcntl::{AtFlags, OFlag, OpenHow, ResolveFlag, openat, openat2, renameat},
+    sys::{
+        stat::{Mode, SFlag, fstatat, futimens, mkdirat},
+        time::TimeSpec,
+    },
+    unistd::{UnlinkatFlags, unlinkat},
+};
+use sha2::{Digest, Sha256};
+use std::{
+    ffi::{OsStr, OsString},
+    fs::File,
+    io::{self, Read, Write},
+    os::unix::{
+        ffi::OsStrExt,
+        fs::{MetadataExt, PermissionsExt},
+    },
+    path::{Component, Path, PathBuf},
+    sync::Arc,
+};
+
+#[derive(Debug)]
+pub enum TransferError {
+    Io(io::Error),
+    PublicationUncertain(io::Error),
+}
+impl std::fmt::Display for TransferError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Io(_) => "Local transfer failed",
+            Self::PublicationUncertain(_) => "Local transfer publication durability is uncertain",
+        })
+    }
+}
+impl std::error::Error for TransferError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(match self {
+            Self::Io(e) | Self::PublicationUncertain(e) => e,
+        })
+    }
+}
+impl From<io::Error> for TransferError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+#[derive(Debug)]
+pub struct Downloaded {
+    length: u64,
+    digest: [u8; 32],
+}
+impl Downloaded {
+    pub fn len(&self) -> u64 {
+        self.length
+    }
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+    pub fn sha256_hex(&self) -> String {
+        self.digest.iter().map(|b| format!("{b:02x}")).collect()
+    }
+}
+#[derive(Clone)]
+pub struct LocalStorage {
+    root: Arc<File>,
+    workers: Owner,
+    configured_root: Option<Arc<Path>>,
+}
+impl LocalStorage {
+    pub fn new(root: File, workers: Owner) -> io::Result<Self> {
+        if !root.metadata()?.is_dir() {
+            return Err(invalid("Storage root is not a directory"));
+        }
+        Ok(Self {
+            root: Arc::new(root),
+            workers,
+            configured_root: None,
+        })
+    }
+    pub(crate) fn pin_configured(root: &Path, workers: Owner) -> io::Result<(Self, (u64, u64))> {
+        let path = std::path::absolute(root)?;
+        let file = open_root(&path)?;
+        let info = file.metadata()?;
+        let mut storage = Self::new(file, workers)?;
+        storage.configured_root = Some(Arc::from(path));
+        Ok((storage, (info.dev(), info.ino())))
+    }
+    pub fn upload(
+        &self,
+        source: Arc<VerifiedSource>,
+        remote: PathBuf,
+    ) -> Result<Work<Result<(), TransferError>>, WorkError> {
+        let root = self.root.clone();
+        self.workers.submit_blocking(move |cancel| {
+            let cancelled = || cancel.is_cancelled();
+            check(&cancelled)?;
+            source.check_unchanged()?;
+            let (parent, name) = parent(&root, &remote, true)?;
+            let source_file = source.reopen()?;
+            if let Ok(destination) = read_leaf(&parent, &name) {
+                let a = source_file.metadata()?;
+                let b = destination.metadata()?;
+                if a.dev() == b.dev() && a.ino() == b.ino() {
+                    return Err(invalid("Source and destination are the same file").into());
+                }
+            }
+            let mut staging = Staging::new(parent)?;
+            copy_complete(source_file, &mut staging.file, &cancelled)?;
+            source.check_unchanged()?;
+            staging.publish(&name, &cancelled)?;
+            let mut remote = read_leaf(&staging.parent, &name)?;
+            let before = FileIdentity::read(&remote.metadata()?)?;
+            source.verify_download(&mut remote, &cancelled)?;
+            if FileIdentity::read(&remote.metadata()?)? != before
+                || FileIdentity::read(&read_leaf(&staging.parent, &name)?.metadata()?)? != before
+            {
+                return Err(invalid("Remote copy changed during verification").into());
+            }
+            check(&cancelled)?;
+            Ok(())
+        })
+    }
+    /// Unlink a leaf (including a symlink itself), never traverse or remove directories.
+    pub fn delete_leaf(
+        &self,
+        path: PathBuf,
+        expected_root: (u64, u64),
+    ) -> Result<Work<Result<(), TransferError>>, WorkError> {
+        self.delete(path, expected_root, false, |_| ())
+    }
+
+    pub(crate) fn delete_target(
+        &self,
+        path: PathBuf,
+        expected_root: (u64, u64),
+    ) -> Result<Work<Result<&'static str, TransferError>>, WorkError> {
+        self.delete(path, expected_root, true, |kind| kind)
+    }
+
+    fn delete<T: Send + 'static>(
+        &self,
+        path: PathBuf,
+        expected_root: (u64, u64),
+        recursive: bool,
+        result: impl FnOnce(&'static str) -> T + Send + 'static,
+    ) -> Result<Work<Result<T, TransferError>>, WorkError> {
+        let root = self.root.clone();
+        let configured = self.configured_root.clone();
+        self.workers.submit_blocking(move |cancel| {
+            let path = path
+                .to_str()
+                .and_then(|path| super::relative_path(path, false))
+                .ok_or_else(|| invalid("Invalid file path"))?;
+            let actual = root.metadata()?;
+            if (actual.dev(), actual.ino()) != expected_root {
+                return Err(invalid("Storage root changed").into());
+            }
+            if let Some(path) = configured {
+                let current = open_root(&path)?.metadata()?;
+                if (current.dev(), current.ino()) != expected_root {
+                    return Err(invalid("Storage root changed").into());
+                }
+            }
+            check(&|| cancel.is_cancelled())?;
+            if recursive {
+                let mut removal = TreeRemoval {
+                    root: &root,
+                    mutated: false,
+                    cancel: &|| cancel.is_cancelled(),
+                };
+                return removal
+                    .remove(Path::new(&path), None, 0)
+                    .map(result)
+                    .map_err(|error| {
+                        if removal.mutated {
+                            TransferError::PublicationUncertain(error)
+                        } else {
+                            TransferError::Io(error)
+                        }
+                    });
+            }
+            let (parent, name) = parent(&root, Path::new(&path), false)?;
+            check(&|| cancel.is_cancelled())?;
+            unlinkat(&parent, name.as_os_str(), UnlinkatFlags::NoRemoveDir)
+                .map_err(io::Error::from)?;
+            parent
+                .sync_all()
+                .map_err(TransferError::PublicationUncertain)?;
+            Ok(result("file"))
+        })
+    }
+
+    pub fn download(
+        &self,
+        remote: PathBuf,
+        destination: File,
+        path: PathBuf,
+    ) -> Result<Work<Result<Downloaded, TransferError>>, WorkError> {
+        let root = self.root.clone();
+        self.workers.submit_blocking(move |cancel| {
+            let cancelled = || cancel.is_cancelled();
+            check(&cancelled)?;
+            let (source_parent, source_name) = parent(&root, &remote, false)?;
+            let source = read_leaf(&source_parent, &source_name)?;
+            let (parent, name) = parent(&destination, &path, true)?;
+            if let Ok(existing) = read_leaf(&parent, &name) {
+                let a = source.metadata()?;
+                let b = existing.metadata()?;
+                if a.dev() == b.dev() && a.ino() == b.ino() {
+                    return Err(invalid("Source and destination are the same file").into());
+                }
+            }
+            let mut staging = Staging::new(parent)?;
+            let receipt = copy_complete(source, &mut staging.file, &cancelled)?;
+            staging.publish(&name, &cancelled)?;
+            Ok(receipt)
+        })
+    }
+}
+
+struct TreeRemoval<'a> {
+    root: &'a File,
+    mutated: bool,
+    cancel: &'a dyn Fn() -> bool,
+}
+
+impl TreeRemoval<'_> {
+    fn remove(
+        &mut self,
+        path: &Path,
+        parent_pin: Option<&File>,
+        depth: usize,
+    ) -> io::Result<&'static str> {
+        check(self.cancel)?;
+        if depth >= 128 {
+            return Err(invalid("Storage tree exceeds the directory depth limit"));
+        }
+        let parent_path = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let name = path
+            .file_name()
+            .ok_or_else(|| invalid("Storage root is not a deletion target"))?;
+        let parent = open_tree_directory(self.root, parent_path)?;
+        if let Some(pin) = parent_pin {
+            let expected = pin.metadata()?;
+            let actual = parent.metadata()?;
+            if (expected.dev(), expected.ino()) != (actual.dev(), actual.ino()) {
+                return Err(invalid("Storage parent moved"));
+            }
+        }
+        let stat = fstatat(&parent, name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
+        let mode = stat.st_mode & SFlag::S_IFMT.bits();
+        let directory = mode == SFlag::S_IFDIR.bits();
+        let expected = (stat.st_dev, stat.st_ino);
+        let directory_pin = if directory {
+            let fd = open_tree_directory(&parent, Path::new(name))?;
+            let metadata = fd.metadata()?;
+            if (metadata.dev(), metadata.ino()) != expected {
+                return Err(invalid("Storage directory changed"));
+            }
+            let mut entries = Dir::from_fd(openat(
+                &fd,
+                ".",
+                OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_DIRECTORY,
+                Mode::empty(),
+            )?)?;
+            for entry in entries.iter() {
+                let entry = entry?;
+                let name = entry.file_name().to_bytes();
+                if name == b"." || name == b".." {
+                    continue;
+                }
+                self.remove(&path.join(OsStr::from_bytes(name)), Some(&fd), depth + 1)?;
+            }
+            Some(fd)
+        } else {
+            None
+        };
+        // Reopen from the root, rather than deleting through a directory moved out of it.
+        let current = open_tree_directory(self.root, parent_path)?;
+        let old_parent = parent.metadata()?;
+        let current_parent = current.metadata()?;
+        let stat = fstatat(&current, name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
+        if (old_parent.dev(), old_parent.ino()) != (current_parent.dev(), current_parent.ino())
+            || (stat.st_dev, stat.st_ino) != expected
+        {
+            return Err(invalid("Storage target changed"));
+        }
+        unlinkat(
+            &current,
+            name,
+            if directory_pin.is_some() {
+                UnlinkatFlags::RemoveDir
+            } else {
+                UnlinkatFlags::NoRemoveDir
+            },
+        )?;
+        self.mutated = true;
+        current.sync_all()?;
+        Ok(if directory {
+            "directory"
+        } else if mode == SFlag::S_IFLNK.bits() {
+            "symlink"
+        } else {
+            "file"
+        })
+    }
+}
+
+fn open_tree_directory(parent: &File, path: &Path) -> io::Result<File> {
+    // Kernel-enforced containment also rejects bind mounts within a selected tree.
+    let how = OpenHow::new()
+        .flags(OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC)
+        .resolve(
+            ResolveFlag::RESOLVE_BENEATH
+                | ResolveFlag::RESOLVE_NO_SYMLINKS
+                | ResolveFlag::RESOLVE_NO_XDEV,
+        );
+    Ok(File::from(openat2(parent, path, how)?))
+}
+
+fn parent(root: &File, path: &Path, create: bool) -> io::Result<(File, OsString)> {
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(name) => parts.push(name.to_owned()),
+            _ => {
+                return Err(invalid(
+                    "Transfer path must be relative without dot components",
+                ));
+            }
+        }
+    }
+    let name = parts
+        .pop()
+        .ok_or_else(|| invalid("Missing transfer filename"))?;
+    let mut current = root.try_clone()?;
+    for part in parts {
+        if create {
+            match mkdirat(&current, part.as_os_str(), Mode::from_bits_truncate(0o755)) {
+                Ok(()) => current.sync_all()?,
+                Err(nix::errno::Errno::EEXIST) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        current = open_directory(&current, part.as_os_str())?;
+    }
+    Ok((current, name))
+}
+#[derive(serde::Serialize)]
+pub(crate) struct LocalEntry {
+    name: String,
+    size: Option<i64>,
+    is_dir: bool,
+    is_symlink: bool,
+    modified: f64,
+}
+
+pub(crate) fn list_directory(
+    root: &Path,
+    path: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> io::Result<Vec<LocalEntry>> {
+    let path = super::relative_path(path, true).ok_or_else(|| invalid("Invalid file path"))?;
+    let mut directory = open_root(&std::path::absolute(root)?)?;
+    for part in path.split('/').filter(|part| !part.is_empty()) {
+        check(cancelled)?;
+        directory = open_directory(&directory, OsStr::new(part))?;
+    }
+    let mut files = Vec::new();
+    for entry in Dir::from_fd(directory.try_clone()?.into())?.iter() {
+        check(cancelled)?;
+        let entry = entry?;
+        let name = entry.file_name();
+        if matches!(name.to_bytes(), b"." | b"..") {
+            continue;
+        }
+        if files.len() == 100_000 {
+            return Err(io::Error::other(
+                "Directory listing exceeds its entry limit",
+            ));
+        }
+        let info = fstatat(&directory, name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
+        let kind = SFlag::from_bits_truncate(info.st_mode) & SFlag::S_IFMT;
+        files.push(LocalEntry {
+            name: name.to_str().map_err(io::Error::other)?.to_owned(),
+            size: (kind == SFlag::S_IFREG).then_some(info.st_size),
+            is_dir: kind == SFlag::S_IFDIR,
+            is_symlink: kind == SFlag::S_IFLNK,
+            modified: info.st_mtime as f64 + info.st_mtime_nsec as f64 / 1e9,
+        });
+    }
+    Ok(files)
+}
+
+type DirectoryStamp = (u64, u64, u32, i64, i64, i64, i64, i64);
+
+/// A filename is not proof of ownership. Count candidates without following links.
+pub(crate) fn protected_archives(root: &Path, cancelled: &dyn Fn() -> bool) -> (u64, u64) {
+    fn walk(
+        dir: &File,
+        depth: usize,
+        budget: &mut usize,
+        counts: &mut (u64, u64),
+        cancelled: &dyn Fn() -> bool,
+    ) -> io::Result<()> {
+        check(cancelled)?;
+        if depth >= 128 {
+            return Err(io::Error::other("Directory nesting limit exceeded"));
+        }
+        for entry in Dir::from_fd(dir.try_clone()?.into())?.iter() {
+            check(cancelled)?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    counts.1 += 1;
+                    continue;
+                }
+            };
+            let name = entry.file_name();
+            if matches!(name.to_bytes(), b"." | b"..") {
+                continue;
+            }
+            if *budget == 0 {
+                return Err(io::Error::other("Archive scan entry limit exceeded"));
+            }
+            *budget -= 1;
+            let stat = match fstatat(dir, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+                Ok(stat) => stat,
+                Err(_) => {
+                    counts.1 += 1;
+                    continue;
+                }
+            };
+            let kind = SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT;
+            if kind == SFlag::S_IFDIR {
+                let child = open_directory(dir, OsStr::from_bytes(name.to_bytes()));
+                if child
+                    .and_then(|child| walk(&child, depth + 1, budget, counts, cancelled))
+                    .is_err()
+                {
+                    counts.1 += 1;
+                    if *budget == 0 {
+                        break;
+                    }
+                }
+            } else if name.to_bytes().windows(4).any(|part| part == b".tar") {
+                counts.0 += 1;
+            }
+        }
+        Ok(())
+    }
+
+    let mut counts = (0, 0);
+    match std::path::absolute(root).and_then(|path| open_root(&path)) {
+        Ok(dir) => {
+            if walk(&dir, 0, &mut 100_000, &mut counts, cancelled).is_err() {
+                counts.1 += 1;
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => counts.1 += 1,
+    }
+    counts
+}
+
+fn directory_stamp(info: nix::sys::stat::FileStat) -> DirectoryStamp {
+    (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_size,
+        info.st_mtime,
+        info.st_mtime_nsec,
+        info.st_ctime,
+        info.st_ctime_nsec,
+    )
+}
+
+pub(crate) fn directory_size(
+    root: &Path,
+    path: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> io::Result<u64> {
+    use nix::sys::stat::fstat;
+    let path = super::relative_path(path, false).ok_or_else(|| invalid("Invalid file path"))?;
+    let root_path = std::path::absolute(root)?;
+    let root = open_root(&root_path)?;
+    let root_info = fstat(&root)?;
+    let scan = |root: &File,
+                fingerprints: &mut Vec<(PathBuf, DirectoryStamp)>|
+     -> io::Result<u64> {
+        fn walk(
+            dir: &File,
+            path: &Path,
+            depth: usize,
+            cancelled: &dyn Fn() -> bool,
+            entries: &mut Vec<(PathBuf, DirectoryStamp)>,
+        ) -> io::Result<u64> {
+            check(cancelled)?;
+            if depth >= 128 {
+                return Err(io::Error::other("Directory nesting limit exceeded"));
+            }
+            let before = directory_stamp(fstat(dir)?);
+            let mut total = 0u64;
+            for entry in Dir::from_fd(dir.try_clone()?.into())?.iter() {
+                check(cancelled)?;
+                let entry = entry?;
+                let name = entry.file_name();
+                if matches!(name.to_bytes(), b"." | b"..") {
+                    continue;
+                }
+                if entries.len() >= 100_000 {
+                    return Err(io::Error::other("Directory size entry limit exceeded"));
+                }
+                let info = fstatat(dir, name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
+                let stamp = directory_stamp(info);
+                let kind = SFlag::from_bits_truncate(info.st_mode) & SFlag::S_IFMT;
+                let child = path.join(OsStr::from_bytes(name.to_bytes()));
+                entries.push((child.clone(), stamp));
+                let bytes = match kind {
+                    SFlag::S_IFDIR => {
+                        let child_dir = open_directory(dir, OsStr::from_bytes(name.to_bytes()))?;
+                        if directory_stamp(fstat(&child_dir)?) != stamp {
+                            return Err(io::Error::other("Directory replaced"));
+                        }
+                        walk(&child_dir, &child, depth + 1, cancelled, entries)?
+                    }
+                    SFlag::S_IFREG => u64::try_from(info.st_size).map_err(io::Error::other)?,
+                    _ => 0,
+                };
+                total = total
+                    .checked_add(bytes)
+                    .ok_or_else(|| io::Error::other("Directory size overflow"))?;
+            }
+            if directory_stamp(fstat(dir)?) != before {
+                return Err(io::Error::other("Directory changed"));
+            }
+            Ok(total)
+        }
+        let path = Path::new(&path);
+        let (parent, name) = parent(root, path, false)?;
+        let directory = open_directory(&parent, &name)?;
+        fingerprints.push((path.to_owned(), directory_stamp(fstat(&directory)?)));
+        walk(&directory, path, 0, cancelled, fingerprints)
+    };
+    let mut fingerprints = Vec::new();
+    let bytes = scan(&root, &mut fingerprints)?;
+    let reopened = open_root(&root_path)?;
+    let current = fstat(&reopened)?;
+    if (root_info.st_dev, root_info.st_ino) != (current.st_dev, current.st_ino) {
+        return Err(io::Error::other("Storage root replaced"));
+    }
+    for (path, before) in fingerprints {
+        check(cancelled)?;
+        let (parent, name) = parent(&reopened, &path, false)?;
+        let after = directory_stamp(fstatat(
+            &parent,
+            name.as_os_str(),
+            AtFlags::AT_SYMLINK_NOFOLLOW,
+        )?);
+        if before != after {
+            return Err(io::Error::other("Directory contents changed"));
+        }
+    }
+    Ok(bytes)
+}
+
+pub(crate) fn open_root(path: &Path) -> io::Result<File> {
+    walk_root(path, false)
+}
+
+pub(crate) fn open_or_create_root(path: &Path) -> io::Result<File> {
+    walk_root(path, true)
+}
+
+fn walk_root(path: &Path, create: bool) -> io::Result<File> {
+    let parts = path
+        .strip_prefix("/")
+        .map_err(io::Error::other)?
+        .components();
+    // Reject traversal before the first mkdir, even if a preceding component is missing.
+    if parts
+        .clone()
+        .any(|part| !matches!(part, Component::Normal(_)))
+    {
+        return Err(invalid("Storage root must not contain parent components"));
+    }
+    let mut current = File::open("/")?;
+    for component in parts {
+        let Component::Normal(name) = component else {
+            return Err(invalid("Storage root must not contain parent components"));
+        };
+        current = match open_directory(&current, name) {
+            Err(error) if create && error.kind() == io::ErrorKind::NotFound => {
+                match mkdirat(&current, name, Mode::from_bits_truncate(0o755)) {
+                    Ok(()) => current.sync_all()?,
+                    Err(nix::errno::Errno::EEXIST) => {}
+                    Err(error) => return Err(error.into()),
+                }
+                open_directory(&current, name)?
+            }
+            result => result?,
+        };
+    }
+    Ok(current)
+}
+fn open_directory(parent: &File, name: &OsStr) -> io::Result<File> {
+    Ok(File::from(openat(
+        parent,
+        name,
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )?))
+}
+fn read_leaf(parent: &File, name: &OsStr) -> io::Result<File> {
+    let file = File::from(openat(
+        parent,
+        name,
+        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )?);
+    let metadata = file.metadata()?;
+    if metadata.is_dir() {
+        return Err(io::ErrorKind::IsADirectory.into());
+    }
+    FileIdentity::read(&metadata)?;
+    Ok(file)
+}
+
+pub(super) fn ensure_copy(
+    root: &File,
+    path: &Path,
+    source: &VerifiedSource,
+    cancelled: &dyn Fn() -> bool,
+) -> io::Result<()> {
+    use nix::{fcntl::AT_FDCWD, unistd::linkat};
+    use std::os::fd::AsRawFd;
+    check(cancelled)?;
+    let (dir, name) = parent(root, path, true)?;
+    match read_leaf(&dir, &name) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let mut stage = File::from(openat(
+                &dir,
+                ".",
+                OFlag::O_TMPFILE | OFlag::O_RDWR | OFlag::O_CLOEXEC,
+                Mode::S_IRUSR | Mode::S_IWUSR,
+            )?);
+            copy_complete(source.reopen()?, &mut stage, cancelled)?;
+            source.check_unchanged()?;
+            stage.sync_all()?;
+            check(cancelled)?;
+            let fd = format!("/proc/self/fd/{}", stage.as_raw_fd());
+            // Never overwrite an occupant, including during recovery of a previous copy.
+            linkat(
+                AT_FDCWD,
+                fd.as_str(),
+                &dir,
+                name.as_os_str(),
+                AtFlags::AT_SYMLINK_FOLLOW,
+            )?;
+        }
+        Err(error) => return Err(error),
+    }
+    let mut copy = read_leaf(&dir, &name)?;
+    let identity = FileIdentity::read(&copy.metadata()?)?;
+    if (identity.device, identity.inode) == (source.identity.device, source.identity.inode)
+        || identity.length != source.len()
+    {
+        return Err(invalid("Destination is not a separate recovery copy"));
+    }
+    source.verify_download(&mut copy, cancelled)?;
+    copy.sync_all()?;
+    dir.sync_all()?;
+    let (again, leaf) = parent(root, path, false)?;
+    if identity != FileIdentity::read(&copy.metadata()?)?
+        || identity != FileIdentity::read(&read_leaf(&again, &leaf)?.metadata()?)?
+    {
+        return Err(invalid("LOCAL copy changed during verification"));
+    }
+    Ok(())
+}
+
+pub(super) fn remove_owned_publication(
+    artifact: &super::PublishedArtifact,
+    token: &str,
+    index: usize,
+) -> io::Result<()> {
+    use nix::fcntl::{RenameFlags, renameat2};
+
+    let directory = open_root(
+        artifact
+            .path
+            .parent()
+            .ok_or_else(|| invalid("Missing publication parent"))?,
+    )?;
+    let leaf = artifact
+        .path
+        .file_name()
+        .ok_or_else(|| invalid("Missing publication leaf"))?;
+    let staging = format!(".dv-cleanup-{token}-{index}");
+    match mkdirat(&directory, staging.as_str(), Mode::S_IRWXU) {
+        Ok(()) => directory.sync_all()?,
+        Err(nix::errno::Errno::EEXIST) => {}
+        Err(error) => return Err(error.into()),
+    }
+    let private = open_directory(&directory, OsStr::new(&staging))?;
+    let meta = private.metadata()?;
+    if meta.mode() & 0o777 != 0o700 || meta.uid() != nix::unistd::geteuid().as_raw() {
+        return Err(invalid("Cleanup directory is not private to the service"));
+    }
+    let staged = OsStr::new("artifact");
+    let finish = || -> io::Result<()> {
+        unlinkat(&directory, staging.as_str(), UnlinkatFlags::RemoveDir)?;
+        directory.sync_all()
+    };
+    let owned = |file: &File| -> io::Result<()> {
+        let identity = FileIdentity::read(&file.metadata()?)?;
+        let mut attr = [0u8; 32];
+        if identity.device != artifact.device
+            || identity.inode != artifact.inode
+            || identity.length != artifact.length
+            || rustix::fs::fgetxattr(file, super::PUBLICATION_ATTR, &mut attr[..])? != attr.len()
+            || attr != token.as_bytes()
+        {
+            return Err(invalid(
+                "Local publication no longer belongs to this backup",
+            ));
+        }
+        Ok(())
+    };
+    let file = match read_leaf(&private, staged) {
+        Ok(staged) => staged,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let existing = match read_leaf(&directory, leaf) {
+                Ok(file) => file,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return finish(),
+                Err(error) => return Err(error),
+            };
+            owned(&existing)?;
+            renameat2(
+                &directory,
+                leaf,
+                &private,
+                staged,
+                RenameFlags::RENAME_NOREPLACE,
+            )?;
+            let moved = read_leaf(&private, staged)?;
+            if let Err(error) = owned(&moved) {
+                renameat2(
+                    &private,
+                    staged,
+                    &directory,
+                    leaf,
+                    RenameFlags::RENAME_NOREPLACE,
+                )?;
+                private.sync_all()?;
+                directory.sync_all()?;
+                return Err(error);
+            }
+            private.sync_all()?;
+            directory.sync_all()?;
+            moved
+        }
+        Err(error) => return Err(error),
+    };
+    owned(&file)?;
+    unlinkat(&private, staged, UnlinkatFlags::NoRemoveDir)?;
+    private.sync_all()?;
+    finish()
+}
+
+pub(crate) fn snapshot_download(
+    root: &Path,
+    path: &Path,
+    cancelled: &dyn Fn() -> bool,
+) -> io::Result<(File, u64)> {
+    check(cancelled)?;
+    snapshot_download_source(open_download_source(root, path)?, cancelled)
+}
+
+pub(crate) fn open_download_source(root: &Path, path: &Path) -> io::Result<File> {
+    let root = open_root(root)?;
+    let (parent, name) = parent(&root, path, false)?;
+    read_leaf(&parent, &name)
+}
+
+/// Remove a reviewed archive leaf without following symlinks or deleting a replacement.
+pub(crate) fn delete_reviewed_leaf(
+    root: &Path,
+    path: &Path,
+    expected: FileIdentity,
+    stage: &str,
+) -> io::Result<()> {
+    use nix::fcntl::{RenameFlags, renameat2};
+    let root = open_root(root)?;
+    let (parent, leaf) = parent(&root, path, false)?;
+    if !stage.starts_with(".dv-removal-")
+        || !stage
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
+    {
+        return Err(invalid("Invalid removal stage"));
+    }
+    let public = match read_leaf(&parent, &leaf) {
+        Ok(file) => Some(file),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let private = match open_directory(&parent, OsStr::new(stage)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let Some(file) = &public else {
+                return parent.sync_all();
+            };
+            if FileIdentity::read(&file.metadata()?)? != expected {
+                return Err(invalid("Reviewed file changed"));
+            }
+            mkdirat(&parent, stage, Mode::S_IRWXU)?;
+            parent.sync_all()?;
+            open_directory(&parent, OsStr::new(stage))?
+        }
+        Err(error) => return Err(error),
+    };
+    let meta = private.metadata()?;
+    if meta.uid() != nix::unistd::geteuid().as_raw() || meta.mode() & 0o777 != 0o700 {
+        return Err(invalid("Removal stage is not service-private"));
+    }
+    let temporary = OsStr::new("reviewed");
+    let actual = match read_leaf(&private, temporary) {
+        Ok(file) => {
+            if public.is_some() {
+                return Err(invalid("Reviewed name was reused during removal"));
+            }
+            Some(FileIdentity::read(&file.metadata()?)?)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if let Some(file) = public {
+                if FileIdentity::read(&file.metadata()?)? != expected {
+                    return Err(invalid("Reviewed file changed"));
+                }
+                renameat2(
+                    &parent,
+                    leaf.as_os_str(),
+                    &private,
+                    temporary,
+                    RenameFlags::RENAME_NOREPLACE,
+                )?;
+                let moved =
+                    read_leaf(&private, temporary).and_then(|f| FileIdentity::read(&f.metadata()?));
+                if !moved.as_ref().is_ok_and(|actual| {
+                    FileIdentity {
+                        changed: expected.changed,
+                        ..*actual
+                    } == expected
+                }) {
+                    renameat2(
+                        &private,
+                        temporary,
+                        &parent,
+                        leaf.as_os_str(),
+                        RenameFlags::RENAME_NOREPLACE,
+                    )?;
+                    parent.sync_all()?;
+                    return Err(invalid("Reviewed file changed"));
+                }
+                parent.sync_all()?;
+                private.sync_all()?;
+                Some(moved?)
+            } else {
+                None
+            }
+        }
+        Err(error) => return Err(error),
+    };
+    if let Some(actual) = actual {
+        if (FileIdentity {
+            changed: expected.changed,
+            ..actual
+        }) != expected
+        {
+            return Err(invalid("Staged file does not belong to this removal"));
+        }
+        unlinkat(&private, temporary, UnlinkatFlags::NoRemoveDir)?;
+        private.sync_all()?;
+    }
+    unlinkat(&parent, stage, UnlinkatFlags::RemoveDir)?;
+    parent.sync_all()
+}
+
+pub(crate) fn snapshot_download_source(
+    source: File,
+    cancelled: &dyn Fn() -> bool,
+) -> io::Result<(File, u64)> {
+    check(cancelled)?;
+    let temp = open_root(&std::env::temp_dir())?;
+    let mut snapshot = File::from(openat(
+        &temp,
+        ".",
+        OFlag::O_TMPFILE | OFlag::O_RDWR | OFlag::O_CLOEXEC,
+        Mode::S_IRUSR | Mode::S_IWUSR,
+    )?);
+    let receipt = copy_complete(source, &mut snapshot, cancelled)?;
+    std::io::Seek::rewind(&mut snapshot)?;
+    Ok((snapshot, receipt.length))
+}
+
+fn copy_complete(
+    mut source: File,
+    output: &mut File,
+    cancel: &dyn Fn() -> bool,
+) -> io::Result<Downloaded> {
+    let metadata = source.metadata()?;
+    let before = FileIdentity::read(&metadata)?;
+    let receipt = copy_stream(&mut source, output, cancel)?;
+    if receipt.length != before.length || FileIdentity::read(&source.metadata()?)? != before {
+        return Err(invalid("Transfer source changed while copying"));
+    }
+    output.set_permissions(std::fs::Permissions::from_mode(metadata.mode() & 0o7777))?;
+    futimens(
+        &*output,
+        &TimeSpec::new(metadata.atime(), metadata.atime_nsec()),
+        &TimeSpec::new(metadata.mtime(), metadata.mtime_nsec()),
+    )?;
+    output.sync_all()?;
+    check(cancel)?;
+    Ok(receipt)
+}
+
+fn copy_stream(
+    reader: &mut (impl Read + ?Sized),
+    output: &mut File,
+    cancel: &dyn Fn() -> bool,
+) -> io::Result<Downloaded> {
+    let mut digest = Sha256::new();
+    let mut length = 0u64;
+    let mut buffer = [0u8; 65536];
+    loop {
+        check(cancel)?;
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        output.write_all(&buffer[..count])?;
+        digest.update(&buffer[..count]);
+        length = length
+            .checked_add(count as u64)
+            .ok_or_else(|| invalid("Transfer length overflow"))?;
+    }
+    check(cancel)?;
+    Ok(Downloaded {
+        length,
+        digest: digest.finalize().into(),
+    })
+}
+
+pub(super) fn receive_snapshot(
+    reader: &mut (impl Read + ?Sized),
+    expected: Option<u64>,
+    cancel: &dyn Fn() -> bool,
+) -> Result<(File, u64), TransferError> {
+    check(cancel)?;
+    let mut file = anonymous_download()?;
+    let receipt = copy_stream(reader, &mut file, cancel)?;
+    if expected.is_some_and(|length| length != receipt.length) {
+        return Err(invalid("Remote download length mismatch").into());
+    }
+    std::io::Seek::rewind(&mut file)?;
+    Ok((file, receipt.length))
+}
+
+pub(crate) fn anonymous_download() -> io::Result<File> {
+    let temp = open_root(&std::env::temp_dir())?;
+    Ok(File::from(openat(
+        &temp,
+        ".",
+        OFlag::O_TMPFILE | OFlag::O_RDWR | OFlag::O_CLOEXEC,
+        Mode::S_IRUSR | Mode::S_IWUSR,
+    )?))
+}
+
+pub(super) fn receive_download(
+    root: File,
+    path: &Path,
+    reader: &mut (impl Read + ?Sized),
+    expected: Option<u64>,
+    cancel: &dyn Fn() -> bool,
+) -> Result<Downloaded, TransferError> {
+    check(cancel)?;
+    let (parent, name) = parent(&root, path, true)?;
+    let mut staging = Staging::new(parent)?;
+    let receipt = copy_stream(reader, &mut staging.file, cancel)?;
+    if expected.is_some_and(|length| length != receipt.length) {
+        return Err(invalid("Remote download length mismatch").into());
+    }
+    staging.file.sync_all()?;
+    staging.publish(&name, cancel)?;
+    Ok(receipt)
+}
+
+pub(super) struct CliDownload {
+    staging: Staging,
+    target: OsString,
+}
+
+impl CliDownload {
+    pub(super) fn prepare(root: File, path: &Path) -> io::Result<Self> {
+        let (parent, target) = parent(&root, path, true)?;
+        Ok(Self {
+            staging: Staging::new(parent)?,
+            target,
+        })
+    }
+
+    pub(super) fn descriptor_path(&self) -> String {
+        use std::os::fd::AsRawFd;
+        format!(
+            "/proc/{}/fd/{}",
+            std::process::id(),
+            self.staging.file.as_raw_fd()
+        )
+    }
+
+    pub(super) fn inplace_path(&self) -> String {
+        use std::os::fd::AsRawFd;
+        format!(
+            "/proc/{}/fd/{}/{}",
+            std::process::id(),
+            self.staging.parent.as_raw_fd(),
+            self.staging.name.to_str().expect("ASCII staging name"),
+        )
+    }
+
+    pub(super) fn verify(
+        mut self,
+        source: &VerifiedSource,
+        cancel: &dyn Fn() -> bool,
+    ) -> io::Result<()> {
+        source.verify_download(&mut self.staging.file, cancel)
+    }
+
+    pub(super) fn finish(mut self, cancel: &dyn Fn() -> bool) -> Result<Downloaded, TransferError> {
+        let file = &mut self.staging.file;
+        let before = FileIdentity::read(&file.metadata()?)?;
+        let digest = super::hash_reader(file, cancel)?;
+        file.sync_all()?;
+        let named = read_leaf(&self.staging.parent, &self.staging.name)?;
+        if FileIdentity::read(&named.metadata()?)? != before {
+            return Err(invalid("Transfer staging changed before publication").into());
+        }
+        let length = before.length;
+        self.staging.publish(&self.target, cancel)?;
+        Ok(Downloaded { length, digest })
+    }
+}
+
+struct Staging {
+    parent: File,
+    name: OsString,
+    file: File,
+    published: bool,
+}
+impl Staging {
+    fn new(parent: File) -> io::Result<Self> {
+        for _ in 0..8 {
+            let mut random = [0u8; 16];
+            getrandom::fill(&mut random)
+                .map_err(|_| io::Error::other("Transfer staging randomness unavailable"))?;
+            let token: String = random.iter().map(|b| format!("{b:02x}")).collect();
+            let name = OsString::from(format!(".dockervault-transfer-{token}.partial"));
+            match openat(
+                &parent,
+                name.as_os_str(),
+                OFlag::O_RDWR
+                    | OFlag::O_CREAT
+                    | OFlag::O_EXCL
+                    | OFlag::O_NOFOLLOW
+                    | OFlag::O_CLOEXEC,
+                Mode::from_bits_truncate(0o600),
+            ) {
+                Ok(fd) => {
+                    return Ok(Self {
+                        parent,
+                        name,
+                        file: File::from(fd),
+                        published: false,
+                    });
+                }
+                Err(nix::errno::Errno::EEXIST) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "Transfer staging collision",
+        ))
+    }
+    fn publish(&mut self, name: &OsStr, cancel: &dyn Fn() -> bool) -> Result<(), TransferError> {
+        check(cancel)?;
+        renameat(&self.parent, self.name.as_os_str(), &self.parent, name)
+            .map_err(io::Error::from)?;
+        self.published = true;
+        self.parent
+            .sync_all()
+            .map_err(TransferError::PublicationUncertain)?;
+        Ok(())
+    }
+}
+impl Drop for Staging {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = unlinkat(
+                &self.parent,
+                self.name.as_os_str(),
+                UnlinkatFlags::NoRemoveDir,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn published_staging_does_not_delete_a_new_occupant_of_its_old_name() {
+        let mut token = [0u8; 16];
+        getrandom::fill(&mut token).unwrap();
+        let suffix: String = token.iter().map(|b| format!("{b:02x}")).collect();
+        let directory = std::env::temp_dir().join(format!("dv-published-staging-{suffix}"));
+        std::fs::create_dir(&directory).unwrap();
+        let mut staging = Staging::new(File::open(&directory).unwrap()).unwrap();
+        let old_name = staging.name.clone();
+        staging.file.write_all(b"complete").unwrap();
+        staging.file.sync_all().unwrap();
+        staging.publish(OsStr::new("published"), &|| false).unwrap();
+        std::fs::write(directory.join(&old_name), b"new unrelated file").unwrap();
+        drop(staging);
+        let result = std::fs::read(directory.join(old_name));
+        std::fs::remove_dir_all(directory).unwrap();
+        assert_eq!(result.unwrap(), b"new unrelated file");
+    }
+}

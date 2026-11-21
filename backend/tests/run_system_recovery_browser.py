@@ -203,7 +203,7 @@ def main():
             [
                 "python",
                 "-c",
-                "import os,hashlib;from pathlib import Path;seed=os.environ['DV143_SEED'];labels=['komodo:key','komodo:secret','crypt:password','crypt:salt']+[kind+':'+field for kind in ['local','ssh','sftp','webdav','s3','ftp','rclone'] for field in ['password','s3_access_key','s3_secret_key']];canaries=[hashlib.sha256((seed+':'+label).encode()).hexdigest().encode() for label in labels];files=[p for root in ['/app/data','/backups','/tmp','/var/log'] for p in Path(root).rglob('*') if p.is_file() and not p.is_symlink()];assert all(not any(value in p.read_bytes() for value in canaries) for p in files),'Provider plaintext found';print('PASS provider canaries absent from actual SQLite/files/cache/temp/logs')",
+                "import os,hashlib;from pathlib import Path;seed=os.environ['DV143_SEED'];labels=['crypt:password','crypt:salt']+[kind+':'+field for kind in ['local','ssh','sftp','webdav','s3','ftp','rclone'] for field in ['password','s3_access_key','s3_secret_key']];canaries=[hashlib.sha256((seed+':'+label).encode()).hexdigest().encode() for label in labels];files=[p for root in ['/app/data','/backups','/tmp','/var/log'] for p in Path(root).rglob('*') if p.is_file() and not p.is_symlink()];assert all(not any(value in p.read_bytes() for value in canaries) for p in files),'Provider plaintext found';print('PASS provider canaries absent from actual SQLite/files/cache/temp/logs')",
             ]
         )
         (out / "provider-disk-canaries.log").write_bytes(probe.output)
@@ -246,8 +246,6 @@ def main():
             "account",
             "bundle",
             "replacement",
-            "komodo:key",
-            "komodo:secret",
             "pre-hook",
             "post-hook",
             "crypt:password",

@@ -9,7 +9,7 @@ import SSHKeyManager from '../components/SSHKeyManager'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '../components/ui/dialog'
 import { Button } from '../components/ui/button'
 import { sessionGeneration, sessionSignal } from '../store/session'
-import { KomodoSettingsCard, StorageSettingsCard } from '../components/SettingsEditors'
+import { StorageSettingsCard } from '../components/SettingsEditors'
 import { SystemRecovery } from '../components/SystemRecovery'
 
 const sections = [
@@ -64,10 +64,9 @@ function SettingsWorkspace() {
   const dataRouter = useContext(UNSAFE_DataRouterContext)
   const hash = location.hash.slice(1)
   const current = hash === 'ssh-keys' ? 'encryption' : sections.some(([id]) => id === hash) ? hash : 'system'
-  const [dirty, setDirty] = useState({ komodo: false, storage: false })
+  const [dirty, setDirty] = useState(false)
   const [discardRevision, setDiscardRevision] = useState(0)
-  const hasDraft = dirty.komodo || dirty.storage
-  const discard = () => { setDiscardRevision(r => r + 1); setDirty({ komodo: false, storage: false }) }
+  const discard = () => { setDiscardRevision(r => r + 1); setDirty(false) }
   const candidate = new URLSearchParams(location.search).get('storageReturn')
   let storageReturn: string | null = null
   if (candidate?.startsWith('/storage?')) {
@@ -77,25 +76,24 @@ function SettingsWorkspace() {
   }
   useEffect(() => { document.getElementById(hash === 'ssh-keys' ? hash : current)?.focus() }, [current, hash])
   useEffect(() => {
-    if (!hasDraft) return
+    if (!dirty) return
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
     window.addEventListener('beforeunload', warn)
     return () => window.removeEventListener('beforeunload', warn)
-  }, [hasDraft])
+  }, [dirty])
   const docker = useQuery({ queryKey: ['docker-health'], queryFn: () => dockerApi.getHealth().then(r => r.data.status === 'healthy'), refetchInterval: 30000 })
   return <div className="space-y-6">
     <header><h1 className="text-2xl font-bold">Settings</h1><p className="text-dark-300">Saved effective values, private drafts and separate test observations.</p></header>
     <nav aria-label="Settings sections" className="flex flex-wrap gap-2">
       {sections.map(([id, label]) => <Link key={id} to={{ pathname: location.pathname, search: location.search, hash: `#${id}` }} aria-current={current === id ? 'location' : undefined} className={`min-h-11 rounded-lg border px-3 py-2 ${current === id ? 'border-primary-400 text-primary-200' : 'border-dark-600 text-dark-200'}`}>{label}</Link>)}
     </nav>
-    {dataRouter && <NavigationGuard key={location.key} dirty={hasDraft} discard={discard} />}
+    {dataRouter && <NavigationGuard key={location.key} dirty={dirty} discard={discard} />}
     <section id="system" tabIndex={-1} aria-label="System settings" hidden={current !== 'system'}><SystemInfoCard /></section>
     <section id="connection" tabIndex={-1} aria-label="Docker connection settings" hidden={current !== 'connection'} className="space-y-4">
       <div className={card}><h2 className="text-lg font-semibold">Docker Connection</h2><QueryFeedback name="Docker" query={docker} />
         <p>{docker.data === undefined ? 'Unknown' : docker.isError ? 'Previous Docker observation is stale; current connection unknown.' : docker.data ? 'Connected' : 'Not connected'}</p>
         <p>Socket path is environment-controlled; this API does not expose its configured value. A health observation does not prove discovery results or lifecycle authority.</p>
       </div>
-      <KomodoSettingsCard discardRevision={discardRevision} onDirty={value => setDirty(prev => prev.komodo === value ? prev : { ...prev, komodo: value })} />
     </section>
     <div hidden={current !== 'encryption'} className="space-y-4">
       <section id="encryption" tabIndex={-1} aria-label="Encryption settings"><EncryptionSetup /></section>
@@ -104,7 +102,7 @@ function SettingsWorkspace() {
         <SSHKeyManager />
       </section>
     </div>
-    <section id="storage-safeguards" tabIndex={-1} aria-label="Storage safeguards" hidden={current !== 'storage-safeguards'}><StorageSettingsCard discardRevision={discardRevision} onDirty={value => setDirty(prev => prev.storage === value ? prev : { ...prev, storage: value })} /></section>
+    <section id="storage-safeguards" tabIndex={-1} aria-label="Storage safeguards" hidden={current !== 'storage-safeguards'}><StorageSettingsCard discardRevision={discardRevision} onDirty={setDirty} /></section>
     <section id="system-recovery" tabIndex={-1} aria-label="System recovery" hidden={current !== 'system-recovery'} className={card}><h2 className="text-lg font-semibold">System recovery</h2>{current === 'system-recovery' && <SystemRecovery />}</section>
   </div>
 }
