@@ -139,3 +139,45 @@ jobs:
           provider=chrislusf/seaweedfs@sha256:6f10079ef97a3fc24574725911e138b9f02eb397aeb69e6b0b9dd09b09d0e0bd
           docker pull --platform 'linux/${{ matrix.arch }}' "$provider"
           bash docker/test-native-s3-restart.sh dockervault-native-candidate-ci "$provider"
+
+  candidate-oci:
+    name: Unpublished native OCI attestations (${{ matrix.arch }})
+    needs: native-workspace
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      - name: Export and check both images without a registry push
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          mkdir -p "$RUNNER_TEMP/dv-oci"
+          dir="$RUNNER_TEMP/dv-oci"
+          docker buildx build --platform "linux/$ARCH" --build-arg "COMMIT_SHA=$sha" \
+            --provenance=mode=min --sbom=true --output "type=oci,dest=$dir/application.oci.tar" .
+          docker buildx build --platform "linux/$ARCH" --build-arg "VCS_REF=$sha" \
+            --provenance=mode=min --sbom=true --output "type=oci,dest=$dir/recovery.oci.tar" \
+            -f docker/recover.Dockerfile .
+          for archive in "$dir"/*.oci.tar; do
+            bash docker/check-native-oci-attestations.sh "$archive" "$ARCH" "$sha"
+          done
+          (cd "$dir" && sha256sum ./*.oci.tar > SHA256SUMS)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-oci-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/dv-oci/
+          if-no-files-found: error
+          compression-level: 0
