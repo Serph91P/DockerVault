@@ -59,16 +59,17 @@ impl IndexedArchive {
         if !root.metadata()?.is_dir() {
             return Err(invalid("Restore capability is not a directory"));
         }
-        self.db.execute_batch("DROP TABLE IF EXISTS restore_nodes; DROP TABLE IF EXISTS restore_steps; CREATE TABLE restore_nodes(path BLOB PRIMARY KEY,kind INTEGER NOT NULL,link BLOB); CREATE TABLE restore_steps(ord INTEGER PRIMARY KEY,kind INTEGER NOT NULL,path BLOB NOT NULL,link BLOB,source INTEGER,mode INTEGER,mtime REAL);").map_err(db_error)?;
-        let planner = Planner {
-            db: &self.db,
-            root,
-            cancel,
-        };
-        planner.put(b".", MemberKind::Directory, None)?;
+        // This private disk-backed plan does not need a commit per archive member.
+        let plan = self.db.transaction().map_err(db_error)?;
+        plan.execute_batch("DROP TABLE IF EXISTS restore_nodes; DROP TABLE IF EXISTS restore_steps; CREATE TABLE restore_nodes(path BLOB PRIMARY KEY,kind INTEGER NOT NULL,link BLOB); CREATE TABLE restore_steps(ord INTEGER PRIMARY KEY,kind INTEGER NOT NULL,path BLOB NOT NULL,link BLOB,source INTEGER,mode INTEGER,mtime REAL);").map_err(db_error)?;
         {
-            let mut statement = self
-                .db
+            let planner = Planner {
+                db: &plan,
+                root,
+                cancel,
+            };
+            planner.put(b".", MemberKind::Directory, None)?;
+            let mut statement = plan
                 .prepare("SELECT * FROM members ORDER BY seq")
                 .map_err(db_error)?;
             let mut rows = statement.query([]).map_err(db_error)?;
@@ -78,6 +79,8 @@ impl IndexedArchive {
                 planner.member(sequence, read_member(row).map_err(db_error)?)?;
             }
         }
+        check(cancel)?;
+        plan.commit().map_err(db_error)?;
         check(cancel)?;
         before_mutation()?;
         let mut pending_sync = Vec::with_capacity(SYNC_BATCH);
