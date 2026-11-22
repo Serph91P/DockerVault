@@ -80,6 +80,7 @@ jobs:
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' dockervault-python-rollback-ci)" = "$ref"
           sh docker/test-writer-fence.sh dockervault-native-candidate-ci dockervault-python-rollback-ci
           bash docker/test-native-rollback-roundtrip.sh dockervault-native-candidate-ci dockervault-python-rollback-ci
+          bash docker/test-native-rollback-roundtrip.sh dockervault-native-candidate-ci dockervault-python-rollback-ci encrypted
       - name: Verify the fenced Python recovery download after native handoff
         if: matrix.arch == 'amd64'
         run: bash docker/test-native-policy-browser.sh dockervault-python-rollback-ci dockervault-native-browser-ci python dockervault-native-candidate-ci

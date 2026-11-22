@@ -4,6 +4,9 @@ set -euo pipefail
 shopt -s inherit_errexit
 native=${1:?native application}
 python=${2:?fenced Python application}
+mode=${3:-plain}
+case "$mode" in plain|encrypted) ;; *) printf 'Expected plain or encrypted\n' >&2; exit 2;; esac
+set +x # The synthetic identity must not appear in traces.
 label=dockervault.fixture=run796-rollback-success
 containers=()
 cleanup() { for c in "${containers[@]}"; do docker rm -fv "$c" >/dev/null; done; }
@@ -55,19 +58,37 @@ restore() {
     local row=$1 source=$2 value=$3 id path
     id=$(jq -er '.id' <<< "$row"); path="/app/data/$source/payload"
     docker exec -u 1000:1000 "$app" sh -ec 'printf changed > "$1"' sh "$path"
-    api POST "/backups/$id/restore" --data '{}' | jq -e '.status == "restored"' >/dev/null
+    if [[ "$mode" == encrypted ]]; then
+        printf '{"private_key":"%s"}' "$identity_key" |
+            docker exec -i -u 1000:1000 "$app" curl -fsS --max-time 45 -b /tmp/rollback-cookie \
+                -H 'Content-Type: application/json' --data-binary @- "http://127.0.0.1/api/v1/backups/$id/restore" |
+            jq -e '.status == "restored"' >/dev/null
+    else
+        api POST "/backups/$id/restore" --data '{}' | jq -e '.status == "restored"' >/dev/null
+    fi
     [[ $(docker exec "$app" sh -ec 'cat "$1"; printf "\n"; stat -c "%a %Y" "$1"' sh "$path") == "$(printf '%s\n640 1700000000' "$value")" ]]
 }
 read_catalog() {
     local id file
     id=$(jq -er '.id' <<< "$1"); file=$(jq -er '.file_path' <<< "$1")
-    [[ $(api GET "/backups/$id" | jq -er 'select(.status == "completed") | .file_path') == "$file" ]]
-    docker exec "$app" sha256sum "$file"
+    if [[ "$mode" == encrypted ]]; then
+        [[ $(api GET "/backups/$id" | jq -er 'select(.status == "completed" and .encrypted == true) | .file_path') == "$file" ]]
+        [[ "$file" == *.enc ]]
+        docker exec "$app" sha256sum "$file" "${file%.enc}.key"
+    else
+        [[ $(api GET "/backups/$id" | jq -er 'select(.status == "completed") | .file_path') == "$file" ]]
+        docker exec "$app" sha256sum "$file"
+    fi
 }
 create "$native"; seed=$app; start; stop
 create --volumes-from "$seed" "$python"; start
 api POST /auth/setup --data '{"username":"handoff-fixture","password":"synthetic-rollback-fixture-only","confirm_password":"synthetic-rollback-fixture-only"}' >/dev/null
 login; original_inode=$(identity)
+if [[ "$mode" == encrypted ]]; then
+    identity_key=$(api POST /encryption/setup --data '{}' | jq -er '.private_key | strings | select(test("^AGE-SECRET-KEY-[A-Z0-9]+$"))')
+    api POST /encryption/confirm-setup --data '{"confirmed":true}' >/dev/null
+    api GET /encryption/status | jq -e '.encryption_enabled and .setup_completed and (has("private_key") | not)' >/dev/null
+fi
 prepare_source python-seed 'original Python bytes'
 legacy_row=$(make_backup python-seed); legacy_sha=$(read_catalog "$legacy_row")
 stop
@@ -76,7 +97,7 @@ create --volumes-from "$seed" "$native"; start; login
 stop
 create --volumes-from "$seed" "$python"; start; login
 [[ $(identity) == "$original_inode" && $(read_catalog "$legacy_row") == "$legacy_sha" ]]
-printf 'Before Rust backup or restore: Python -> Rust catalog read -> Python on the same SQLite inode and archive digest\n'
+printf '%s before Rust backup or restore: Python -> Rust catalog read -> Python on the same SQLite inode and archive digest(s)\n' "$mode"
 stop
 create --volumes-from "$seed" "$native"; start; login
 [[ $(identity) == "$original_inode" ]]
@@ -91,4 +112,4 @@ stop; start; login
 [[ $(identity) == "$original_inode" && $(read_catalog "$rust_row") == "$rust_sha" ]]
 restore "$rust_row" rust-written 'original Rust bytes'
 stop
-printf 'Post-write Python -> Rust restore and committed backup -> Python restore and restart/re-restore: same SQLite inode and archive digests, bytes/mode/mtime match\n'
+printf '%s post-write: Python -> Rust restore and committed backup -> Python restore and restart/re-restore: same SQLite inode and archive digest(s), bytes/mode/mtime match\n' "$mode"
