@@ -116,9 +116,8 @@ async fn run() -> Result<(), &'static str> {
         .map_err(|_| "workload journal")?
         .is_empty()
     {
-        let docker = DockerClient::connect(&config.docker_socket)
-            .await
-            .map_err(|_| "workload recovery requires Docker")?;
+        // Still persist a partial filesystem restore when Docker is unavailable.
+        let docker = DockerClient::connect(&config.docker_socket).await.ok();
         let recovery = Recovery::new(journal.clone(), docker).map_err(|_| "workload recovery")?;
         recovery
             .reconcile()

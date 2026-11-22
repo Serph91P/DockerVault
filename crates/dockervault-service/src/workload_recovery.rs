@@ -34,28 +34,31 @@ impl From<WorkError> for RecoveryError {
 #[derive(Clone)]
 pub struct Recovery {
     journal: Journal,
-    docker: DockerClient,
+    docker: Option<DockerClient>,
     owner: Owner,
 }
 impl Recovery {
-    pub fn new(journal: Journal, docker: DockerClient) -> Result<Self, RecoveryError> {
+    pub fn new(
+        journal: Journal,
+        docker: impl Into<Option<DockerClient>>,
+    ) -> Result<Self, RecoveryError> {
         Ok(Self {
             journal,
-            docker,
+            docker: docker.into(),
             owner: Owner::new(1)?,
         })
     }
     pub async fn shutdown(&self, grace: Option<Duration>) {
         self.owner.shutdown(grace).await;
     }
-    async fn start_running(&self, id: &str) -> bool {
+    async fn start_running(docker: &DockerClient, id: &str) -> bool {
         for attempt in 0..3 {
-            if self.docker.state(id).await.as_deref() == Ok("running") {
+            if docker.state(id).await.as_deref() == Ok("running") {
                 return true;
             }
-            if self.docker.start(id).await.is_ok() {
+            if docker.start(id).await.is_ok() {
                 for check in 0..3 {
-                    if self.docker.state(id).await.as_deref() == Ok("running") {
+                    if docker.state(id).await.as_deref() == Ok("running") {
                         return true;
                     }
                     if check < 2 {
@@ -92,20 +95,26 @@ impl Recovery {
                             errors.push(crate::journal::RESTORE_UNKNOWN.into());
                             continue;
                         }
+                        let Some(docker) = &service.docker else {
+                            errors.push(format!(
+                                "Workload recovery requires Docker for journal operation {after}"
+                            ));
+                            continue;
+                        };
                         let mut failures = Vec::new();
                         let mut ready = HashSet::new();
                         for (identity, value) in &operation.resources {
                             if value.original != "running" || !value.requested || value.restored {
                                 continue;
                             }
-                            let state = service.docker.state(identity).await.ok();
+                            let state = docker.state(identity).await.ok();
                             if !matches!(state.as_deref(), Some("running" | "exited" | "created")) {
                                 failures.push(identity.clone());
                                 continue;
                             }
                             if !value.stopped {
                                 if state.as_deref() == Some("running")
-                                    && service.docker.stop(identity).await.is_err()
+                                    && docker.stop(identity).await.is_err()
                                 {
                                     failures.push(identity.clone());
                                     continue;
@@ -116,7 +125,8 @@ impl Recovery {
                         }
                         // Settle every old stop intent before starting any dependency again.
                         for identity in operation.restart_order() {
-                            if ready.contains(&identity) && !service.start_running(&identity).await
+                            if ready.contains(&identity)
+                                && !Self::start_running(docker, &identity).await
                             {
                                 failures.push(identity);
                             }

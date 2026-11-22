@@ -283,8 +283,43 @@ fn standalone_service_migrates_serves_and_shuts_down_without_python() {
         .unwrap();
     process.kill().unwrap();
     process.wait().unwrap();
+    db.execute_batch(
+        "DELETE FROM app_settings WHERE key='recovery_activation';
+         INSERT INTO workload_operations(backup_id,kind,phase,state,resources,created_at)
+         VALUES(3,'restore','native_restore_writing','active','{}','2024-01-01');",
+    )
+    .unwrap();
+    let mut interrupted = run(&dir, port);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let exit = loop {
+        if let Some(status) = interrupted.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            interrupted.kill().unwrap();
+            interrupted.wait().unwrap();
+            panic!("startup should refuse an unresolved restore");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    assert!(!exit.success());
+    let interrupted_state: (String, Option<String>) = db
+        .query_row(
+            "SELECT state,error FROM workload_operations WHERE backup_id=3",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
+    assert_eq!(
+        interrupted_state,
+        (
+            "recovery_required".into(),
+            Some(dockervault_service::journal::RESTORE_UNKNOWN.into())
+        ),
+        "restart must record the unresolved path restore without a Docker socket"
+    );
     assert_eq!(
         pending, "PENDING",
         "startup must not change backups during staged recovery activation"
