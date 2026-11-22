@@ -3968,6 +3968,56 @@ async fn backup_catalog_reads_records_and_validates_filters() {
 }
 
 #[tokio::test]
+async fn restore_routes_report_field_errors_before_archive_lookup() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    for endpoint in ["restore", "restore-review"] {
+        let cases = [
+            (
+                "bad",
+                Some(json!({})),
+                "path.backup_id",
+                "Input should be a valid integer, unable to parse string as an integer",
+            ),
+            ("999", None, "body", "Field required"),
+            (
+                "999",
+                Some(json!({"destination_type":"bogus"})),
+                "body.destination_type",
+                "Input should be 'original', 'volume' or 'path'",
+            ),
+            (
+                "999",
+                Some(json!({"target_volume":42})),
+                "body.target_volume",
+                "Input should be a valid string",
+            ),
+            (
+                "999",
+                Some(json!({"destination_type":"path","target_volume":"other"})),
+                "body",
+                "Value error, Contradictory or missing restore destination",
+            ),
+        ];
+        for (id, body, field, message) in cases {
+            let path = format!("/api/v1/backups/{id}/{endpoint}");
+            let (status, _, response) = server.request("POST", &path, &headers, body).await;
+            assert_eq!(status, 422, "{path}: {response}");
+            assert_eq!(
+                response,
+                json!({"detail":"Validation error","errors":[{"field":field,"message":message}]}),
+                "{path}"
+            );
+        }
+    }
+    server.close().await;
+}
+
+#[tokio::test]
 async fn local_delete_submit_commits_before_effect_and_replay_does_not_delete_again() {
     const ROUTE: &str = "/api/v1/operations";
     let server = Server::start("http://localhost:3000").await;

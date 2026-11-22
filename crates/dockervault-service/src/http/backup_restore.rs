@@ -1,6 +1,7 @@
 use super::{
     HttpState,
-    auth::required_user,
+    auth::{json_body, required_user, validation},
+    operations::query_integer,
     storage::{completed_archive_copies, saved_archive_source, snapshot_for_download},
 };
 use crate::{
@@ -11,13 +12,13 @@ use crate::{
 };
 use axum::{
     Json,
-    extract::{Path as RoutePath, State},
-    http::{HeaderMap, StatusCode},
+    extract::{Path as RoutePath, Request, State},
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
 use dockervault_core::crypto::{decrypt_dek, decrypt_private, key_sidecar_path};
 use dockervault_core::encoding::python_json;
-use serde::Deserialize;
+
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{Row, sqlite::SqliteRow};
@@ -50,20 +51,74 @@ fn error((status, message): Failure) -> Response {
     (status, Json(json!({"detail":message}))).into_response()
 }
 
-#[derive(Deserialize)]
-pub(super) struct Selection {
+struct Selection {
     destination_type: Option<String>,
     target_path: Option<String>,
     target_volume: Option<String>,
     review_fingerprint: Option<String>,
-    #[serde(default, deserialize_with = "private_key")]
     private_key: Option<Zeroizing<String>>,
 }
 
-fn private_key<'de, D: serde::Deserializer<'de>>(
-    input: D,
-) -> Result<Option<Zeroizing<String>>, D::Error> {
-    Option::<String>::deserialize(input).map(|value| value.map(Zeroizing::new))
+async fn selection(
+    state: &HttpState,
+    raw_id: &str,
+    mut request: Request,
+) -> Result<(i64, Selection), Box<Response>> {
+    required_user(state, request.headers()).await?;
+    let id = query_integer(raw_id).ok_or_else(|| validation(vec![json!({
+        "field":"path.backup_id", "message":"Input should be a valid integer, unable to parse string as an integer"
+    })]))?;
+    let mut body = json_body(state, &mut request).await?;
+    let body = body.as_object_mut().expect("validated object");
+    let mut errors = Vec::new();
+    let mut field = |name: &str| match body.remove(name) {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value))
+            if name != "destination_type"
+                || matches!(value.as_str(), "original" | "volume" | "path") =>
+        {
+            Some(value)
+        }
+        _ => {
+            let message = if name == "destination_type" {
+                "Input should be 'original', 'volume' or 'path'"
+            } else {
+                "Input should be a valid string"
+            };
+            errors.push(json!({"field":format!("body.{name}"), "message":message}));
+            None
+        }
+    };
+    let selection = Selection {
+        destination_type: field("destination_type"),
+        target_volume: field("target_volume"),
+        target_path: field("target_path"),
+        private_key: field("private_key").map(Zeroizing::new),
+        review_fingerprint: field("review_fingerprint"),
+    };
+    if !errors.is_empty() {
+        return Err(validation(errors));
+    }
+    let path = selection.target_path.as_deref();
+    let volume = selection.target_volume.as_deref();
+    let kind = selection.destination_type.as_deref().unwrap_or_else(|| {
+        if path.is_some_and(|p| !p.is_empty()) {
+            "path"
+        } else {
+            "original"
+        }
+    });
+    let valid = match kind {
+        "path" => path.is_some_and(|p| !p.is_empty()) && volume.is_none(),
+        "volume" => volume.is_some_and(|v| !v.is_empty()) && path.is_none(),
+        _ => path.is_none() && volume.is_none(),
+    };
+    if !valid {
+        return Err(validation(vec![json!({
+            "field":"body", "message":"Value error, Contradictory or missing restore destination"
+        })]));
+    }
+    Ok((id, selection))
 }
 
 struct Impact {
@@ -81,18 +136,12 @@ struct Impact {
 
 pub(super) async fn review(
     State(state): State<HttpState>,
-    RoutePath(id): RoutePath<i64>,
-    headers: HeaderMap,
-    input: Result<Json<Selection>, axum::extract::rejection::JsonRejection>,
+    RoutePath(id): RoutePath<String>,
+    request: Request,
 ) -> Response {
-    if let Err(e) = required_user(&state, &headers).await {
-        return *e;
-    }
-    let Ok(Json(selection)) = input else {
-        return error((
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "Invalid restore destination",
-        ));
+    let (id, selection) = match selection(&state, &id, request).await {
+        Ok(value) => value,
+        Err(response) => return *response,
     };
     match impact(&state, id, &selection, None).await {
         Ok(value) => Json(value.public).into_response(),
@@ -102,18 +151,12 @@ pub(super) async fn review(
 
 pub(super) async fn restore(
     State(state): State<HttpState>,
-    RoutePath(id): RoutePath<i64>,
-    headers: HeaderMap,
-    input: Result<Json<Selection>, axum::extract::rejection::JsonRejection>,
+    RoutePath(id): RoutePath<String>,
+    request: Request,
 ) -> Response {
-    if let Err(e) = required_user(&state, &headers).await {
-        return *e;
-    }
-    let Ok(Json(selection)) = input else {
-        return error((
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "Invalid restore destination",
-        ));
+    let (id, selection) = match selection(&state, &id, request).await {
+        Ok(value) => value,
+        Err(response) => return *response,
     };
     if selection.destination_type.is_some() && selection.review_fingerprint.is_none() {
         return error((
