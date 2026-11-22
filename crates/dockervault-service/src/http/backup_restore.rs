@@ -33,6 +33,7 @@ use zeroize::Zeroizing;
 
 type Failure = (StatusCode, &'static str);
 const INTERNAL: Failure = (StatusCode::INTERNAL_SERVER_ERROR, "Restore failed");
+const MISSING_BACKUP: Failure = (StatusCode::NOT_FOUND, "Backup not found");
 const STALE: Failure = (StatusCode::CONFLICT, "Restore impact changed; review again");
 const UNAVAILABLE: Failure = (
     StatusCode::NOT_FOUND,
@@ -158,6 +159,15 @@ pub(super) async fn restore(
         Ok(value) => value,
         Err(response) => return *response,
     };
+    match sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM backups WHERE id=?)")
+        .bind(id)
+        .fetch_one(state.auth.pool())
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => return error(MISSING_BACKUP),
+        Err(_) => return error(INTERNAL),
+    }
     if selection.destination_type.is_some() && selection.review_fingerprint.is_none() {
         return error((
             StatusCode::CONFLICT,
@@ -190,19 +200,11 @@ async fn impact(
     selection: &Selection,
     cancel: Option<&CancellationToken>,
 ) -> Result<Impact, Failure> {
-    if !matches!(
-        selection.destination_type.as_deref(),
-        None | Some("original")
-    ) || selection.target_path.is_some()
-        || selection.target_volume.is_some()
-    {
-        return Err(UNSUPPORTED);
-    }
     let row = sqlx::query("SELECT b.status,b.target_id,b.file_path,b.file_size,b.checksum,b.encrypted,b.encryption_key_path,b.backup_metadata,
         t.id AS plan_id,t.target_type,t.host_path,t.volume_name,t.container_name,t.stop_container,t.dependencies
         FROM backups b LEFT JOIN backup_targets t ON t.id=b.target_id WHERE b.id=?")
         .bind(id).fetch_optional(state.auth.pool()).await.map_err(|_| INTERNAL)?
-        .ok_or((StatusCode::NOT_FOUND,"Backup not found"))?;
+        .ok_or(MISSING_BACKUP)?;
     if field::<Option<String>>(&row, "status")?.as_deref() != Some("COMPLETED") {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -211,6 +213,14 @@ async fn impact(
     }
     let target: i64 = field::<Option<i64>>(&row, "plan_id")?
         .ok_or((StatusCode::BAD_REQUEST, "Source plan is unavailable"))?;
+    if !matches!(
+        selection.destination_type.as_deref(),
+        None | Some("original")
+    ) || selection.target_path.is_some()
+        || selection.target_volume.is_some()
+    {
+        return Err(UNSUPPORTED);
+    }
     let encrypted = field::<Option<bool>>(&row, "encrypted")?.unwrap_or(false);
     let host = field::<Option<String>>(&row, "host_path")?;
     let container = field::<Option<String>>(&row, "container_name")?;

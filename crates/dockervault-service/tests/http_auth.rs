@@ -4018,6 +4018,28 @@ async fn restore_routes_report_field_errors_before_archive_lookup() {
 }
 
 #[tokio::test]
+async fn restore_routes_report_missing_backup_before_destination_checks() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    for endpoint in ["restore", "restore-review"] {
+        for body in [
+            json!({"destination_type":"original"}),
+            json!({"destination_type":"volume","target_volume":"fixture-volume"}),
+        ] {
+            let path = format!("/api/v1/backups/999/{endpoint}");
+            let (status, _, response) = server.request("POST", &path, &headers, Some(body)).await;
+            assert_eq!(status, 404, "{path}: {response}");
+            assert_eq!(response, json!({"detail":"Backup not found"}));
+        }
+    }
+    server.close().await;
+}
+
+#[tokio::test]
 async fn local_delete_submit_commits_before_effect_and_replay_does_not_delete_again() {
     const ROUTE: &str = "/api/v1/operations";
     let server = Server::start("http://localhost:3000").await;
