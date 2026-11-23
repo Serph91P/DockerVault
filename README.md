@@ -291,7 +291,18 @@ Start Caddy in the same Docker network as DockerVault, and it handles TLS certif
 
 ## Development
 
-### Backend
+### Rust backend
+
+The default Docker image runs the Rust backend and the compiled frontend. See
+the [Rust development guide](docs/RUST_DEVELOPMENT.md) for build and test commands,
+and the [CI contract](docs/contract-ci.md) for the native package checks. When
+verifying a change, use an isolated application image and synthetic data.
+
+### Legacy Python compatibility
+
+The Python backend below is still used to compare behavior and test the fenced
+rollback image. It is not the backend of the default image. Do not run the
+development server against data used by an application container.
 
 ```bash
 cd backend
