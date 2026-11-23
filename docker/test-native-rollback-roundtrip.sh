@@ -80,6 +80,28 @@ read_catalog() {
         docker exec "$app" sha256sum "$file"
     fi
 }
+restore_journal_snapshot() {
+    # Inspect the stopped fixture with the legacy runtime's SQLite, not its app startup.
+    docker run --rm --interactive --pull=never --network none --read-only \
+        --volumes-from "$app:ro" --user 1000:1000 --entrypoint /opt/venv/bin/python "$python" -IB - "$1" <<'PY'
+import json
+import sqlite3
+import sys
+
+with sqlite3.connect("file:/app/data/backup.db?mode=ro", uri=True) as db:
+    ledger = db.execute("SELECT version, applied_at FROM schema_migrations ORDER BY version").fetchall()
+    assert [version for version, _ in ledger] == list(range(1, 8)), "Unexpected migration ledger"
+    rows = db.execute(
+        "SELECT id, state, resources FROM workload_operations WHERE kind = 'restore' AND backup_id = ? LIMIT 2",
+        (int(sys.argv[1]),),
+    ).fetchall()
+    assert len(rows) == 1, "Expected one journal record for the completed Rust restore"
+    operation, state, resources = rows[0]
+    assert state == "finished", "Completed Rust restore must be settled before handoff"
+    assert json.loads(resources) == {}, "A file restore must not introduce legacy workload entries"
+    print(json.dumps([operation, ledger]))
+PY
+}
 create "$native"; seed=$app; start; stop
 create --volumes-from "$seed" "$python"; start
 api POST /auth/setup --data '{"username":"handoff-fixture","password":"synthetic-rollback-fixture-only","confirm_password":"synthetic-rollback-fixture-only"}' >/dev/null
@@ -105,6 +127,8 @@ restore "$legacy_row" python-seed 'original Python bytes'
 prepare_source rust-written 'original Rust bytes'
 rust_row=$(make_backup rust-written); rust_sha=$(read_catalog "$rust_row")
 stop
+legacy_id=$(jq -er '.id | numbers' <<< "$legacy_row")
+rust_journal=$(restore_journal_snapshot "$legacy_id")
 create --volumes-from "$seed" "$python"; start; login
 [[ $(identity) == "$original_inode" && $(read_catalog "$legacy_row") == "$legacy_sha" && $(read_catalog "$rust_row") == "$rust_sha" ]]
 restore "$rust_row" rust-written 'original Rust bytes'
@@ -112,4 +136,6 @@ stop; start; login
 [[ $(identity) == "$original_inode" && $(read_catalog "$rust_row") == "$rust_sha" ]]
 restore "$rust_row" rust-written 'original Rust bytes'
 stop
+[[ $(restore_journal_snapshot "$legacy_id") == "$rust_journal" ]]
+printf '%s post-write: legacy SQLite read the same finished Rust restore and unchanged migration ledger after handoff\n' "$mode"
 printf '%s post-write: Python -> Rust restore and committed backup -> Python restore and restart/re-restore: same SQLite inode and archive digest(s), bytes/mode/mtime match\n' "$mode"
