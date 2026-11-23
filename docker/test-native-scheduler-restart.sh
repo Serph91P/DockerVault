@@ -131,11 +131,15 @@ while (( $(date +%s) < due + 30 )); do
 done
 [[ -n "$backup" ]] || { printf 'No completed backup by deadline %s + 30s\n' "$due" >&2; exit 1; }
 expect_backup() {
-    api GET /backups | jq -er --argjson target "$active" --argjson backup "$backup" '
+    api GET /backups | jq -er --argjson target "$active" --argjson backup "$backup" --argjson due "$due" '
+        # The API emits UTC with Z or +00:00. The deadline has no fractional seconds.
+        def epoch: sub("([.][0-9]+)?(Z|[+]00:00)$"; "Z") | fromdateiso8601;
         select(length == 1) | .[0] | select(.id == $backup and .target_id == $target and
           .backup_type == "full" and .status == "completed" and .completed_at != null and
           .local_available == true and .encrypted == false and .file_size > 0) |
-        .file_path | strings | select(startswith("/backups/"))'
+        if (.created_at | epoch) < $due or (.completed_at | epoch) < $due then
+          error("Backup \(.id) predates deadline \($due | todateiso8601): created_at=\(.created_at), completed_at=\(.completed_at)")
+        else .file_path | strings | select(startswith("/backups/")) end'
 }
 archive=$(expect_backup)
 verify_archive() {
