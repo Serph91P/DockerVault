@@ -5,10 +5,11 @@ Building this checkout without `--target` selects the final `native-production` 
 ```sh
 docker build --platform linux/amd64 \
   --build-arg COMMIT_SHA="$(git rev-parse HEAD)" -t dockervault:native-candidate .
-sh docker/test-native-candidate.sh dockervault:native-candidate
+docker build --platform linux/amd64 -f backend/tests/browser.Dockerfile -t dockervault:native-browser .
+sh docker/test-native-candidate.sh dockervault:native-candidate dockervault:native-browser
 ```
 
-The smoke runs with no network other than the container's loopback, no published ports, disposable Docker volumes, and no host mounts. It exercises the normal entrypoint with s6 as PID 1 and the built frontend/nginx configuration. The Rust backend listens on loopback as UID 1000. The test verifies health through nginx, the data/SSH paths, and that a clean stop/start reopens the same SQLite file. It executes the process guard and recovery CLI as UID 1000 and checks the archive worker's rejection of that UID and successful use by an isolated root test process against a synthetic fixture.
+The smoke runs with no network other than the container's loopback, no published ports, disposable Docker volumes, and no host mounts. It exercises the normal entrypoint with s6 as PID 1 and the built frontend/nginx configuration. The Rust backend listens on loopback as UID 1000. The test verifies health through nginx, the data/SSH paths, and that a clean stop/start reopens the same SQLite file. A separate network-disabled verifier uses Node SQLite from the browser image to query the disposable database read-only before and after the restart. It checks `SELECT 1` and that migration ledger rows 1–7, including their timestamps, are unchanged. The runtime package receives no test tooling. The smoke also executes the process guard and recovery CLI as UID 1000 and checks the archive worker's rejection of that UID and successful use by an isolated root test process against a synthetic fixture.
 
 The worker is packaged as a root-owned executable, **not** delegated via sudo: its current request allows the caller to supply source prefixes. Mode 0755 alone is not a privilege grant. The production authorization of sources needs a trusted boundary before a service-to-root rule can be qualified. No recovery executable is served at the legacy Python URL. The native recovery CLI's presence and startup are checked here; this does not qualify packaged offline restoration.
 

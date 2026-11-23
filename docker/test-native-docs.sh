@@ -54,7 +54,7 @@ for setting in default true; do
         if [[ "$wanted" == 200 && "$actual" == 200 ]]; then
             case "$route" in
                 /openapi.json)
-                    expect 'OpenAPI version, routes, request/response schema' "$(docker exec "$container" curl -fsS --max-time 5 "${cookie[@]}" "$upstream$route" | jq -r '(.openapi | startswith("3.")) and (.paths | length > 80) and (.paths["/api/v1/auth/setup"].post | has("requestBody") and has("responses"))')" true;;
+                    expect 'OpenAPI title, version, routes, request/response schema' "$(docker exec "$container" curl -fsS --max-time 5 "${cookie[@]}" "$upstream$route" | jq -r '(.info.title == "Docker Volume Backup Manager") and (.openapi | startswith("3.")) and (.paths | length > 80) and (.paths["/api/v1/auth/setup"].post | has("requestBody") and has("responses"))')" true;;
                 /docs|/redoc)
                     body=$(docker exec "$container" curl -fsS --max-time 5 "${cookie[@]}" "$upstream$route")
                     expect "$route references local spec" "$(if [[ "$body" == *'/openapi.json'* ]]; then printf yes; else printf no; fi)" yes;;

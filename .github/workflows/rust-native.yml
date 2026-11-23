@@ -37,6 +37,11 @@ jobs:
               cargo test --workspace --locked --offline
               cargo clippy --workspace --all-targets --locked --offline -- -D warnings
             '
+      - name: Build browser acceptance image for the native runner
+        run: |
+          docker build --platform 'linux/${{ matrix.arch }}' \
+            -f backend/tests/browser.Dockerfile -t dockervault-native-browser-ci .
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' dockervault-native-browser-ci)" = 'linux/${{ matrix.arch }}'
       - name: Build and start the default application image (no target)
         run: |
           sha=$(git rev-parse HEAD)
@@ -45,17 +50,12 @@ jobs:
             --build-arg "COMMIT_SHA=$sha" -t "$image" .
           test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = 'linux/${{ matrix.arch }}'
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$sha"
-          sh docker/test-native-candidate.sh "$image"
+          sh docker/test-native-candidate.sh "$image" dockervault-native-browser-ci
           bash docker/test-native-queued-roundtrip.sh "$image"
       - name: Verify packaged opt-in API documentation and backend logging
         run: |
           bash docker/test-native-docs.sh dockervault-native-candidate-ci
           bash docker/test-native-logging.sh dockervault-native-candidate-ci
-      - name: Build browser acceptance image for the native runner
-        run: |
-          docker build --platform 'linux/${{ matrix.arch }}' \
-            -f backend/tests/browser.Dockerfile -t dockervault-native-browser-ci .
-          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' dockervault-native-browser-ci)" = 'linux/${{ matrix.arch }}'
       - name: Exercise policy routes through the packaged frontend
         if: matrix.arch == 'amd64'
         run: bash docker/test-native-policy-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci

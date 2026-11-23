@@ -1,7 +1,8 @@
 #!/bin/sh
 # An isolated image smoke: no published ports, host mounts, or Docker socket.
 set -eu
-image=${1:?Usage: sh docker/test-native-candidate.sh IMAGE}
+image=${1:?Usage: sh docker/test-native-candidate.sh IMAGE BROWSER_IMAGE}
+browser_image=${2:?Browser acceptance image with Node SQLite required}
 container=$(docker create --network none "$image")
 trap 'docker rm -fv "$container" >/dev/null' EXIT
 
@@ -74,11 +75,33 @@ docker exec "$container" sh -eu -c '
     test "$(tar -xOf /backups/candidate-smoke.tar fixture/content)" = "candidate fixture"
     stat -c %i /app/data/backup.db >/app/data/smoke-db-inode
 '
+sqlite_ledger() {
+    docker run --rm --pull never --network none --read-only \
+        --volumes-from "$container:ro" --user 1000:1000 --entrypoint node "$browser_image" -e '
+        const assert = require("node:assert/strict");
+        const { DatabaseSync } = require("node:sqlite");
+        const db = new DatabaseSync("/app/data/backup.db", { readOnly: true });
+        assert.equal(db.prepare("SELECT 1 AS value").get().value, 1);
+        const ledger = db.prepare("SELECT version, applied_at FROM schema_migrations ORDER BY version").all();
+        assert.deepEqual(ledger.map(({ version }) => version), [1, 2, 3, 4, 5, 6, 7]);
+        assert.ok(ledger.every(({ applied_at }) => typeof applied_at === "string" && applied_at.length > 0));
+        db.close();
+        console.log(JSON.stringify(ledger));
+    '
+}
+before=$(sqlite_ledger)
+printf 'SQLite SELECT 1 and ledger 1–7 passed before restart\n'
 docker stop -t 30 "$container" >/dev/null
 test "$(docker inspect -f '{{.State.ExitCode}}' "$container")" = 0
 docker start "$container" >/dev/null
 ready
 docker exec "$container" sh -ec 'test "$(stat -c %i /app/data/backup.db)" = "$(cat /app/data/smoke-db-inode)"'
+after=$(sqlite_ledger)
+if [ "$before" != "$after" ]; then
+    printf 'SQLite migration ledger changed across restart\n' >&2
+    exit 1
+fi
+printf 'SQLite SELECT 1 and unchanged ledger rows passed after clean restart on the same DB inode\n'
 bash "$(dirname "$0")/test-native-docs.sh" "$image"
 bash "$(dirname "$0")/test-native-logging.sh" "$image"
 printf 'Native candidate smoke passed: %s\n' "$(docker inspect -f '{{.Image}}' "$container")"
