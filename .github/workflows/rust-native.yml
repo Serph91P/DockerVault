@@ -51,11 +51,14 @@ jobs:
         run: |
           bash docker/test-native-docs.sh dockervault-native-candidate-ci
           bash docker/test-native-logging.sh dockervault-native-candidate-ci
+      - name: Build browser acceptance image for the native runner
+        run: |
+          docker build --platform 'linux/${{ matrix.arch }}' \
+            -f backend/tests/browser.Dockerfile -t dockervault-native-browser-ci .
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' dockervault-native-browser-ci)" = 'linux/${{ matrix.arch }}'
       - name: Exercise policy routes through the packaged frontend
         if: matrix.arch == 'amd64'
-        run: |
-          docker build -f backend/tests/browser.Dockerfile -t dockervault-native-browser-ci .
-          bash docker/test-native-policy-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci
+        run: bash docker/test-native-policy-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci
 
       - name: Exercise truthful frontend state and persisted effects in Chromium
         if: matrix.arch == 'amd64'
@@ -82,7 +85,6 @@ jobs:
           bash docker/test-native-rollback-roundtrip.sh dockervault-native-candidate-ci dockervault-python-rollback-ci
           bash docker/test-native-rollback-roundtrip.sh dockervault-native-candidate-ci dockervault-python-rollback-ci encrypted
       - name: Verify the fenced Python recovery download after native handoff
-        if: matrix.arch == 'amd64'
         run: bash docker/test-native-policy-browser.sh dockervault-python-rollback-ci dockervault-native-browser-ci python dockervault-native-candidate-ci
       - name: Native pinned rclone capabilities and encrypted preparation without network
         run: |
@@ -109,7 +111,6 @@ jobs:
       - name: Verify embedded dependencies in shipped native binaries
         run: sh docker/test-native-rust-inventory.sh dockervault-native-candidate-ci dockervault-recovery-ci
       - name: Execute the downloaded tool with all three documented recovery commands offline
-        if: matrix.arch == 'amd64'
         run: bash docker/test-native-policy-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci native dockervault-recovery-ci dockervault-rust-ci
       - name: Recover original v1 and legacy bytes without network or Python
         shell: bash
