@@ -41,6 +41,159 @@ impl Drop for Fixture {
         fs::remove_dir_all(&self.0).unwrap();
     }
 }
+
+#[test]
+fn filtered_directory_links_roundtrip_with_stripped_or_kept_root() {
+    for compressed in [false, true] {
+        for (prefix, strip_root) in [("links", Some(b"".as_slice())), ("mount/data", None)] {
+            for (include, exclude, links) in [
+                (&[][..], &[][..], &["current", "loop"][..]),
+                (&["real/file.txt", "current"][..], &[][..], &["current"][..]),
+                (&[][..], &["current"][..], &["loop"][..]),
+                (
+                    &["real", "current", "loop"][..],
+                    &["current"][..],
+                    &["loop"][..],
+                ),
+            ] {
+                check_filtered_links(compressed, prefix, strip_root, include, exclude, links);
+            }
+        }
+    }
+}
+
+fn check_filtered_links(
+    compressed: bool,
+    prefix: &str,
+    strip_root: Option<&[u8]>,
+    include: &[&str],
+    exclude: &[&str],
+    links: &[&str],
+) {
+    use std::{io::Read, path::Path};
+    use tar::EntryType::{Directory, Regular, Symlink};
+
+    let case = format!("{prefix}, gzip={compressed}, include={include:?}, exclude={exclude:?}");
+    let root = Fixture::new();
+    let source = root.0.join("source");
+    let payload = b"original payload\0\n";
+    fs::create_dir(source.join("real")).unwrap();
+    fs::write(source.join("real/file.txt"), payload).unwrap();
+    symlink("real", source.join("current")).unwrap();
+    symlink(".", source.join("loop")).unwrap();
+    let request = Request::parse(
+        &serde_json::to_vec(&serde_json::json!({
+            "version": 1, "dest": "/backups/archive.tar", "compress": compressed,
+            "sources": [[prefix, source]], "allowed_sources": [source],
+            "include_paths": include, "exclude_paths": exclude,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let backups = root.0.join("backups");
+    let spool = fs::File::open(&backups).unwrap();
+    let report = create_archive(&request, &spool, &|| false).unwrap();
+    assert_eq!(report.skipped_count(), 0, "{case}");
+    let archive = backups.join("archive.tar");
+    let file = fs::File::open(&archive).unwrap();
+    let reader: Box<dyn Read> = if compressed {
+        Box::new(flate2::read::GzDecoder::new(file))
+    } else {
+        Box::new(file)
+    };
+    let mut actual: Vec<_> = tar::Archive::new(reader)
+        .entries()
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (
+                entry
+                    .path()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .trim_end_matches('/')
+                    .to_owned(),
+                entry.header().entry_type(),
+                entry.link_name().unwrap().map(|p| p.into_owned()),
+            )
+        })
+        .collect();
+    let target = |name| if name == "current" { "real" } else { "." };
+    let mut expected = vec![
+        (prefix.to_owned(), Directory, None),
+        (format!("{prefix}/real"), Directory, None),
+        (format!("{prefix}/real/file.txt"), Regular, None),
+    ];
+    expected.extend(links.iter().map(|&name| {
+        (
+            format!("{prefix}/{name}"),
+            Symlink,
+            Some(PathBuf::from(target(name))),
+        )
+    }));
+    actual.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    expected.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(actual, expected, "{case}");
+
+    let destination = root.0.join("downloads");
+    IndexedArchive::prepare(
+        fs::File::open(archive).unwrap(),
+        compressed,
+        &spool,
+        strip_root,
+        &|| false,
+    )
+    .unwrap()
+    .restore_into(&fs::File::open(&destination).unwrap(), &|| false)
+    .unwrap();
+    let restored = if strip_root.is_some() {
+        assert!(!destination.join(prefix).exists(), "{case}");
+        destination
+    } else {
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 1, "{case}");
+        assert_eq!(
+            fs::read_dir(destination.join("mount")).unwrap().count(),
+            1,
+            "{case}"
+        );
+        destination.join(prefix)
+    };
+    assert_eq!(
+        fs::read_dir(restored.join("real")).unwrap().count(),
+        1,
+        "{case}"
+    );
+    assert_eq!(
+        fs::read(restored.join("real/file.txt")).unwrap(),
+        payload,
+        "{case}"
+    );
+    let mut names: Vec<_> = fs::read_dir(&restored)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort_unstable();
+    let mut expected_names = vec!["real"];
+    for &name in links {
+        expected_names.push(name);
+        assert_eq!(
+            fs::read_link(restored.join(name)).unwrap(),
+            Path::new(target(name)),
+            "{case}"
+        );
+    }
+    if links.contains(&"current") {
+        assert_eq!(
+            fs::read(restored.join("current/file.txt")).unwrap(),
+            payload,
+            "{case}"
+        );
+    }
+    expected_names.sort_unstable();
+    assert_eq!(names, expected_names, "{case}");
+}
+
 #[tokio::test]
 async fn authenticated_decryption_returns_only_an_anonymous_completed_snapshot() {
     use nix::{
