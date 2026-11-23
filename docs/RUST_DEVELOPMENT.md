@@ -28,6 +28,46 @@ docker run --rm dockervault-rust-dev cargo audit
 docker run --rm dockervault-rust-dev cargo deny check advisories licenses sources
 ```
 
+## Rust workspace coverage
+
+The `Rust workspace coverage (amd64)` CI job reports source coverage for
+`dockervault-core`, `dockervault-service`, and `dockervault-tools`. Download
+`rust-coverage-amd64-<commit>` from the Rust foundations run. `source.json`
+records the measured checkout and platform; `coverage.json` is the LLVM JSON
+export with workspace totals and per-file summaries. The job logs identify the
+compiler (including its LLVM version) and cargo-llvm-cov version.
+
+To reproduce, run from a clean checkout of the commit in `source.json` on
+Linux amd64. This uses Rust 1.99.1 with its matching `llvm-tools-preview` and
+cargo-llvm-cov 0.9.2. The image build fetches dependencies; the test container
+has no network access outside its own loopback and no host socket or data mount.
+
+```sh
+docker build --target coverage -f docker/rust-dev.Dockerfile -t dockervault-rust-coverage .
+docker run --rm --network none --cpus 2 --memory 6g --user 1000:1000 \
+  --env CARGO_BUILD_JOBS=2 --env CARGO_PROFILE_TEST_DEBUG=0 \
+  --entrypoint /bin/sh dockervault-rust-coverage -ec '
+    rustc -vV >&2
+    cargo llvm-cov --version >&2
+    cargo llvm-cov --workspace --locked --offline --no-cfg-coverage \
+      --remap-path-prefix --json --summary-only --output-path /tmp/coverage.json >&2
+    cat /tmp/coverage.json
+  ' > coverage.json
+jq '.data[0].totals | {lines, regions, functions}' coverage.json
+```
+
+This runs the default-feature Cargo unit and integration tests. The denominator
+is LLVM's mapped code for this build, not all repository lines. Default
+cargo-llvm-cov report filters omit standalone test and example sources, build
+outputs, and dependencies; inline test code can still contribute. Doctests,
+other architectures/feature sets, and separate packaged Docker, provider and
+browser jobs are not measured here. Treat uncovered code as a lead for test
+design, not as proof of a defect; high coverage is not proof of parity.
+
+There is no new minimum percentage. The Python cutoffs (`34%` in
+`backend/pytest.ini`, `80%` in `test.sh`) and their runners are unchanged.
+The percentages are not interchangeable, and instrumentation is not a benchmark.
+
 ## Workspace boundary
 
 - `dockervault-core`: domain/offline algorithms; no HTTP, SQL or Tokio dependency.

@@ -10,6 +10,44 @@ permissions:
   contents: read
 
 jobs:
+  native-coverage:
+    name: Rust workspace coverage (amd64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Build isolated coverage image
+        run: docker build --target coverage -f docker/rust-dev.Dockerfile -t dockervault-rust-coverage .
+      - name: Measure Rust coverage offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/rust-coverage"
+          mkdir "$dir"
+          docker run --rm --network none --cpus 2 --memory 6g --user 1000:1000 \
+            --env CARGO_BUILD_JOBS=2 --env CARGO_PROFILE_TEST_DEBUG=0 \
+            --entrypoint /bin/sh dockervault-rust-coverage -ec '
+              rustc -vV >&2
+              cargo llvm-cov --version >&2
+              cargo llvm-cov --workspace --locked --offline --no-cfg-coverage \
+                --remap-path-prefix --json --summary-only --output-path /tmp/coverage.json >&2
+              cat /tmp/coverage.json
+            ' > "$dir/coverage.json"
+          jq -e '.type == "llvm.coverage.json.export" and .data[0].totals.lines.count > 0' \
+            "$dir/coverage.json" >/dev/null
+          platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' dockervault-rust-coverage)
+          test "$platform" = linux/amd64
+          jq -n --arg commit "$(git rev-parse HEAD)" --arg platform "$platform" \
+            '{commit: $commit, platform: $platform}' > "$dir/source.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rust-coverage-amd64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/rust-coverage/
+          if-no-files-found: error
+
   native-workspace:
     name: Native workspace and offline recovery (${{ matrix.arch }})
     strategy:
