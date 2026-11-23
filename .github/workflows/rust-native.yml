@@ -52,6 +52,10 @@ jobs:
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$sha"
           sh docker/test-native-candidate.sh "$image" dockervault-native-browser-ci
           bash docker/test-native-queued-roundtrip.sh "$image"
+      - name: Restore a plain LOCAL-only backup after clean native restart
+        run: bash docker/test-native-local-restart.sh dockervault-native-candidate-ci plain
+      - name: Restore an encrypted LOCAL-only backup after clean native restart
+        run: bash docker/test-native-local-restart.sh dockervault-native-candidate-ci encrypted
       - name: Verify packaged opt-in API documentation and backend logging
         run: |
           bash docker/test-native-docs.sh dockervault-native-candidate-ci
