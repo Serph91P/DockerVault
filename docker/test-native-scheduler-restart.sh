@@ -155,13 +155,13 @@ phase=automatic-backup
 # Both linked targets' own cron fires at the Embedded control's deadline.
 # Keep polling past both Shared deadlines even if the expected backup completes early.
 while :; do
-    observed=$(date +%s)
     rows=$(api GET /backups)
+    observed=$(date +%s)
     jq -e --argjson a "$active" --argjson s "$shared" --argjson due "$due" --argjson shared_due "$shared_due" \
         --argjson now "$observed" '
         def epoch: sub("([.][0-9]+)?(Z|[+]00:00)$"; "Z") | fromdateiso8601;
         def timely($deadline):
-            (.created_at | epoch) >= $deadline and
+            $now >= $deadline and (.created_at | epoch) >= $deadline and
             if .status == "completed" then
                 (.completed_at | epoch) >= $deadline and (.completed_at | epoch) < $deadline + 30
             else .status == "pending" or .status == "running" end;
