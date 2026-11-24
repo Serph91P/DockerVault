@@ -3212,6 +3212,99 @@ async fn legacy_delete_removes_only_the_selected_local_copy() {
 }
 
 #[tokio::test]
+async fn legacy_delete_preserves_recovery_identity_for_disabled_storage() {
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let archive = server.path.join("backups/fixture.tar.enc");
+    let key = server.path.join("backups/fixture.tar.key");
+    let key_path = key.to_str().unwrap();
+    let replica = server.path.join("replica");
+    let remote_path = "replica.tar.enc";
+    let remote_bytes = b"synthetic remote ciphertext";
+    let key_bytes = b"synthetic recovery key";
+    std::fs::create_dir(&replica).unwrap();
+    std::fs::write(&archive, b"synthetic local ciphertext").unwrap();
+    std::fs::write(&key, key_bytes).unwrap();
+    std::fs::write(replica.join(remote_path), remote_bytes).unwrap();
+
+    let db = server.db.pool();
+    sqlx::query(
+        "INSERT INTO backup_targets(id,name,target_type,enabled) VALUES(11,'Fixture','path',1)",
+    )
+    .execute(db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO backups(id,target_id,backup_type,status,encrypted,file_path,encryption_key_path) VALUES(12,11,'FULL','COMPLETED',1,?,?)")
+        .bind(archive.to_str().unwrap()).bind(key_path).execute(db).await.unwrap();
+    sqlx::query("INSERT INTO remote_storages(id,name,storage_type,base_path,enabled) VALUES(13,'Replica','local',?,0)")
+        .bind(replica.to_str().unwrap()).execute(db).await.unwrap();
+    sqlx::query("INSERT INTO backup_storage_syncs(id,backup_id,storage_id,remote_path,sync_status) VALUES(14,12,13,?,'completed')")
+        .bind(remote_path).execute(db).await.unwrap();
+
+    let (status, _, result) = server
+        .request("DELETE", "/api/v1/backups/12", &headers, None)
+        .await;
+    assert_eq!(status, 200, "{result}");
+    assert_eq!(result["status"], "incomplete", "{result}");
+    assert!(result["warning"].as_str().is_some_and(|s| !s.is_empty()));
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{result}");
+    assert!(
+        items.iter().any(|item| item["copy"] == "remote"
+            && item["backup_id"] == 12
+            && item["storage_id"] == 13
+            && item["outcome"] == "failed"),
+        "{result}"
+    );
+    assert!(
+        items.iter().any(|item| item["copy"] == "local"
+            && item["backup_id"] == 12
+            && item["outcome"] == "succeeded"),
+        "{result}"
+    );
+
+    let (id, target, saved_key, file_path) =
+        sqlx::query_as::<_, (i64, i64, Option<String>, Option<String>)>(
+            "SELECT id,target_id,encryption_key_path,file_path FROM backups",
+        )
+        .fetch_one(db)
+        .await
+        .unwrap();
+    assert_eq!((id, target), (12, 11));
+    assert_eq!(
+        saved_key.as_deref(),
+        Some(key_path),
+        "recovery key reference"
+    );
+    let syncs = sqlx::query_as::<_, (i64, i64, i64, String, String)>(
+        "SELECT id,backup_id,storage_id,remote_path,sync_status FROM backup_storage_syncs",
+    )
+    .fetch_all(db)
+    .await
+    .unwrap();
+    assert_eq!(
+        syncs,
+        [(14, 12, 13, remote_path.into(), "completed".into())]
+    );
+    assert_eq!(
+        std::fs::read(replica.join(remote_path)).unwrap(),
+        remote_bytes
+    );
+    assert_eq!(std::fs::read(key).unwrap(), key_bytes);
+
+    assert_eq!(file_path, None);
+    assert_eq!(
+        std::fs::metadata(archive).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn removal_keeps_durable_intent_when_catalog_acknowledgment_fails() {
     removal_acknowledgment_failure(true, false).await;
 }
