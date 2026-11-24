@@ -2935,6 +2935,82 @@ async fn retention_applies_only_to_expired_local_copies_and_counts_settled_chang
 }
 
 #[tokio::test]
+async fn retention_apply_preserves_the_union_of_keep_last_and_daily() {
+    let origin = "http://localhost:3000";
+    let server = Server::configured(
+        Config::from_pairs([
+            ("COOKIE_SECURE", "false"),
+            ("CORS_ORIGINS", origin),
+            ("DOCKER_SOCKET", "/dev/null/docker.sock"),
+        ])
+        .unwrap(),
+    )
+    .await;
+    let cookie = server.setup().await;
+    let db = server.db.pool();
+    sqlx::raw_sql(
+        "INSERT INTO retention_policies(id,name,keep_last,keep_daily,keep_weekly,keep_monthly,keep_yearly,max_age_days)
+         VALUES(123,'Overlap',2,2,0,0,0,30);
+         INSERT INTO backup_targets(id,name,target_type,enabled,retention_policy_id)
+         VALUES(1,'Fixture','path',1,123);",
+    )
+    .execute(db)
+    .await
+    .unwrap();
+
+    // Anchor both buckets to one UTC date, even if Apply crosses midnight.
+    let today = time::OffsetDateTime::now_utc().date();
+    let yesterday = today.previous_day().unwrap();
+    let fixtures = [
+        (1, format!("{today}T00:00:01Z"), b"both".as_slice()),
+        (
+            2,
+            format!("{today}T00:00:00Z"),
+            b"keep-last only".as_slice(),
+        ),
+        (
+            3,
+            format!("{yesterday}T00:00:00Z"),
+            b"daily only".as_slice(),
+        ),
+    ];
+    let archive = |id: i64| server.path.join(format!("backups/overlap-{id}.tar"));
+    for (id, created_at, bytes) in &fixtures {
+        let path = archive(*id);
+        std::fs::write(&path, bytes).unwrap();
+        sqlx::query(
+            "INSERT INTO backups(id,target_id,backup_type,status,file_path,created_at)
+             VALUES(?,1,'FULL','COMPLETED',?,?)",
+        )
+        .bind(id)
+        .bind(path.to_str().unwrap())
+        .bind(created_at)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    let (status, _, result) = server
+        .request(
+            "POST",
+            "/api/v1/retention/1/apply",
+            &[("Cookie", cookie.as_str()), ("Origin", origin)],
+            None,
+        )
+        .await;
+    assert_eq!((status, result), (200, json!({"kept":3,"deleted":0})));
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM backups ORDER BY id")
+        .fetch_all(db)
+        .await
+        .unwrap();
+    assert_eq!(ids, [1, 2, 3]);
+    for (id, _, bytes) in fixtures {
+        assert_eq!(std::fs::read(archive(id)).unwrap(), bytes, "archive {id}");
+    }
+    server.close().await;
+}
+
+#[tokio::test]
 async fn legacy_delete_removes_only_the_selected_local_copy() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
