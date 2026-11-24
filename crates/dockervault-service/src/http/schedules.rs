@@ -69,6 +69,8 @@ mod maintenance_tests {
 pub(super) struct LiveScheduler {
     jobs: tokio::sync::Mutex<BTreeMap<i64, LiveJob>>,
     worker: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    #[cfg(test)]
+    fail_next_job_install: std::sync::atomic::AtomicBool,
 }
 
 struct LiveJob {
@@ -82,106 +84,329 @@ struct LiveJob {
 mod live_job_tests {
     use super::*;
     use crate::{auth::AuthService, config::Config, db::Database, ownership::Owner};
-    use reqwest::header::{CONTENT_TYPE, COOKIE, SET_COOKIE};
+    use reqwest::{
+        Method,
+        header::{CONTENT_TYPE, COOKIE, SET_COOKIE},
+    };
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const DEADLINE: Duration = Duration::from_secs(10);
+    const DUE: &str = "2000-01-01T02:00:00+00:00";
+    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
+    struct TestDir(std::path::PathBuf);
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            if let Err(error) = std::fs::remove_dir_all(&self.0)
+                && !std::thread::panicking()
+            {
+                panic!("Could not clean scheduler test directory: {error}");
+            }
+        }
+    }
+
+    struct Fixture {
+        state: HttpState,
+        client: reqwest::Client,
+        api: String,
+        cookie: String,
+        stop: tokio::sync::oneshot::Sender<()>,
+        server: tokio::task::JoinHandle<()>,
+        _dir: TestDir,
+    }
+
+    impl Fixture {
+        async fn start() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "dv-live-scheduler-{}-{}",
+                std::process::id(),
+                NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&path).unwrap();
+            let dir = TestDir(path);
+            let owner = Owner::new(1).unwrap();
+            let db = Database::open(dir.0.join("db.sqlite"), &dir.0, &owner)
+                .await
+                .unwrap();
+            owner.shutdown(None).await;
+            let options = (*db.pool().connect_options()).clone();
+            db.close().await;
+            // One request connection makes retaining it across reconciliation observable.
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .acquire_timeout(Duration::from_secs(5))
+                .connect_with(options)
+                .await
+                .unwrap();
+            let mut config =
+                Config::from_pairs([("TZ", "UTC"), ("DOCKER_SOCKET", "/dev/null/docker.sock")])
+                    .unwrap();
+            config.backup_base_path = dir.0.to_str().unwrap().into();
+            let state = HttpState::new(AuthService::new(pool), config);
+            sqlx::query("INSERT INTO schedules(id,name,cron_expression,enabled,created_at) VALUES (7,'Shared','0 2 * * *',1,'2000-01-01 00:00:00.000000')")
+                .execute(state.auth.pool()).await.unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let api = format!("http://{}/api/v1", listener.local_addr().unwrap());
+            let app = super::super::router(state.clone());
+            let (stop, stopped) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .with_graceful_shutdown(async {
+                    let _ = stopped.await;
+                })
+                .await
+                .unwrap();
+            });
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .retry(reqwest::retry::never())
+                .timeout(DEADLINE)
+                .build()
+                .unwrap();
+            let setup = client
+                .post(format!("{api}/auth/setup"))
+                .header(CONTENT_TYPE, "application/json")
+                .body(json!({"username":"public-admin","password":"PUBLIC-password!","confirm_password":"PUBLIC-password!"}).to_string())
+                .send().await.unwrap();
+            assert_eq!(setup.status(), StatusCode::OK);
+            let cookie = setup.headers()[SET_COOKIE]
+                .to_str()
+                .unwrap()
+                .split(';')
+                .next()
+                .unwrap()
+                .to_owned();
+            Self {
+                state,
+                client,
+                api,
+                cookie,
+                stop,
+                server,
+                _dir: dir,
+            }
+        }
+
+        async fn request(
+            &self,
+            method: Method,
+            route: &str,
+            body: Option<Value>,
+        ) -> (StatusCode, Value) {
+            let mut request = self
+                .client
+                .request(method, format!("{}/{route}", self.api))
+                .header(COOKIE, &self.cookie);
+            if let Some(body) = body {
+                request = request
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(body.to_string());
+            }
+            let response = request.send().await.unwrap();
+            (
+                response.status(),
+                serde_json::from_slice(&response.bytes().await.unwrap()).unwrap(),
+            )
+        }
+
+        async fn jobs(&self) -> Value {
+            let (status, jobs) = self.request(Method::GET, "schedules/jobs", None).await;
+            assert_eq!(status, StatusCode::OK, "{jobs}");
+            jobs
+        }
+
+        async fn seed_due_job(&self) {
+            sqlx::query("INSERT INTO backup_targets(id,name,target_type,schedule_id,schedule_cron,enabled) VALUES (20,'Original','volume',7,'0 4 * * *',1)")
+                .execute(self.state.auth.pool()).await.unwrap();
+            assert!(reconcile(&self.state).await.is_ok());
+            // A known overdue deadline also detects unintended recomputation.
+            self.state
+                .scheduler
+                .jobs
+                .lock()
+                .await
+                .get_mut(&20)
+                .unwrap()
+                .next
+                .timestamp = Timestamp::parse(DUE).unwrap();
+        }
+
+        async fn create_target(&self, name: String) -> (StatusCode, Value) {
+            self.request(Method::POST, "targets", Some(json!({
+                "name":name,"target_type":"volume","volume_name":"owned-unexecuted-volume","schedule_id":7
+            }))).await
+        }
+
+        async fn close(self) {
+            self.stop.send(()).unwrap();
+            self.server.await.unwrap();
+            self.state.auth.shutdown(None).await;
+            self.state.auth.pool().close().await;
+        }
+    }
+
+    fn due_job(name: &str) -> Value {
+        json!([{"id":"backup_target_20","name":name,"next_run":DUE}])
+    }
 
     #[tokio::test]
     async fn live_authenticated_renames_preserve_an_already_due_job() {
-        let path = std::env::temp_dir().join(format!("dv-rename-due-{}", std::process::id()));
-        std::fs::create_dir(&path).unwrap();
-        let owner = Owner::new(1).unwrap();
-        let db = Database::open(path.join("db.sqlite"), &path, &owner)
-            .await
-            .unwrap();
-        owner.shutdown(None).await;
-        let state = HttpState::new(
-            AuthService::new(db.pool().clone()),
-            Config::from_pairs([("TZ", "UTC"), ("DOCKER_SOCKET", "/dev/null/docker.sock")])
-                .unwrap(),
-        );
-        sqlx::raw_sql("INSERT INTO schedules(id,name,cron_expression,enabled,created_at) VALUES (7,'Shared','0 2 * * *',1,'2000-01-01 00:00:00.000000');
-            INSERT INTO backup_targets(id,name,target_type,schedule_id,enabled) VALUES (20,'Original','volume',7,1);")
-            .execute(db.pool()).await.unwrap();
-        assert!(reconcile(&state).await.is_ok());
-        // Set the real installed deadline at the private registry boundary. No dispatch
-        // worker is running and nothing needs to wait for the host clock to advance.
-        state
-            .scheduler
-            .jobs
-            .lock()
-            .await
-            .get_mut(&20)
-            .unwrap()
-            .next
-            .timestamp = Timestamp::parse("2000-01-01T02:00:00+00:00").unwrap();
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let api = format!("http://{}/api/v1", listener.local_addr().unwrap());
-        let app = super::super::router(state.clone());
-        let (stop, stopped) = tokio::sync::oneshot::channel();
-        let server = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-            )
-            .with_graceful_shutdown(async { stopped.await.unwrap() })
-            .await
-            .unwrap();
-        });
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .unwrap();
-        let setup = client
-            .post(format!("{api}/auth/setup"))
-            .header(CONTENT_TYPE, "application/json")
-            .body(json!({"username":"public-admin","password":"PUBLIC-password!","confirm_password":"PUBLIC-password!"}).to_string())
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(setup.status(), StatusCode::OK);
-        let cookie = setup.headers()[SET_COOKIE]
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap();
-        let read_jobs = || async {
-            let response = client
-                .get(format!("{api}/schedules/jobs"))
-                .header(COOKIE, cookie)
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-            serde_json::from_slice::<Value>(&response.bytes().await.unwrap()).unwrap()
-        };
-        let expected = |name| json!([{"id":"backup_target_20","name":name,"next_run":"2000-01-01T02:00:00+00:00"}]);
-        assert_eq!(read_jobs().await, expected("Backup: Original"));
-
+        let fixture = Fixture::start().await;
+        fixture.seed_due_job().await;
+        assert_eq!(fixture.jobs().await, due_job("Backup: Original"));
         for (route, id, name) in [
             ("targets/20", 20, "Renamed target"),
             ("schedules/7", 7, "Renamed schedule"),
         ] {
-            let response = client
-                .put(format!("{api}/{route}"))
-                .header(COOKIE, cookie)
-                .header(CONTENT_TYPE, "application/json")
-                .body(json!({"name":name}).to_string())
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-            let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+            let (status, body) = fixture
+                .request(Method::PUT, route, Some(json!({"name":name})))
+                .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
             assert_eq!(body["id"], id);
             assert_eq!(body["name"], name);
-            assert_eq!(read_jobs().await, expected("Backup: Renamed target"));
+            assert_eq!(fixture.jobs().await, due_job("Backup: Renamed target"));
         }
-        stop.send(()).unwrap();
-        server.await.unwrap();
-        state.auth.shutdown(None).await;
-        db.close().await;
-        std::fs::remove_dir_all(path).unwrap();
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn live_schedule_delete_commit_failure_preserves_binding_and_job() {
+        let fixture = Fixture::start().await;
+        fixture.seed_due_job().await;
+        let pool = fixture.state.auth.pool();
+        let before = fixture.jobs().await;
+        assert_eq!(before, due_job("Backup: Original"));
+        // DELETE itself succeeds. Only COMMIT checks the deferred foreign key.
+        sqlx::raw_sql("CREATE TABLE owned_commit_guard (schedule_id INTEGER REFERENCES schedules(id) DEFERRABLE INITIALLY DEFERRED);
+            CREATE TRIGGER owned_fail_commit AFTER DELETE ON schedules WHEN OLD.id=7
+            BEGIN INSERT INTO owned_commit_guard VALUES (OLD.id); END;")
+            .execute(pool).await.unwrap();
+        let (status, body) = fixture.request(Method::DELETE, "schedules/7", None).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        let schedule: (String, String, bool) =
+            sqlx::query_as("SELECT name,cron_expression,enabled FROM schedules WHERE id=7")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(schedule, ("Shared".into(), "0 2 * * *".into(), true));
+        let binding: i64 = sqlx::query_scalar("SELECT schedule_id FROM backup_targets WHERE id=20")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(binding, 7);
+        assert_eq!(fixture.jobs().await, before);
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn live_job_install_failure_reloads_committed_assignment_without_resaving() {
+        let fixture = Fixture::start().await;
+        assert_eq!(fixture.jobs().await, json!([]));
+        fixture
+            .state
+            .scheduler
+            .fail_next_job_install
+            .store(true, Ordering::Relaxed);
+        let (status, body) = fixture.create_target("owned-retry".into()).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        let detail = body["detail"].as_str().unwrap();
+        assert!(
+            detail.contains("Configuration saved")
+                && detail.contains("POST /api/v1/schedules/reload"),
+            "{detail}"
+        );
+        let pool = fixture.state.auth.pool();
+        let (id, binding): (i64, i64) =
+            sqlx::query_as("SELECT id,schedule_id FROM backup_targets WHERE name='owned-retry'")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(binding, 7);
+        assert_eq!(fixture.jobs().await, json!([]));
+
+        let (status, body) = fixture
+            .request(Method::POST, "schedules/reload", None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let jobs = fixture.jobs().await;
+        let jobs = jobs.as_array().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0]["id"], format!("backup_target_{id}"));
+        assert_eq!(jobs[0]["name"], "Backup: owned-retry");
+        assert!(
+            jobs[0]["next_run"]
+                .as_str()
+                .unwrap()
+                .ends_with("T02:00:00+00:00"),
+            "{jobs:?}"
+        );
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn live_parallel_target_creates_release_request_connection_before_reconcile() {
+        let fixture = Fixture::start().await;
+        let pool = fixture.state.auth.pool();
+        let jobs = fixture.state.scheduler.jobs.lock().await;
+        let responses = tokio::time::timeout(DEADLINE, async {
+            let creates = futures_util::future::join_all(
+                (0..8).map(|i| fixture.create_target(format!("owned-parallel-{i}"))),
+            );
+            let release = async {
+                // Keep reconciliation waiting until every write has committed. If any
+                // request keeps the sole DB connection, the batch cannot reach this point.
+                loop {
+                    let committed: i64 = sqlx::query_scalar("SELECT count(*) FROM backup_targets")
+                        .fetch_one(pool)
+                        .await
+                        .expect("request connection must be available while reconcile waits");
+                    if committed == 8 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                drop(jobs);
+            };
+            tokio::join!(creates, release).0
+        })
+        .await
+        .expect("eight creates must reconcile within one 10-second window");
+        let mut ids: Vec<_> = responses
+            .into_iter()
+            .map(|(status, body)| {
+                assert_eq!(status, StatusCode::OK, "{body}");
+                body["id"].as_i64().unwrap()
+            })
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids.len(), 8);
+        assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
+        let persisted: Vec<(i64, Option<i64>)> =
+            sqlx::query_as("SELECT id,schedule_id FROM backup_targets ORDER BY id")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            persisted,
+            ids.iter().map(|&id| (id, Some(7))).collect::<Vec<_>>()
+        );
+        let jobs = fixture.jobs().await;
+        let mut installed: Vec<_> = jobs
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|job| job["id"].as_str().unwrap())
+            .collect();
+        installed.sort_unstable();
+        let mut expected: Vec<_> = ids.iter().map(|id| format!("backup_target_{id}")).collect();
+        expected.sort_unstable();
+        assert_eq!(installed, expected);
+        fixture.close().await;
     }
 }
 
@@ -279,6 +504,15 @@ pub(super) async fn reconcile(state: &HttpState) -> Result<(), Failure> {
             });
             match job {
                 Ok(job) => {
+                    #[cfg(test)]
+                    if state_for_cron
+                        .scheduler
+                        .fail_next_job_install
+                        .swap(false, std::sync::atomic::Ordering::Relaxed)
+                    {
+                        errors = true;
+                        continue;
+                    }
                     next.insert(id, job);
                 }
                 Err(error) => {
