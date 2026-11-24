@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prove ordinary scheduler startup projection and one real deadline in the native package.
+# Prove ordinary Embedded and Shared scheduler dispatch in the native package.
 set -euo pipefail
 image=${1:?Native application image required}
 [[ ${RUNNER_ENVIRONMENT:-} == github-hosted ]] || {
@@ -67,7 +67,7 @@ ready
 authenticate setup
 docker exec -u 1000:1000 "$app" sh -ec '
     umask 077
-    for plan in active disabled removed; do
+    for plan in active disabled removed shared-active shared-disabled; do
         mkdir "/app/data/scheduler-$plan"
         printf "\000scheduler-%s\377\n" "$plan" > "/app/data/scheduler-$plan/payload"
     done
@@ -78,10 +78,14 @@ phase=configure
 # the following legitimate dispatch cannot mask a duplicate of this deadline.
 due=$(( ($(date +%s) + 149) / 60 * 60 ))
 next=$((due + 3600))
+shared_due=$((due + 60))
+shared_next=$((shared_due + 3600))
 cron="$(date -u -d "@$due" +%-M) * * * *"
+shared_cron="$(date -u -d "@$shared_due" +%-M) * * * *"
 create_plan() {
-    jq -nc --arg name "scheduler-$1" --arg cron "$cron" \
-        '{name:$name,target_type:"path",host_path:("/app/data/"+$name),schedule_cron:$cron,enabled:true,compression_enabled:false}' |
+    jq -nc --arg name "scheduler-$1" --arg cron "$cron" --argjson schedule "${2:-null}" \
+        '{name:$name,target_type:"path",host_path:("/app/data/"+$name),schedule_cron:$cron,enabled:true,compression_enabled:false}
+         + (if $schedule == null then {} else {schedule_id:$schedule} end)' |
         api POST /targets --data-binary @- | jq -er '.id | numbers'
 }
 active=$(create_plan active)
@@ -91,80 +95,139 @@ api GET /schedules/jobs | jq -e --arg a "backup_target_$active" --arg d "backup_
     'map(.id) | sort == ([$a, $d, $r] | sort)' >/dev/null
 api PUT "/targets/$disabled" --data '{"enabled":false}' | jq -e '.enabled == false' >/dev/null
 api DELETE "/targets/$removed" | jq -e '.status == "removed"' >/dev/null
+create_schedule() {
+    jq -nc --arg name "$1" --arg cron "$shared_cron" --argjson enabled "$2" \
+        '{name:$name,cron_expression:$cron,enabled:$enabled}' |
+        api POST /schedules --data-binary @- | jq -er '.id | numbers'
+}
+shared_schedule=$(create_schedule 'Active shared schedule' true)
+disabled_schedule=$(create_schedule 'Disabled shared schedule' false)
+shared=$(create_plan shared-active "$shared_schedule")
+suppressed=$(create_plan shared-disabled "$disabled_schedule")
 
-expect_job() {
-    local expected=$1 jobs term
+expect_jobs() {
+    local jobs name target expected term
     jobs=$(api GET /schedules/jobs)
-    term=$(jq -er --arg id "backup_target_$active" \
-        'select(length == 1) | .[0] | select(.id == $id and .name == "Backup: scheduler-active") | .next_run | strings' <<< "$jobs") || {
-        printf 'Expected only the active registered job, got: %s\n' "$jobs" >&2
-        return 1
-    }
-    [[ $(date -u -d "$term" +%s) == "$expected" ]] || {
-        printf 'Expected registered deadline %s, got %s\n' "$expected" "$term" >&2
-        return 1
-    }
-    printf '%s: active plan %s is the only registered job, next_run=%s\n' "$phase" "$active" "$term"
+    jq -e --arg a "backup_target_$active" --arg s "backup_target_$shared" \
+        'map(.id) | sort == ([$a, $s] | sort)' <<< "$jobs" >/dev/null
+    for name in active shared-active; do
+        if [[ $name == active ]]; then target=$active; expected=$1; else target=$shared; expected=$2; fi
+        term=$(jq -er --arg id "backup_target_$target" --arg name "Backup: scheduler-$name" \
+            '.[] | select(.id == $id and .name == $name) | .next_run | strings' <<< "$jobs")
+        [[ $(date -u -d "$term" +%s) == "$expected" ]] || {
+            printf 'Expected %s deadline %s, got %s\n' "$name" "$expected" "$term" >&2
+            return 1
+        }
+        printf '%s: %s registered job (target %s), next_run=%s\n' "$phase" "$name" "$target" "$term"
+    done
+}
+expect_shared_legacy() {
+    local target schedule rows term
+    for target in "$shared" "$suppressed"; do
+        if [[ $target == "$shared" ]]; then schedule=$shared_schedule; else schedule=$disabled_schedule; fi
+        api GET "/targets/$target" | jq -e --argjson schedule "$schedule" --arg cron "$cron" \
+            '.enabled == true and .schedule_id == $schedule and .schedule_cron == $cron' >/dev/null
+    done
+    rows=$(api GET /schedules/legacy/by-target)
+    term=$(jq -er --argjson t "$shared" --arg cron "$shared_cron" \
+        '[.[] | select(.target_id == $t)] | select(length == 1) | .[0] |
+         select(.enabled == true and .cron_expression == $cron) | .next_run | strings' <<< "$rows")
+    [[ $(date -u -d "$term" +%s) == "$shared_due" ]]
+    jq -e --argjson t "$suppressed" --arg cron "$shared_cron" \
+        '[.[] | select(.target_id == $t)] | length == 1 and
+         (.[0] | .enabled == false and .cron_expression == $cron and has("next_run") and .next_run == null)' \
+        <<< "$rows" >/dev/null
+    printf '%s: legacy active Shared next_run=%s; disabled Shared target %s enabled=false next_run=null, no job\n' \
+        "$phase" "$term" "$suppressed"
 }
 expect_empty_history() { api GET /backups | jq -e '. == []' >/dev/null; }
-expect_job "$due"
+expect_jobs "$due" "$shared_due"
 expect_empty_history
 
 phase=restart-before-due
 restart_backend
-expect_job "$due"
+expect_jobs "$due" "$shared_due"
+expect_shared_legacy
 expect_empty_history
 (( $(date +%s) < due ))
 
 phase=automatic-backup
-# No trigger or scheduler write after restart: observe the unfiltered catalog.
-backup=
-while (( $(date +%s) < due + 30 )); do
+# Both linked targets' own cron fires at the Embedded control's deadline.
+# Keep polling past both Shared deadlines even if the expected backup completes early.
+while :; do
+    observed=$(date +%s)
     rows=$(api GET /backups)
-    if [[ "$rows" != '[]' ]]; then
-        (( $(date +%s) >= due ))
-        jq -e --argjson target "$active" 'length == 1 and .[0].target_id == $target and
-            (.[0].status == "pending" or .[0].status == "running" or .[0].status == "completed")' <<< "$rows" >/dev/null
-        if backup=$(jq -er '.[0] | select(.status == "completed") | .id | numbers' <<< "$rows"); then break; fi
-    fi
+    jq -e --argjson a "$active" --argjson s "$shared" --argjson due "$due" --argjson shared_due "$shared_due" \
+        --argjson now "$observed" '
+        def epoch: sub("([.][0-9]+)?(Z|[+]00:00)$"; "Z") | fromdateiso8601;
+        def timely($deadline):
+            (.created_at | epoch) >= $deadline and
+            if .status == "completed" then
+                (.completed_at | epoch) >= $deadline and (.completed_at | epoch) < $deadline + 30
+            else .status == "pending" or .status == "running" end;
+        def ready($target; $deadline):
+            $now < $deadline + 30 or any(.[]; .target_id == $target and .status == "completed");
+        type == "array" and length == (unique_by(.target_id) | length) and
+        all(.[]; (.target_id == $a and timely($due)) or (.target_id == $s and timely($shared_due))) and
+        ready($a; $due) and ready($s; $shared_due)' <<< "$rows" >/dev/null || {
+        printf 'Unexpected catalog at %s (Embedded/own due=%s, Shared due=%s): %s\n' \
+            "$observed" "$due" "$shared_due" "$rows" >&2
+        exit 1
+    }
+    if (( observed >= shared_due + 30 )); then break; fi
     sleep 1
 done
-[[ -n "$backup" ]] || { printf 'No completed backup by deadline %s + 30s\n' "$due" >&2; exit 1; }
+printf 'Observation through %s: no Shared fallback at own deadline %s, no disabled Shared backup at either %s or %s\n' \
+    "$observed" "$due" "$due" "$shared_due"
 expect_backup() {
-    api GET /backups | jq -er --argjson target "$active" --argjson backup "$backup" --argjson due "$due" '
-        # The API emits UTC with Z or +00:00. The deadline has no fractional seconds.
-        def epoch: sub("([.][0-9]+)?(Z|[+]00:00)$"; "Z") | fromdateiso8601;
-        select(length == 1) | .[0] | select(.id == $backup and .target_id == $target and
+    jq -er --argjson target "$1" '
+        select(length == 2) | [.[] | select(.target_id == $target)] | select(length == 1) | .[0] |
+        select((.id | type) == "number" and
           .backup_type == "full" and .status == "completed" and .completed_at != null and
-          .local_available == true and .encrypted == false and .file_size > 0) |
-        if (.created_at | epoch) < $due or (.completed_at | epoch) < $due then
-          error("Backup \(.id) predates deadline \($due | todateiso8601): created_at=\(.created_at), completed_at=\(.completed_at)")
-        else .file_path | strings | select(startswith("/backups/")) end'
+          .local_available == true and .encrypted == false and .file_size > 0 and
+          (.file_path | strings | startswith("/backups/"))) |
+        [.id, .file_path, .created_at, .completed_at] | @tsv'
 }
-archive=$(expect_backup)
 verify_archive() {
     docker exec -u 1000:1000 "$app" sh -ec '
         test -f "$1"
         test ! -L "$1"
-        tar -xOf "$1" scheduler-active/payload > /tmp/scheduler-backup-payload
-        printf "\000scheduler-active\377\n" | cmp - /tmp/scheduler-backup-payload
+        tar -xOf "$1" "scheduler-$2/payload" > /tmp/scheduler-backup-payload
+        printf "\000scheduler-%s\377\n" "$2" | cmp - /tmp/scheduler-backup-payload
         sha256sum "$1"
-    ' sh "$archive"
+    ' sh "$1" "$2"
 }
-digest=$(verify_archive)
-printf 'Automatic backup %s: completed, fixture bytes verified, archive SHA256 %s\n' "$backup" "${digest%% *}"
-expect_job "$next"
+embedded_record=$(expect_backup "$active" <<< "$rows")
+shared_record=$(expect_backup "$shared" <<< "$rows")
+record_archive() {
+    local id path created completed digest
+    IFS=$'\t' read -r id path created completed <<< "$1"
+    digest=$(verify_archive "$path" "$2") || return 1
+    printf '%s automatic backup %s: completed, created_at=%s completed_at=%s, fixture bytes verified, archive SHA256 %s\n' \
+        "$2" "$id" "$created" "$completed" "${digest%% *}" >&2
+    printf '%s\n' "$digest"
+}
+embedded_digest=$(record_archive "$embedded_record" active)
+shared_digest=$(record_archive "$shared_record" shared-active)
+expect_jobs "$next" "$shared_next"
 
 phase=restart-after-completion
 restart_backend
 unset credentials
-expect_job "$next"
+expect_jobs "$next" "$shared_next"
+expect_unchanged_history() {
+    rows=$(api GET /backups)
+    [[ $(expect_backup "$active" <<< "$rows") == "$embedded_record" &&
+       $(expect_backup "$shared" <<< "$rows") == "$shared_record" ]]
+}
 # Observe multiple scheduler ticks, still well before the next legitimate run.
 for ((attempt=0; attempt<12; attempt++)); do
-    [[ $(expect_backup) == "$archive" ]]
+    expect_unchanged_history
     sleep 1
 done
-[[ $(expect_backup) == "$archive" && $(verify_archive) == "$digest" ]]
-expect_job "$next"
+expect_unchanged_history
+[[ $(record_archive "$embedded_record" active) == "$embedded_digest" &&
+   $(record_archive "$shared_record" shared-active) == "$shared_digest" ]]
+expect_jobs "$next" "$shared_next"
 (( $(date +%s) < next ))
-printf 'Scheduler restart verified: one completed backup %s, no disabled/removed backup or replay (%s, %s)\n' "$backup" "$arch" "$rev"
+printf 'Scheduler restart verified: one Embedded and one Shared backup, no disabled/removed backup or replay (%s, %s)\n' "$arch" "$rev"
