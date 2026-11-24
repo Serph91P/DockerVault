@@ -4230,6 +4230,33 @@ async fn backup_history_accepts_legacy_datetime_filters_and_returns_python_error
 }
 
 #[tokio::test]
+async fn backup_catalog_defaults_to_50_results() {
+    let config = Config::from_pairs([("DOCKER_SOCKET", "/dev/null/docker.sock")]).unwrap();
+    let server = Server::configured(config).await;
+    let cookie = server.setup().await;
+    let headers = [("Cookie", cookie.as_str())];
+    let pool = server.db.pool();
+    sqlx::query("INSERT INTO backup_targets(id,name,target_type,host_path) VALUES(1,'fixture','path','/fixture')")
+        .execute(pool).await.unwrap();
+    let inserted = sqlx::query(
+        "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<51)
+         INSERT INTO backups(id,target_id,backup_type,status,created_at)
+         SELECT i,1,'FULL','COMPLETED','2026-01-01 10:00:00.000000' FROM n",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    assert_eq!(inserted.rows_affected(), 51);
+
+    let (status, _, body) = server
+        .request("GET", "/api/v1/backups", &headers, None)
+        .await;
+    server.close().await;
+    assert_eq!(status, 200);
+    assert_eq!(body.as_array().expect("expected a backup list").len(), 50);
+}
+
+#[tokio::test]
 async fn backup_catalog_reads_records_and_validates_filters() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
