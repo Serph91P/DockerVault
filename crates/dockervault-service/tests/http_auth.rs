@@ -674,6 +674,160 @@ async fn scheduler_startup_uses_committed_shared_precedence_without_resave() {
 }
 
 #[tokio::test]
+async fn live_target_writes_replace_or_remove_the_effective_job() {
+    let config =
+        Config::from_pairs([("TZ", "UTC"), ("DOCKER_SOCKET", "/dev/null/docker.sock")]).unwrap();
+    let server = Server::configured(config).await;
+    let cookie = server.setup().await;
+    let headers = [("cookie", cookie.as_str())];
+    // Leave dispatch stopped; only the HTTP writes may install or change jobs.
+    let date = time::OffsetDateTime::now_utc().date().next_day().unwrap();
+    let cron = |hour| format!("0 {hour} {} {} *", date.day(), date.month() as u8);
+
+    let a = live_schedule_request(
+        &server,
+        &headers,
+        "POST",
+        "/api/v1/schedules",
+        Some(json!({"name":"Shared A","cron_expression":cron(2)})),
+    )
+    .await["id"]
+        .as_i64()
+        .unwrap();
+    let b = live_schedule_request(
+        &server,
+        &headers,
+        "POST",
+        "/api/v1/schedules",
+        Some(json!({"name":"Shared B","cron_expression":cron(9)})),
+    )
+    .await["id"]
+        .as_i64()
+        .unwrap();
+    let root = "/api/v1/targets";
+    let created = live_schedule_request(&server, &headers, "POST", root, Some(json!({"name":"Shared at create","target_type":"volume","volume_name":"fixture-not-executed","schedule_id":a,"schedule_cron":cron(4)}))).await;
+    let id = created["id"].as_i64().unwrap();
+    assert_live_schedule_jobs(&server, &headers, date, Some((id, "Shared at create", 2))).await;
+    live_schedule_request(&server, &headers, "DELETE", &format!("{root}/{id}"), None).await;
+    assert_live_schedule_jobs(&server, &headers, date, None).await;
+
+    let created = live_schedule_request(&server, &headers, "POST", root, Some(json!({"name":"Target","target_type":"volume","volume_name":"fixture-not-executed","schedule_cron":cron(4)}))).await;
+    let id = created["id"].as_i64().unwrap();
+    let route = format!("{root}/{id}");
+    let update = |body| live_schedule_request(&server, &headers, "PUT", &route, Some(body));
+    assert_live_schedule_jobs(&server, &headers, date, Some((id, "Target", 4))).await;
+    update(json!({"schedule_id":a})).await;
+    assert_live_schedule_jobs(&server, &headers, date, Some((id, "Target", 2))).await;
+    let reassigned = update(json!({"schedule_id":b})).await;
+    assert_live_schedule_jobs(&server, &headers, date, Some((id, "Target", 9))).await;
+    let fetched = live_schedule_request(&server, &headers, "GET", &route, None).await;
+    for body in [reassigned, fetched] {
+        assert_eq!(body["schedule_id"], b);
+        assert_eq!(
+            body["schedule"],
+            json!({"id":b,"name":"Shared B","cron_expression":cron(9)})
+        );
+    }
+    update(json!({"name":"Renamed target"})).await;
+    assert_live_schedule_jobs(&server, &headers, date, Some((id, "Renamed target", 9))).await;
+    update(json!({"enabled":false})).await;
+    assert_live_schedule_jobs(&server, &headers, date, None).await;
+    update(json!({"enabled":true})).await;
+    assert_live_schedule_jobs(&server, &headers, date, Some((id, "Renamed target", 9))).await;
+    let cleared = update(json!({"schedule_id":null,"schedule_cron":null})).await;
+    assert_live_schedule_jobs(&server, &headers, date, None).await;
+    assert_eq!(
+        cleared["enabled"], true,
+        "clear must not disable the target"
+    );
+    // A fresh projection must not bring either of the cleared schedules back.
+    live_schedule_request(&server, &headers, "POST", "/api/v1/schedules/reload", None).await;
+    assert_live_schedule_jobs(&server, &headers, date, None).await;
+
+    update(json!({"schedule_cron":cron(4)})).await;
+    assert_live_schedule_jobs(&server, &headers, date, Some((id, "Renamed target", 4))).await;
+    update(json!({"schedule_cron":cron(9)})).await;
+    assert_live_schedule_jobs(&server, &headers, date, Some((id, "Renamed target", 9))).await;
+    server.close().await;
+}
+
+#[tokio::test]
+async fn live_shared_schedule_writes_reconcile_linked_jobs() {
+    let config =
+        Config::from_pairs([("TZ", "UTC"), ("DOCKER_SOCKET", "/dev/null/docker.sock")]).unwrap();
+    let server = Server::configured(config).await;
+    let cookie = server.setup().await;
+    let headers = [("cookie", cookie.as_str())];
+    let date = time::OffsetDateTime::now_utc().date().next_day().unwrap();
+    let cron = |hour| format!("0 {hour} {} {} *", date.day(), date.month() as u8);
+    let shared = live_schedule_request(
+        &server,
+        &headers,
+        "POST",
+        "/api/v1/schedules",
+        Some(json!({"name":"Shared","cron_expression":cron(2)})),
+    )
+    .await["id"]
+        .as_i64()
+        .unwrap();
+    let id = live_schedule_request(&server, &headers, "POST", "/api/v1/targets", Some(json!({"name":"Linked target","target_type":"volume","volume_name":"fixture-not-executed","schedule_id":shared,"schedule_cron":cron(4)}))).await["id"].as_i64().unwrap();
+    let route = format!("/api/v1/schedules/{shared}");
+    let update = |body| live_schedule_request(&server, &headers, "PUT", &route, Some(body));
+    assert_live_schedule_jobs(&server, &headers, date, Some((id, "Linked target", 2))).await;
+    let renamed = update(json!({"name":"Renamed shared schedule"})).await;
+    assert_live_schedule_jobs(&server, &headers, date, Some((id, "Linked target", 2))).await;
+    assert_eq!(renamed["name"], "Renamed shared schedule");
+    update(json!({"cron_expression":cron(9)})).await;
+    assert_live_schedule_jobs(&server, &headers, date, Some((id, "Linked target", 9))).await;
+    update(json!({"enabled":false})).await;
+    assert_live_schedule_jobs(&server, &headers, date, None).await;
+    update(json!({"cron_expression":cron(2)})).await;
+    assert_live_schedule_jobs(&server, &headers, date, None).await;
+    update(json!({"enabled":true})).await;
+    assert_live_schedule_jobs(&server, &headers, date, Some((id, "Linked target", 2))).await;
+    live_schedule_request(&server, &headers, "DELETE", &route, None).await;
+    assert_live_schedule_jobs(&server, &headers, date, Some((id, "Linked target", 4))).await;
+    server.close().await;
+}
+
+async fn live_schedule_request(
+    server: &Server,
+    headers: &[(&str, &str)],
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+) -> Value {
+    let (status, _, response) = server.request(method, path, headers, body).await;
+    assert_eq!(status, 200, "{method} {path}: {response}");
+    response
+}
+
+#[track_caller]
+fn assert_live_schedule_jobs<'a>(
+    server: &'a Server,
+    headers: &'a [(&'a str, &'a str)],
+    date: time::Date,
+    expected: Option<(i64, &'a str, u8)>,
+) -> impl std::future::Future<Output = ()> + 'a {
+    let caller = std::panic::Location::caller();
+    async move {
+        let expected: Vec<_> = expected
+            .into_iter()
+            .map(|(id, name, hour)| {
+                json!({
+                    "id":format!("backup_target_{id}"),
+                    "name":format!("Backup: {name}"),
+                    "next_run":format!("{date}T{hour:02}:00:00+00:00"),
+                })
+            })
+            .collect();
+        let actual =
+            live_schedule_request(server, headers, "GET", "/api/v1/schedules/jobs", None).await;
+        assert_eq!(actual, json!(expected), "jobs expected at {caller}");
+    }
+}
+
+#[tokio::test]
 async fn started_scheduler_dispatches_and_rechecks_targets_before_admission() {
     let server = Server::configured(Config::from_pairs([("TZ", "UTC")]).unwrap()).await;
     let cookie = server.setup().await;
