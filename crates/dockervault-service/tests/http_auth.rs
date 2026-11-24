@@ -4257,6 +4257,59 @@ async fn backup_catalog_defaults_to_50_results() {
 }
 
 #[tokio::test]
+async fn backup_history_sorts_by_size_in_both_directions() {
+    let config = Config::from_pairs([("DOCKER_SOCKET", "/dev/null/docker.sock")]).unwrap();
+    let server = Server::configured(config).await;
+    let cookie = server.setup().await;
+    let headers = [("Cookie", cookie.as_str())];
+    let pool = server.db.pool();
+    let target_id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO backup_targets(name,target_type,host_path) VALUES('fixture','path','/fixture') RETURNING id",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    // Size order differs from ID and creation order in either direction.
+    let mut ids = Vec::new();
+    for (day, size) in [(1, 30), (2, 2), (3, 10)] {
+        let id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO backups(target_id,backup_type,status,file_size,created_at)
+             VALUES(?,'FULL','COMPLETED',?,?) RETURNING id",
+        )
+        .bind(target_id)
+        .bind(size)
+        .bind(format!("2025-01-{day:02} 00:00:00.000000"))
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        ids.push(id);
+    }
+
+    for (direction, expected) in [
+        ("asc", [ids[1], ids[2], ids[0]]),
+        ("desc", [ids[0], ids[2], ids[1]]),
+    ] {
+        let (status, _, body) = server
+            .request(
+                "GET",
+                &format!("/api/v1/backups/history?sort=size&direction={direction}"),
+                &headers,
+                None,
+            )
+            .await;
+        assert_eq!(status, 200, "{direction}: {body}");
+        let actual: Vec<_> = body["items"]
+            .as_array()
+            .expect("expected history items")
+            .iter()
+            .map(|item| item["id"].as_i64().expect("expected numeric backup ID"))
+            .collect();
+        assert_eq!(actual, expected, "{direction}");
+    }
+    server.close().await;
+}
+
+#[tokio::test]
 async fn backup_catalog_reads_records_and_validates_filters() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
