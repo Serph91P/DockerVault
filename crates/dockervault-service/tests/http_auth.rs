@@ -3088,6 +3088,86 @@ async fn retention_apply_keeps_three_newest_archives_past_max_age() {
 }
 
 #[tokio::test]
+async fn retention_apply_keeps_newest_local_archive_with_legacy_zero_keep_last() {
+    let origin = "http://localhost:3000";
+    let server = Server::configured(
+        Config::from_pairs([
+            ("COOKIE_SECURE", "false"),
+            ("CORS_ORIGINS", origin),
+            ("DOCKER_SOCKET", "/dev/null/docker.sock"),
+        ])
+        .unwrap(),
+    )
+    .await;
+    let cookie = server.setup().await;
+    let db = server.db.pool();
+    // Seed the stored legacy value directly; policy writes reject keep_last = 0.
+    sqlx::raw_sql(
+        "INSERT INTO retention_policies(id,name,keep_last,keep_daily,keep_weekly,keep_monthly,keep_yearly,max_age_days)
+         VALUES(123,'Legacy fallback',0,0,0,0,0,365);
+         INSERT INTO backup_targets(id,name,target_type,enabled,retention_policy_id)
+         VALUES(1,'Fixture','path',1,123);",
+    )
+    .execute(db)
+    .await
+    .unwrap();
+
+    // Match the noon case's first three UTC times, with the newest ID in the middle.
+    let newest = (2, "2026-06-15T12:00:00Z", b"newest archive".as_slice());
+    let older = [
+        (1, "2026-06-15T11:00:00Z", b"one hour older".as_slice()),
+        (3, "2026-06-14T11:00:00Z", b"25 hours older".as_slice()),
+    ];
+    let archive = |id: i64| {
+        server
+            .path
+            .join(format!("backups/legacy-fallback-{id}.tar"))
+    };
+    for (id, created_at, bytes) in [older[0], newest, older[1]] {
+        let path = archive(id);
+        std::fs::write(&path, bytes).unwrap();
+        sqlx::query(
+            "INSERT INTO backups(id,target_id,backup_type,status,file_path,created_at)
+             VALUES(?,1,'FULL','COMPLETED',?,?)",
+        )
+        .bind(id)
+        .bind(path.to_str().unwrap())
+        .bind(created_at)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    let (status, _, result) = server
+        .request(
+            "POST",
+            "/api/v1/retention/1/apply",
+            &[("Cookie", cookie.as_str()), ("Origin", origin)],
+            None,
+        )
+        .await;
+    assert_eq!((status, result), (200, json!({"kept":1,"deleted":2})));
+    let rows: Vec<(i64, Option<String>)> = sqlx::query_as("SELECT id,file_path FROM backups")
+        .fetch_all(db)
+        .await
+        .unwrap();
+    let kept_path = archive(newest.0);
+    assert_eq!(
+        rows,
+        [(newest.0, Some(kept_path.to_str().unwrap().to_owned()))]
+    );
+    assert_eq!(std::fs::read(&kept_path).unwrap(), newest.2);
+    for (id, _, _) in older {
+        assert_eq!(
+            std::fs::symlink_metadata(archive(id)).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound,
+            "older archive {id}"
+        );
+    }
+    server.close().await;
+}
+
+#[tokio::test]
 async fn legacy_delete_removes_only_the_selected_local_copy() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
