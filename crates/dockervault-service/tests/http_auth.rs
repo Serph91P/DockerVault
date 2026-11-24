@@ -610,6 +610,68 @@ async fn schedule_crud_reports_saved_reconcile_failure_and_unlinks_removed_targe
 }
 
 #[tokio::test]
+async fn scheduler_startup_uses_committed_shared_precedence_without_resave() {
+    let config = Config::from_pairs([("TZ", "UTC")]).unwrap();
+    let server = Server::configured(config.clone()).await;
+    let cookie = server.setup().await;
+    // Tomorrow's UTC date keeps every fixture deadline well beyond this test.
+    let date = time::OffsetDateTime::now_utc().date().next_day().unwrap();
+    let cron = |hour| format!("0 {hour} {} {} *", date.day(), date.month() as u8);
+    let mut tx = server.db.pool().begin().await.unwrap();
+    sqlx::query("INSERT INTO schedules(id,name,cron_expression,enabled) VALUES
+        (7,'Shared',?1,1),(8,'Disabled shared',?2,0)")
+        .bind(cron(2))
+        .bind(cron(6))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO backup_targets(id,name,target_type,schedule_id,schedule_cron,enabled) VALUES
+        (20,'Legacy','path',NULL,?1,1),(21,'Shared','path',7,?1,1),(22,'Disabled shared','path',8,?1,1)")
+        .bind(cron(4))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let server = Server::open_at(config, server.stop_preserving_files().await).await;
+    server.state.start_scheduler().await;
+    let headers = [("cookie", cookie.as_str())];
+    let (status, _, jobs) = server
+        .request("GET", "/api/v1/schedules/jobs", &headers, None)
+        .await;
+    assert_eq!(status, 200);
+    let jobs = jobs.as_array().unwrap();
+    assert_eq!(jobs.len(), 2, "registered jobs: {jobs:?}");
+    let (status, _, rows) = server
+        .request("GET", "/api/v1/schedules/legacy/by-target", &headers, None)
+        .await;
+    assert_eq!(status, 200);
+    let rows = rows.as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+
+    for (target, hour) in [(20, Some(4)), (21, Some(2)), (22, None)] {
+        let job_id = format!("backup_target_{target}");
+        let job = jobs.iter().find(|job| job["id"] == job_id);
+        let next_run = hour.map(|hour| format!("{date}T{hour:02}:00:00+00:00"));
+        match &next_run {
+            Some(next_run) => assert_eq!(
+                job.and_then(|job| job.get("next_run")),
+                Some(&json!(next_run)),
+                "registered deadline for {job_id}: {job:?}"
+            ),
+            None => assert!(job.is_none(), "disabled shared schedule registered {job:?}"),
+        }
+        let row = rows
+            .iter()
+            .find(|row| row["target_id"] == target)
+            .unwrap_or_else(|| panic!("missing API schedule for {job_id}"));
+        assert_eq!(row["enabled"], json!(hour.is_some()), "{job_id}");
+        assert_eq!(row.get("next_run"), Some(&json!(next_run)), "{job_id}");
+    }
+    server.close().await;
+}
+
+#[tokio::test]
 async fn started_scheduler_dispatches_and_rechecks_targets_before_admission() {
     let server = Server::configured(Config::from_pairs([("TZ", "UTC")]).unwrap()).await;
     let cookie = server.setup().await;
