@@ -82,9 +82,10 @@ struct LiveJob {
 mod live_job_tests {
     use super::*;
     use crate::{auth::AuthService, config::Config, db::Database, ownership::Owner};
+    use reqwest::header::{CONTENT_TYPE, COOKIE, SET_COOKIE};
 
     #[tokio::test]
-    async fn live_renames_preserve_an_already_due_job() {
+    async fn live_authenticated_renames_preserve_an_already_due_job() {
         let path = std::env::temp_dir().join(format!("dv-rename-due-{}", std::process::id()));
         std::fs::create_dir(&path).unwrap();
         let owner = Owner::new(1).unwrap();
@@ -94,7 +95,8 @@ mod live_job_tests {
         owner.shutdown(None).await;
         let state = HttpState::new(
             AuthService::new(db.pool().clone()),
-            Config::from_pairs([("TZ", "UTC")]).unwrap(),
+            Config::from_pairs([("TZ", "UTC"), ("DOCKER_SOCKET", "/dev/null/docker.sock")])
+                .unwrap(),
         );
         sqlx::raw_sql("INSERT INTO schedules(id,name,cron_expression,enabled,created_at) VALUES (7,'Shared','0 2 * * *',1,'2000-01-01 00:00:00.000000');
             INSERT INTO backup_targets(id,name,target_type,schedule_id,enabled) VALUES (20,'Original','volume',7,1);")
@@ -111,37 +113,72 @@ mod live_job_tests {
             .unwrap()
             .next
             .timestamp = Timestamp::parse("2000-01-01T02:00:00+00:00").unwrap();
-        let expected = |name| json!([{"id":"backup_target_20","name":name,"next_run":"2000-01-01T02:00:00+00:00"}]);
-        assert_eq!(
-            jobs(State(state.clone())).await.0,
-            expected("Backup: Original")
-        );
 
-        let rename = |name| {
-            axum::http::Request::builder()
-                .header("content-type", "application/json")
-                .body(axum::body::Body::from(json!({"name":name}).to_string()))
-                .unwrap()
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let api = format!("http://{}/api/v1", listener.local_addr().unwrap());
+        let app = super::super::router(state.clone());
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async { stopped.await.unwrap() })
+            .await
+            .unwrap();
+        });
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let setup = client
+            .post(format!("{api}/auth/setup"))
+            .header(CONTENT_TYPE, "application/json")
+            .body(json!({"username":"public-admin","password":"PUBLIC-password!","confirm_password":"PUBLIC-password!"}).to_string())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(setup.status(), StatusCode::OK);
+        let cookie = setup.headers()[SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap();
+        let read_jobs = || async {
+            let response = client
+                .get(format!("{api}/schedules/jobs"))
+                .header(COOKIE, cookie)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            serde_json::from_slice::<Value>(&response.bytes().await.unwrap()).unwrap()
         };
-        let response = super::super::target_write::update(
-            State(state.clone()),
-            Path("20".into()),
-            rename("Renamed target"),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let renamed = expected("Backup: Renamed target");
-        assert_eq!(jobs(State(state.clone())).await.0, renamed);
+        let expected = |name| json!([{"id":"backup_target_20","name":name,"next_run":"2000-01-01T02:00:00+00:00"}]);
+        assert_eq!(read_jobs().await, expected("Backup: Original"));
 
-        let response = update(
-            State(state.clone()),
-            Path("7".into()),
-            rename("Renamed schedule"),
-        )
-        .await
-        .into_response();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(jobs(State(state.clone())).await.0, renamed);
+        for (route, id, name) in [
+            ("targets/20", 20, "Renamed target"),
+            ("schedules/7", 7, "Renamed schedule"),
+        ] {
+            let response = client
+                .put(format!("{api}/{route}"))
+                .header(COOKIE, cookie)
+                .header(CONTENT_TYPE, "application/json")
+                .body(json!({"name":name}).to_string())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+            assert_eq!(body["id"], id);
+            assert_eq!(body["name"], name);
+            assert_eq!(read_jobs().await, expected("Backup: Renamed target"));
+        }
+        stop.send(()).unwrap();
+        server.await.unwrap();
         state.auth.shutdown(None).await;
         db.close().await;
         std::fs::remove_dir_all(path).unwrap();
