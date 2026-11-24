@@ -3828,29 +3828,18 @@ async fn encrypted_remote_copy_recovers_rejected_ack(dav: bool) {
     provider.await.unwrap();
 }
 
-#[tokio::test]
-async fn native_encrypted_backup_has_recoverable_key_and_no_named_plaintext() {
-    use dockervault_core::crypto::{decrypt_dek, decrypt_file};
-    use sha2::{Digest, Sha256};
-    let server = Server::start("http://localhost:3000").await;
-    let cookie = server.setup().await;
-    let headers = [
-        ("Cookie", cookie.as_str()),
-        ("Origin", "http://localhost:3000"),
-    ];
-    let source = server.path.join("source");
-    std::fs::create_dir(&source).unwrap();
-    std::fs::write(source.join("data"), b"encrypted backup payload").unwrap();
-    let identity = age::x25519::Identity::generate();
+async fn complete_encrypted_fixture_backup(
+    server: &Server,
+    headers: &[(&str, &str)],
+    identity: &age::x25519::Identity,
+) -> (i64, String, String, i64, String) {
     sqlx::query("INSERT INTO encryption_config(id,public_key,encryption_enabled,setup_completed) VALUES(1,?,1,1)")
         .bind(identity.to_public().to_string()).execute(server.db.pool()).await.unwrap();
-    sqlx::query("INSERT INTO backup_targets(id,name,target_type,host_path,enabled,compression_enabled) VALUES(1,'Cipher','path',?,1,1)")
-        .bind(source.to_str().unwrap()).execute(server.db.pool()).await.unwrap();
     let (status, _, body) = server
         .request(
             "POST",
             "/api/v1/backups",
-            &headers,
+            headers,
             Some(json!({"target_id":1})),
         )
         .await;
@@ -3866,6 +3855,27 @@ async fn native_encrypted_backup_has_recoverable_key_and_no_named_plaintext() {
             }
         }
     }).await.unwrap();
+    (id, archive, key, size, checksum)
+}
+
+#[tokio::test]
+async fn native_encrypted_backup_has_recoverable_key_and_no_named_plaintext() {
+    use dockervault_core::crypto::{decrypt_dek, decrypt_file};
+    use sha2::{Digest, Sha256};
+    let server = Server::start("http://localhost:3000").await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let source = server.path.join("source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("data"), b"encrypted backup payload").unwrap();
+    sqlx::query("INSERT INTO backup_targets(id,name,target_type,host_path,enabled,compression_enabled) VALUES(1,'Cipher','path',?,1,1)")
+        .bind(source.to_str().unwrap()).execute(server.db.pool()).await.unwrap();
+    let identity = age::x25519::Identity::generate();
+    let (id, archive, key, size, checksum) =
+        complete_encrypted_fixture_backup(&server, &headers, &identity).await;
     assert_eq!(std::fs::metadata(&archive).unwrap().len() as i64, size);
     assert_eq!(
         std::fs::read_dir(server.path.join("backups/Cipher"))
@@ -3942,6 +3952,157 @@ async fn native_encrypted_backup_has_recoverable_key_and_no_named_plaintext() {
             422
         );
     }
+    server.close().await;
+}
+
+#[tokio::test]
+async fn schedule_delete_keeps_encrypted_history_historical_only() {
+    check_schedule_delete_keeps_encrypted_history(&[]).await;
+}
+
+#[tokio::test]
+async fn schedule_delete_keeps_encrypted_history_mixed() {
+    check_schedule_delete_keeps_encrypted_history(&[2]).await;
+}
+
+async fn check_schedule_delete_keeps_encrypted_history(active_ids: &[i64]) {
+    use age::secrecy::ExposeSecret;
+    use std::fs;
+
+    let config = Config::from_pairs([
+        ("COOKIE_SECURE", "false"),
+        ("CORS_ORIGINS", "http://localhost:3000"),
+        ("DOCKER_SOCKET", "/dev/null/docker.sock"),
+    ])
+    .unwrap();
+    let server = Server::configured(config).await;
+    let cookie = server.setup().await;
+    let headers = [
+        ("Cookie", cookie.as_str()),
+        ("Origin", "http://localhost:3000"),
+    ];
+    let source = server.path.join("source");
+    fs::create_dir(&source).unwrap();
+    let payload = source.join("data");
+    let original = b"retained after schedule deletion\0\n";
+    fs::write(&payload, original).unwrap();
+
+    let db = server.db.pool();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("PRAGMA foreign_keys")
+            .fetch_one(db)
+            .await
+            .unwrap(),
+        1
+    );
+    sqlx::query(
+        "INSERT INTO schedules(id,name,cron_expression,enabled,created_at,updated_at)
+         VALUES(7,'Shared','0 2 * * *',0,'2025-01-01 00:00:00','2025-01-01 00:00:00')",
+    )
+    .execute(db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO backup_targets(id,name,target_type,host_path,schedule_id,enabled,compression_enabled) VALUES(1,'Historical','path',?,7,1,1)")
+        .bind(source.to_str().unwrap()).execute(db).await.unwrap();
+    for id in active_ids {
+        sqlx::query("INSERT INTO backup_targets(id,name,target_type,schedule_id,enabled) VALUES(?,'Active','path',7,1)")
+            .bind(id).execute(db).await.unwrap();
+    }
+    let identity = age::x25519::Identity::generate();
+    let (id, archive, key, _, _) =
+        complete_encrypted_fixture_backup(&server, &headers, &identity).await;
+    let archive_bytes = fs::read(&archive).unwrap();
+    let key_bytes = fs::read(&key).unwrap();
+    let backup = format!("/api/v1/backups/{id}");
+    let logs_path = format!("{backup}/logs");
+    let (status, _, logs) = server.request("GET", &logs_path, &headers, None).await;
+    assert_eq!(status, 200);
+    assert!(!logs.as_array().unwrap().is_empty());
+
+    let (status, _, body) = server
+        .request("DELETE", "/api/v1/targets/1", &headers, None)
+        .await;
+    assert_eq!(status, 200, "{body}");
+    let removed_at: String =
+        sqlx::query_scalar("SELECT removed_at FROM backup_targets WHERE id=1 AND schedule_id=7")
+            .fetch_one(db)
+            .await
+            .unwrap();
+    let schedule = "/api/v1/schedules/7";
+    let (status, _, detail) = server.request("GET", schedule, &headers, None).await;
+    assert_eq!(status, 200, "{detail}");
+    assert_eq!(detail["target_count"], active_ids.len());
+    let listed: Vec<i64> = detail["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|target| target["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(listed, active_ids);
+
+    let (status, _, deleted) = server.request("DELETE", schedule, &headers, None).await;
+    assert_eq!(status, 200, "{deleted}");
+    assert_eq!(deleted["unlinked_targets"], active_ids.len() + 1);
+    assert!(
+        !sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM schedules WHERE id=7)")
+            .fetch_one(db)
+            .await
+            .unwrap()
+    );
+    let targets: Vec<(i64, Option<i64>, Option<String>)> =
+        sqlx::query_as("SELECT id,schedule_id,removed_at FROM backup_targets ORDER BY id")
+            .fetch_all(db)
+            .await
+            .unwrap();
+    let mut expected = vec![(1, None, Some(removed_at))];
+    expected.extend(active_ids.iter().map(|&id| (id, None, None)));
+    assert_eq!(targets, expected);
+    assert!(
+        sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(db)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(fs::read(archive).unwrap(), archive_bytes);
+    assert_eq!(fs::read(key).unwrap(), key_bytes);
+
+    let (status, _, catalog) = server.request("GET", &backup, &headers, None).await;
+    assert_eq!(status, 200, "{catalog}");
+    assert_eq!(catalog["id"], id);
+    assert_eq!(catalog["target_id"], 1);
+    assert_eq!(catalog["target_name"], "Historical");
+    assert_eq!(catalog["status"], "completed");
+    assert_eq!(catalog["encrypted"], true);
+    let (status, _, retained_logs) = server.request("GET", &logs_path, &headers, None).await;
+    assert_eq!((status, retained_logs), (200, logs));
+    let private = identity.to_string();
+    let (status, _, files) = server
+        .request(
+            "POST",
+            &format!("{backup}/files?search=data"),
+            &headers,
+            Some(json!({"private_key":private.expose_secret()})),
+        )
+        .await;
+    assert_eq!(status, 200, "{files}");
+    assert_eq!(files[0]["path"], "source/data");
+
+    fs::write(&payload, b"mutated after backup").unwrap();
+    let (status, _, review) = server
+        .request(
+            "POST",
+            &format!("{backup}/restore-review"),
+            &headers,
+            Some(json!({"destination_type":"original"})),
+        )
+        .await;
+    assert_eq!(status, 200, "{review}");
+    assert_eq!(review["key_required"], true);
+    let (status, _, restored) = server.request("POST", &format!("{backup}/restore"), &headers,
+        Some(json!({"destination_type":"original","review_fingerprint":review["fingerprint"],"private_key":private.expose_secret()}))).await;
+    assert_eq!(status, 200, "{restored}");
+    assert_eq!(fs::read(payload).unwrap(), original);
     server.close().await;
 }
 
