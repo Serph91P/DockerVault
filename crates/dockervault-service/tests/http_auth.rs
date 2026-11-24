@@ -3011,6 +3011,83 @@ async fn retention_apply_preserves_the_union_of_keep_last_and_daily() {
 }
 
 #[tokio::test]
+async fn retention_apply_keeps_three_newest_archives_past_max_age() {
+    let origin = "http://localhost:3000";
+    let server = Server::configured(
+        Config::from_pairs([
+            ("COOKIE_SECURE", "false"),
+            ("CORS_ORIGINS", origin),
+            ("DOCKER_SOCKET", "/dev/null/docker.sock"),
+        ])
+        .unwrap(),
+    )
+    .await;
+    let cookie = server.setup().await;
+    let db = server.db.pool();
+    sqlx::raw_sql(
+        "INSERT INTO retention_policies(id,name,keep_last,keep_daily,keep_weekly,keep_monthly,keep_yearly,max_age_days)
+         VALUES(123,'Keep three',3,0,0,0,0,365);
+         INSERT INTO backup_targets(id,name,target_type,enabled,retention_policy_id)
+         VALUES(1,'Fixture','path',1,123);",
+    )
+    .execute(db)
+    .await
+    .unwrap();
+
+    // All four are well past the cutoff; neither ID order puts the oldest last.
+    let expired = (2, "2020-01-01T00:00:00Z", b"oldest".as_slice());
+    let retained = [
+        (1, "2020-01-03T00:00:00Z", b"second newest".as_slice()),
+        (3, "2020-01-02T00:00:00Z", b"third newest".as_slice()),
+        (4, "2020-01-04T00:00:00Z", b"newest".as_slice()),
+    ];
+    let archive = |id: i64| server.path.join(format!("backups/keep-three-{id}.tar"));
+    for (id, created_at, bytes) in retained.into_iter().chain([expired]) {
+        let path = archive(id);
+        std::fs::write(&path, bytes).unwrap();
+        sqlx::query(
+            "INSERT INTO backups(id,target_id,backup_type,status,file_path,created_at)
+             VALUES(?,1,'FULL','COMPLETED',?,?)",
+        )
+        .bind(id)
+        .bind(path.to_str().unwrap())
+        .bind(created_at)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    let (status, _, result) = server
+        .request(
+            "POST",
+            "/api/v1/retention/1/apply",
+            &[("Cookie", cookie.as_str()), ("Origin", origin)],
+            None,
+        )
+        .await;
+    assert_eq!((status, result), (200, json!({"kept":3,"deleted":1})));
+    let rows: Vec<(i64, Option<String>)> =
+        sqlx::query_as("SELECT id,file_path FROM backups ORDER BY id")
+            .fetch_all(db)
+            .await
+            .unwrap();
+    assert_eq!(
+        rows,
+        retained.map(|(id, _, _)| (id, Some(archive(id).to_str().unwrap().to_owned())))
+    );
+    for (id, _, bytes) in retained {
+        assert_eq!(std::fs::read(archive(id)).unwrap(), bytes, "archive {id}");
+    }
+    assert_eq!(
+        std::fs::symlink_metadata(archive(expired.0))
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::NotFound
+    );
+    server.close().await;
+}
+
+#[tokio::test]
 async fn legacy_delete_removes_only_the_selected_local_copy() {
     let server = Server::start("http://localhost:3000").await;
     let cookie = server.setup().await;
