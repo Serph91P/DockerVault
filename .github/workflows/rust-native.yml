@@ -97,6 +97,8 @@ jobs:
         run: bash docker/test-native-local-restart.sh dockervault-native-candidate-ci plain
       - name: Restore an encrypted LOCAL-only backup after clean native restart
         run: bash docker/test-native-local-restart.sh dockervault-native-candidate-ci encrypted
+      - name: Exercise failed-only copy removal in Chromium after clean native restart
+        run: bash docker/test-native-removal-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci
       - name: Verify packaged opt-in API documentation and backend logging
         run: |
           bash docker/test-native-docs.sh dockervault-native-candidate-ci
