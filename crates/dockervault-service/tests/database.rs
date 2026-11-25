@@ -351,6 +351,76 @@ async fn legacy_rows_extensions_objects_and_once_only_data_rewrite_survive() {
             .unwrap(),
         0
     );
+    let pool = second.pool();
+    for phase in ["after reopen", "after backup ID reuse"] {
+        if phase == "after backup ID reuse" {
+            let inserted = sqlx::query("INSERT INTO backups(id,target_id,backup_type,status,file_path,started_at,completed_at,created_at) VALUES(999,41,'FULL','COMPLETED','/backups/new/archive.tar','2024-01-02 03:04:05.000000','2024-01-02 03:04:06.000000','2024-01-02 03:04:05.000000')")
+                .execute(pool)
+                .await
+                .unwrap();
+            assert_eq!(inserted.rows_affected(), 1);
+            assert_eq!(inserted.last_insert_rowid(), 999);
+        }
+
+        let rows = sqlx::query_as::<_, (String, i64, String, String)>(
+            "SELECT table_name,row_id,row_json,reason FROM catalog_quarantine ORDER BY table_name,row_id",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        let quarantined: Vec<_> = rows
+            .iter()
+            .map(|(table, id, json, reason)| {
+                (
+                    table.as_str(),
+                    *id,
+                    serde_json::from_str::<Value>(json).unwrap(),
+                    reason.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            quarantined,
+            [
+                (
+                    "backup_logs",
+                    72,
+                    serde_json::json!({"id": 72, "backup_id": 999, "level": null,
+                        "step": "complete", "message": "orphan", "details": null, "created_at": null}),
+                    "missing parent reference",
+                ),
+                (
+                    "backup_storage_syncs",
+                    62,
+                    serde_json::json!({"id": 62, "backup_id": 999, "storage_id": 7,
+                        "remote_path": "orphan/archive.tar", "synced_at": null,
+                        "sync_status": "completed", "error_message": null}),
+                    "missing parent reference",
+                ),
+            ],
+            "quarantine rows {phase}"
+        );
+
+        let logs = sqlx::query_as::<_, (i64, i64)>("SELECT id,backup_id FROM backup_logs")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+        let syncs =
+            sqlx::query_as::<_, (i64, i64)>("SELECT id,backup_id FROM backup_storage_syncs")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        assert_eq!(logs, [(71, 51)], "active logs {phase}");
+        assert_eq!(syncs, [(61, 51)], "active syncs {phase}");
+        assert!(
+            sqlx::query("PRAGMA foreign_key_check")
+                .fetch_all(pool)
+                .await
+                .unwrap()
+                .is_empty(),
+            "foreign key violations {phase}"
+        );
+    }
     second.close().await;
     owner.shutdown(None).await;
 }
