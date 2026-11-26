@@ -69,8 +69,9 @@ ready "$restored_app"
 setup_incomplete "$source_app"
 setup_incomplete "$restored_app"
 if [[ -n "$python_ref" ]]; then
-    docker top "$source_app" -eo args | grep -E '^[^ ]*python[^ ]* [^ ]*/uvicorn app\.main:app '
-    docker top "$restored_app" -eo args | grep -E '^/usr/local/bin/dockervault-service '
+    # Docker requires the PID column even when verifying only command arguments.
+    docker top "$source_app" -eo pid,args | grep -E '^[[:space:]]*[0-9]+[[:space:]]+[^ ]*python[^ ]* [^ ]*/uvicorn app\.main:app '
+    docker top "$restored_app" -eo pid,args | grep -E '^[[:space:]]*[0-9]+[[:space:]]+/usr/local/bin/dockervault-service '
     docker inspect "$source_app" "$restored_app" | jq -e '
         all(.[]; .HostConfig.NetworkMode == "none" and
             ([.Mounts[].Destination] | sort) == ["/app/data", "/backups"] and
