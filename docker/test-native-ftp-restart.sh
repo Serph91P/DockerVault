@@ -115,6 +115,7 @@ with FTP() as ftp:
         if prefix == "/canary-copies":
             base = Path("/fixture/rust/canary-copies")
             assert {str(p.relative_to(base)) for p in base.rglob("*")} == {key, key.split("/")[0]}
+            data.seek(0)
             with tarfile.open(fileobj=data, mode="r:") as archive:
                 directory, content = archive.getmembers()
                 assert directory.isdir() and directory.name == root
