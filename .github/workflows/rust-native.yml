@@ -208,7 +208,7 @@ jobs:
           provider=chrislusf/seaweedfs@sha256:6f10079ef97a3fc24574725911e138b9f02eb397aeb69e6b0b9dd09b09d0e0bd
           docker pull --platform 'linux/${{ matrix.arch }}' "$provider"
           bash docker/test-native-s3-restart.sh dockervault-native-candidate-ci "$provider"
-      - name: Restore a plain FTP-only backup after clean native restart
+      - name: Verify FTP-only native restart and isolated R14 Canary
         run: |
           fixture=dockervault-ftp-fixture-ci
           docker build --platform 'linux/${{ matrix.arch }}' -t "$fixture" - <<'DOCKERFILE'
@@ -219,6 +219,8 @@ jobs:
           DOCKERFILE
           trap 'docker image rm "$fixture" >/dev/null' EXIT
           bash docker/test-native-ftp-restart.sh dockervault-native-candidate-ci "$fixture"
+          bash docker/test-native-ftp-restart.sh dockervault-native-candidate-ci "$fixture" \
+            dockervault-r14-python-ref:39124ea
 
   candidate-oci:
     name: Unpublished native OCI attestations (${{ matrix.arch }})

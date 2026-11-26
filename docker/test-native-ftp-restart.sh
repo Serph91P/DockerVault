@@ -1,24 +1,45 @@
 #!/usr/bin/env bash
-# Prove the normal plain restore can reopen its only copy over FTP after a clean restart.
+# Reuse the plain FTP backup for either the restart/restore or the R14 isolation proof.
 set -euo pipefail
-image=${1:?Usage: bash docker/test-native-ftp-restart.sh APP_IMAGE FTP_FIXTURE_IMAGE}
+image=${1:?Usage: bash docker/test-native-ftp-restart.sh APP_IMAGE FTP_FIXTURE_IMAGE [PYTHON_CONTROL_IMAGE]}
 fixture=${2:?FTP fixture image required}
-[[ ${RUNNER_ENVIRONMENT:-} == github-hosted ]] || {
+control_image=${3:-}
+[[ ${RUNNER_ENVIRONMENT:-} == github-hosted && ( $# == 2 ||
+    ( $# == 3 && -n "$control_image" && ${GITHUB_ACTIONS:-} == true ) ) ]] || {
     printf 'Run this container test only on the GitHub-hosted CI matrix\n' >&2
     exit 2
 }
 rev=$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")
 arch=$(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$image")
 [[ "$rev" == "$(git rev-parse HEAD)" && ( "$arch" == linux/amd64 || "$arch" == linux/arm64 ) ]]
-app= provider= phase=startup
+prefix=/copies
+source=/app/data/ftp-restart-source
+if [[ -n "$control_image" ]]; then
+    case "$(uname -m):$arch" in x86_64:linux/amd64|aarch64:linux/arm64) ;; *) exit 2 ;; esac
+    prefix=/canary-copies
+    source=/app/data/r14-rust-source
+    source docker/native-ftp-canary-control.sh
+fi
+app= provider= control= volumes= phase=startup
 cleanup() {
-    local status=$?
+    local status=$? id volume remaining
     if ((status != 0)); then
         printf 'Plain FTP roundtrip failed at %s (%s, %s)\n' "$phase" "$arch" "$rev" >&2
     fi
-    if [[ -n "$app" ]]; then docker rm -fv "$app" >/dev/null || status=1; fi
-    if [[ -n "$provider" ]]; then docker rm -fv "$provider" >/dev/null || status=1; fi
-    if ((status == 0)); then printf 'FTP fixture and app containers and app volumes removed\n'; fi
+    for id in "$app" "$control" "$provider"; do
+        [[ -n "$id" ]] || continue
+        docker rm -fv "$id" >/dev/null || status=1
+        if [[ -n "$control_image" ]]; then
+            remaining=$(docker ps -aq --no-trunc --filter "id=$id") && [[ -z "$remaining" ]] || status=1
+        fi
+    done
+    for volume in $volumes; do
+        remaining=$(docker volume ls -q --filter "name=$volume") && [[ -z "$remaining" ]] || status=1
+    done
+    if ((status == 0)); then
+        if [[ -n "$control" ]]; then printf 'R14 Canary cleanup: three containers, fixture tmpfs and four anonymous volumes removed\n'
+        else printf 'FTP fixture and app containers and app volumes removed\n'; fi
+    fi
     exit "$status"
 }
 trap cleanup EXIT
@@ -27,27 +48,36 @@ provider=$(docker create --pull=never --network none --user 1000:1000 \
     --tmpfs /fixture:rw,uid=1000,gid=1000,mode=0700,size=16m "$fixture" python -u -c '
 import asyncio
 from pathlib import Path
+import sys
 import aioftp
 
 async def main():
     root = Path("/fixture")
-    (root / "copies").mkdir()
-    server = aioftp.Server([aioftp.User("fixture", "public-fixture-only", base_path=root)])
+    prefix = sys.argv[1]
+    control = root / "python"
+    if prefix == "/canary-copies":
+        root /= "rust"
+        (control / "control-copies").mkdir(parents=True)
+        (control / "control-copies/reference").write_bytes(b"pre-existing Python provider object\n")
+    (root / prefix[1:]).mkdir(parents=True)
+    users = [aioftp.User("fixture", "public-fixture-only", base_path=root)]
+    if prefix == "/canary-copies":
+        users.append(aioftp.User("control", "public-control-only", base_path=control))
+    server = aioftp.Server(users)
     await server.start("127.0.0.1", 32121)
     await asyncio.Event().wait()
 
 asyncio.run(main())
-')
+' "$prefix")
 docker start "$provider" >/dev/null
 app=$(docker create --pull=never --network "container:$provider" --cpus 2 --memory 6g "$image")
 docker start "$app" >/dev/null
 
 service=/run/dockervault/services/backend
-source=/app/data/ftp-restart-source
 ready() {
     local attempt
     for ((attempt=0; attempt<30; attempt++)); do
-        if docker exec "$app" curl -fsS --max-time 2 http://127.0.0.1/health 2>/dev/null | \
+        if docker exec "${1:-$app}" curl -fsS --max-time 2 http://127.0.0.1/health 2>/dev/null | \
             jq -e '.status == "healthy"' >/dev/null; then return; fi
         sleep 1
     done
@@ -64,20 +94,33 @@ authenticate() {
 }
 ftp_read() {
     # Standalone FTP client reads every byte and checks the terminal reply, outside the app.
-    docker exec -i "$provider" python - "$@" <<'PY'
+    docker exec -i "$provider" python - "$prefix" "${source##*/}" "$@" <<'PY'
 from ftplib import FTP
 from hashlib import sha256
 from io import BytesIO
+from pathlib import Path
 import sys
+import tarfile
 
+prefix, root, *keys = sys.argv[1:]
 with FTP() as ftp:
     ftp.connect("127.0.0.1", 32121, timeout=10)
     ftp.login("fixture", "public-fixture-only")
-    ftp.cwd("/copies")
-    if len(sys.argv) == 2:
+    ftp.cwd(prefix)
+    if keys:
+        key, = keys
         data = BytesIO()
-        ftp.retrbinary("RETR " + sys.argv[1], data.write)
+        ftp.retrbinary("RETR " + key, data.write)
         assert data.tell() > 0
+        if prefix == "/canary-copies":
+            base = Path("/fixture/rust/canary-copies")
+            assert {str(p.relative_to(base)) for p in base.rglob("*")} == {key, key.split("/")[0]}
+            with tarfile.open(fileobj=data, mode="r:") as archive:
+                directory, content = archive.getmembers()
+                assert directory.isdir() and directory.name == root
+                assert content.isfile() and content.name == f"{root}/content"
+                assert content.mode == 0o640 and content.mtime == 1700000000
+                assert archive.extractfile(content).read() == b"\x00plain FTP fixture\xff\n"
         print(sha256(data.getbuffer()).hexdigest(), data.tell())
 PY
 }
@@ -87,10 +130,13 @@ for ((attempt=0; attempt<30; attempt++)); do
     sleep 1
 done
 ftp_read
+if [[ -n "$control_image" ]]; then prepare_control; fi
 credentials=$(jq -nc --arg password "$(tr -d '-' </proc/sys/kernel/random/uuid)" \
     '{username:"ftp-restart",password:$password,confirm_password:$password}')
 authenticate setup
-storage=$(api POST /storage --data '{"name":"FTP fixture","storage_type":"ftp","enabled":true,"host":"127.0.0.1","port":32121,"username":"fixture","password":"public-fixture-only","base_path":"/copies"}' | jq -er '.id | numbers')
+storage=$(jq -nc --arg prefix "$prefix" \
+    '{name:"FTP fixture",storage_type:"ftp",enabled:true,host:"127.0.0.1",port:32121,username:"fixture",password:"public-fixture-only",base_path:$prefix}' |
+    api POST /storage --data-binary @- | jq -er '.id | numbers')
 docker exec -u 1000:1000 "$app" sh -ec '
     mkdir "$1"; printf "\000plain FTP fixture\377\n" > "$1/content"
     chmod 640 "$1/content"; touch -d @1700000000 "$1/content"
@@ -127,12 +173,13 @@ read -r archive_hash archive_size <<< "$archive"
 # Query only the app's anonymous data volume, read-only; never copy its credentials or write SQLite.
 catalog() {
     docker run --rm --pull=never -i --network none --volumes-from "$app:ro" --user 1000:1000 \
-        "$fixture" python - "$backup" "$plan" "$storage" "$key" "$archive_size" <<'PY'
+        "$fixture" python - "$backup" "$plan" "$storage" "$key" "$archive_size" "$archive_hash" "$prefix" "$source" <<'PY'
 import json
+from pathlib import Path
 import sqlite3
 import sys
 
-backup, target, storage, path, size = sys.argv[1:]
+backup, target, storage, path, size, digest, prefix, source = sys.argv[1:]
 with sqlite3.connect("file:/app/data/backup.db?mode=ro", uri=True) as db:
     db.execute("BEGIN")
     assert db.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
@@ -148,12 +195,26 @@ with sqlite3.connect("file:/app/data/backup.db?mode=ro", uri=True) as db:
     row, = rows
     assert row[:4] == (int(target), "COMPLETED", 0, int(size)), row
     assert row[6:9] == (int(storage), path, "completed") and row[9] and row[10] is None, row
+    if prefix == "/canary-copies":
+        assert db.execute("SELECT base_path FROM remote_storages").fetchall() == [(prefix,)]
+        assert db.execute("SELECT id,host_path FROM backup_targets").fetchall() == [(int(target), source)]
+        assert db.execute("SELECT id FROM backups").fetchall() == [(int(backup),)]
+        assert db.execute("SELECT backup_id,storage_id FROM backup_storage_syncs").fetchall() == [(int(backup), int(storage))]
+        assert db.execute("SELECT count(*) FROM workload_operations").fetchone() == (0,)
+        assert row[5] == digest
+        assert Path(row[4]).is_relative_to("/backups") and not Path(row[4]).is_relative_to("/backups/r14-python-output")
     print(json.dumps(row))
 PY
 }
 settled=$(catalog)
 printf 'Durable FTP sync: backup=%s target=%s storage=%s bytes=%s sha256=%s; primary archive absent\n' \
     "$backup" "$plan" "$storage" "$archive_size" "$archive_hash"
+if [[ -n "$control" ]]; then
+    verify_control
+    printf 'R14 Canary: source=%s; one completed sync and full FTP RETR/tar payload at %s/%s; catalog=%s\n' \
+        "$source" "$prefix" "$key" "$settled"
+    exit 0
+fi
 docker exec -u 1000:1000 "$app" sh -ec '
     printf "mutated\n" > "$1/content"; chmod 600 "$1/content"; touch -d @1710000000 "$1/content"
 ' sh "$source"
