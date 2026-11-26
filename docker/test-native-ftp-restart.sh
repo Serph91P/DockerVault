@@ -146,7 +146,7 @@ with sqlite3.connect("file:/app/data/backup.db?mode=ro", uri=True) as db:
         FROM backups b JOIN backup_storage_syncs s ON s.backup_id=b.id WHERE b.id=?
         """, (backup,)).fetchall()
     row, = rows
-    assert row[:4] == (int(target), "completed", 0, int(size)), row
+    assert row[:4] == (int(target), "COMPLETED", 0, int(size)), row
     assert row[6:9] == (int(storage), path, "completed") and row[9] and row[10] is None, row
     print(json.dumps(row))
 PY
