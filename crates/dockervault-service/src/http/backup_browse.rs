@@ -32,6 +32,10 @@ pub(in crate::http) use member_route::{member, member_encrypted};
 
 const MAX_PAGE: i64 = 2000;
 
+#[cfg(test)]
+#[path = "backup_shadow_test.rs"]
+mod shadow_test;
+
 #[derive(serde::Deserialize)]
 pub(in crate::http) struct BrowseKey {
     #[serde(deserialize_with = "read_private_key")]

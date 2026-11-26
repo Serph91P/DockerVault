@@ -65,7 +65,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Build native isolated Rust development image
-        run: docker build -f docker/rust-dev.Dockerfile -t dockervault-rust-ci .
+        run: |
+          docker build --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" \
+            -f docker/rust-dev.Dockerfile -t dockervault-rust-ci .
       - name: Native offline workspace tests and lints
         run: |
           docker run --rm --network none --cpus 2 --memory 6g \
@@ -136,6 +138,8 @@ jobs:
       - name: Verify the fenced Python recovery download after native handoff
         run: bash docker/test-native-policy-browser.sh dockervault-python-rollback-ci dockervault-native-browser-ci python dockervault-native-candidate-ci
       - name: Import an integrated Python V1 system bundle and restore its retained encrypted LOCAL archive
+        env:
+          DOCKERVAULT_SHADOW_RUST_IMAGE: dockervault-rust-ci
         run: |
           bash docker/test-native-system-recovery.sh dockervault-native-candidate-ci \
             dockervault-r14-python-ref:39124ea 39124ea3a98963b6307a69a0fbaf5902a17cde3d "$(git rev-parse HEAD)"

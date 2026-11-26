@@ -289,3 +289,8 @@ if [[ -n "$python_ref" ]]; then
     [[ $(docker exec "$restored_app" sha256sum /tmp/system.dockervault) == "$bundle_hash" ]]
 fi
 printf '#143 LOCAL: real restore with retained identity and sidecar; payload byte-for-byte, retained pair unchanged, no primary archive\n'
+if [[ -n "${DOCKERVAULT_SHADOW_RUST_IMAGE:-}" ]]; then
+    phase=readonly-shadow
+    bash docker/test-native-shadow.sh "$source_app" "$source_image" "$DOCKERVAULT_SHADOW_RUST_IMAGE" \
+        "$key" "$backup" "$python_ref" "$rev"
+fi
