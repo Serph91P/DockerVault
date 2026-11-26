@@ -308,6 +308,14 @@ struct ReplicaIntent {
     metadata_was_null: bool,
 }
 
+// The existing shapes share one exclusive receipt slot; do not change the on-disk format.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RemovalIntent {
+    Replica(ReplicaIntent),
+    Local(LocalIntent),
+}
+
 async fn remove_replica(
     state: &HttpState,
     item: &Item,
@@ -342,7 +350,10 @@ async fn remove_replica(
     .await
     .map_err(|_| INCOMPLETE)?;
     if let Some(raw) = pending {
-        let intent: ReplicaIntent = serde_json::from_str(&raw).map_err(|_| INCOMPLETE)?;
+        let RemovalIntent::Replica(intent) = serde_json::from_str(&raw).map_err(|_| INCOMPLETE)?
+        else {
+            return Err(INCOMPLETE);
+        };
         if intent.storage_id != storage_id
             || intent.replica.sync_id != replica.sync_id
             || intent.replica.local_root.as_ref() != Some(root)
@@ -578,13 +589,33 @@ async fn remove_claimed_primary(
     .await
     .map_err(|_| INCOMPLETE)?;
     if let Some(raw) = pending {
-        let intent: LocalIntent = serde_json::from_str(&raw).map_err(|_| INCOMPLETE)?;
-        if intent.files.iter().any(|file| !files.contains(file)) {
-            return Err(CHANGED);
+        match serde_json::from_str(&raw).map_err(|_| INCOMPLETE)? {
+            RemovalIntent::Local(intent) => {
+                if intent.files.iter().any(|file| !files.contains(file)) {
+                    return Err(CHANGED);
+                }
+                tx.rollback().await.map_err(|_| INCOMPLETE)?;
+                drop(db);
+                return settle_local(state, item.backup_id, intent, &raw, cancel).await;
+            }
+            RemovalIntent::Replica(_) => {
+                // Report local drift without taking over the pending replica receipt.
+                let root = PathBuf::from(&state.config.backup_base_path);
+                let current = state
+                    .download_jobs
+                    .submit_blocking(move |_| inspect(&root, archive.as_deref(), key.as_deref()))
+                    .map_err(|_| INCOMPLETE)?
+                    .wait()
+                    .await
+                    .map_err(|_| INCOMPLETE)?
+                    .map_err(|_| CHANGED)?;
+                return Err(if current == files {
+                    INCOMPLETE
+                } else {
+                    CHANGED
+                });
+            }
         }
-        tx.rollback().await.map_err(|_| INCOMPLETE)?;
-        drop(db);
-        return settle_local(state, item.backup_id, intent, &raw, cancel).await;
     }
     let active: bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workload_operations WHERE backup_id=? AND state!='finished') OR EXISTS(SELECT 1 FROM backup_storage_syncs WHERE backup_id=? AND sync_status IN ('pending','running'))")
         .bind(item.backup_id).bind(item.backup_id).fetch_one(&mut *tx).await.map_err(|_|INCOMPLETE)?;
@@ -727,24 +758,27 @@ pub async fn recover(state: &HttpState) -> Result<(), sqlx::Error> {
         }
         for (id, raw) in page {
             last = id;
-            if let Ok(intent) = serde_json::from_str::<ReplicaIntent>(&raw) {
-                if settle_replica(state, id, &intent, &raw, &CancellationToken::new())
-                    .await
-                    .is_err()
-                {
-                    tracing::warn!(backup_id = id, "Unsettled LOCAL replica removal retained");
+            let cancel = CancellationToken::new();
+            match serde_json::from_str(&raw) {
+                Ok(RemovalIntent::Replica(intent)) => {
+                    if settle_replica(state, id, &intent, &raw, &cancel)
+                        .await
+                        .is_err()
+                    {
+                        tracing::warn!(backup_id = id, "Unsettled LOCAL replica removal retained");
+                    }
                 }
-                continue;
-            }
-            let Ok(intent) = serde_json::from_str::<LocalIntent>(&raw) else {
-                tracing::warn!(backup_id = id, "Invalid copy removal receipt retained");
-                continue;
-            };
-            if settle_local(state, id, intent, &raw, &CancellationToken::new())
-                .await
-                .is_err()
-            {
-                tracing::warn!(backup_id = id, "Unsettled local copy removal retained");
+                Ok(RemovalIntent::Local(intent)) => {
+                    if settle_local(state, id, intent, &raw, &cancel)
+                        .await
+                        .is_err()
+                    {
+                        tracing::warn!(backup_id = id, "Unsettled local copy removal retained");
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(backup_id = id, "Invalid copy removal receipt retained");
+                }
             }
         }
     }
