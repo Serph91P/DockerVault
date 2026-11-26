@@ -200,6 +200,17 @@ jobs:
           provider=chrislusf/seaweedfs@sha256:6f10079ef97a3fc24574725911e138b9f02eb397aeb69e6b0b9dd09b09d0e0bd
           docker pull --platform 'linux/${{ matrix.arch }}' "$provider"
           bash docker/test-native-s3-restart.sh dockervault-native-candidate-ci "$provider"
+      - name: Restore a plain FTP-only backup after clean native restart
+        run: |
+          fixture=dockervault-ftp-fixture-ci
+          docker build --platform 'linux/${{ matrix.arch }}' -t "$fixture" - <<'DOCKERFILE'
+          FROM python:3.14-slim@sha256:22eafb370920ad8b429e0aec3fff433e0669968519f5d60469d83729c138b28b
+          RUN printf '%s\n' 'aioftp==0.27.2 --hash=sha256:83befd4091be0e26eeba44dadebb7e7bea653f7b6bda3ba9b6785d4372a93e10' > /tmp/ftp-requirement \
+              && python -m pip install --no-cache-dir --no-deps --only-binary=:all: --require-hashes -r /tmp/ftp-requirement \
+              && rm /tmp/ftp-requirement
+          DOCKERFILE
+          trap 'docker image rm "$fixture" >/dev/null' EXIT
+          bash docker/test-native-ftp-restart.sh dockervault-native-candidate-ci "$fixture"
 
   candidate-oci:
     name: Unpublished native OCI attestations (${{ matrix.arch }})
