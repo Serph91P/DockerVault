@@ -122,7 +122,7 @@ with FTP() as ftp:
                 assert content.isfile() and content.name == f"{root}/content"
                 assert content.mode == 0o640 and content.mtime == 1700000000
                 assert archive.extractfile(content).read() == b"\x00plain FTP fixture\xff\n"
-        print(sha256(data.getbuffer()).hexdigest(), data.tell())
+        print(sha256(data.getbuffer()).hexdigest(), len(data.getbuffer()))
 PY
 }
 ready
