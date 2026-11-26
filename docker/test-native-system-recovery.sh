@@ -2,10 +2,31 @@
 # #143 LOCAL oracle: bundle metadata and retained encrypted bytes are separate inputs.
 # Use the standard package and the backup/restore HTTP routes, not a seeded database.
 set -euo pipefail
-image=${1:?Usage: bash docker/test-native-system-recovery.sh IMAGE}
+image=${1:?Usage: bash docker/test-native-system-recovery.sh RUST_IMAGE [PYTHON_IMAGE PYTHON_REVISION TARGET_REVISION]}
+source_image=${2:-$image}
+python_ref=${3:-}
+if (($# != 1)); then
+    if [[ $# != 4 || ${GITHUB_ACTIONS:-} != true || ${RUNNER_ENVIRONMENT:-} != github-hosted ]]; then
+        printf 'Python package recovery requires four arguments and a GitHub-hosted Actions runner\n' >&2
+        exit 2
+    fi
+    [[ "$python_ref" =~ ^[a-f0-9]{40}$ && "$4" =~ ^[a-f0-9]{40}$ && "$python_ref" != "$4" ]]
+fi
 rev=$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")
 arch=$(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$image")
 [[ "$rev" =~ ^[a-f0-9]{40}$ && ( "$arch" == linux/amd64 || "$arch" == linux/arm64 ) ]]
+if [[ -n "$python_ref" ]]; then
+    case "$(uname -m)" in
+        x86_64) runner_arch=linux/amd64 ;;
+        aarch64) runner_arch=linux/arm64 ;;
+        *) exit 2 ;;
+    esac
+    [[ "$arch" == "$runner_arch" && "$rev" == "$4" ]]
+    [[ $(docker image inspect -f '{{.Os}}/{{.Architecture}} {{index .Config.Labels "org.opencontainers.image.revision"}}' "$source_image") == "$arch $python_ref" ]]
+    printf '#143 Python→Rust packages: %s source=%s@%s (%s), target=%s@%s (%s)\n' \
+        "$arch" "$source_image" "$python_ref" "$(docker image inspect -f '{{.Id}}' "$source_image")" \
+        "$image" "$rev" "$(docker image inspect -f '{{.Id}}' "$image")"
+fi
 source_app= restored_app=
 phase=startup
 cleanup() {
@@ -19,7 +40,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-start() { docker run --detach --pull=never --network none --cpus 2 --memory 6g "$image"; }
+start() { docker run --detach --pull=never --network none --cpus 2 --memory 6g "$1"; }
 ready() {
     local app=$1 attempt
     for ((attempt=0; attempt<30; attempt++)); do
@@ -41,13 +62,24 @@ setup_incomplete() {
     api "$1" GET /auth/status | jq -e '.setup_complete == false and .authenticated == false' >/dev/null
 }
 
-source_app=$(start)
-restored_app=$(start)
+source_app=$(start "$source_image")
+restored_app=$(start "$image")
 ready "$source_app"
 ready "$restored_app"
 setup_incomplete "$source_app"
 setup_incomplete "$restored_app"
-printf '#143 LOCAL: both default packages healthy and uninitialized (%s, %s)\n' "$arch" "$rev"
+if [[ -n "$python_ref" ]]; then
+    docker top "$source_app" -eo args | grep -E '^[^ ]*python[^ ]* [^ ]*/uvicorn app\.main:app '
+    docker top "$restored_app" -eo args | grep -E '^/usr/local/bin/dockervault-service '
+    docker inspect "$source_app" "$restored_app" | jq -e '
+        all(.[]; .HostConfig.NetworkMode == "none" and
+            ([.Mounts[].Destination] | sort) == ["/app/data", "/backups"] and
+            all(.Mounts[]; .Type == "volume")) and
+        ([.[].Mounts[].Name] | unique | length) == 4' >/dev/null
+    printf '#143 Python→Rust: both stock packages healthy and uninitialized, four disjoint anonymous volumes\n'
+else
+    printf '#143 LOCAL: both default packages healthy and uninitialized (%s, %s)\n' "$arch" "$rev"
+fi
 
 phase=source-fixture
 fixture=/app/data/recovery-source
@@ -95,6 +127,26 @@ sidecar=${key%.enc}.key
 source_api GET "/backups/$backup/logs" | jq -e 'length > 0' >/dev/null
 catalog() { jq -cS '{id,target_id,target_name,status,backup_type,file_path,file_size,checksum,encrypted,remote_sync_details: [.remote_sync_details[] | {storage_id,remote_path,status}]}'; }
 source_catalog=$(catalog <<< "$item")
+# The HTTP DTO omits the sync row's own ID. Read only the owned test databases.
+sync_row() {
+    docker run --rm -i --pull=never --network none --volumes-from "$1:ro" \
+        --user 1000:1000 --entrypoint python "$source_image" - "$backup" "$storage" "$key" <<'PY'
+import json
+import sqlite3
+import sys
+
+backup, storage, path = sys.argv[1:]
+with sqlite3.connect("file:/app/data/backup.db?mode=ro", uri=True) as db:
+    row, = db.execute("SELECT id, backup_id, storage_id, sync_status, remote_path FROM backup_storage_syncs")
+    assert row[0] > 0 and row[1:] == (int(backup), int(storage), "completed", path)
+    print(json.dumps(row))
+PY
+}
+if [[ -n "$python_ref" ]]; then
+    source_sync=$(sync_row "$source_app")
+    public_key=$(source_api GET /encryption/status | jq -er '
+        select(.setup_completed and .encryption_enabled) | .public_key | strings | select(startswith("age1"))')
+fi
 archive_hashes() {
     docker exec -u 1000:1000 "$1" sh -ec '
         cd "$1"; shift
@@ -112,9 +164,17 @@ printf '%s' "$export_request" | source_api POST /recovery/export --data-binary @
     -D /tmp/recovery-headers -o /tmp/system.dockervault
 docker exec "$source_app" grep -qi '^content-disposition: attachment; filename="dockervault-system-backup\.dockervault"' /tmp/recovery-headers
 docker exec "$source_app" grep -qi '^content-type: application/octet-stream' /tmp/recovery-headers
-bundle=$(docker exec "$source_app" cat /tmp/system.dockervault)
-jq -e '.format == "dockervault-recovery" and .envelope_version == 1 and .kdf.name == "argon2id" and .aead.name == "aes-256-gcm" and (.ciphertext_b64 | length > 0)' <<< "$bundle" >/dev/null
+docker exec "$source_app" cat /tmp/system.dockervault |
+    jq -e '.format == "dockervault-recovery" and .envelope_version == 1 and .kdf.name == "argon2id" and .aead.name == "aes-256-gcm" and (.ciphertext_b64 | length > 0)' >/dev/null
+# Keep the exact download, including any trailing newline, out of shell substitution.
+docker exec "$source_app" cat /tmp/system.dockervault |
+    docker exec -i -u 1000:1000 "$restored_app" sh -ec 'umask 077; cat >/tmp/system.dockervault'
+bundle_hash=$(docker exec "$source_app" sha256sum /tmp/system.dockervault)
+[[ $(docker exec "$restored_app" sha256sum /tmp/system.dockervault) == "$bundle_hash" ]]
 printf '#143 LOCAL: completed encrypted backup and LOCAL catalog copy; anonymous export 401, admin download V1 Argon2id/AES-GCM\n'
+if [[ -n "$python_ref" ]]; then
+    printf '#143 Python→Rust: identical V1 bundle SHA-256 %s; separately retained archive/sidecar:\n%s\n' "${bundle_hash%% *}" "$retained_hashes"
+fi
 
 # Compare directory inventory and file bytes, including SQLite main/WAL. SHM is SQLite's volatile lock/index.
 # Preview may create the empty, persistent flock anchor for crypto serialization, not application data.
@@ -131,7 +191,9 @@ fresh_state() {
 setup_incomplete "$restored_app"
 crypto_lock=/app/data/backup.db.recovery-crypto.lock
 before=$(fresh_state "$crypto_lock")
-preview_request() { printf '%s' "$bundle" | jq -Rsc --arg pass "$1" '{bundle:.,password:$pass}'; }
+preview_request() {
+    docker exec "$restored_app" cat /tmp/system.dockervault | jq -Rsc --arg pass "$1" '{bundle:.,password:$pass}'
+}
 restore_request() {
     preview_request "$1" | jq -c --arg pass "$admin_password" \
         '. + {username:"restored-admin",admin_password:$pass,confirm_admin_password:$pass}'
@@ -149,17 +211,21 @@ setup_incomplete "$restored_app"
 after=$(fresh_state "$crypto_lock")
 [[ "$before" == "$after" ]]
 
-phase=wrong-password
-before=$(fresh_state)
-http=$(restore_request 'wrong-143-test-password' | api "$restored_app" POST /recovery/restore \
-    --no-fail -o /tmp/recovery-rejection -w '%{http_code}' --data-binary @-)
-[[ "$http" == 400 ]]
-docker exec "$restored_app" cat /tmp/recovery-rejection |
-    jq -e '.detail == "Invalid or incompatible recovery bundle or password"' >/dev/null
-setup_incomplete "$restored_app"
-after=$(fresh_state)
-[[ "$before" == "$after" ]]
-printf '#143 LOCAL: preview preserved application data (empty crypto lock allowed); wrong import password 400, still uninitialized, identical data inventory and file hashes\n'
+if [[ -z "$python_ref" ]]; then
+    phase=wrong-password
+    before=$(fresh_state)
+    http=$(restore_request 'wrong-143-test-password' | api "$restored_app" POST /recovery/restore \
+        --no-fail -o /tmp/recovery-rejection -w '%{http_code}' --data-binary @-)
+    [[ "$http" == 400 ]]
+    docker exec "$restored_app" cat /tmp/recovery-rejection |
+        jq -e '.detail == "Invalid or incompatible recovery bundle or password"' >/dev/null
+    setup_incomplete "$restored_app"
+    after=$(fresh_state)
+    [[ "$before" == "$after" ]]
+    printf '#143 LOCAL: preview preserved application data (empty crypto lock allowed); wrong import password 400, still uninitialized, identical data inventory and file hashes\n'
+else
+    printf '#143 Python→Rust: preview kept setup incomplete and app-data inventory and hashes identical (empty crypto lock allowed)\n'
+fi
 
 phase=activation
 # Transfer only retained archive/sidecar, never the primary, source DB or sessions.
@@ -196,6 +262,12 @@ jq -e '.local_available == false' <<< "$item" >/dev/null
 restored_api GET "/backups/$backup/logs" | jq -e '. == []' >/dev/null
 [[ $(archive_hashes "$restored_app") == "$retained_hashes" ]]
 printf '#143 LOCAL: setup activated and healthy; fresh admin login, source session/logs excluded, target/storage/catalog preserved\n'
+if [[ -n "$python_ref" ]]; then
+    [[ $(sync_row "$restored_app") == "$source_sync" ]]
+    restored_api GET /encryption/status | jq -e --arg key "$public_key" '
+        .setup_completed and .encryption_enabled and .public_key == $key' >/dev/null
+    printf '#143 Python→Rust: original public identity and sync row preserved: %s\n' "$source_sync"
+fi
 
 phase=archive-restore
 fingerprint=$(restored_api POST "/backups/$backup/restore-review" --data '{"destination_type":"original"}' |
@@ -211,4 +283,8 @@ docker exec -u 1000:1000 "$restored_app" sh -ec '
 primary_empty
 [[ $(archive_hashes "$source_app") == "$retained_hashes" && $(archive_hashes "$restored_app") == "$retained_hashes" ]]
 [[ $(restored_api GET "/backups/$backup" | catalog) == "$source_catalog" ]]
+if [[ -n "$python_ref" ]]; then
+    [[ $(sync_row "$restored_app") == "$source_sync" ]]
+    [[ $(docker exec "$restored_app" sha256sum /tmp/system.dockervault) == "$bundle_hash" ]]
+fi
 printf '#143 LOCAL: real restore with retained identity and sidecar; payload byte-for-byte, retained pair unchanged, no primary archive\n'

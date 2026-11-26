@@ -135,6 +135,10 @@ jobs:
           bash docker/test-native-rollback-roundtrip.sh dockervault-native-candidate-ci dockervault-python-rollback-ci encrypted
       - name: Verify the fenced Python recovery download after native handoff
         run: bash docker/test-native-policy-browser.sh dockervault-python-rollback-ci dockervault-native-browser-ci python dockervault-native-candidate-ci
+      - name: Import an integrated Python V1 system bundle and restore its retained encrypted LOCAL archive
+        run: |
+          bash docker/test-native-system-recovery.sh dockervault-native-candidate-ci \
+            dockervault-r14-python-ref:39124ea 39124ea3a98963b6307a69a0fbaf5902a17cde3d "$(git rev-parse HEAD)"
       - name: Native pinned rclone capabilities and encrypted preparation without network
         run: |
           docker build -f docker/rclone-test.Dockerfile -t dockervault-rclone-ci .
