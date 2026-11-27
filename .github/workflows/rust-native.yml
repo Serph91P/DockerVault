@@ -205,11 +205,17 @@ jobs:
           '
       - name: Recover an authenticated native backup after a service restart
         run: bash docker/test-native-encrypted-roundtrip.sh dockervault-native-candidate-ci dockervault-recovery-ci
-      - name: Restore plain and encrypted backups from isolated S3 after restart
+      - name: Restore from isolated S3 and verify copy removal fails closed
         run: |
+          set -euo pipefail
+          package=dockervault-native-candidate-ci
+          platform='linux/${{ matrix.arch }}'
+          sha=$(git rev-parse HEAD)
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}} {{index .Config.Labels "org.opencontainers.image.revision"}}' "$package")" = "$platform $sha"
           provider=chrislusf/seaweedfs@sha256:6f10079ef97a3fc24574725911e138b9f02eb397aeb69e6b0b9dd09b09d0e0bd
-          docker pull --platform 'linux/${{ matrix.arch }}' "$provider"
-          bash docker/test-native-s3-restart.sh dockervault-native-candidate-ci "$provider"
+          docker pull --platform "$platform" "$provider"
+          docker image inspect --format 'S3 fixture package: {{.Os}}/{{.Architecture}} {{.Id}} revision={{index .Config.Labels "org.opencontainers.image.revision"}}' "$package"
+          bash docker/test-native-s3-restart.sh "$package" "$provider"
       - name: Verify FTP-only native restart and isolated R14 Canary
         run: |
           fixture=dockervault-ftp-fixture-ci

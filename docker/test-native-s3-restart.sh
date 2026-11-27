@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Test an S3-only restore through the packaged HTTP service, with no host mounts.
+# Test S3-only restore and fail-closed removal through the packaged HTTP service.
 set -euo pipefail
+if [[ ${GITHUB_ACTIONS:-} != true || ${RUNNER_ENVIRONMENT:-} != github-hosted ]]; then
+    printf 'S3 package fixture requires a GitHub-hosted Actions runner\n' >&2
+    exit 2
+fi
 app_image=${1:?Usage: bash docker/test-native-s3-restart.sh APP_IMAGE SEAWEEDFS_IMAGE}
 provider_image=${2:?Pinned SeaweedFS image required}
 rev=$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$app_image")
@@ -8,8 +12,11 @@ rev=$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.
 app=
 provider=
 cleanup() {
-    if [[ -n "$app" ]]; then docker rm -fv "$app" >/dev/null; fi
-    if [[ -n "$provider" ]]; then docker rm -fv "$provider" >/dev/null; fi
+    local rc=$?
+    if [[ -n "$app" ]]; then docker rm -fv "$app" >/dev/null || rc=1; fi
+    if [[ -n "$provider" ]]; then docker rm -fv "$provider" >/dev/null || rc=1; fi
+    if [[ $rc == 0 ]]; then printf 'S3 fixture containers and anonymous volumes removed\n'; fi
+    exit "$rc"
 }
 trap cleanup EXIT
 provider=$(docker create --pull=never --network none -e AWS_ACCESS_KEY_ID=fixture-only \
@@ -36,8 +43,45 @@ api() {
 s3() {
     local path
     path=$(jq -nr --arg path "$1" '$path | split("/") | map(@uri) | join("/")')
+    shift
     docker exec "$app" curl -fsS --max-time 10 --aws-sigv4 aws:amz:us-east-1:s3 \
-        --user fixture-only:public-test-fixture-only "http://127.0.0.1:8333/dv-restart-fixture$path"
+        --user fixture-only:public-test-fixture-only "$@" "http://127.0.0.1:8333/dv-restart-fixture$path"
+}
+catalog_snapshot() {
+    api GET "/backups/$backup" --fail | jq -cSe \
+        '{id, status, checksum, encrypted, local_available, remote_synced, remote_sync_details}'
+}
+assert_removal_unchanged() {
+    local catalog archive sidecar sentinel listing
+    catalog=$(catalog_snapshot)
+    archive=$(s3 "$object" | sha256sum)
+    sidecar=$(s3 "${object%.enc}.key" | sha256sum)
+    sentinel=$(s3 /sentinel.txt | sha256sum)
+    listing=$(s3 '' | sha256sum)
+    test "$catalog" = "$catalog_before"
+    test "$archive" = "$archive_sum"
+    test "$sidecar" = "$sidecar_sum"
+    test "$sentinel" = "$sentinel_sum"
+    test "$listing" = "$listing_sum"
+}
+assert_s3_removal_refused() {
+    local phase=$1 preview token request result replay
+    preview=$(api POST /backups/removal/preview --fail --data "{\"scope\":\"remote\",\"backup_ids\":[$backup]}")
+    token=$(jq -er 'select(.archive_count == 1 and .copy_count == 1) | .token | strings | select(length > 0)' <<< "$preview")
+    assert_removal_unchanged
+    request=$(jq -nc --arg token "$token" '{token:$token}')
+    result=$(printf '%s' "$request" | api POST /backups/removal/execute --fail --data-binary @-)
+    jq -e --argjson backup "$backup" --argjson storage "$storage" '
+        select(.status == "incomplete" and .succeeded == 0 and .failed == 1 and .skipped == 0 and .retry_token == null)
+        | ([.items[] | select(.outcome != "retained")] | length == 1 and
+            .[0].outcome == "failed" and .[0].backup_id == $backup and .[0].storage_id == $storage and
+            .[0].message == "Confirmed remote copy removal is not available")
+    ' <<< "$result" >/dev/null
+    assert_removal_unchanged
+    replay=$(printf '%s' "$request" | api POST /backups/removal/execute --fail --data-binary @-)
+    test "$replay" = "$result"
+    assert_removal_unchanged
+    printf 'S3 removal %s: authenticated preview, execute and replay incomplete (0 succeeded, 1 failed); archive, sidecar, sentinel, listing and catalog/sync unchanged (%s)\n' "$phase" "$rev"
 }
 ready
 for ((attempt=0; attempt<30; attempt++)); do
@@ -88,6 +132,14 @@ for mode in plain encrypted; do
         sidecar_sum=$(s3 "${object%.enc}.key" | sha256sum)
     fi
     docker exec "$app" sh -ec 'test -z "$(find /backups -type f -print -quit)"'
+    if [[ "$mode" == encrypted ]]; then
+        # Test-owned sentinel lies outside the configured backup prefix.
+        s3 /sentinel.txt --upload-file /tmp/dv-s3-encrypted/content >/dev/null
+        sentinel_sum=$(s3 /sentinel.txt | sha256sum)
+        listing_sum=$(s3 '' | sha256sum)
+        catalog_before=$(catalog_snapshot)
+        assert_s3_removal_refused before-restart
+    fi
     docker exec -u 1000:1000 "$app" sh -ec 'printf "mutated\n" > "$1/content"' sh "$source"
     inode=$(docker exec "$app" stat -c '%d:%i' /app/data/backup.db)
     docker stop --time 30 "$app" >/dev/null
@@ -96,6 +148,9 @@ for mode in plain encrypted; do
     ready
     test "$(docker exec "$app" stat -c '%d:%i' /app/data/backup.db)" = "$inode"
     test "$(entry)" = "$key"
+    if [[ "$mode" == encrypted ]]; then
+        assert_s3_removal_refused after-restart
+    fi
     fingerprint=$(api POST "/backups/$backup/restore-review" --fail --data '{"destination_type":"original"}' | jq -er '.fingerprint | strings')
     payload=$(jq -nc --arg fingerprint "$fingerprint" '{destination_type:"original",review_fingerprint:$fingerprint}')
     if [[ "$mode" == encrypted ]]; then
