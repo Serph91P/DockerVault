@@ -1,8 +1,6 @@
 """Real backup callers must queue before SQL, not inside SQLite's busy handler."""
 
 import asyncio
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import text
@@ -88,13 +86,6 @@ async def test_backup_callers_wait_before_entering_sql(caller, tmp_path, monkeyp
         monkeypatch.setattr(module, "async_session", sessions)
     monkeypatch.setattr(
         backup_module.settings, "BACKUP_BASE_PATH", str(tmp_path / "backups")
-    )
-    from app import komodo_config
-
-    monkeypatch.setattr(
-        komodo_config,
-        "load_komodo_config",
-        AsyncMock(return_value=SimpleNamespace(enabled=False)),
     )
     engine = BackupEngine()
     monkeypatch.setattr(schedules, "backup_engine", engine)

@@ -20,7 +20,6 @@ os.environ.update(
     DOCKER_SOCKET=str(root / "absent.sock"),
     COOKIE_SECURE="false",
     ALLOWED_SSH_KEY_DIRS=str(root / "ssh_keys"),
-    KOMODO_ENABLED="false",
 )
 (root / "backups" / "nested").mkdir(parents=True, exist_ok=True)
 (root / "backups" / "nested" / "payload.txt").write_bytes(

@@ -1,4 +1,4 @@
-// #190 real cookie/API/SQLite/age/SSH files; explicitly synthetic Komodo/SSH transport.
+// #190 real cookie/API/SQLite/age/SSH files; explicitly synthetic SSH transport.
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import { chmod, readFile, writeFile } from 'node:fs/promises'
@@ -11,9 +11,6 @@ const base = 'http://127.0.0.1', root = '/app/data/settings190', checks = []
 const check = (value, label) => { assert.ok(value, label); checks.push(label); console.log('PASS ' + label) }
 async function api(path, method = 'GET', data) { const r = await context.request.fetch(base + '/api/v1' + path, { method, data }); assert.ok(r.ok(), `${method} ${path}: ${r.status()}`); return r.json() }
 async function section(name) { await page.getByRole('link', { name, exact: true }).click() }
-async function connections() { await page.goto(base + '/settings#connection'); await expect(page.getByRole('button', { name: 'Edit Settings', exact: true })).toBeEnabled() }
-async function edit() { await page.getByRole('button', { name: 'Edit Settings', exact: true }).click() }
-async function saveKomodo() { await page.getByRole('button', { name: 'Save', exact: true }).click(); await expect(page.getByLabel('Komodo save result')).toHaveText('Komodo settings saved; canonical values confirmed.') }
 async function restart() {
   const before = (await api('/test-settings190/restarted')).restarted
   await api('/test-settings190/restart', 'POST')
@@ -31,64 +28,6 @@ try {
   await page.getByRole('button', { name: /Continue without encryption/ }).click()
   await page.getByRole('button', { name: 'Continue to DockerVault', exact: true }).click()
   check((await context.cookies()).some(c => c.name === 'session_token' && c.httpOnly), 'AC2/5 real HttpOnly cookie authentication')
-  await connections()
-  check((await api('/settings/komodo')).api_url === 'http://127.0.0.1:9100/env', 'AC3 real effective ENV fallback before any DB override')
-  check(!(await api('/test-settings190/effects')).settings.komodo_api_url, 'AC2 reading and initial connection observation did not save')
-  await page.getByRole('button', { name: 'Test saved connection' }).click()
-  await expect(page.getByText(/Komodo test: completed/)).toBeVisible()
-  await api('/test-settings190/komodo/failed', 'POST')
-  await page.getByRole('button', { name: 'Test saved connection' }).click()
-  await expect(page.getByText(/Komodo test: failed/)).toBeVisible()
-  check(!(await api('/test-settings190/effects')).settings.komodo_api_url, 'AC2 failed native saved test never stores credentials')
-  await api('/test-settings190/komodo/good', 'POST')
-  await edit()
-  await page.getByLabel('Komodo API URL', { exact: true }).fill('http://127.0.0.1:9100/db')
-  const key = randomBytes(24).toString('hex'), secret = randomBytes(24).toString('hex')
-  await page.getByLabel('Komodo API key', { exact: true }).fill(key)
-  await page.getByLabel('Komodo API secret', { exact: true }).fill(secret)
-  await expect(page.getByRole('button', { name: 'Test saved connection' })).toBeDisabled()
-  await section('System')
-  await expect(page.getByRole('dialog', { name: 'Discard unsaved settings?' })).toBeVisible()
-  await page.keyboard.press('Escape')
-  await expect(page.getByLabel('Komodo API URL', { exact: true })).toHaveValue('http://127.0.0.1:9100/db')
-  check(true, 'AC2/3/7 dirty section navigation Escape retains correction context')
-  await saveKomodo()
-  const effects = await api('/test-settings190/effects')
-  check(effects.settings.komodo_api_url === 'http://127.0.0.1:9100/db' && effects.client_matches_effective && effects.transport.headers_present, 'AC1/3 SQLite override and actual Komodo client refreshed atomically (synthetic HTTP peer)')
-  await page.reload(); await expect(page.getByText('http://127.0.0.1:9100/db', { exact: true })).toBeVisible()
-  await page.getByRole('button', { name: 'Test saved connection' }).click(); await expect(page.getByText(/Komodo test: completed/)).toBeVisible()
-  check((await api('/test-settings190/effects')).transport.path === '/db/read', 'AC2 saved-only test reaches DB endpoint instead of previous ENV endpoint')
-  for (const status of [422, 503]) {
-    await edit(); await page.getByLabel('Komodo API URL', { exact: true }).fill('http://127.0.0.1:9100/correction')
-    const fault = route => route.fulfill({ status, json: status === 422 ? { detail: [{ loc: ['body', 'api_url'], type: 'value_error', msg: 'synthetic transport validation' }] } : {} })
-    await page.route('**/api/v1/settings/komodo', route => route.request().method() === 'PUT' ? fault(route) : route.continue())
-    await page.getByRole('button', { name: 'Save', exact: true }).click()
-    await expect(page.getByText('Request failed. Review the highlighted fields or retry.')).toBeVisible()
-    await expect(page.getByLabel('Komodo API URL', { exact: true })).toHaveValue('http://127.0.0.1:9100/correction')
-    if (status === 422) await expect(page.getByLabel('Komodo API URL', { exact: true })).toHaveAttribute('aria-invalid', 'true')
-    await page.unroute('**/api/v1/settings/komodo')
-    check((await api('/test-settings190/effects')).settings.komodo_api_url === 'http://127.0.0.1:9100/db', `AC2/3 injected ${status} save retains safe input and no SQLite effect`)
-    await page.getByRole('button', { name: 'Cancel', exact: true }).click()
-  }
-  await edit(); await page.getByLabel('Komodo API URL', { exact: true }).fill('not-an-http-endpoint')
-  await page.getByRole('button', { name: 'Save', exact: true }).click()
-  await expect(page.getByText('Request failed. Review the highlighted fields or retry.')).toBeVisible()
-  check((await api('/test-settings190/effects')).settings.komodo_api_url === 'http://127.0.0.1:9100/db', 'AC3 actual backend invalid URL rejection preserves previous DB values')
-  await page.getByRole('button', { name: 'Cancel', exact: true }).click()
-  await edit(); await page.getByLabel('Komodo API URL', { exact: true }).fill('http://127.0.0.1:9100/readback')
-  let written = false
-  await page.route('**/api/v1/settings/komodo', async route => {
-    if (route.request().method() === 'PUT') { const r = await route.fetch(); written = true; return route.fulfill({ response: r }) }
-    return written ? route.fulfill({ status: 503, json: {} }) : route.continue()
-  })
-  await page.getByRole('button', { name: 'Save', exact: true }).click()
-  await expect(page.getByLabel('Komodo save result')).toContainText('Write accepted, but canonical readback is unconfirmed')
-  check((await api('/test-settings190/effects')).settings.komodo_api_url.endsWith('/readback'), 'AC2 accepted write + readback503 has real durable effect but no false UI save success')
-  await page.unroute('**/api/v1/settings/komodo'); await page.getByRole('button', { name: 'Cancel', exact: true }).click(); await page.reload()
-  await expect(page.getByText('http://127.0.0.1:9100/readback', { exact: true })).toBeVisible()
-  await edit(); await page.getByRole('switch', { name: 'Enable Komodo integration' }).click(); await page.getByRole('checkbox', { name: 'Clear API key' }).check(); await page.getByRole('checkbox', { name: 'Clear API secret' }).check(); await saveKomodo()
-  const cleared = await api('/settings/komodo')
-  check(!cleared.enabled && !cleared.has_api_key && !cleared.has_api_secret, 'AC1/3 explicit empty DB overrides do not fall back to ENV credentials')
   await section('Storage safeguards')
   for (const value of [true, false]) {
     const toggle = page.getByRole('switch', { name: 'Check quota before upload' })
@@ -181,14 +120,10 @@ try {
   check(await page.getByRole('button', { name: 'Restore system backup', exact: true }).count() === 0, 'AC6 first-run restore not offered after setup')
   for (const motion of ['reduce', 'no-preference']) {
     await page.emulateMedia({ reducedMotion: motion })
-    await connections(); await edit(); await page.getByLabel('Komodo API URL', { exact: true }).fill('http://127.0.0.1:9100/discard')
-    await section('System'); await page.getByRole('button', { name: 'Discard and leave', exact: true }).click(); await expect(page.locator('#system')).toBeFocused(); await expect(page.getByRole('dialog', { name: 'Discard unsaved settings?' })).toBeHidden(); await page.goBack(); await expect(page.locator('#connection')).toBeFocused(); await expect(page.getByRole('button', { name: 'Edit Settings', exact: true })).toBeVisible(); await page.goForward(); await expect(page.locator('#system')).toBeFocused()
+    await section('Storage safeguards'); await page.getByRole('switch', { name: 'Check quota before upload' }).click()
+    await section('System'); await page.getByRole('button', { name: 'Discard and leave', exact: true }).click(); await expect(page.locator('#system')).toBeFocused(); await expect(page.getByRole('dialog', { name: 'Discard unsaved settings?' })).toBeHidden(); await page.goBack(); await expect(page.locator('#storage-safeguards')).toBeFocused(); await expect(page.getByRole('button', { name: 'Edit Settings', exact: true })).toBeVisible(); await page.goForward(); await expect(page.locator('#system')).toBeFocused()
     check(true, `AC3/7 discard and Back/Forward preserve durable focused contexts (${motion})`)
   }
-  await connections(); await edit(); await page.getByLabel('Komodo API secret', { exact: true }).fill(secret)
-  await page.route('**/api/v1/settings/komodo', route => route.request().method() === 'PUT' ? route.fulfill({ status: 401, json: {} }) : route.continue())
-  await page.getByRole('button', { name: 'Save', exact: true }).click(); await expect(page.getByRole('button', { name: /Sign in/i })).toBeVisible()
-  check(await page.evaluate(values => values.every(v => !JSON.stringify(localStorage).includes(v) && !JSON.stringify(sessionStorage).includes(v) && !location.href.includes(v)), [key, secret, password]), 'AC3/5 401 revokes editor and private values never enter browser persistence or URLs')
   check((await api('/test-settings190/effects')).foreign_key_errors.length === 0, 'AC1 final real SQLite foreign-key integrity')
-  await writeFile('/runner/settings190-result.json', JSON.stringify({ checks, count: checks.length, doubles: ['loopback synthetic Komodo HTTP', 'SSH remote transport with real local shell/file effects'], native_at_or_device: false }, null, 2))
+  await writeFile('/runner/settings190-result.json', JSON.stringify({ checks, count: checks.length, doubles: ['SSH remote transport with real local shell/file effects'], native_at_or_device: false }, null, 2))
 } finally { await browser.close() }

@@ -1,0 +1,380 @@
+{
+  "source": "accepted143 fc1b3392fec6ecf9562ef88875ab143858d637bf / actual insert_state",
+  "configured_backup_root": "/PUBLIC/imported//backups/.",
+  "payload": {
+    "schema_version": 1,
+    "application": "dockervault",
+    "compatibility_version": 1,
+    "exported_at": "2024-03-10T00:00:00+00:00",
+    "backup_root": "/PUBLIC/exported/backups",
+    "tables": {
+      "retention_policies": [
+        {
+          "id": 1,
+          "name": "PUBLIC-name",
+          "description": "PUBLIC-description",
+          "keep_last": 0,
+          "keep_daily": 0,
+          "keep_weekly": 0,
+          "keep_monthly": 0,
+          "keep_yearly": 0,
+          "max_age_days": 0,
+          "created_at": "2024-03-10T01:02:03.123456+05:30",
+          "updated_at": "2024-03-10T01:02:03.123456+05:30"
+        }
+      ],
+      "schedules": [
+        {
+          "id": 1,
+          "name": "PUBLIC-name",
+          "cron_expression": "0 3 * * *",
+          "description": "PUBLIC-description",
+          "enabled": false,
+          "created_at": "2024-03-10T01:02:03.123456+05:30",
+          "updated_at": "2024-03-10T01:02:03.123456+05:30"
+        }
+      ],
+      "remote_storages": [
+        {
+          "id": 1,
+          "name": "PUBLIC-name",
+          "storage_type": "local",
+          "enabled": false,
+          "host": "PUBLIC-host",
+          "port": 0,
+          "username": "PUBLIC-username",
+          "password": "PUBLIC-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "base_path": "/tmp/PUBLIC-local",
+          "ssh_key_path": null,
+          "s3_bucket": "PUBLIC-s3_bucket",
+          "s3_region": "PUBLIC-s3_region",
+          "s3_access_key": "",
+          "s3_secret_key": null,
+          "s3_endpoint_url": "PUBLIC-s3_endpoint_url",
+          "webdav_url": "PUBLIC-webdav_url",
+          "rclone_remote": "PUBLIC-rclone_remote",
+          "created_at": "2024-03-10T01:02:03.123456+05:30",
+          "updated_at": "2024-03-10T01:02:03.123456+05:30"
+        }
+      ],
+      "encryption_config": [
+        {
+          "id": 1,
+          "public_key": "PUBLIC-public_key",
+          "key_created_at": "2024-03-10T01:02:03.123456+05:30",
+          "encryption_enabled": false,
+          "setup_completed": false,
+          "created_at": "2024-03-10T01:02:03.123456+05:30",
+          "updated_at": "2024-03-10T01:02:03.123456+05:30"
+        }
+      ],
+      "app_settings": [
+        {
+          "id": 1,
+          "key": "storage_check_quota_before_upload",
+          "value": "false",
+          "updated_at": "2024-03-10T01:02:03.123456+05:30"
+        },
+        {
+          "id": 2,
+          "key": "komodo_api_secret",
+          "value": "PUBLIC literal credential",
+          "updated_at": null
+        }
+      ],
+      "backup_targets": [
+        {
+          "id": 1,
+          "name": "PUBLIC-name",
+          "target_type": "path",
+          "container_id": "PUBLIC-container_id",
+          "container_name": "PUBLIC-container_name",
+          "volume_name": "PUBLIC-volume_name",
+          "host_path": "/tmp/PUBLIC-source",
+          "stack_name": "PUBLIC-stack_name",
+          "schedule_id": 1,
+          "schedule_cron": null,
+          "enabled": false,
+          "removed_at": "2024-03-10T01:02:03.123456+05:30",
+          "retention_policy_id": 1,
+          "dependencies": {
+            "PUBLIC": false,
+            "integer": 9007199254740993
+          },
+          "selected_volumes": {
+            "PUBLIC": false,
+            "integer": 9007199254740993
+          },
+          "include_paths": {
+            "PUBLIC": false,
+            "integer": 9007199254740993
+          },
+          "exclude_paths": {
+            "PUBLIC": false,
+            "integer": 9007199254740993
+          },
+          "per_volume_rules": {
+            "PUBLIC": false,
+            "integer": 9007199254740993
+          },
+          "pre_backup_command": "PUBLIC-pre_backup_command",
+          "post_backup_command": "PUBLIC-post_backup_command",
+          "stop_container": false,
+          "compression_enabled": false,
+          "sync_to_remote": false,
+          "remote_storage_ids": [
+            1
+          ],
+          "delete_local_after_sync": false,
+          "created_at": "2024-03-10T01:02:03.123456+05:30",
+          "updated_at": "2024-03-10T01:02:03.123456+05:30"
+        }
+      ],
+      "backups": [
+        {
+          "id": 1,
+          "target_id": 1,
+          "backup_type": "full",
+          "status": "pending",
+          "file_path": "/PUBLIC/exported/backups/nested/./archive.tar.gz.enc",
+          "file_size": 0,
+          "checksum": "PUBLIC-checksum",
+          "encrypted": true,
+          "encryption_key_path": "/PUBLIC/exported/backups/nested/archive.tar.gz.key",
+          "started_at": "2024-03-10T01:02:03.123456+05:30",
+          "completed_at": "2024-03-10T01:02:03.123456+05:30",
+          "duration_seconds": 0,
+          "error_message": "PUBLIC-error_message",
+          "retry_count": 0,
+          "backup_metadata": {
+            "PUBLIC": false,
+            "integer": 9007199254740993
+          },
+          "created_at": "2024-03-10T01:02:03.123456+05:30"
+        }
+      ],
+      "backup_schedules": [
+        {
+          "id": 1,
+          "target_id": 1,
+          "cron_expression": "0 4 * * *",
+          "next_run": "2024-03-10T01:02:03.123456+05:30",
+          "last_run": "2024-03-10T01:02:03.123456+05:30",
+          "enabled": false,
+          "created_at": "2024-03-10T01:02:03.123456+05:30",
+          "updated_at": "2024-03-10T01:02:03.123456+05:30"
+        }
+      ],
+      "backup_storage_syncs": [
+        {
+          "id": 1,
+          "backup_id": 1,
+          "storage_id": 1,
+          "remote_path": "PUBLIC/archive.tar",
+          "synced_at": "2024-03-10T01:02:03.123456+05:30",
+          "sync_status": "PUBLIC-sync_status",
+          "error_message": "PUBLIC-error_message"
+        }
+      ]
+    },
+    "ssh_public_keys": [],
+    "rclone": {
+      "schema_version": 1,
+      "roots": [],
+      "remotes": {},
+      "files": {}
+    },
+    "manifest": {
+      "tables": {
+        "retention_policies": {
+          "count": 1,
+          "sha256": "1ee92754faf4a491d484051375f1209e89cdc78f722353658e647380729ee0cb"
+        },
+        "schedules": {
+          "count": 1,
+          "sha256": "4d524830defbf6f9fc3695583c58e2a5bdc0e53fabc386ce2034ff90d18a730d"
+        },
+        "remote_storages": {
+          "count": 1,
+          "sha256": "a7f77cfe716baf79f484c0c94838c1b74c488deb2cf69d12bb979cdbaaf5c6d0"
+        },
+        "encryption_config": {
+          "count": 1,
+          "sha256": "b4812400047614643a1625eb0788058e6739d641c3eae35e330405e3f755c8ba"
+        },
+        "app_settings": {
+          "count": 2,
+          "sha256": "8090b29303c5f775e6e0834ba3182f575591a6d456ab70e320c611c0b00adfc2"
+        },
+        "backup_targets": {
+          "count": 1,
+          "sha256": "3b75258ae96c518b92d43e6d5170f36293102840359de2115f39365a255b0700"
+        },
+        "backups": {
+          "count": 1,
+          "sha256": "3528267924d652f085b217bc4b37b7a561fa03e72bc851fa620a8fbf3c77b2fd"
+        },
+        "backup_schedules": {
+          "count": 1,
+          "sha256": "78c4fefb07e1a4163087c3a55e5fac6aa197315578880a26aa428273d7c9d09b"
+        },
+        "backup_storage_syncs": {
+          "count": 1,
+          "sha256": "18ca603d28f78aecc507129b38ffceb7c4395dd44b7b3ab867d7577f4cefb2ab"
+        }
+      },
+      "ssh_public_keys": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "rclone": "693ee766a8fb97fe79ec28e0652a15eb3fb385096fa6d6c66c6e0b474534b50e"
+    }
+  },
+  "plaintext_sql_rows": {
+    "retention_policies": [
+      {
+        "id": 1,
+        "name": "PUBLIC-name",
+        "description": "PUBLIC-description",
+        "keep_last": 0,
+        "keep_daily": 0,
+        "keep_weekly": 0,
+        "keep_monthly": 0,
+        "keep_yearly": 0,
+        "max_age_days": 0,
+        "created_at": "2024-03-10 01:02:03.123456",
+        "updated_at": "2024-03-10 01:02:03.123456"
+      }
+    ],
+    "schedules": [
+      {
+        "id": 1,
+        "name": "PUBLIC-name",
+        "cron_expression": "0 3 * * *",
+        "description": "PUBLIC-description",
+        "enabled": 0,
+        "created_at": "2024-03-10 01:02:03.123456",
+        "updated_at": "2024-03-10 01:02:03.123456"
+      }
+    ],
+    "remote_storages": [
+      {
+        "id": 1,
+        "name": "PUBLIC-name",
+        "storage_type": "local",
+        "enabled": 0,
+        "host": "PUBLIC-host",
+        "port": 0,
+        "username": "PUBLIC-username",
+        "password": "PUBLIC-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "base_path": "/tmp/PUBLIC-local",
+        "ssh_key_path": null,
+        "s3_bucket": "PUBLIC-s3_bucket",
+        "s3_region": "PUBLIC-s3_region",
+        "s3_access_key": "",
+        "s3_secret_key": null,
+        "s3_endpoint_url": "PUBLIC-s3_endpoint_url",
+        "webdav_url": "PUBLIC-webdav_url",
+        "rclone_remote": "PUBLIC-rclone_remote",
+        "created_at": "2024-03-10 01:02:03.123456",
+        "updated_at": "2024-03-10 01:02:03.123456"
+      }
+    ],
+    "encryption_config": [
+      {
+        "id": 1,
+        "public_key": "PUBLIC-public_key",
+        "key_created_at": "2024-03-10 01:02:03.123456",
+        "encryption_enabled": 0,
+        "setup_completed": 0,
+        "created_at": "2024-03-10 01:02:03.123456",
+        "updated_at": "2024-03-10 01:02:03.123456"
+      }
+    ],
+    "app_settings": [
+      {
+        "id": 1,
+        "key": "storage_check_quota_before_upload",
+        "value": "false",
+        "updated_at": "2024-03-10 01:02:03.123456"
+      },
+      {
+        "id": 2,
+        "key": "komodo_api_secret",
+        "value": "PUBLIC literal credential",
+        "updated_at": null
+      }
+    ],
+    "backup_targets": [
+      {
+        "id": 1,
+        "name": "PUBLIC-name",
+        "target_type": "path",
+        "container_id": "PUBLIC-container_id",
+        "container_name": "PUBLIC-container_name",
+        "volume_name": "PUBLIC-volume_name",
+        "host_path": "/tmp/PUBLIC-source",
+        "stack_name": "PUBLIC-stack_name",
+        "schedule_id": 1,
+        "schedule_cron": null,
+        "enabled": 0,
+        "removed_at": "2024-03-10 01:02:03.123456",
+        "retention_policy_id": 1,
+        "dependencies": "{\"PUBLIC\": false, \"integer\": 9007199254740993}",
+        "selected_volumes": "{\"PUBLIC\": false, \"integer\": 9007199254740993}",
+        "include_paths": "{\"PUBLIC\": false, \"integer\": 9007199254740993}",
+        "exclude_paths": "{\"PUBLIC\": false, \"integer\": 9007199254740993}",
+        "per_volume_rules": "{\"PUBLIC\": false, \"integer\": 9007199254740993}",
+        "pre_backup_command": "PUBLIC-pre_backup_command",
+        "post_backup_command": "PUBLIC-post_backup_command",
+        "stop_container": 0,
+        "compression_enabled": 0,
+        "sync_to_remote": 0,
+        "remote_storage_ids": "[1]",
+        "delete_local_after_sync": 0,
+        "created_at": "2024-03-10 01:02:03.123456",
+        "updated_at": "2024-03-10 01:02:03.123456"
+      }
+    ],
+    "backups": [
+      {
+        "id": 1,
+        "target_id": 1,
+        "backup_type": "FULL",
+        "status": "PENDING",
+        "file_path": "/PUBLIC/imported/backups/nested/archive.tar.gz.enc",
+        "file_size": 0,
+        "checksum": "PUBLIC-checksum",
+        "encrypted": 1,
+        "encryption_key_path": "/PUBLIC/imported/backups/nested/archive.tar.gz.key",
+        "started_at": "2024-03-10 01:02:03.123456",
+        "completed_at": "2024-03-10 01:02:03.123456",
+        "duration_seconds": 0,
+        "error_message": "PUBLIC-error_message",
+        "retry_count": 0,
+        "backup_metadata": "{\"PUBLIC\": false, \"integer\": 9007199254740993}",
+        "created_at": "2024-03-10 01:02:03.123456"
+      }
+    ],
+    "backup_schedules": [
+      {
+        "id": 1,
+        "target_id": 1,
+        "cron_expression": "0 4 * * *",
+        "next_run": "2024-03-10 01:02:03.123456",
+        "last_run": "2024-03-10 01:02:03.123456",
+        "enabled": 0,
+        "created_at": "2024-03-10 01:02:03.123456",
+        "updated_at": "2024-03-10 01:02:03.123456"
+      }
+    ],
+    "backup_storage_syncs": [
+      {
+        "id": 1,
+        "backup_id": 1,
+        "storage_id": 1,
+        "remote_path": "PUBLIC/archive.tar",
+        "synced_at": "2024-03-10 01:02:03.123456",
+        "sync_status": "PUBLIC-sync_status",
+        "error_message": "PUBLIC-error_message"
+      }
+    ]
+  }
+}

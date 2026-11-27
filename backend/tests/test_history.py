@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 
 from app.database import (
     Backup,
@@ -72,6 +73,61 @@ async def test_history_pages_full_catalog_with_stable_insert_boundary(
         await async_client.get("/api/v1/backups/history", params={"q": "no match"})
     ).json()["total"] == 0
     assert isinstance((await async_client.get("/api/v1/backups")).json(), list)
+
+
+@pytest.mark.asyncio
+async def test_history_sorts_by_size_in_both_directions(
+    async_client, db_session, monkeypatch
+):
+    from app import auth
+    from app.main import app
+
+    target = BackupTarget(name="Source", target_type="path", host_path="/fixture")
+    db_session.add(target)
+    await db_session.flush()
+    # Size order differs from ID and creation order in either direction.
+    rows = [
+        Backup(
+            target_id=target.id,
+            status=BackupStatus.COMPLETED,
+            file_size=size,
+            created_at=datetime(2025, 1, day),
+        )
+        for day, size in enumerate((30, 2, 10), start=1)
+    ]
+    db_session.add_all(rows)
+    await db_session.commit()
+    largest, smallest, middle = rows
+
+    # Keep async_client's isolated database, but use real session authentication.
+    with monkeypatch.context() as auth_patch:
+        auth_patch.setattr("app.main.is_setup_complete", auth.is_setup_complete)
+        auth_patch.setattr("app.main.get_session_user", auth.get_session_user)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="https://test"
+        ) as client:
+            password = "Synthetic-History-Only-42!"
+            setup = await client.post(
+                "/api/v1/auth/setup",
+                json={
+                    "username": "history-admin",
+                    "password": password,
+                    "confirm_password": password,
+                },
+            )
+            assert setup.status_code == 200
+            assert client.cookies.get("session_token")
+            for direction, expected in (
+                ("asc", [smallest.id, middle.id, largest.id]),
+                ("desc", [largest.id, middle.id, smallest.id]),
+            ):
+                result = await client.get(
+                    "/api/v1/backups/history",
+                    params={"sort": "size", "direction": direction},
+                )
+                assert result.status_code == 200
+                ids = [item["id"] for item in result.json()["items"]]
+                assert ids == expected, direction
 
 
 @pytest.mark.asyncio

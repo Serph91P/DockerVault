@@ -118,7 +118,13 @@ jobs:
     
     steps:
     - uses: actions/checkout@v6
-    
+
+    - name: Check release source and admission without publishing
+      run: |
+        ruby scripts/test-release-source.rb
+        ruby scripts/test-release-admission.rb
+        ruby scripts/test-develop-version.rb
+
     - name: Set up Python 3.14
       uses: actions/setup-python@v6
       with:
@@ -180,9 +186,9 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v4
       
-    - name: Build Docker image
+    - name: Build explicit Python reference for the legacy integration oracles
       run: |
-        docker build -t dockervault:test .
+        docker build --target production -t dockervault:test .
 
     - name: Check runtime binaries
       run: |
@@ -310,7 +316,10 @@ jobs:
       run: npm install --global "$(node -p "require('./package.json').packageManager")"
         
     - name: Run fail-closed npm audit with exact existing-debt exceptions
-      run: python backend/tests/check_npm_audit.py
+      env:
+        # Install the repository-pinned toolchain independently of the runner image.
+        RUSTUP_HOME: ${{ runner.temp }}/dockervault-audit-rustup
+      run: cargo run --locked --package dockervault-tools --bin dockervault-npm-audit
 
     - name: Preserve the complete npm audit report
       if: always()

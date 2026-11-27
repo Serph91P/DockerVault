@@ -65,7 +65,6 @@ def main():
             entrypoint=["python", "/app/data/runtime_history_app.py"],
             environment={
                 "COOKIE_SECURE": "false",
-                "KOMODO_ENABLED": "false",
                 "PYTHONPATH": "/app",
             },
             labels={"dockervault.test": "history185"},

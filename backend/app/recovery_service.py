@@ -19,7 +19,6 @@ from app import database
 from app.config import settings
 from app.credential_encryption import decrypt_value, encrypt_value
 from app.cron import next_run
-from app.komodo_config import effective_config
 
 # Order is also the FK-safe insertion order; NEVER include Base.metadata wholesale.
 PORTABLE_MODELS = (
@@ -36,16 +35,11 @@ PORTABLE_MODELS = (
 TABLES = {model.__tablename__: model.__table__ for model in PORTABLE_MODELS}
 PORTABLE_SETTINGS = frozenset(
     {
-        "komodo_enabled",
-        "komodo_api_url",
-        "komodo_api_key",
-        "komodo_api_secret",
         "storage_check_quota_before_upload",
         "encryption_onboarding_deferred",
     }
 )
 STORAGE_SECRETS = ("password", "s3_access_key", "s3_secret_key")
-KOMODO_SECRETS = frozenset({"komodo_api_key", "komodo_api_secret"})
 
 
 class RecoveryStateError(ValueError):
@@ -97,25 +91,17 @@ async def export_state(session) -> dict:
     for row in tables["remote_storages"]:
         for field in STORAGE_SECRETS:
             row[field] = decrypt_value(row[field])
-    raw_settings = {row["key"]: row["value"] for row in tables["app_settings"]}
-    komodo = effective_config(raw_settings)
-    effective = {
-        "komodo_enabled": "true" if komodo.enabled else "false",
-        "komodo_api_url": komodo.api_url,
-        "komodo_api_key": komodo.api_key,
-        "komodo_api_secret": komodo.api_secret,
-    }
-    next_id = max((row["id"] for row in tables["app_settings"]), default=0) + 1
-    kept = []
-    for row in tables["app_settings"]:
-        if row["key"] in PORTABLE_SETTINGS:
-            if row["key"] in effective:
-                row["value"] = effective.pop(row["key"])
-            kept.append(row)
-    for key, value in sorted(effective.items()):
-        kept.append({"id": next_id, "key": key, "value": value, "updated_at": None})
-        next_id += 1
-    tables["app_settings"] = sorted(kept, key=lambda row: row["id"])
+    public_key_metadata = next(
+        (
+            row["value"]
+            for row in tables["app_settings"]
+            if row["key"] == "recovery_ssh_public_keys"
+        ),
+        "[]",
+    )
+    tables["app_settings"] = [
+        row for row in tables["app_settings"] if row["key"] in PORTABLE_SETTINGS
+    ]
     rclone_storages = [
         row for row in tables["remote_storages"] if row["storage_type"] == "rclone"
     ]
@@ -135,9 +121,7 @@ async def export_state(session) -> dict:
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "backup_root": str(Path(settings.BACKUP_BASE_PATH).absolute()),
         "tables": tables,
-        "ssh_public_keys": await _public_keys(
-            json.loads(raw_settings.get("recovery_ssh_public_keys", "[]"))
-        ),
+        "ssh_public_keys": await _public_keys(json.loads(public_key_metadata)),
         "rclone": rclone,
     }
     payload["manifest"] = state_manifest(payload)
@@ -373,12 +357,6 @@ async def insert_state(session, payload: dict, *, protect_credentials=True):
             if name == "remote_storages" and protect_credentials:
                 for field in STORAGE_SECRETS:
                     row[field] = encrypt_value(row[field])
-            if (
-                name == "app_settings"
-                and row["key"] in KOMODO_SECRETS
-                and protect_credentials
-            ):
-                row["value"] = encrypt_value(row["value"])
             if name == "backups":
                 for field in ("file_path", "encryption_key_path"):
                     if row[field]:
@@ -443,11 +421,9 @@ async def validate_state(payload: dict) -> dict:
 async def inspect_import(session, payload, managed, directory):
     """One non-destructive post-insert observation, not a second health engine."""
     import asyncio
-    import httpx
 
     from app.api.backups import _resolve_backup_path
     from app.api.storage import _db_to_config
-    from app.komodo_config import validate_komodo_url
     from app.remote_storage import RemoteStorageManager, SSHStorage, StorageType
     from app.rclone_recovery import run_managed
 
@@ -551,38 +527,9 @@ async def inspect_import(session, payload, managed, directory):
                         state = "offline"
                 copies.append({"storage_id": sync.storage_id, "state": state})
             catalog.append({"id": backup.id, "local": local_state, "copies": copies})
-        values = {
-            row.key: row.value
-            for row in (await session.scalars(select(database.AppSettings))).all()
-        }
-        komodo = effective_config(values)
-        komodo_state = "disabled"
-        if komodo.enabled:
-            komodo_state = "credentials_required"
-            if komodo.api_url and komodo.api_key and komodo.api_secret:
-                try:
-                    await asyncio.to_thread(validate_komodo_url, komodo.api_url)
-                    async with httpx.AsyncClient(
-                        timeout=5, follow_redirects=False, trust_env=False
-                    ) as client:
-                        response = await client.post(
-                            komodo.api_url + "/read",
-                            json={"type": "GetVersion"},
-                            headers={
-                                "X-Api-Key": komodo.api_key,
-                                "X-Api-Secret": komodo.api_secret,
-                            },
-                        )
-                        connected = response.status_code == 200 and isinstance(
-                            response.json().get("version"), str
-                        )
-                    komodo_state = "connected" if connected else "offline"
-                except (OSError, ValueError, httpx.HTTPError):
-                    komodo_state = "offline"
         return {
             "storages": connections,
             "ssh_public_keys": payload["ssh_public_keys"],
-            "komodo": {"state": komodo_state},
             "catalog": catalog,
             "counts": {name: len(rows) for name, rows in payload["tables"].items()},
             "archives_modified": False,

@@ -1,0 +1,52 @@
+{
+  "source": "fc1b3392fec6ecf9562ef88875ab143858d637bf",
+  "public_test_password": "PUBLIC_TEST_RECOVERY_PASSWORD_NOT_A_CREDENTIAL",
+  "payload": {
+    "unicode": "Gr\u00fc\u00dfe\ud83c\udf89",
+    "integer": 9007199254740993,
+    "float": 0.1,
+    "nested": {
+      "false": false,
+      "null": null,
+      "text": "safe, : data"
+    },
+    "rows": []
+  },
+  "cases": [
+    {
+      "name": "unsupported-memory",
+      "bundle": "{\"aead\":{\"name\":\"aes-256-gcm\",\"nonce_b64\":\"sAeHNCF3LhoISSCb\",\"tag_b64\":\"PvXA2ZzxuH6Day8iuJq8aA==\"},\"ciphertext_b64\":\"RrhNDl1qwnu0E+iKWHw6yVF4hkVzrs83+b6n1/cNNe3yo+CGba2h08fhWrCc5I9NMLUnenZ5YntQOyIVfHkGULVCHARbJy/khjaFOFGZ1zBAHMRSWP9XApI/aMoe++966jausBDQYncOz2/8rJ+pIxyF4VHFJp1vKT4zzQWDZNF2gHeacG2p5Ia62+up1YLRWCsB6ZY=\",\"envelope_version\":1,\"format\":\"dockervault-recovery\",\"kdf\":{\"iterations\":3,\"memory_kib\":1,\"name\":\"argon2id\",\"parallelism\":1,\"salt_b64\":\"xwq4q9JGnyvUyRube8y6OA==\"}}",
+      "valid": false
+    },
+    {
+      "name": "unsupported-iterations",
+      "bundle": "{\"aead\":{\"name\":\"aes-256-gcm\",\"nonce_b64\":\"SBWF8qVgb+bDTgvV\",\"tag_b64\":\"r9QzQQhL5/ZMV6+Y1HZ0Kg==\"},\"ciphertext_b64\":\"nVI526WenT+kjhzaxVRmkY9Cjh+Jmo53rL4WLrc2XTDsTzEkdVGSGx+Lcwp6174bIQ3XjebmMoSjMNo6YBR6GkjTFNkjX6WUb7sj3ooFjphLhUjEGfVn+3zpmwdxnhEIoOk9e8IdXHvyYW3pApthzlzDg046TmqxJnlOqqi4dvAxZOeQNkZoOCl/rHKO/xZEl9ODdZE=\",\"envelope_version\":1,\"format\":\"dockervault-recovery\",\"kdf\":{\"iterations\":1,\"memory_kib\":65536,\"name\":\"argon2id\",\"parallelism\":1,\"salt_b64\":\"Tk4PC04NTGv4QoGMO6Ba0w==\"}}",
+      "valid": false
+    },
+    {
+      "name": "unsupported-parallelism",
+      "bundle": "{\"aead\":{\"name\":\"aes-256-gcm\",\"nonce_b64\":\"q7+NXBV2ZOvu/xFt\",\"tag_b64\":\"4I5M4ybsqI56P+lYp2cHwA==\"},\"ciphertext_b64\":\"gmkWdJVkdyfsFYbRZnthDlWUC7brRtqdMPz1Vf9nK0gc0dWQIWO9XIdwN7iXi5tUlWU4prpN7kpgQVnPOmiicaDLMLQGCsJWdlUKpoW7eN4LrRoL/wkkvZd9dEGEkubwzzKVGjThwRcFA68RlIl6Qo7GKSpdc3rZf/XFB44AuDGnh4NrXMy/KSyH2GOwj549xyuZYj4=\",\"envelope_version\":1,\"format\":\"dockervault-recovery\",\"kdf\":{\"iterations\":3,\"memory_kib\":65536,\"name\":\"argon2id\",\"parallelism\":2,\"salt_b64\":\"2s75glPS0gGr/94BijYXxw==\"}}",
+      "valid": false
+    },
+    {
+      "name": "unsupported-kdf-name",
+      "bundle": "{\"aead\":{\"name\":\"aes-256-gcm\",\"nonce_b64\":\"pZeB+h8fsqZC+d2G\",\"tag_b64\":\"XoOTIP0ZT3qhjnZ8+dm8Ew==\"},\"ciphertext_b64\":\"GdhvcFhBnoUADDCQvGeCxNpAD9Kj7jX5Me0wDOspyIO3QUjMsFhsajoHImGyCTHxhnoc7PrYDh2/sS13kneKouIHVNNeyQ3jDL0AYfqPuzDpUpNSvoSH+SkF+cw5b+nRkrIamHBxP1qb8aavCsx89qvFQlZ/Zotd3NsAUO64GMUY5ZYAD65ALyaAdK+1JeUH28x53FQ=\",\"envelope_version\":1,\"format\":\"dockervault-recovery\",\"kdf\":{\"iterations\":3,\"memory_kib\":65536,\"name\":\"other\",\"parallelism\":1,\"salt_b64\":\"cGGy0MmjCIsSraIJFymemA==\"}}",
+      "valid": false
+    },
+    {
+      "name": "unsupported-aead-name",
+      "bundle": "{\"aead\":{\"name\":\"other\",\"nonce_b64\":\"49O3c4YrX3Z2lRuq\",\"tag_b64\":\"C9bc5WhU0y8Mg4gZ3M4hpQ==\"},\"ciphertext_b64\":\"biKBNr5ICy0hCT2/jP3qnvcSDfv5X/24agSj2frQDAEPiCXKYp5Ztne9c5JqMHV7+U8gh9iPzt2eO0c+J6cVOmmkJnKcTlMyTahb+7i53Pi43WteS7UGRDaZ0cOxf/w9L0xPuN0jsKVtNHFL0b2x4YN2vyLS27gZQ25jxpl6mfZIvHKy2ccH1xoa3V8/fdE0JTNDxLQ=\",\"envelope_version\":1,\"format\":\"dockervault-recovery\",\"kdf\":{\"iterations\":3,\"memory_kib\":65536,\"name\":\"argon2id\",\"parallelism\":1,\"salt_b64\":\"VEgEGMVyT3c2xfrVf4buOg==\"}}",
+      "valid": false
+    },
+    {
+      "name": "unsupported-format",
+      "bundle": "{\"aead\":{\"name\":\"aes-256-gcm\",\"nonce_b64\":\"gRQLXaCZomGPgvVa\",\"tag_b64\":\"XZvZuvURTU3IlB7Msch4Wg==\"},\"ciphertext_b64\":\"rFr/D52skHHyZzN2u1O2NVgnT35zyRwfWry4pk+DZRutv5EIBlC7WIPRbWn0XMvx7NxhrjLpXxYtdDqkhIAsgLI28bQSLyzxf60ToA9pirit1WSokx/kck5mhN4ImXgkbCpXl+4AhDzHvMBGchxxsIWFb9A/OGn7xhW2+mzUM39VwnQOg2A6kBVhTrVwPKystfn7rT0=\",\"envelope_version\":1,\"format\":\"other\",\"kdf\":{\"iterations\":3,\"memory_kib\":65536,\"name\":\"argon2id\",\"parallelism\":1,\"salt_b64\":\"2JskRgsKHdA/0meUaM4CfA==\"}}",
+      "valid": false
+    },
+    {
+      "name": "unsupported-version",
+      "bundle": "{\"aead\":{\"name\":\"aes-256-gcm\",\"nonce_b64\":\"vU9z47veJsXjS12M\",\"tag_b64\":\"lVmQi/Qrdivi9mL7vI1F/g==\"},\"ciphertext_b64\":\"dgL2qAuUbuICZzidsjAWShNNz/rzDkCohIM3qYTcDQhe8rsHsJW0QfBhoeCxxsQ1/iM4r5skJHQfZ2P1mO8Ogm4aftgOsuBkImRrNGHuGhcQwMnnimNn6/L1GX8Fi2cxf2mo/+buqwal1iTi2v3xBsUp7mMTLrqi70CGm3o7tl6Vuryw+Pb+wBulgHab35ya0RuWFlg=\",\"envelope_version\":2,\"format\":\"dockervault-recovery\",\"kdf\":{\"iterations\":3,\"memory_kib\":65536,\"name\":\"argon2id\",\"parallelism\":1,\"salt_b64\":\"G9K8tjQrtYPaiKEe+2iRRw==\"}}",
+      "valid": false
+    }
+  ]
+}

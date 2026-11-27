@@ -238,7 +238,6 @@ async def test_recovery_status_exposes_public_references_not_private_key_availab
     result = {
         "storages": [],
         "catalog": [],
-        "komodo": {"state": "disabled"},
         "counts": {},
         "archives_modified": False,
     }

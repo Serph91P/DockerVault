@@ -18,7 +18,7 @@ RUN npm install --global npm@11.6.2 && \
 # =============================================================================
 # Stage 2: Build Frontend
 # =============================================================================
-FROM frontend-deps AS frontend-builder
+FROM frontend-deps AS frontend-source
 
 # Build argument to control environment
 ARG BUILD_ENV=production
@@ -30,7 +30,76 @@ COPY frontend/ .
 
 # Set NODE_ENV based on build argument
 ENV NODE_ENV=${BUILD_ENV}
+
+FROM frontend-source AS frontend-builder
 RUN npm run build
+
+FROM frontend-source AS native-frontend-builder
+RUN VITE_NATIVE_BACKEND=true npm run build
+
+# Native application stages; the final stage selects the standard image.
+FROM rust@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS native-builder
+RUN cargo install --locked cargo-auditable --version 0.7.7
+WORKDIR /src
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates ./crates
+RUN cargo fetch --locked && cargo auditable build --release --locked --offline --bins \
+    -p dockervault-service -p dockervault-tools
+
+FROM scratch AS rollback-preflight
+COPY --from=native-builder /src/target/release/dockervault-rollback-preflight /
+
+# Match the accepted runtime's pinned rclone without adding an extractor to the image.
+FROM debian@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS native-rclone
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip
+RUN set -eu; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) arch=amd64; checksum=b5c9b2fb6ada8a400c5fc5d48cd112dc1adea21a3b73b03857059374dd8a78d0 ;; \
+      arm64) arch=arm64; checksum=66ce9c7fbdf6ba38991fa2ac193ed051bd6d04aeec693900c848154bf549484f ;; \
+      *) exit 1 ;; \
+    esac; \
+    archive="rclone-v1.72.1-linux-${arch}"; \
+    curl --fail --silent --show-error --location \
+      "https://downloads.rclone.org/v1.72.1/${archive}.zip" --output /tmp/rclone.zip; \
+    printf '%s  %s\n' "$checksum" /tmp/rclone.zip | sha256sum --check -; \
+    unzip -p /tmp/rclone.zip "${archive}/rclone" > /tmp/rclone; \
+    install -m 0755 /tmp/rclone /usr/local/bin/rclone
+
+FROM debian@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS native-candidate
+ARG COMMIT_SHA=unknown
+LABEL org.opencontainers.image.revision="${COMMIT_SHA}"
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl nginx openssh-client rsync s6 sshpass libssl3t64 \
+    && rm -rf /var/lib/apt/lists/* /etc/nginx/sites-enabled/default \
+    && groupadd -g 1000 dockervault \
+    && useradd -u 1000 -g 1000 -m dockervault
+COPY --from=native-builder /src/target/release/dockervault-service /src/target/release/dockervault-recover /usr/local/bin/
+COPY --from=native-builder /src/target/release/dockervault-process-guard /src/target/release/dockervault-archive-worker /usr/local/libexec/
+COPY --from=native-builder /src/target/release/dockervault-nginx-realip /usr/local/libexec/
+COPY --from=native-rclone /usr/local/bin/rclone /usr/local/bin/rclone
+COPY --from=native-frontend-builder /app/dist /usr/share/nginx/html
+COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
+COPY docker/native-recovery-download.conf /etc/nginx/dockervault-recovery.conf
+RUN sed -i '/^    location \/ {/i\    include /etc/nginx/dockervault-recovery.conf;' /etc/nginx/conf.d/default.conf
+RUN set -eu; \
+    arch=$(dpkg --print-architecture); \
+    case "$arch" in amd64|arm64) ;; *) exit 1 ;; esac; \
+    case "$COMMIT_SHA" in unknown) ;; *[!a-f0-9]*) exit 1 ;; *) test "${#COMMIT_SHA}" -eq 40 ;; esac; \
+    digest=$(sha256sum /usr/local/bin/dockervault-recover); \
+    install -d -m 0755 /usr/share/nginx/html/recovery-tools; \
+    printf '{"os":"linux","arch":"%s","revision":"%s","file":"dockervault-recover","sha256":"%s"}\n' \
+      "$arch" "$COMMIT_SHA" "${digest%% *}" > /usr/share/nginx/html/recovery-tools/manifest.json
+COPY docker/native-entrypoint.sh /usr/local/sbin/dockervault-init
+COPY docker/native-services/ /etc/dockervault/services/
+RUN chmod 0755 /usr/local/sbin/dockervault-init /etc/dockervault/services/*/run
+WORKDIR /app
+ENV DATABASE_URL=sqlite:////app/data/backup.db BACKUP_BASE_PATH=/backups TZ=UTC
+EXPOSE 80
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -sf http://127.0.0.1/health || exit 1
+VOLUME ["/app/data", "/backups"]
+# Match docker/python-rollback.Dockerfile: hold the mount's inode before either init runs.
+ENTRYPOINT ["/usr/bin/flock", "--exclusive", "--nonblock", "--conflict-exit-code", "73", "--no-fork", "/app/data", "/usr/local/sbin/dockervault-init"]
 
 # =============================================================================
 # Stage 3: Python Dependencies Builder
@@ -55,7 +124,7 @@ RUN pip install --no-cache-dir --upgrade pip==25.3 && \
     pip install --no-cache-dir -r requirements.txt
 
 # =============================================================================
-# Stage 4: Production Image
+# Stage 4: Explicit Python reference image (transition only)
 # =============================================================================
 FROM python:3.14-slim AS production
 
@@ -191,3 +260,8 @@ VOLUME ["/app/data", "/backups"]
 
 # Entrypoint handles docker group setup and starts supervisord
 ENTRYPOINT ["/entrypoint.sh"]
+
+# Plain builds use Rust; the transition listener still names the Python target.
+FROM native-candidate AS native-production
+ARG BUILD_ENV=production
+ENV APP_ENV=${BUILD_ENV}

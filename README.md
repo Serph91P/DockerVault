@@ -28,7 +28,6 @@ DockerVault is a containerized backup system for Docker volumes and host paths. 
 - **GFS Retention** — Grandfather-Father-Son retention strategy per backup target
 - **Remote Storage** — Sync to SSH, S3, WebDAV, FTP, or 40+ providers via Rclone
 - **Real-time UI** — WebSocket-based live updates in the web interface
-- **Komodo Integration** — Optional integration with Komodo for container orchestration
 - **Security First** — Docker socket and volumes mounted read-only
 
 ## Getting Started
@@ -126,16 +125,6 @@ Schedule format: `Minute Hour Day Month Weekday`
 | `0 */6 * * *` | Every 6 hours |
 | `30 1 1 * *` | 1st of every month at 01:30 |
 
-### Komodo Integration
-
-Enable optional integration with [Komodo](https://github.com/mbecker20/komodo):
-
-```env
-KOMODO_ENABLED=true
-KOMODO_API_URL=http://komodo:8080
-KOMODO_API_KEY=your-api-key
-```
-
 ## Security
 
 DockerVault follows security best practices:
@@ -170,7 +159,18 @@ DockerVault supports end-to-end encryption for your backups using **AES-256-CBC*
 
 **Without DockerVault (Disaster Recovery):**
 
-If you lose access to DockerVault, you can still recover encrypted backups using standard command-line tools:
+For a native Rust installation, save `/recovery-tools/manifest.json` and
+`/recovery-tools/dockervault-recover` from the same trusted server before you
+need them. Check the manifest's revision, SHA-256 and Linux architecture against
+the downloaded tool and your recovery machine. Keep the archive, its `.key`
+sidecar and your private age identity. Follow the [native offline recovery command](docs/RUST_OFFLINE_RECOVERY.md#recover-an-existing-backup);
+it needs no running DockerVault, database or network.
+
+**Python reference and fenced rollback images only:**
+
+Save `/recover_backup.py` from that Python installation, or save
+`backend/app/recovery.py` from its trusted release source under that name.
+The Rust image does not serve this URL.
 
 ```bash
 # Prerequisites: age, openssl, Python 3 and recover_backup.py (see below)
@@ -201,10 +201,6 @@ tar xzf backup.tar.gz
 > [!TIP]
 > The downloaded private key file includes these recovery instructions.
 
-Save the standalone script from `/recover_backup.py` on your DockerVault instance
-with your key export, or obtain `backend/app/recovery.py` from the trusted release
-source and save it as `recover_backup.py`. It uses only Python's standard library,
-age and OpenSSL; no running app, database or Python package install is needed.
 New versioned archives authenticate content before output/extraction. Legacy CBC
 archives remain readable with their original raw-DEK sidecars, but have no
 cryptographic authenticity guarantee: compare against an independently trusted
@@ -286,6 +282,7 @@ Start Caddy in the same Docker network as DockerVault, and it handles TLS certif
 |----------|---------|-------------|
 | `CORS_ORIGINS` | `http://localhost` | Comma-separated list of allowed CORS origins |
 | `COOKIE_SECURE` | `false` | Set session cookie `Secure` flag. Set to `true` behind a TLS-terminating reverse proxy |
+| `ENABLE_DOCS` | `false` | Serve authenticated OpenAPI, Swagger UI, and ReDoc on the internal backend listener only; the public frontend proxy does not expose them |
 | `CREDENTIAL_ENCRYPTION_KEY` | Auto-generated | Fernet key for encrypting remote storage credentials at rest. If empty, a key is generated and saved to `/app/data/.credential_key` |
 | `ALLOWED_HOOK_COMMANDS` | `pg_dump,pg_dumpall,mysqldump,mongodump,redis-cli,mariadb-dump` | Comma-separated allowlist of binaries permitted in pre/post backup hooks |
 | `LOG_FORMAT` | `text` | Log output format: `text` or `json` (structured logging for production) |
@@ -294,7 +291,18 @@ Start Caddy in the same Docker network as DockerVault, and it handles TLS certif
 
 ## Development
 
-### Backend
+### Rust backend
+
+The default Docker image runs the Rust backend and the compiled frontend. See
+the [Rust development guide](docs/RUST_DEVELOPMENT.md) for build and test commands,
+and the [CI contract](docs/contract-ci.md) for the native package checks. When
+verifying a change, use an isolated application image and synthetic data.
+
+### Legacy Python compatibility
+
+The Python backend below is still used to compare behavior and test the fenced
+rollback image. It is not the backend of the default image. Do not run the
+development server against data used by an application container.
 
 ```bash
 cd backend

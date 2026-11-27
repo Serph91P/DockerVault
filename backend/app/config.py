@@ -75,13 +75,6 @@ class Settings(BaseSettings):
     RCLONE_CONFIG: str = "/root/.config/rclone/rclone.conf"
     RCLONE_CONFIG_PASS: SecretStr = SecretStr("")
 
-    # Komodo Integration
-    KOMODO_API_URL: str = ""
-    KOMODO_API_KEY: str = ""
-    KOMODO_API_SECRET: str = ""
-    KOMODO_ENABLED: bool = False
-    KOMODO_ALLOWED_HOSTS: str = ""  # Exact operator-approved internal hostnames
-
     # Timezone
     TZ: str = "Europe/Berlin"
 

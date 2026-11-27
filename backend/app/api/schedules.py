@@ -477,16 +477,10 @@ async def trigger_all_backups(schedule_id: int):
 
     Backups are executed **sequentially** so each target completes its
     full stop → backup → start cycle before the next one begins.
-    If Komodo integration is enabled the Komodo stack target (if any)
-    is moved to the end of the list so that Komodo remains available
-    to manage other containers for as long as possible.
     """
     import asyncio
 
     from app.backup_engine import BackupType
-    from app.komodo_config import load_komodo_config
-
-    komodo_config = await load_komodo_config()
 
     async with backup_db_session(async_session) as session:
         result = await session.execute(
@@ -505,17 +499,6 @@ async def trigger_all_backups(schedule_id: int):
             t for t in schedule.targets if t.enabled and t.removed_at is None
         ]
         skipped = [t.id for t in schedule.targets if not t.enabled]
-
-        # When Komodo is active, push targets whose stack/container name
-        # contains "komodo" to the end so that Komodo keeps running
-        # while every other backup goes through its stop/start cycle.
-        if komodo_config.enabled:
-
-            def _is_komodo_target(t: BackupTarget) -> bool:
-                name = (t.stack_name or t.container_name or "").lower()
-                return "komodo" in name
-
-            enabled_targets.sort(key=_is_komodo_target)
 
     # Create records only after releasing the read section; creation owns its own transaction.
     backup_ids: list[int] = []

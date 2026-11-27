@@ -11,8 +11,14 @@ const empty = {
   freed_human: '0.00 B',
 }
 describe('policy response trust boundaries', () => {
+  it('requires an explicit scan-only result for the read endpoint', () => {
+    const endpoint = '/retention/cleanup-orphaned'
+    expect(() => validateRead(endpoint, empty)).toThrow(ResponseError)
+    expect(() => validateRead(endpoint, { ...empty, mode: 'scan_only' })).not.toThrow()
+  })
   it.each([
     empty,
+    { ...empty, mode: 'scan_only' },
     { ...empty, outcome: 'success', deleted: 1, freed_bytes: 4 },
     { ...empty, outcome: 'partial', deleted: 1, failed: 1 },
     { ...empty, outcome: 'failure', failed: 1 },
@@ -30,6 +36,9 @@ describe('policy response trust boundaries', () => {
     { ...empty, scan_complete: false },
     { ...empty, failed: -1 },
     { ...empty, freed_bytes: '0' },
+    { ...empty, mode: 'unknown' },
+    { ...empty, mode: 'scan_only', outcome: 'success', deleted: 1, freed_bytes: 4 },
+    { ...empty, mode: 'scan_only', freed_bytes: 4 },
   ])(
     'rejects malformed or contradictory cleanup, never assumes empty %j',
     (data) =>

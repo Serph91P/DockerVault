@@ -219,7 +219,6 @@ Die Anwendung hat systematische Schwächen in folgenden Bereichen:
 |---|---------|--------|-----------|
 | SE1 | "System Information" zeigt nur statische Pfade – wenig nützlich | Dynamische Infos: Disk Space, DB Size, Backup Count, Application Version, Uptime | Mittel |
 | SE2 | Encryption Setup wird nicht erklärt – was passiert wenn man das aktiviert | Erklärungstext: "Backups will be encrypted before storage. You must keep your private key safe, or backups cannot be restored." mit Warnung | Mittel |
-| SE3 | Komodo-Settings Edit-Mode: Man klickt "Edit" aber die Felder sind leer statt vorausgefüllt | ✅ Bereits gefixt (`initialFormData` aus Query) – aber nur wenn `handleStartEdit` aufgerufen wird. Der `formData` State wird mit leeren Werten initialisiert und erst beim Edit-Klick überschrieben. Potential für Race-Condition wenn Query noch lädt | Niedrig |
 
 ### 3.7 Login & SetupWizard
 
@@ -421,7 +420,6 @@ Pattern-Vereinheitlichung:
 50. **[W4]** ✅ Wizard: Skipped Steps kleiner dargestellt
 51. **[O1]** ✅ Options: Compression bereits prominent (kein Toggle)
 52. **[B4]** ✅ Backups: Klickbare Stats-Karten als Filter
-53. **[SE3]** ✅ Settings: Komodo Form Race-Condition behoben
 54. **[T4]** ✅ Target-Select: Stack-Details expandierbar (Container + Volumes)
 55. **[D2]** ✅ Dependencies: Auto-detect bei Stacks automatisch
 56. **[ST3]** ✅ Storage: Persistent Test-Result via localStorage

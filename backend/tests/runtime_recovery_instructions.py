@@ -34,7 +34,7 @@ def commands(source, root, public_key):
         text = (
             (root / "README.md")
             .read_text()
-            .split("**Without DockerVault (Disaster Recovery):**", 1)[1]
+            .split("**Python reference and fenced rollback images only:**", 1)[1]
             .split("## Security Considerations", 1)[0]
         )
         return re.findall(r"```bash\n(.*?)\n```", text, re.S)[0]

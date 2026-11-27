@@ -1024,10 +1024,13 @@ function PolicyActions({
   )
 }
 function Cleanup() {
+  const scanOnly = import.meta.env.VITE_NATIVE_BACKEND === 'true'
+  const title = scanOnly ? 'Scan Orphaned Files' : 'Cleanup Orphaned Files'
   const [open, setOpen] = useState(false)
   const client = useQueryClient()
   const mutation = useMutation({
     mutationFn: async () => {
+      if (scanOnly) return (await retentionApi.scanOrphaned()).data
       const { data } = await retentionApi.cleanupOrphaned()
       await client.invalidateQueries({ queryKey: queryKeys.backups.all })
       await client.invalidateQueries({ queryKey: ['storage-files'] })
@@ -1049,16 +1052,18 @@ function Cleanup() {
               ? 'error'
               : 'warning',
         phase,
-        title: 'Cleanup result',
-        message: `Backend reports ${data.deleted} deleted files; ${data.failed} failed. Overall cleanup: ${data.outcome}. UI-session observation only.`,
+        title: data.mode === 'scan_only' ? 'Orphan scan result' : 'Cleanup result',
+        message: data.mode === 'scan_only'
+          ? `Scan ${data.scan_complete ? 'complete' : 'incomplete'}; ${data.protected} protected. No files were deleted.`
+          : `Backend reports ${data.deleted} deleted files; ${data.failed} failed. Overall cleanup: ${data.outcome}. UI-session observation only.`,
       })
     },
     onError: () => {
       useNotificationStore.getState().addNotification({
         type: 'warning',
         phase: 'unknown',
-        title: 'Cleanup result',
-        message: 'Cleanup result unknown. Inspect files before repeating.',
+        title: scanOnly ? 'Orphan scan result' : 'Cleanup result',
+        message: scanOnly ? 'Orphan scan result could not be verified.' : 'Cleanup result unknown. Inspect files before repeating.',
       })
     },
   })
@@ -1071,29 +1076,29 @@ function Cleanup() {
           setOpen(true)
         }}
       >
-        Cleanup
+        {scanOnly ? title : 'Cleanup'}
       </Button>
       <Modal
         open={open}
-        title="Cleanup Orphaned Files"
+        title={title}
         pending={mutation.isPending}
         onClose={() => setOpen(false)}
       >
         <div className="p-6 space-y-4">
-          <h2>Cleanup Orphaned Files</h2>
-          <p>
+          <h2>{title}</h2>
+          {scanOnly ? <p>Read-only scan of the backup-base directory. No files will be deleted.</p> : <p>
             Global backup-base directory scan for *.tar* files without catalog
             references. Cataloged and active artifacts are protected. This is
             not retention pruning, is not limited to a selected policy, and has
             no file dry run. Deletions cannot be undone.
-          </p>
+          </p>}
           {mutation.isPending && (
-            <p role="status">Scanning and settling file deletions...</p>
+            <p role="status">{scanOnly ? 'Scanning backup files...' : 'Scanning and settling file deletions...'}</p>
           )}
           {mutation.isError && (
             <p role="alert">
-              Cleanup failed or result unknown. Inspect files before another
-              cleanup; no automatic retry.
+              {scanOnly ? 'Scan failed or result could not be verified; no automatic retry.'
+                : 'Cleanup failed or result unknown. Inspect files before another cleanup; no automatic retry.'}
             </p>
           )}
           {mutation.data && (
@@ -1104,6 +1109,11 @@ function Cleanup() {
                 node?.focus()
               }}
             >
+              {mutation.data.mode === 'scan_only' ? <>
+                <h3>Scan {mutation.data.scan_complete ? 'complete' : 'incomplete'}</h3>
+                <p>Scan only: no files were deleted.</p>
+                <p>{mutation.data.protected} protected; {mutation.data.scan_errors} scan errors.</p>
+              </> : <>
               <h3>Cleanup result: {mutation.data.outcome}</h3>
               <p>
                 {mutation.data.deleted} deleted; {mutation.data.failed} failed;{' '}
@@ -1115,16 +1125,17 @@ function Cleanup() {
                 {mutation.data.scan_errors} scan errors. This is the backend
                 result of this request, not a preview of another cleanup.
               </p>
+              </>}
             </section>
           )}
           <div className="flex flex-wrap gap-3">
             {!mutation.data && !mutation.isError && (
               <Button
-                variant="destructive"
+                variant={scanOnly ? 'outline' : 'destructive'}
                 disabled={mutation.isPending}
                 onClick={() => mutation.mutate()}
               >
-                {mutation.isPending ? 'Processing...' : 'Cleanup'}
+                {mutation.isPending ? 'Processing...' : scanOnly ? 'Scan' : 'Cleanup'}
               </Button>
             )}
             <Button

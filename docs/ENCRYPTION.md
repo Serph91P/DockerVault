@@ -42,10 +42,17 @@ key is outside this storage-tampering boundary.
 
 ## Disaster recovery
 
-Save `/recover_backup.py` from the DockerVault installation with exported keys,
-or save `backend/app/recovery.py` from a trusted release source under that name.
-The same standalone standard-library codec is used by the application. It needs
-Python 3, `age`, and `openssl`, but no app, database or Python package installation:
+For the native Rust image, save `/recovery-tools/manifest.json` and
+`/recovery-tools/dockervault-recover` from the same trusted installation. Verify
+the manifest's revision, SHA-256 and Linux architecture before running the
+[native offline recovery command](RUST_OFFLINE_RECOVERY.md#recover-an-existing-backup)
+with the archive, its sidecar and your private age identity. The native tool does
+not need the application, SQLite, a network connection or Python.
+
+For the **Python reference and fenced rollback images only**, save
+`/recover_backup.py` from the matching installation, or save `backend/app/recovery.py`
+from its trusted release source under that name. This legacy helper needs Python 3,
+`age` and `openssl`. The Rust image does not serve `/recover_backup.py`.
 
 ```bash
 python3 recover_backup.py --identity private_key.txt --key backup.tar.gz.key \
@@ -54,6 +61,7 @@ python3 recover_backup.py --identity private_key.txt --key backup.tar.gz.key \
 
 Only extract after exit 0. The helper handles both explicit formats, validates
 v1 before destination mutation, converts legacy binary DEKs correctly, and cleans
-its temporary files. Keep the private key and recovery script separately backed up;
-the script is public, not a secret. Generated key-export, API, README and frontend
-instructions are exercised against actual age/OpenSSL in native runtime CI.
+its temporary files. Keep the private key and recovery tool separately backed up;
+the tool is public, not a secret. Native package tests verify offline decryption
+and the architecture-aware browser download. Separate Python integration checks
+exercise the Python reference instructions against real age/OpenSSL.

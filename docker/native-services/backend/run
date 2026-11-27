@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+cd /app
+exec s6-setuidgid dockervault /usr/local/bin/dockervault-service 127.0.0.1:8000

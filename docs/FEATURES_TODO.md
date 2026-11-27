@@ -8,8 +8,6 @@
 - [x] Backup-Engine für Container, Volumes, Paths, Stacks
 - [x] Retention Policies (global)
 - [x] Remote Storage (S3, FTP, WebDAV)
-- [x] Komodo-Integration (optional)
-- [x] Komodo-Settings im Frontend editierbar
 - [x] WebSocket für Echtzeit-Updates
 - [x] ARM64 Build aus CI entfernt (schnellere Builds)
 - [x] TypeScript/Python Linting Fehler behoben

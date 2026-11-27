@@ -9,7 +9,6 @@ import asyncio
 # ruff: noqa: E402 -- isolated deployment environment must precede product imports.
 from contextlib import asynccontextmanager
 import hashlib
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -42,8 +41,6 @@ os.environ.update(
     DOCKER_SOCKET=str(ROOT / "absent.sock"),
     ALLOWED_SSH_KEY_DIRS=str(ROOT / "ssh_keys"),
     RCLONE_CONFIG="/nonexistent/explicit-synthetic-source",
-    KOMODO_ENABLED="false",
-    KOMODO_ALLOWED_HOSTS="127.0.0.1",
     LOG_LEVEL="WARNING",
 )
 os.environ.pop("CREDENTIAL_ENCRYPTION_KEY", None)
@@ -121,27 +118,6 @@ if len(sys.argv) > 1 and sys.argv[1] == "--inspect":
     raise SystemExit(0)
 
 
-class SyntheticKomodo(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass
-
-    def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
-        good = self.headers.get("X-Api-Key") == marker(
-            "komodo:key"
-        ) and self.headers.get("X-Api-Secret") == marker("komodo:secret")
-        content = json.dumps(
-            {"version": "synthetic143"} if body.get("type") == "GetVersion" else []
-        ).encode()
-        self.send_response(200 if good else 401)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(content)))
-        self.end_headers()
-        self.wfile.write(content)
-
-
-server = ThreadingHTTPServer(("127.0.0.1", 9611), SyntheticKomodo)
-threading.Thread(target=server.serve_forever, daemon=True).start()
 from app.main import app
 from app import rclone_recovery
 from app.recovery_bundle import decode_bundle
@@ -230,18 +206,6 @@ async def populate():
             )
         session.add_all(
             [
-                database.AppSettings(key="komodo_enabled", value="true"),
-                database.AppSettings(
-                    key="komodo_api_url", value="http://127.0.0.1:9611"
-                ),
-                database.AppSettings(
-                    key="komodo_api_key",
-                    value=credentials.encrypt_value(marker("komodo:key")),
-                ),
-                database.AppSettings(
-                    key="komodo_api_secret",
-                    value=credentials.encrypt_value(marker("komodo:secret")),
-                ),
                 database.AppSettings(
                     key="storage_check_quota_before_upload", value="true"
                 ),
@@ -370,8 +334,6 @@ async def verify_bundle(request: Request):
         for label in [
             "account",
             "bundle",
-            "komodo:key",
-            "komodo:secret",
             "pre-hook",
             "post-hook",
         ]

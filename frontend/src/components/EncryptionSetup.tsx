@@ -31,6 +31,10 @@ interface SetupResponse {
   recovery_instructions: string;
 }
 
+const nativeRecovery = import.meta.env.VITE_NATIVE_BACKEND === 'true'
+const nativeRecoveryCheck = 'sha256sum dockervault-recover\n# Compare against sha256 in manifest.json before continuing.\nchmod 700 dockervault-recover'
+const nativeRecoveryCommand = './dockervault-recover --identity private_key.txt --key backup.tar.gz.key --archive backup.tar.gz.enc --output backup.tar.gz'
+
 export default function EncryptionSetup() {
   const queryClient = useQueryClient();
   const [showSetupModal, setShowSetupModal] = useState(false);
@@ -415,6 +419,7 @@ ${setupData.recovery_instructions.split('\n').map(line => `# ${line}`).join('\n'
                     <span className="text-indigo-400 mt-1">•</span>
                     <span>Your private key file (exported during setup)</span>
                   </li>
+                  {nativeRecovery ? <li>Linux matching the recovery manifest (amd64 or arm64), a compatible C runtime and OpenSSL 3 libcrypto.</li> : <>
                   <li className="flex items-start gap-2">
                     <span className="text-indigo-400 mt-1">•</span>
                     <span><code className="text-xs bg-dark-900 px-1.5 py-0.5 rounded">age</code> tool: <a href="https://github.com/FiloSottile/age" target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:underline">github.com/FiloSottile/age</a></span>
@@ -423,13 +428,18 @@ ${setupData.recovery_instructions.split('\n').map(line => `# ${line}`).join('\n'
                     <span className="text-indigo-400 mt-1">•</span>
                     <span><code className="text-xs bg-dark-900 px-1.5 py-0.5 rounded">openssl</code> (usually pre-installed)</span>
                   </li>
+                  </>}
                 </ul>
               </div>
 
               {/* Steps */}
               <div>
                 <h3 className="text-sm font-semibold text-dark-200 mb-3">Recovery Steps</h3>
-                <p className="text-sm text-dark-300 mb-3">Run these blocks in the same Bash shell. Save <a href="/recover_backup.py" download className="underline">recover_backup.py</a> with your exported key. It needs Python 3, age and OpenSSL, but no running app or Python packages. New archives are authenticated before plaintext is released; legacy CBC requires an independently trusted checksum.</p>
+                {nativeRecovery ? (
+                  <p className="text-sm text-dark-300 mb-3">Save <a href="/recovery-tools/dockervault-recover" download className="underline">dockervault-recover</a> and the <a href="/recovery-tools/manifest.json" download className="underline">recovery manifest</a> with your exported key. The binary matches the server image, not necessarily this computer. Check the manifest platform and SHA-256 before running it. No running app, Python or age command is required. Run the blocks in the same Bash shell. New archives are authenticated before plaintext is released; legacy CBC requires an independently trusted checksum.</p>
+                ) : (
+                  <p className="text-sm text-dark-300 mb-3">Run these blocks in the same Bash shell. Save <a href="/recover_backup.py" download className="underline">recover_backup.py</a> with your exported key. It needs Python 3, age and OpenSSL, but no running app or Python packages. New archives are authenticated before plaintext is released; legacy CBC requires an independently trusted checksum.</p>
+                )}
                 <div className="space-y-4">
                   <div>
                     <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">1.</span> Save your private key to a file:</p>
@@ -444,17 +454,17 @@ chmod 600 private_key.txt`}
                   </div>
 
                   <div>
-                    <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">2.</span> Check your saved recovery script:</p>
+                    <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">2.</span> Check your saved recovery tool:</p>
                     <pre tabIndex={0} className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
-{`test -f recover_backup.py`}
+{nativeRecovery ? nativeRecoveryCheck : <>{`test -f recover_backup.py`}</>}
                     </pre>
                   </div>
 
                   <div>
                     <p className="text-sm text-dark-300 mb-2"><span className="font-semibold text-dark-100">3.</span> Decrypt the backup:</p>
                     <pre tabIndex={0} className="bg-dark-900 rounded-lg p-3 text-xs font-mono text-dark-300 overflow-x-auto">
-{`python3 recover_backup.py --identity private_key.txt --key backup.tar.gz.key \\
-    --archive backup.tar.gz.enc --output backup.tar.gz`}
+{nativeRecovery ? nativeRecoveryCommand : <>{`python3 recover_backup.py --identity private_key.txt --key backup.tar.gz.key \\
+    --archive backup.tar.gz.enc --output backup.tar.gz`}</>}
                     </pre>
                   </div>
 

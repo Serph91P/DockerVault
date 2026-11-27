@@ -6,7 +6,7 @@ services:
     # Allow long-running backups to drain when the orchestrator stops the
     # container (redeploy, host reboot, ...). Without this, Docker sends
     # SIGKILL after 10s and any active backup is killed mid-tar.
-    # Tools like Komodo/Watchtower honour this value.
+    # Tools like Watchtower honour this value.
     stop_grace_period: 24h
     # Run as root to access Docker volumes (required for backup functionality)
     # This is necessary because Docker volumes are owned by root
@@ -36,11 +36,6 @@ services:
       # indefinitely (default). Must be smaller than supervisord's
       # stopwaitsecs and the compose stop_grace_period above.
       - SHUTDOWN_TIMEOUT=${SHUTDOWN_TIMEOUT:-0}
-      # Komodo Integration (optional)
-      - KOMODO_ENABLED=${KOMODO_ENABLED:-false}
-      - KOMODO_API_URL=${KOMODO_API_URL:-}
-      - KOMODO_API_KEY=${KOMODO_API_KEY:-}
-      - KOMODO_API_SECRET=${KOMODO_API_SECRET:-}
     volumes:
       # Docker socket - required for container management
       - /var/run/docker.sock:/var/run/docker.sock

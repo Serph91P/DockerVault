@@ -1,0 +1,1815 @@
+{
+  "scope": "exact frozen Linux Python path-filter helpers, AST extraction only; no application startup; not Rust execution",
+  "source_head": "18d8c3d7f5d464195ac3fb3918048c794ef1079a",
+  "rules": [
+    "exclude wins",
+    "fnmatch star crosses slash",
+    "directory-prefix matching after trailing-star/slash stripping",
+    "leading slash stripped; case preserved",
+    "parent traversal uses literal prefix before first *?["
+  ],
+  "file_cases": [
+    {
+      "path": "",
+      "include": [],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "",
+      "include": [
+        "data"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "",
+      "include": [
+        "data/*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "",
+      "include": [
+        "/data/"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "",
+      "include": [
+        "*.txt"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "",
+      "include": [
+        "data/keep.txt"
+      ],
+      "exclude": [
+        "data/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "",
+      "include": [],
+      "exclude": [
+        "data"
+      ],
+      "expected": true
+    },
+    {
+      "path": "",
+      "include": [],
+      "exclude": [
+        "*.db"
+      ],
+      "expected": true
+    },
+    {
+      "path": "",
+      "include": [
+        "a/?/c"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "",
+      "include": [
+        "[!x]*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "",
+      "include": [
+        "\u00e4/*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "exclude": [
+        "data/drop.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "/",
+      "include": [],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "/",
+      "include": [
+        "data"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "/",
+      "include": [
+        "data/*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "/",
+      "include": [
+        "/data/"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "/",
+      "include": [
+        "*.txt"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "/",
+      "include": [
+        "data/keep.txt"
+      ],
+      "exclude": [
+        "data/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "/",
+      "include": [],
+      "exclude": [
+        "data"
+      ],
+      "expected": true
+    },
+    {
+      "path": "/",
+      "include": [],
+      "exclude": [
+        "*.db"
+      ],
+      "expected": true
+    },
+    {
+      "path": "/",
+      "include": [
+        "a/?/c"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "/",
+      "include": [
+        "[!x]*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "/",
+      "include": [
+        "\u00e4/*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "/",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "exclude": [
+        "data/drop.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "data",
+      "include": [],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data",
+      "include": [
+        "data"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data",
+      "include": [
+        "data/*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "data",
+      "include": [
+        "/data/"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "data",
+      "include": [
+        "*.txt"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "data",
+      "include": [
+        "data/keep.txt"
+      ],
+      "exclude": [
+        "data/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "data",
+      "include": [],
+      "exclude": [
+        "data"
+      ],
+      "expected": false
+    },
+    {
+      "path": "data",
+      "include": [],
+      "exclude": [
+        "*.db"
+      ],
+      "expected": true
+    },
+    {
+      "path": "data",
+      "include": [
+        "a/?/c"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "data",
+      "include": [
+        "[!x]*"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data",
+      "include": [
+        "\u00e4/*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "data",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "exclude": [
+        "data/drop.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "/data/item.txt",
+      "include": [],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "/data/item.txt",
+      "include": [
+        "data"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "/data/item.txt",
+      "include": [
+        "data/*"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "/data/item.txt",
+      "include": [
+        "/data/"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "/data/item.txt",
+      "include": [
+        "*.txt"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "/data/item.txt",
+      "include": [
+        "data/keep.txt"
+      ],
+      "exclude": [
+        "data/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "/data/item.txt",
+      "include": [],
+      "exclude": [
+        "data"
+      ],
+      "expected": false
+    },
+    {
+      "path": "/data/item.txt",
+      "include": [],
+      "exclude": [
+        "*.db"
+      ],
+      "expected": true
+    },
+    {
+      "path": "/data/item.txt",
+      "include": [
+        "a/?/c"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "/data/item.txt",
+      "include": [
+        "[!x]*"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "/data/item.txt",
+      "include": [
+        "\u00e4/*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "/data/item.txt",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "exclude": [
+        "data/drop.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "database",
+      "include": [],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "database",
+      "include": [
+        "data"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "database",
+      "include": [
+        "data/*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "database",
+      "include": [
+        "/data/"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "database",
+      "include": [
+        "*.txt"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "database",
+      "include": [
+        "data/keep.txt"
+      ],
+      "exclude": [
+        "data/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "database",
+      "include": [],
+      "exclude": [
+        "data"
+      ],
+      "expected": true
+    },
+    {
+      "path": "database",
+      "include": [],
+      "exclude": [
+        "*.db"
+      ],
+      "expected": true
+    },
+    {
+      "path": "database",
+      "include": [
+        "a/?/c"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "database",
+      "include": [
+        "[!x]*"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "database",
+      "include": [
+        "\u00e4/*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "database",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "exclude": [
+        "data/drop.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "dataX",
+      "include": [],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "dataX",
+      "include": [
+        "data"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "dataX",
+      "include": [
+        "data/*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "dataX",
+      "include": [
+        "/data/"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "dataX",
+      "include": [
+        "*.txt"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "dataX",
+      "include": [
+        "data/keep.txt"
+      ],
+      "exclude": [
+        "data/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "dataX",
+      "include": [],
+      "exclude": [
+        "data"
+      ],
+      "expected": true
+    },
+    {
+      "path": "dataX",
+      "include": [],
+      "exclude": [
+        "*.db"
+      ],
+      "expected": true
+    },
+    {
+      "path": "dataX",
+      "include": [
+        "a/?/c"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "dataX",
+      "include": [
+        "[!x]*"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "dataX",
+      "include": [
+        "\u00e4/*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "dataX",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "exclude": [
+        "data/drop.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "data/sub/x.db",
+      "include": [],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data/sub/x.db",
+      "include": [
+        "data"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data/sub/x.db",
+      "include": [
+        "data/*"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data/sub/x.db",
+      "include": [
+        "/data/"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data/sub/x.db",
+      "include": [
+        "*.txt"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "data/sub/x.db",
+      "include": [
+        "data/keep.txt"
+      ],
+      "exclude": [
+        "data/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "data/sub/x.db",
+      "include": [],
+      "exclude": [
+        "data"
+      ],
+      "expected": false
+    },
+    {
+      "path": "data/sub/x.db",
+      "include": [],
+      "exclude": [
+        "*.db"
+      ],
+      "expected": false
+    },
+    {
+      "path": "data/sub/x.db",
+      "include": [
+        "a/?/c"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "data/sub/x.db",
+      "include": [
+        "[!x]*"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data/sub/x.db",
+      "include": [
+        "\u00e4/*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "data/sub/x.db",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "exclude": [
+        "data/drop.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "data/keep.txt",
+      "include": [],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data/keep.txt",
+      "include": [
+        "data"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data/keep.txt",
+      "include": [
+        "data/*"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data/keep.txt",
+      "include": [
+        "/data/"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data/keep.txt",
+      "include": [
+        "*.txt"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data/keep.txt",
+      "include": [
+        "data/keep.txt"
+      ],
+      "exclude": [
+        "data/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "data/keep.txt",
+      "include": [],
+      "exclude": [
+        "data"
+      ],
+      "expected": false
+    },
+    {
+      "path": "data/keep.txt",
+      "include": [],
+      "exclude": [
+        "*.db"
+      ],
+      "expected": true
+    },
+    {
+      "path": "data/keep.txt",
+      "include": [
+        "a/?/c"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "data/keep.txt",
+      "include": [
+        "[!x]*"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data/keep.txt",
+      "include": [
+        "\u00e4/*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "data/keep.txt",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "exclude": [
+        "data/drop.txt"
+      ],
+      "expected": true
+    },
+    {
+      "path": "data/drop.txt",
+      "include": [],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data/drop.txt",
+      "include": [
+        "data"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data/drop.txt",
+      "include": [
+        "data/*"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data/drop.txt",
+      "include": [
+        "/data/"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data/drop.txt",
+      "include": [
+        "*.txt"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data/drop.txt",
+      "include": [
+        "data/keep.txt"
+      ],
+      "exclude": [
+        "data/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "data/drop.txt",
+      "include": [],
+      "exclude": [
+        "data"
+      ],
+      "expected": false
+    },
+    {
+      "path": "data/drop.txt",
+      "include": [],
+      "exclude": [
+        "*.db"
+      ],
+      "expected": true
+    },
+    {
+      "path": "data/drop.txt",
+      "include": [
+        "a/?/c"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "data/drop.txt",
+      "include": [
+        "[!x]*"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "data/drop.txt",
+      "include": [
+        "\u00e4/*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "data/drop.txt",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "exclude": [
+        "data/drop.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "\u00e4/\u65e5\u671f.txt",
+      "include": [],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "\u00e4/\u65e5\u671f.txt",
+      "include": [
+        "data"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "\u00e4/\u65e5\u671f.txt",
+      "include": [
+        "data/*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "\u00e4/\u65e5\u671f.txt",
+      "include": [
+        "/data/"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "\u00e4/\u65e5\u671f.txt",
+      "include": [
+        "*.txt"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "\u00e4/\u65e5\u671f.txt",
+      "include": [
+        "data/keep.txt"
+      ],
+      "exclude": [
+        "data/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "\u00e4/\u65e5\u671f.txt",
+      "include": [],
+      "exclude": [
+        "data"
+      ],
+      "expected": true
+    },
+    {
+      "path": "\u00e4/\u65e5\u671f.txt",
+      "include": [],
+      "exclude": [
+        "*.db"
+      ],
+      "expected": true
+    },
+    {
+      "path": "\u00e4/\u65e5\u671f.txt",
+      "include": [
+        "a/?/c"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "\u00e4/\u65e5\u671f.txt",
+      "include": [
+        "[!x]*"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "\u00e4/\u65e5\u671f.txt",
+      "include": [
+        "\u00e4/*"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "\u00e4/\u65e5\u671f.txt",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "exclude": [
+        "data/drop.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": ".hidden",
+      "include": [],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": ".hidden",
+      "include": [
+        "data"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": ".hidden",
+      "include": [
+        "data/*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": ".hidden",
+      "include": [
+        "/data/"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": ".hidden",
+      "include": [
+        "*.txt"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": ".hidden",
+      "include": [
+        "data/keep.txt"
+      ],
+      "exclude": [
+        "data/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": ".hidden",
+      "include": [],
+      "exclude": [
+        "data"
+      ],
+      "expected": true
+    },
+    {
+      "path": ".hidden",
+      "include": [],
+      "exclude": [
+        "*.db"
+      ],
+      "expected": true
+    },
+    {
+      "path": ".hidden",
+      "include": [
+        "a/?/c"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": ".hidden",
+      "include": [
+        "[!x]*"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": ".hidden",
+      "include": [
+        "\u00e4/*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": ".hidden",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "exclude": [
+        "data/drop.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "a/b/c",
+      "include": [],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "a/b/c",
+      "include": [
+        "data"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "a/b/c",
+      "include": [
+        "data/*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "a/b/c",
+      "include": [
+        "/data/"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "a/b/c",
+      "include": [
+        "*.txt"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "a/b/c",
+      "include": [
+        "data/keep.txt"
+      ],
+      "exclude": [
+        "data/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "a/b/c",
+      "include": [],
+      "exclude": [
+        "data"
+      ],
+      "expected": true
+    },
+    {
+      "path": "a/b/c",
+      "include": [],
+      "exclude": [
+        "*.db"
+      ],
+      "expected": true
+    },
+    {
+      "path": "a/b/c",
+      "include": [
+        "a/?/c"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "a/b/c",
+      "include": [
+        "[!x]*"
+      ],
+      "exclude": [],
+      "expected": true
+    },
+    {
+      "path": "a/b/c",
+      "include": [
+        "\u00e4/*"
+      ],
+      "exclude": [],
+      "expected": false
+    },
+    {
+      "path": "a/b/c",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "exclude": [
+        "data/drop.txt"
+      ],
+      "expected": false
+    }
+  ],
+  "parent_cases": [
+    {
+      "path": "",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "",
+      "include": [
+        "data"
+      ],
+      "expected": false
+    },
+    {
+      "path": "",
+      "include": [
+        "data/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "",
+      "include": [
+        "/data/"
+      ],
+      "expected": false
+    },
+    {
+      "path": "",
+      "include": [
+        "*.txt"
+      ],
+      "expected": true
+    },
+    {
+      "path": "",
+      "include": [
+        "data/keep.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "",
+      "include": [
+        "a/?/c"
+      ],
+      "expected": false
+    },
+    {
+      "path": "",
+      "include": [
+        "[!x]*"
+      ],
+      "expected": true
+    },
+    {
+      "path": "",
+      "include": [
+        "\u00e4/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "/",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "/",
+      "include": [
+        "data"
+      ],
+      "expected": false
+    },
+    {
+      "path": "/",
+      "include": [
+        "data/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "/",
+      "include": [
+        "/data/"
+      ],
+      "expected": false
+    },
+    {
+      "path": "/",
+      "include": [
+        "*.txt"
+      ],
+      "expected": true
+    },
+    {
+      "path": "/",
+      "include": [
+        "data/keep.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "/",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "/",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "/",
+      "include": [
+        "a/?/c"
+      ],
+      "expected": false
+    },
+    {
+      "path": "/",
+      "include": [
+        "[!x]*"
+      ],
+      "expected": true
+    },
+    {
+      "path": "/",
+      "include": [
+        "\u00e4/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "/",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "data",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "data",
+      "include": [
+        "data"
+      ],
+      "expected": true
+    },
+    {
+      "path": "data",
+      "include": [
+        "data/*"
+      ],
+      "expected": true
+    },
+    {
+      "path": "data",
+      "include": [
+        "/data/"
+      ],
+      "expected": true
+    },
+    {
+      "path": "data",
+      "include": [
+        "*.txt"
+      ],
+      "expected": true
+    },
+    {
+      "path": "data",
+      "include": [
+        "data/keep.txt"
+      ],
+      "expected": true
+    },
+    {
+      "path": "data",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "data",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "data",
+      "include": [
+        "a/?/c"
+      ],
+      "expected": false
+    },
+    {
+      "path": "data",
+      "include": [
+        "[!x]*"
+      ],
+      "expected": true
+    },
+    {
+      "path": "data",
+      "include": [
+        "\u00e4/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "data",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "expected": true
+    },
+    {
+      "path": "data/sub",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "data/sub",
+      "include": [
+        "data"
+      ],
+      "expected": true
+    },
+    {
+      "path": "data/sub",
+      "include": [
+        "data/*"
+      ],
+      "expected": true
+    },
+    {
+      "path": "data/sub",
+      "include": [
+        "/data/"
+      ],
+      "expected": true
+    },
+    {
+      "path": "data/sub",
+      "include": [
+        "*.txt"
+      ],
+      "expected": true
+    },
+    {
+      "path": "data/sub",
+      "include": [
+        "data/keep.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "data/sub",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "data/sub",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "data/sub",
+      "include": [
+        "a/?/c"
+      ],
+      "expected": false
+    },
+    {
+      "path": "data/sub",
+      "include": [
+        "[!x]*"
+      ],
+      "expected": true
+    },
+    {
+      "path": "data/sub",
+      "include": [
+        "\u00e4/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "data/sub",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "expected": true
+    },
+    {
+      "path": "other",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "other",
+      "include": [
+        "data"
+      ],
+      "expected": false
+    },
+    {
+      "path": "other",
+      "include": [
+        "data/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "other",
+      "include": [
+        "/data/"
+      ],
+      "expected": false
+    },
+    {
+      "path": "other",
+      "include": [
+        "*.txt"
+      ],
+      "expected": true
+    },
+    {
+      "path": "other",
+      "include": [
+        "data/keep.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "other",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "other",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "other",
+      "include": [
+        "a/?/c"
+      ],
+      "expected": false
+    },
+    {
+      "path": "other",
+      "include": [
+        "[!x]*"
+      ],
+      "expected": true
+    },
+    {
+      "path": "other",
+      "include": [
+        "\u00e4/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "other",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "a",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "a",
+      "include": [
+        "data"
+      ],
+      "expected": false
+    },
+    {
+      "path": "a",
+      "include": [
+        "data/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "a",
+      "include": [
+        "/data/"
+      ],
+      "expected": false
+    },
+    {
+      "path": "a",
+      "include": [
+        "*.txt"
+      ],
+      "expected": true
+    },
+    {
+      "path": "a",
+      "include": [
+        "data/keep.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "a",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "a",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "a",
+      "include": [
+        "a/?/c"
+      ],
+      "expected": true
+    },
+    {
+      "path": "a",
+      "include": [
+        "[!x]*"
+      ],
+      "expected": true
+    },
+    {
+      "path": "a",
+      "include": [
+        "\u00e4/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "a",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "a/b",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "a/b",
+      "include": [
+        "data"
+      ],
+      "expected": false
+    },
+    {
+      "path": "a/b",
+      "include": [
+        "data/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "a/b",
+      "include": [
+        "/data/"
+      ],
+      "expected": false
+    },
+    {
+      "path": "a/b",
+      "include": [
+        "*.txt"
+      ],
+      "expected": true
+    },
+    {
+      "path": "a/b",
+      "include": [
+        "data/keep.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "a/b",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "a/b",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "a/b",
+      "include": [
+        "a/?/c"
+      ],
+      "expected": true
+    },
+    {
+      "path": "a/b",
+      "include": [
+        "[!x]*"
+      ],
+      "expected": true
+    },
+    {
+      "path": "a/b",
+      "include": [
+        "\u00e4/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "a/b",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "\u00e4",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "\u00e4",
+      "include": [
+        "data"
+      ],
+      "expected": false
+    },
+    {
+      "path": "\u00e4",
+      "include": [
+        "data/*"
+      ],
+      "expected": false
+    },
+    {
+      "path": "\u00e4",
+      "include": [
+        "/data/"
+      ],
+      "expected": false
+    },
+    {
+      "path": "\u00e4",
+      "include": [
+        "*.txt"
+      ],
+      "expected": true
+    },
+    {
+      "path": "\u00e4",
+      "include": [
+        "data/keep.txt"
+      ],
+      "expected": false
+    },
+    {
+      "path": "\u00e4",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "\u00e4",
+      "include": [],
+      "expected": false
+    },
+    {
+      "path": "\u00e4",
+      "include": [
+        "a/?/c"
+      ],
+      "expected": false
+    },
+    {
+      "path": "\u00e4",
+      "include": [
+        "[!x]*"
+      ],
+      "expected": true
+    },
+    {
+      "path": "\u00e4",
+      "include": [
+        "\u00e4/*"
+      ],
+      "expected": true
+    },
+    {
+      "path": "\u00e4",
+      "include": [
+        "data/[kd]*.txt"
+      ],
+      "expected": false
+    }
+  ]
+}

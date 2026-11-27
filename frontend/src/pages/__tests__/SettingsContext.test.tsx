@@ -5,6 +5,12 @@ import Layout from '../../components/Layout'
 import { it, expect } from 'vitest'
 import Settings from '../Settings'
 
+it('offers Docker settings without the retired integration', async () => {
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter initialEntries={['/settings#connection']}><Settings /></MemoryRouter></QueryClientProvider>)
+  expect(await screen.findByRole('region', { name: 'Docker connection settings' })).toBeInTheDocument()
+  expect(screen.queryByRole('heading', { name: 'Komodo Integration' })).not.toBeInTheDocument()
+})
+
 const labels: Record<string, string> = { connection: 'Docker connection settings', encryption: 'Encryption settings', 'ssh-keys': 'SSH key security', system: 'System settings', 'storage-safeguards': 'Storage safeguards', 'system-recovery': 'System recovery' }
 it.each(Object.keys(labels))('shell preserves Settings %s fragment focus instead of stealing it', async id => {
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter initialEntries={[`/settings#${id}`]}><Routes><Route element={<Layout />}><Route path="/settings" element={<Settings />} /></Route></Routes></MemoryRouter></QueryClientProvider>)

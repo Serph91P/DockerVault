@@ -1,0 +1,42 @@
+[advisories]
+yanked = "deny"
+ignore = []
+
+[licenses]
+confidence-threshold = 0.95
+include-dev = true
+allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "Unicode-3.0", "Zlib"]
+
+# Unmodified Mozilla Fernet implementation; retain MPL notice/source in distributions.
+[[licenses.exceptions]]
+name = "fernet"
+version = "=0.2.2"
+allow = ["MPL-2.0"]
+
+# Modern AWS SDK HTTPS uses these unmodified permissive ISC components.
+# Preserve the exact upstream texts under docs/licenses/S3-*.txt in distributions.
+[[licenses.exceptions]]
+name = "aws-lc-rs"
+version = "=1.19.0"
+allow = ["ISC"]
+
+[[licenses.exceptions]]
+name = "aws-lc-sys"
+version = "=0.47.0"
+allow = ["ISC"]
+
+[[licenses.exceptions]]
+name = "rustls-webpki"
+version = "=0.103.17"
+allow = ["ISC"]
+
+[[licenses.exceptions]]
+name = "untrusted"
+version = "=0.9.0"
+allow = ["ISC"]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/transact-rs/sqlx", "https://github.com/str4d/rage", "https://github.com/kellpossible/cargo-i18n"]

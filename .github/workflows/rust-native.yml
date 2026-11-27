@@ -1,0 +1,339 @@
+name: Rust foundations
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  native-coverage:
+    name: Rust workspace coverage (amd64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Build isolated coverage image
+        run: docker build --target coverage -f docker/rust-dev.Dockerfile -t dockervault-rust-coverage .
+      - name: Measure Rust coverage offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/rust-coverage"
+          mkdir "$dir"
+          docker run --rm --network none --cpus 2 --memory 6g --user 1000:1000 \
+            --env CARGO_BUILD_JOBS=2 --env CARGO_PROFILE_TEST_DEBUG=0 \
+            --entrypoint /bin/sh dockervault-rust-coverage -ec '
+              rustc -vV >&2
+              cargo llvm-cov --version >&2
+              cargo llvm-cov --workspace --locked --offline --no-cfg-coverage \
+                --remap-path-prefix --json --summary-only --output-path /tmp/coverage.json >&2
+              cat /tmp/coverage.json
+            ' > "$dir/coverage.json"
+          jq -e '.type == "llvm.coverage.json.export" and .data[0].totals.lines.count > 0' \
+            "$dir/coverage.json" >/dev/null
+          platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' dockervault-rust-coverage)
+          test "$platform" = linux/amd64
+          jq -n --arg commit "$(git rev-parse HEAD)" --arg platform "$platform" \
+            '{commit: $commit, platform: $platform}' > "$dir/source.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rust-coverage-amd64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/rust-coverage/
+          if-no-files-found: error
+
+  native-workspace:
+    name: Native workspace and offline recovery (${{ matrix.arch }})${{ github.event_name == 'push' && github.ref == 'refs/heads/develop' && matrix.profile == 'production' && ' [production profile]' || '' }}
+    env:
+      DV_TESTED_OCI: ${{ (matrix.profile == 'development' || (github.event_name == 'pull_request' && github.base_ref == 'develop')) && 'true' || 'false' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+        profile: ${{ fromJSON(github.event_name == 'push' && github.ref == 'refs/heads/develop' && '["production","development"]' || '["production"]') }}
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Build native isolated Rust development image
+        run: |
+          docker build --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" \
+            -f docker/rust-dev.Dockerfile -t dockervault-rust-ci .
+      - name: Native offline workspace tests and lints
+        run: |
+          docker run --rm --network none --cpus 2 --memory 6g \
+            --user 1000:1000 --env CARGO_BUILD_JOBS=2 \
+            --entrypoint /bin/sh dockervault-rust-ci -ec '
+              cargo fmt --all -- --check
+              cargo test --workspace --locked --offline
+              cargo clippy --workspace --all-targets --locked --offline -- -D warnings
+            '
+      - name: Build browser acceptance image for the native runner
+        run: |
+          docker build --platform 'linux/${{ matrix.arch }}' \
+            -f backend/tests/browser.Dockerfile -t dockervault-native-browser-ci .
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' dockervault-native-browser-ci)" = 'linux/${{ matrix.arch }}'
+      - uses: docker/setup-buildx-action@v4
+        if: env.DV_TESTED_OCI == 'true'
+      - name: Build the tested OCI package once and load its native platform
+        id: tested-oci
+        if: env.DV_TESTED_OCI == 'true'
+        env:
+          ARCH: ${{ matrix.arch }}
+          DV_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+          DV_BUILD_ENV: ${{ matrix.profile }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$DV_SOURCE_REVISION"
+          command -v skopeo >/dev/null || { sudo apt-get update && sudo apt-get install -y skopeo; }
+          dir="$RUNNER_TEMP/dv-native-dev"
+          mkdir "$dir"
+          labels=()
+          if [[ $DV_BUILD_ENV == development ]]; then
+            git fetch --unshallow --tags origin develop
+            version_info=$(bash scripts/release-version.sh "$GITHUB_REF" "$DV_SOURCE_REVISION")
+            IFS= read -r version_line <<< "$version_info"
+            DV_VERSION=${version_line#version=}
+            [[ $DV_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+-dev$ ]]
+            labels=(--label "org.opencontainers.image.version=$DV_VERSION" --label org.opencontainers.image.ref.name=develop)
+            export DV_VERSION
+            printf 'version=%s\n' "$DV_VERSION" >> "$GITHUB_OUTPUT"
+          fi
+          docker buildx build --platform "linux/$ARCH" --build-arg "COMMIT_SHA=$DV_SOURCE_REVISION" \
+            --build-arg "BUILD_ENV=$DV_BUILD_ENV" "${labels[@]}" --provenance=mode=min --sbom=true \
+            --output "type=oci,dest=$dir/application.oci.tar,compression=gzip" .
+          bash docker/native-dev-oci.sh load "$dir" "$ARCH" dockervault-native-candidate-ci
+      - name: Build and start the default application image (no target)
+        run: |
+          sha=$(git rev-parse HEAD)
+          image=dockervault-native-candidate-ci
+          if [[ $DV_TESTED_OCI != true ]]; then
+            docker build --platform 'linux/${{ matrix.arch }}' \
+              --build-arg "COMMIT_SHA=$sha" -t "$image" .
+          fi
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = 'linux/${{ matrix.arch }}'
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$sha"
+          sh docker/test-native-candidate.sh "$image" dockervault-native-browser-ci
+          bash docker/test-native-queued-roundtrip.sh "$image"
+      - name: Verify ordinary scheduler dispatch after clean native backend restarts
+        timeout-minutes: 6
+        run: bash docker/test-native-scheduler-restart.sh dockervault-native-candidate-ci
+      - name: Restore a plain LOCAL-only backup after clean native restart
+        run: bash docker/test-native-local-restart.sh dockervault-native-candidate-ci plain
+      - name: Restore an encrypted LOCAL-only backup after clean native restart
+        run: bash docker/test-native-local-restart.sh dockervault-native-candidate-ci encrypted
+      - name: Restore a native system bundle and retained encrypted LOCAL backup on a fresh instance
+        run: bash docker/test-native-system-recovery.sh dockervault-native-candidate-ci
+      - name: Exercise failed-only copy removal in Chromium after clean native restart
+        run: bash docker/test-native-removal-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci
+      - name: Verify packaged opt-in API documentation and backend logging
+        run: |
+          bash docker/test-native-docs.sh dockervault-native-candidate-ci
+          bash docker/test-native-logging.sh dockervault-native-candidate-ci
+      - name: Exercise policy routes through the packaged frontend
+        if: matrix.arch == 'amd64'
+        run: bash docker/test-native-policy-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci
+
+      - name: Exercise truthful frontend state and persisted effects in Chromium
+        if: matrix.arch == 'amd64'
+        run: bash docker/test-native-truthful-states-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci
+
+      - name: Exercise TLS WebSocket session and origin boundaries in Chromium
+        if: matrix.arch == 'amd64'
+        run: bash docker/test-native-websocket-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci
+      - name: Rehearse exclusive writer startup with fenced Python rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref=39124ea3a98963b6307a69a0fbaf5902a17cde3d
+          git fetch --no-tags --depth=1 origin "$ref"
+          git archive "$ref" | docker build --platform 'linux/${{ matrix.arch }}' --target production \
+            --build-arg "COMMIT_SHA=$ref" -t dockervault-r14-python-ref:39124ea -
+          preflight=dockervault-rollback-preflight-ci
+          docker build --platform 'linux/${{ matrix.arch }}' --target rollback-preflight -t "$preflight" .
+          docker build --platform 'linux/${{ matrix.arch }}' -f docker/python-rollback.Dockerfile \
+            --build-arg "ROLLBACK_PREFLIGHT=$preflight" --target python-rollback -t dockervault-python-rollback-ci .
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' dockervault-python-rollback-ci)" = 'linux/${{ matrix.arch }}'
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' dockervault-python-rollback-ci)" = "$ref"
+          sh docker/test-writer-fence.sh dockervault-native-candidate-ci dockervault-python-rollback-ci
+          bash docker/test-native-rollback-roundtrip.sh dockervault-native-candidate-ci dockervault-python-rollback-ci
+          bash docker/test-native-rollback-roundtrip.sh dockervault-native-candidate-ci dockervault-python-rollback-ci encrypted
+      - name: Refuse writer handoff with a synthetic legacy Komodo obligation
+        run: sh docker/test-legacy-komodo-obligation.sh dockervault-native-candidate-ci dockervault-python-rollback-ci
+      - name: Verify the fenced Python recovery download after native handoff
+        run: bash docker/test-native-policy-browser.sh dockervault-python-rollback-ci dockervault-native-browser-ci python dockervault-native-candidate-ci
+      - name: Import an integrated Python V1 system bundle and restore its retained encrypted LOCAL archive
+        env:
+          DOCKERVAULT_SHADOW_RUST_IMAGE: dockervault-rust-ci
+        run: |
+          bash docker/test-native-system-recovery.sh dockervault-native-candidate-ci \
+            dockervault-r14-python-ref:39124ea 39124ea3a98963b6307a69a0fbaf5902a17cde3d "$(git rev-parse HEAD)"
+      - name: Native pinned rclone capabilities and encrypted preparation without network
+        run: |
+          docker build -f docker/rclone-test.Dockerfile -t dockervault-rclone-ci .
+          docker run --rm --network none --cpus 2 --memory 6g --user 1000:1000 dockervault-rclone-ci
+      - name: Dependency advisories, licenses and sources
+        run: |
+          docker run --rm --user 1000:1000 --entrypoint /bin/sh dockervault-rust-ci -ec '
+            cargo deny check advisories licenses sources
+            cargo audit --deny warnings
+          '
+      - name: Native fixed-policy privileged worker and physical root-child settlement
+        run: |
+          docker build -f docker/archive-worker-test.Dockerfile -t dockervault-archive-worker-ci .
+          docker run --rm --network none --user 1000:1000 \
+            --entrypoint /usr/local/bin/archive-worker-privileges dockervault-archive-worker-ci
+          docker run --rm --network none --cpus 2 --memory 6g --user 1000:1000 \
+            --entrypoint /usr/local/bin/privileged-archive-supervision dockervault-archive-worker-ci
+      - name: Build native standalone recovery image
+        run: |
+          docker build --build-arg VCS_REF="$(git rev-parse HEAD)" \
+            -f docker/recover.Dockerfile -t dockervault-recovery-ci .
+          test "$(docker image inspect --format '{{.Architecture}}' dockervault-recovery-ci)" = '${{ matrix.arch }}'
+      - name: Verify embedded dependencies in shipped native binaries
+        run: sh docker/test-native-rust-inventory.sh dockervault-native-candidate-ci dockervault-recovery-ci
+      - name: Execute the downloaded tool with all three documented recovery commands offline
+        env:
+          DV_BROWSER_RECEIPT: ${{ env.DV_TESTED_OCI == 'true' && format('{0}/dv-browser.json', runner.temp) || '' }}
+        run: bash docker/test-native-policy-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci native dockervault-recovery-ci dockervault-rust-ci
+      - name: Recover original v1 and legacy bytes without network or Python
+        shell: bash
+        run: |
+          set -euo pipefail
+          container=$(docker run --detach --rm --network none --read-only \
+            --tmpfs /work:rw,uid=1000,gid=1000,mode=0700,size=16m \
+            --user 1000:1000 --entrypoint /bin/sleep dockervault-recovery-ci infinity)
+          trap 'docker stop --time 1 "$container" >/dev/null' EXIT
+          docker exec "$container" mkdir /work/fixtures
+          tar -C crates/dockervault-core/tests/fixtures -cf - . | \
+            docker exec --interactive "$container" tar -xf - -C /work/fixtures
+          # Reconstruct PUBLIC synthetic fixture bytes in the build image only.
+          # The isolated recovery image still contains no compiler/Python/server.
+          docker run --rm --network none --user 1000:1000 dockervault-rust-ci \
+            cargo run --quiet --example public_fixture_identity -p dockervault-tools --locked --offline -- gzip | \
+            docker exec --interactive "$container" /bin/sh -ec \
+              'umask 077; cat > /work/fixtures/pax-links.tar.gz.identity.TEST_ONLY'
+          docker exec "$container" /bin/sh -ec '
+            for program in python python3 age openssl sqlite3 dockervault-service; do
+              if command -v "$program" >/dev/null 2>&1; then exit 1; fi
+            done
+            test ! -e /app/data
+            test -s /usr/share/licenses/dockervault/fernet-MPL-2.0.txt
+            for variant in "" .legacy; do
+              /usr/local/bin/dockervault-recover \
+                --archive "/work/fixtures/pax-links.tar.gz${variant}.enc" \
+                --output /work/recovered.gz \
+                --identity /work/fixtures/pax-links.tar.gz.identity.TEST_ONLY \
+                --key "/work/fixtures/pax-links.tar.gz${variant}.key.TEST_ONLY"
+              cmp /work/fixtures/pax-links.tar.gz /work/recovered.gz
+            done
+          '
+      - name: Recover an authenticated native backup after a service restart
+        run: bash docker/test-native-encrypted-roundtrip.sh dockervault-native-candidate-ci dockervault-recovery-ci
+      - name: Restore from isolated S3 and verify copy removal fails closed
+        run: |
+          set -euo pipefail
+          package=dockervault-native-candidate-ci
+          platform='linux/${{ matrix.arch }}'
+          sha=$(git rev-parse HEAD)
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}} {{index .Config.Labels "org.opencontainers.image.revision"}}' "$package")" = "$platform $sha"
+          provider=chrislusf/seaweedfs@sha256:6f10079ef97a3fc24574725911e138b9f02eb397aeb69e6b0b9dd09b09d0e0bd
+          docker pull --platform "$platform" "$provider"
+          docker image inspect --format 'S3 fixture package: {{.Os}}/{{.Architecture}} {{.Id}} revision={{index .Config.Labels "org.opencontainers.image.revision"}}' "$package"
+          bash docker/test-native-s3-restart.sh "$package" "$provider"
+      - name: Verify FTP-only native restart and isolated R14 Canary
+        run: |
+          fixture=dockervault-ftp-fixture-ci
+          docker build --platform 'linux/${{ matrix.arch }}' -t "$fixture" - <<'DOCKERFILE'
+          FROM python:3.14-slim@sha256:22eafb370920ad8b429e0aec3fff433e0669968519f5d60469d83729c138b28b
+          RUN printf '%s\n' 'aioftp==0.27.2 --hash=sha256:83befd4091be0e26eeba44dadebb7e7bea653f7b6bda3ba9b6785d4372a93e10' > /tmp/ftp-requirement \
+              && python -m pip install --no-cache-dir --no-deps --only-binary=:all: --require-hashes -r /tmp/ftp-requirement \
+              && rm /tmp/ftp-requirement
+          DOCKERFILE
+          trap 'docker image rm "$fixture" >/dev/null' EXIT
+          bash docker/test-native-ftp-restart.sh dockervault-native-candidate-ci "$fixture"
+          bash docker/test-native-ftp-restart.sh dockervault-native-candidate-ci "$fixture" \
+            dockervault-r14-python-ref:39124ea
+      - name: Bind the tested downloads to the OCI package
+        if: env.DV_TESTED_OCI == 'true'
+        env:
+          ARCH: ${{ matrix.arch }}
+          DV_VERSION: ${{ steps.tested-oci.outputs.version }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/dv-native-dev"
+          bash docker/native-dev-oci.sh receipt "$dir" "$ARCH" "$RUNNER_TEMP/dv-browser.json" > "$dir/receipt.json"
+      - uses: actions/upload-artifact@v7
+        if: github.event_name == 'push' && github.ref == 'refs/heads/develop' && matrix.profile == 'development'
+        with:
+          name: native-dev-${{ matrix.arch }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dv-native-dev/
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@v7
+        if: github.event_name == 'pull_request' && github.base_ref == 'develop'
+        with:
+          name: native-pr-tested-${{ matrix.arch }}-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dv-native-dev/
+          if-no-files-found: error
+          compression-level: 0
+
+  candidate-oci:
+    name: Unpublished native OCI attestations (${{ matrix.arch }})
+    needs: native-workspace
+    env:
+      # Only the Develop PR already tests the production-profile OCI; the Develop push binds a development-profile OCI.
+      DV_TESTED_OCI: ${{ (github.event_name == 'pull_request' && github.base_ref == 'develop') && 'true' || 'false' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      - name: Export and check remaining images without a registry push
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          mkdir -p "$RUNNER_TEMP/dv-oci"
+          dir="$RUNNER_TEMP/dv-oci"
+          if [[ $DV_TESTED_OCI != true ]]; then
+            docker buildx build --platform "linux/$ARCH" --build-arg "COMMIT_SHA=$sha" \
+              --provenance=mode=min --sbom=true --output "type=oci,dest=$dir/application.oci.tar" .
+          fi
+          docker buildx build --platform "linux/$ARCH" --build-arg "VCS_REF=$sha" \
+            --provenance=mode=min --sbom=true --output "type=oci,dest=$dir/recovery.oci.tar" \
+            -f docker/recover.Dockerfile .
+          for archive in "$dir"/*.oci.tar; do
+            bash docker/check-native-oci-attestations.sh "$archive" "$ARCH" "$sha"
+          done
+          (cd "$dir" && sha256sum ./*.oci.tar > SHA256SUMS)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.DV_TESTED_OCI == 'true' && 'native-recovery-oci' || 'native-oci' }}-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/dv-oci/
+          if-no-files-found: error
+          compression-level: 0
