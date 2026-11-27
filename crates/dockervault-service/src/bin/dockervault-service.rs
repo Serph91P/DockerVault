@@ -102,6 +102,14 @@ async fn run() -> Result<(), &'static str> {
         .await
         .map_err(|_| "database migration")?;
     tracing::debug!("Database opened and migrations checked");
+    if Journal::has_unsettled_legacy_authority(db.pool())
+        .await
+        .map_err(|_| "workload authority inspection")?
+    {
+        return Err(
+            "unsettled legacy workload authority; preserve the catalog and verify provider settlement before handoff",
+        );
+    }
     settle_interrupted(db.pool())
         .await
         .map_err(|_| "storage recovery")?;

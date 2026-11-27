@@ -135,6 +135,8 @@ jobs:
           sh docker/test-writer-fence.sh dockervault-native-candidate-ci dockervault-python-rollback-ci
           bash docker/test-native-rollback-roundtrip.sh dockervault-native-candidate-ci dockervault-python-rollback-ci
           bash docker/test-native-rollback-roundtrip.sh dockervault-native-candidate-ci dockervault-python-rollback-ci encrypted
+      - name: Refuse writer handoff with a synthetic legacy Komodo obligation
+        run: sh docker/test-legacy-komodo-obligation.sh dockervault-native-candidate-ci dockervault-python-rollback-ci
       - name: Verify the fenced Python recovery download after native handoff
         run: bash docker/test-native-policy-browser.sh dockervault-python-rollback-ci dockervault-native-browser-ci python dockervault-native-candidate-ci
       - name: Import an integrated Python V1 system bundle and restore its retained encrypted LOCAL archive

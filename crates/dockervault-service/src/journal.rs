@@ -129,6 +129,23 @@ pub struct Journal {
     owner: Owner,
 }
 impl Journal {
+    pub async fn has_unsettled_legacy_authority(pool: &SqlitePool) -> Result<bool, JournalError> {
+        // The normal catalog has no authority column: its workload journal is Docker-only.
+        let has_authority: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('workload_operations') WHERE name='authority')",
+        )
+        .fetch_one(pool)
+        .await?;
+        if !has_authority {
+            return Ok(false);
+        }
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM workload_operations WHERE state IS NOT 'finished' AND authority IS NOT 'docker')",
+        )
+        .fetch_one(pool)
+        .await?)
+    }
+
     pub fn new(pool: SqlitePool) -> Result<Self, JournalError> {
         Ok(Self {
             pool,
