@@ -1,0 +1,245 @@
+diff --git a/crates/dockervault-service/src/http/backup_restore.rs b/crates/dockervault-service/src/http/backup_restore.rs
+index f57ce14..0f30a41 100644
+--- a/crates/dockervault-service/src/http/backup_restore.rs
++++ b/crates/dockervault-service/src/http/backup_restore.rs
+@@ -316,6 +316,7 @@ async fn execute(
+     selection: &Selection,
+     cancel: &CancellationToken,
+ ) -> Result<Value, Failure> {
++    let claims_started = std::time::Instant::now();
+     let initial = impact(state, id, selection, Some(cancel)).await?;
+     let _target = state
+         .backup_claims
+@@ -371,14 +372,17 @@ async fn execute(
+         return Err(KEY_REQUIRED);
+     }
+     let root = std::path::absolute(&state.config.backup_base_path).map_err(|_| INTERNAL)?;
++    let claims_checks_ns = claims_started.elapsed().as_nanos();
+     let input = restore_input(state, id, &reviewed, &root, cancel).await?;
+     if cancel.is_cancelled() {
+         return Err(INTERNAL);
+     }
++    let begin_started = std::time::Instant::now();
+     let key = journal
+         .begin(Some(id), Kind::Restore, indexmap::IndexMap::new(), None)
+         .await
+         .map_err(|_| INTERNAL)?;
++    let journal_begin_ns = begin_started.elapsed().as_nanos();
+     let token = cancel.clone();
+     let private = private.cloned();
+     let writer_journal = journal.clone();
+@@ -407,10 +411,17 @@ async fn execute(
+         Ok(work) => work.wait().await.unwrap_or(Err(INTERNAL)),
+         Err(_) => Err(INTERNAL),
+     };
++    let settle_started = std::time::Instant::now();
+     journal
+         .settle_native_restore(key, result.is_ok())
+         .await
+         .map_err(|_| INTERNAL)?;
++    if result.is_ok() {
++        use std::io::Write as _;
++        let ns = settle_started.elapsed().as_nanos();
++        let _ = writeln!(std::io::stderr().lock(),
++            r#"DV245_PHASE {{"phase":"settle","wall_ns":{ns},"claims_checks_ns":{claims_checks_ns},"journal_begin_ns":{journal_begin_ns}}}"#);
++    }
+     result
+ }
+ 
+@@ -456,10 +467,17 @@ async fn restore_input(
+                     Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+                     Err(_) => return Err(UNAVAILABLE),
+                 };
++                let snapshot_started = std::time::Instant::now();
+                 let (archive, length) = local::snapshot_download_source(file, &|| {
+                     token.is_cancelled() || owner.is_cancelled()
+                 })
+                 .map_err(|_| INTERNAL)?;
++                {
++                    use std::io::Write as _;
++                    let ns = snapshot_started.elapsed().as_nanos();
++                    let _ = writeln!(std::io::stderr().lock(),
++                        r#"DV245_PHASE {{"phase":"local_snapshot","wall_ns":{ns}}}"#);
++                }
+                 let sidecar = key_path
+                     .map(|key| open(&key).map_err(|_| KEY_UNAVAILABLE))
+                     .transpose()?;
+@@ -573,6 +591,7 @@ fn restore_path(
+         snapshot =
+             decrypt_private(snapshot, length, spool, &material, cancel).map_err(|_| INTERNAL)?;
+     }
++    let hash_started = std::time::Instant::now();
+     if let Some(checksum) = &impact.checksum {
+         let digest = hash_reader(&mut snapshot, cancel).map_err(|_| INTERNAL)?;
+         if !checksum.eq_ignore_ascii_case(&hex(&digest)) {
+@@ -580,6 +599,8 @@ fn restore_path(
+         }
+         snapshot.rewind().map_err(|_| INTERNAL)?;
+     }
++    let hash_ns = if impact.checksum.is_some() { hash_started.elapsed().as_nanos() } else { 0 };
++    let index_started = std::time::Instant::now();
+     let mut index = IndexedArchive::prepare(
+         snapshot,
+         gzip,
+@@ -588,6 +609,12 @@ fn restore_path(
+         cancel,
+     )
+     .map_err(|_| INTERNAL)?;
++    {
++        use std::io::Write as _;
++        let index_ns = index_started.elapsed().as_nanos();
++        let _ = writeln!(std::io::stderr().lock(),
++            r#"DV245_PHASE {{"phase":"hash_index","hash_ns":{hash_ns},"index_ns":{index_ns}}}"#);
++    }
+     let dest = local::open_root(&impact.destination).map_err(|_| STALE)?;
+     if dir_identity(&dest).map_err(|_| STALE)? != impact.identity {
+         return Err(STALE);
+diff --git a/crates/dockervault-service/src/restore/destination.rs b/crates/dockervault-service/src/restore/destination.rs
+index d15ecaf..35c5074 100644
+--- a/crates/dockervault-service/src/restore/destination.rs
++++ b/crates/dockervault-service/src/restore/destination.rs
+@@ -19,10 +19,20 @@ use std::{
+         unix::{ffi::OsStrExt, fs::PermissionsExt},
+     },
+     path::Path,
++    sync::atomic::{AtomicU64, Ordering::Relaxed},
++    time::Instant,
+ };
+ const MAX_PATH: usize = 1024 * 1024;
+ const SYNC_BATCH: usize = 32;
+ const SYNC_WORKERS: usize = 8;
++
++#[derive(Default)]
++struct SyncObservation {
++    batch_ns: u128,
++    syscall_span_ns: u128,
++    batches: usize,
++    files: usize,
++}
+ #[derive(Clone)]
+ struct Node {
+     kind: MemberKind,
+@@ -60,6 +70,7 @@ impl IndexedArchive {
+             return Err(invalid("Restore capability is not a directory"));
+         }
+         // This private disk-backed plan does not need a commit per archive member.
++        let plan_started = Instant::now();
+         let plan = self.db.transaction().map_err(db_error)?;
+         plan.execute_batch("DROP TABLE IF EXISTS restore_nodes; DROP TABLE IF EXISTS restore_steps; CREATE TABLE restore_nodes(path BLOB PRIMARY KEY,kind INTEGER NOT NULL,link BLOB); CREATE TABLE restore_steps(ord INTEGER PRIMARY KEY,kind INTEGER NOT NULL,path BLOB NOT NULL,link BLOB,source INTEGER,mode INTEGER,mtime REAL);").map_err(db_error)?;
+         {
+@@ -81,12 +92,19 @@ impl IndexedArchive {
+         }
+         check(cancel)?;
+         plan.commit().map_err(db_error)?;
++        let plan_ns = plan_started.elapsed().as_nanos();
+         check(cancel)?;
++        let intent_started = Instant::now();
+         before_mutation()?;
++        let intent_ns = intent_started.elapsed().as_nanos();
++        let write_started = Instant::now();
++        let mut observation = SyncObservation::default();
+         let mut pending_sync = Vec::with_capacity(SYNC_BATCH);
+-        let result = self.apply_steps(root, cancel, &mut pending_sync);
++        let result = self.apply_steps(root, cancel, &mut pending_sync, &mut observation);
+         // Drain opened files even after cancellation or a later write fails.
+-        result.and(sync_files(&mut pending_sync))?;
++        result.and(sync_files(&mut pending_sync, &mut observation))?;
++        let mut directory_sync_ns = 0;
++        let mut directory_syncs = 0;
+         // Python applies directory timestamps after descendants; modes/owners are ignored.
+         let mut statement=self.db.prepare("SELECT path,mtime FROM restore_steps WHERE kind=1 AND mtime IS NOT NULL GROUP BY path HAVING ord=MAX(ord) ORDER BY length(path) DESC,ord DESC").map_err(db_error)?;
+         let mut rows = statement.query([]).map_err(db_error)?;
+@@ -96,10 +114,25 @@ impl IndexedArchive {
+             let mtime: f64 = row.get(1).map_err(db_error)?;
+             let directory = open_dir(root, &path)?;
+             set_file_attrs(&directory, None, Some(mtime))?;
++            let sync_started = Instant::now();
+             directory.sync_all()?;
++            directory_sync_ns += sync_started.elapsed().as_nanos();
++            directory_syncs += 1;
+         }
++        let sync_started = Instant::now();
+         root.sync_all()?;
+-        check(cancel)
++        directory_sync_ns += sync_started.elapsed().as_nanos();
++        directory_syncs += 1;
++        let write_ns = write_started.elapsed().as_nanos()
++            .saturating_sub(observation.batch_ns + directory_sync_ns);
++        let result = check(cancel);
++        if result.is_ok() {
++            use std::io::Write as _;
++            let _ = writeln!(std::io::stderr().lock(),
++                r#"DV245_PHASE {{"phase":"destination","plan_ns":{plan_ns},"write_ns":{write_ns},"batch_ns":{},"batches":{},"batch_files":{},"batch_syscall_span_ns":{},"directory_sync_ns":{directory_sync_ns},"directory_syncs":{directory_syncs},"intent_ns":{intent_ns}}}"#,
++                observation.batch_ns, observation.batches, observation.files, observation.syscall_span_ns);
++        }
++        result
+     }
+ 
+     fn apply_steps(
+@@ -107,6 +140,7 @@ impl IndexedArchive {
+         root: &File,
+         cancel: &dyn Fn() -> bool,
+         pending_sync: &mut Vec<File>,
++        observation: &mut SyncObservation,
+     ) -> io::Result<()> {
+         let mut last = 0i64;
+         loop {
+@@ -133,7 +167,7 @@ impl IndexedArchive {
+             last = step.order;
+             check(cancel)?;
+             if step.kind != 0 {
+-                sync_files(pending_sync)?;
++                sync_files(pending_sync, observation)?;
+             }
+             match step.kind {
+                 0 => {
+@@ -152,7 +186,7 @@ impl IndexedArchive {
+                     set_file_attrs(&file, step.mode, step.mtime)?;
+                     pending_sync.push(file);
+                     if pending_sync.len() == SYNC_BATCH {
+-                        sync_files(pending_sync)?;
++                        sync_files(pending_sync, observation)?;
+                     }
+                 }
+                 1 => {
+@@ -238,14 +272,23 @@ impl IndexedArchive {
+     }
+ }
+ 
+-fn sync_files(files: &mut Vec<File>) -> io::Result<()> {
+-    fn sync_chunk(files: &[File]) -> io::Result<()> {
++fn sync_files(files: &mut Vec<File>, observation: &mut SyncObservation) -> io::Result<()> {
++    let started = Instant::now();
++    let count = files.len();
++    let first = AtomicU64::new(u64::MAX);
++    let last = AtomicU64::new(0);
++    let sync_chunk = |files: &[File]| -> io::Result<()> {
+         let mut result = Ok(());
+         for file in files {
+-            result = result.and(file.sync_all());
++            let entry = started.elapsed().as_nanos() as u64;
++            let synced = file.sync_all();
++            let exit = started.elapsed().as_nanos() as u64;
++            first.fetch_min(entry, Relaxed);
++            last.fetch_max(exit, Relaxed);
++            result = result.and(synced);
+         }
+         result
+-    }
++    };
+     // Writes are ordered; only the durability calls on already-open files overlap.
+     let result = if files.len() < SYNC_WORKERS {
+         sync_chunk(files)
+@@ -269,6 +312,12 @@ fn sync_files(files: &mut Vec<File>) -> io::Result<()> {
+         })
+     };
+     files.clear();
++    if count != 0 {
++        observation.batch_ns += started.elapsed().as_nanos();
++        observation.syscall_span_ns += u128::from(last.load(Relaxed).saturating_sub(first.load(Relaxed)));
++        observation.batches += 1;
++        observation.files += count;
++    }
+     result
+ }
+ impl Planner<'_> {
