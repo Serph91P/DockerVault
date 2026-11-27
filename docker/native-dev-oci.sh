@@ -6,6 +6,8 @@ fail() { printf '%s\n' "$*" >&2; exit 1; }
 if [[ ${GITHUB_EVENT_NAME:-} == push && ${GITHUB_REF:-} == refs/heads/develop ]]; then
     source_revision=${GITHUB_SHA:-}
     build_env=development
+    version=${DV_VERSION:-}
+    [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+-dev$ ]] || fail 'invalid Develop OCI version'
 elif [[ ${GITHUB_EVENT_NAME:-} == pull_request && ( ${1:-} == load || ${1:-} == receipt ) ]]; then
     source_revision=$(jq -er --arg ref "${GITHUB_REF:-}" '
         select((.number | type) == "number" and ("refs/pull/\(.number)/merge" == $ref)
@@ -14,6 +16,7 @@ elif [[ ${GITHUB_EVENT_NAME:-} == pull_request && ( ${1:-} == load || ${1:-} == 
     ' "${GITHUB_EVENT_PATH:?Missing pull request event}") || fail 'invalid develop pull request event'
     [[ $(git rev-parse --verify HEAD) == "$source_revision" ]] || fail 'pull request checkout revision differs'
     build_env=production
+    version=''
 else
     fail 'requires a develop push'
 fi
@@ -63,6 +66,10 @@ inspect() {
         '.os=="linux" and .architecture==$arch and .config.Labels["org.opencontainers.image.revision"]==$rev' "$config" >/dev/null || fail 'OCI config/revision'
     jq -e --arg env "APP_ENV=$build_env" \
         '[.config.Env[] | select(startswith("APP_ENV="))] == [$env]' "$config" >/dev/null || fail 'OCI application build profile'
+    if [[ $build_env == development ]]; then
+        jq -e --arg version "$version" '.config.Labels["org.opencontainers.image.version"]==$version and
+            .config.Labels["org.opencontainers.image.ref.name"]=="develop"' "$config" >/dev/null || fail 'Develop OCI version/ref label mismatch'
+    fi
     entry=$(read_blob "$attestation")
     read_blob "$(jq -ce .config "$entry")" >/dev/null
     spdx=$(jq -re '[.layers[]|select(.annotations["in-toto.io/predicate-type"]=="https://spdx.dev/Document")]|select(length==1)|.[0].digest' "$entry")
@@ -113,7 +120,8 @@ inspect() {
 }
 receipt() {
     jq -cS --arg event "$GITHUB_EVENT_NAME" --arg ref "$GITHUB_REF" --arg repository "$GITHUB_REPOSITORY" \
-        --arg run_id "$2" --arg attempt "$3" '. + {$event,$ref,$repository,$run_id,$attempt} | del(.descriptors)' <<< "$1"
+        --arg run_id "$2" --arg attempt "$3" --arg version "$version" \
+        '. + {$event,$ref,$repository,$run_id,$attempt,$version} | del(.descriptors)' <<< "$1"
 }
 case ${1:-} in
     load)

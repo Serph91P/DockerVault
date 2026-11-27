@@ -123,6 +123,7 @@ jobs:
       run: |
         ruby scripts/test-release-source.rb
         ruby scripts/test-release-admission.rb
+        ruby scripts/test-develop-version.rb
 
     - name: Set up Python 3.14
       uses: actions/setup-python@v6

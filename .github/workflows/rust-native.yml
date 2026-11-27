@@ -89,6 +89,7 @@ jobs:
       - uses: docker/setup-buildx-action@v4
         if: env.DV_TESTED_OCI == 'true'
       - name: Build the tested OCI package once and load its native platform
+        id: tested-oci
         if: env.DV_TESTED_OCI == 'true'
         env:
           ARCH: ${{ matrix.arch }}
@@ -100,8 +101,19 @@ jobs:
           command -v skopeo >/dev/null || { sudo apt-get update && sudo apt-get install -y skopeo; }
           dir="$RUNNER_TEMP/dv-native-dev"
           mkdir "$dir"
+          labels=()
+          if [[ $DV_BUILD_ENV == development ]]; then
+            git fetch --unshallow --tags origin develop
+            version_info=$(bash scripts/release-version.sh "$GITHUB_REF" "$DV_SOURCE_REVISION")
+            IFS= read -r version_line <<< "$version_info"
+            DV_VERSION=${version_line#version=}
+            [[ $DV_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+-dev$ ]]
+            labels=(--label "org.opencontainers.image.version=$DV_VERSION" --label org.opencontainers.image.ref.name=develop)
+            export DV_VERSION
+            printf 'version=%s\n' "$DV_VERSION" >> "$GITHUB_OUTPUT"
+          fi
           docker buildx build --platform "linux/$ARCH" --build-arg "COMMIT_SHA=$DV_SOURCE_REVISION" \
-            --build-arg "BUILD_ENV=$DV_BUILD_ENV" --provenance=mode=min --sbom=true \
+            --build-arg "BUILD_ENV=$DV_BUILD_ENV" "${labels[@]}" --provenance=mode=min --sbom=true \
             --output "type=oci,dest=$dir/application.oci.tar,compression=gzip" .
           bash docker/native-dev-oci.sh load "$dir" "$ARCH" dockervault-native-candidate-ci
       - name: Build and start the default application image (no target)
@@ -259,6 +271,7 @@ jobs:
         if: env.DV_TESTED_OCI == 'true'
         env:
           ARCH: ${{ matrix.arch }}
+          DV_VERSION: ${{ steps.tested-oci.outputs.version }}
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/dv-native-dev"

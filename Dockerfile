@@ -263,3 +263,5 @@ ENTRYPOINT ["/entrypoint.sh"]
 
 # Plain builds use Rust; the transition listener still names the Python target.
 FROM native-candidate AS native-production
+ARG BUILD_ENV=production
+ENV APP_ENV=${BUILD_ENV}

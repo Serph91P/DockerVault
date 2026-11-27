@@ -63,8 +63,9 @@ jobs:
             const workflows = ['test.yml', 'rust-native.yml'];
             const completed = runs => runs.every(run => run?.status === 'completed');
 
-            // Native package builds and tests can outlast the former Tests-only wait.
-            for (let attempt = 0; attempt < 120; attempt++) {
+            // Develop waits for the full native package tests and upload.
+            const tries = ref === 'refs/heads/develop' ? 360 : 120;
+            for (let attempt = 0; attempt < tries; attempt++) {
               const runs = await Promise.all(workflows.map(async workflow_id => {
                 const {data} = await github.rest.actions.listWorkflowRuns({
                   ...repository, workflow_id, head_sha: sha, event: 'push', per_page: 100
@@ -119,7 +120,7 @@ jobs:
                 core.info(`Release validation passed for ${sha}: Tests run ${runs[0].id}, native run ${native.id}`);
                 return;
               }
-              if (attempt < 119) await new Promise(resolve => setTimeout(resolve, 15000));
+              if (attempt + 1 < tries) await new Promise(resolve => setTimeout(resolve, 15000));
             }
             core.setFailed(`Timed out waiting for successful release validation on ${sha}`);
       - name: Checkout repository
@@ -134,101 +135,7 @@ jobs:
           REF: ${{ steps.source.outputs.ref }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
         run: |
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          
-          if [[ "$REF" == refs/tags/v* ]]; then
-            # Manual tag push - use the tag version directly
-            VERSION=${REF#refs/tags/v}
-            if [[ "$VERSION" == *-dev* ]] || [[ "$VERSION" == dev.* ]]; then
-              IS_PRERELEASE=true
-              BUILD_ENV=development
-            else
-              IS_PRERELEASE=false
-              BUILD_ENV=production
-            fi
-          else
-            # Auto-version: find highest version across ALL tags (dev + stable)
-            HIGHEST_TAG=""
-            HIGHEST_MAJOR=0
-            HIGHEST_MINOR=0
-            HIGHEST_PATCH=0
-            
-            for tag in $(git tag -l 'v*'); do
-              ver="$tag"
-              ver="${ver#v}"
-              ver="${ver#dev.}"
-              ver="${ver%%-dev*}"
-              
-              M=$(echo "$ver" | cut -d. -f1)
-              m=$(echo "$ver" | cut -d. -f2)
-              P=$(echo "$ver" | cut -d. -f3)
-              
-              [[ "$M" =~ ^[0-9]+$ ]] || continue
-              [[ "$m" =~ ^[0-9]+$ ]] || continue
-              [[ "$P" =~ ^[0-9]+$ ]] || continue
-              
-              if (( M > HIGHEST_MAJOR )) || \
-                 (( M == HIGHEST_MAJOR && m > HIGHEST_MINOR )) || \
-                 (( M == HIGHEST_MAJOR && m == HIGHEST_MINOR && P > HIGHEST_PATCH )); then
-                HIGHEST_MAJOR=$M
-                HIGHEST_MINOR=$m
-                HIGHEST_PATCH=$P
-                HIGHEST_TAG="$tag"
-              fi
-            done
-            
-            echo "Highest existing version: ${HIGHEST_MAJOR}.${HIGHEST_MINOR}.${HIGHEST_PATCH} (tag: ${HIGHEST_TAG:-none})"
-            
-            # Analyze commits since last tag for conventional commit bump type
-            BUMP="patch"
-            if [ -n "$HIGHEST_TAG" ]; then
-              COMMITS=$(git log "${HIGHEST_TAG}..HEAD" --pretty=format:"%s%n%b" 2>/dev/null || echo "")
-            else
-              COMMITS=$(git log --pretty=format:"%s%n%b" 2>/dev/null || echo "")
-            fi
-            
-            if echo "$COMMITS" | grep -qiE '(^[a-z]+!:|BREAKING CHANGE)'; then
-              BUMP="major"
-            elif echo "$COMMITS" | grep -qiE '^feat(\(|:)'; then
-              BUMP="minor"
-            fi
-            
-            echo "Bump type: $BUMP"
-            
-            case "$BUMP" in
-              major)
-                NEXT_MAJOR=$((HIGHEST_MAJOR + 1))
-                NEXT_MINOR=0
-                NEXT_PATCH=0
-                ;;
-              minor)
-                NEXT_MAJOR=$HIGHEST_MAJOR
-                NEXT_MINOR=$((HIGHEST_MINOR + 1))
-                NEXT_PATCH=0
-                ;;
-              patch)
-                NEXT_MAJOR=$HIGHEST_MAJOR
-                NEXT_MINOR=$HIGHEST_MINOR
-                NEXT_PATCH=$((HIGHEST_PATCH + 1))
-                ;;
-            esac
-            
-            VERSION="${NEXT_MAJOR}.${NEXT_MINOR}.${NEXT_PATCH}"
-            
-            if [[ "$REF" == refs/heads/main ]]; then
-              IS_PRERELEASE=false
-              BUILD_ENV=production
-            else
-              VERSION="${VERSION}-dev"
-              IS_PRERELEASE=true
-              BUILD_ENV=development
-            fi
-          fi
-          
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
-          echo "build_env=${BUILD_ENV}" >> $GITHUB_OUTPUT
-          echo "Version: ${VERSION}, Prerelease: ${IS_PRERELEASE}, Build Env: ${BUILD_ENV}, Ref: ${REF}"
+          bash scripts/release-version.sh "$REF" "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Docker metadata
         id: docker_meta
@@ -302,7 +209,7 @@ jobs:
             unzip -q "$dir/$arch.zip" application.oci.tar receipt.json -d "$dir/$arch"
             rm "$dir/$arch.zip"
           done
-          digest=$(bash docker/native-dev-oci.sh promote "$dir" "$NATIVE_RUN" "$NATIVE_ATTEMPT" "$dir/bound")
+          digest=$(DV_VERSION="$VERSION" bash docker/native-dev-oci.sh promote "$dir" "$NATIVE_RUN" "$NATIVE_ATTEMPT" "$dir/bound")
           test "sha256:$(skopeo inspect --raw "oci:$dir/bound:bound" | sha256sum | cut -d' ' -f1)" = "$digest"
           printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
           printf 'Verified Develop index: %s\n' "$digest"
