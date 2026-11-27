@@ -1,0 +1,61 @@
+name: DV245 one-shot phase binary (amd64)
+on:
+  push:
+    branches: [dv245-idle-t-118d09e7]
+permissions:
+  contents: read
+jobs:
+  phase-binary:
+    if: github.repository == 'Serph91P/DockerVault' && github.ref == 'refs/heads/dv245-idle-t-118d09e7'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Build only the instrumented native service payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          pin=cd546f2c5625980c1bf6a4c686b406a79c893697
+          patch_sha=79c4e57080c79b1f5e820befb900d8156398daa2b3c3787c74896c5b1ce69543
+          test "$(git rev-list --parents -n 1 HEAD)" = "$GITHUB_SHA $pin"
+          expected=$'.github/dv245-phase/instrumentation.patch\n.github/workflows/dv245-phase-once.yml'
+          test "$(git diff --name-only "$pin" HEAD)" = "$expected"
+          test "$(uname -m)" = x86_64
+          case "$(docker info --format '{{.OSType}}/{{.Architecture}}')" in
+            linux/x86_64|linux/amd64) ;; *) exit 1 ;;
+          esac
+          docker buildx inspect default | grep -Ex 'Driver:[[:space:]]+docker[[:space:]]*'
+          root=$(docker info --format '{{.DockerRootDir}}')
+          read -r bytes inodes < <(sudo -n stat -f -c '%S:%a %d' -- "$root")
+          printf 'Docker filesystem available: %s bytes, %s inodes\n' "$(( ${bytes%:*} * ${bytes#*:} ))" "$inodes"
+          test "$(( ${bytes%:*} * ${bytes#*:} ))" -ge "$((21 * 1024**3))"
+          test "$inodes" -ge 700000
+          read -r block free < <(stat -f -c '%S %a' -- "$RUNNER_TEMP")
+          test "$((block * free))" -ge "$((512 * 1024**2))"
+          patch_file="$GITHUB_WORKSPACE/.github/dv245-phase/instrumentation.patch"
+          printf '%s  %s\n' "$patch_sha" "$patch_file" | sha256sum --strict -c -
+          src=$(mktemp -d "$RUNNER_TEMP/dv245-src.XXXXXXXX")
+          out="$RUNNER_TEMP/dv245-phase-binary"
+          git archive "$pin" | tar -x -C "$src"
+          git -C "$src" apply --check "$patch_file"
+          git -C "$src" apply "$patch_file"
+          printf '\nFROM scratch AS dv245-phase-export\nCOPY --from=native-builder /src/target/release/dockervault-service /dockervault-service\n' >> "$src/Dockerfile"
+          docker buildx build --builder default --platform linux/amd64 --target dv245-phase-export \
+            --output "type=local,dest=$out" "$src"
+          test -s "$out/dockervault-service"
+          readelf -h "$out/dockervault-service"
+          LC_ALL=C readelf -h "$out/dockervault-service" | grep -E 'Machine: .*X86-64'
+          (cd "$out"; sha256sum dockervault-service > SHA256SUMS)
+          jq -n --arg source "$pin" --arg patch "$patch_sha" --arg workflow "$GITHUB_SHA" \
+            --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" \
+            '{source:$source,patch_sha256:$patch,workflow_commit:$workflow,run:$run,attempt:$attempt,platform:"linux/amd64"}' > "$out/source.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dv245-phase-binary-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dv245-phase-binary/
+          if-no-files-found: error
+          retention-days: 2
