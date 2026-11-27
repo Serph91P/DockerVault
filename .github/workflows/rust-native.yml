@@ -295,7 +295,8 @@ jobs:
     name: Unpublished native OCI attestations (${{ matrix.arch }})
     needs: native-workspace
     env:
-      DV_TESTED_OCI: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/develop') || (github.event_name == 'pull_request' && github.base_ref == 'develop')) && 'true' || 'false' }}
+      # Only the Develop PR already tests the production-profile OCI; the Develop push binds a development-profile OCI.
+      DV_TESTED_OCI: ${{ (github.event_name == 'pull_request' && github.base_ref == 'develop') && 'true' || 'false' }}
     strategy:
       fail-fast: false
       matrix:
