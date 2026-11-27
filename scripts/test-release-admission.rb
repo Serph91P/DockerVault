@@ -27,11 +27,16 @@ fixture = <<~'JS'
   const script = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
   const sha = 'a'.repeat(40), other = 'b'.repeat(40);
   const run = overrides => ({id:42, head_sha:sha, head_branch:'develop', event:'push', status:'completed', conclusion:'success', ...overrides});
-  const nativeRun = overrides => run({id:43, ...overrides});
+  const nativeRun = overrides => run({id:43, run_attempt:2, ...overrides});
+  const digest = `sha256:${'c'.repeat(64)}`;
+  const artifact = (arch, id) => ({id, name:`native-dev-${arch}-${sha}-2`, digest, expired:false});
+  const artifacts = [artifact('amd64', 51), artifact('arm64', 52)];
   const matrix = ['amd64', 'arm64'].map(arch => ({name:`Native workspace and offline recovery (${arch})`, head_sha:sha, status:'completed', conclusion:'success'}));
   const execute = new (Object.getPrototypeOf(async function(){}).constructor)('github','context','core','process','setTimeout',script);
-  async function trial({ref='refs/heads/develop', tests=run(), native=nativeRun(), jobs=matrix, pending=null} = {}) {
+  async function trial({ref='refs/heads/develop', tests=run(), native=nativeRun(), jobs=matrix, pending=null,
+                       eventName='push', outerRef=ref, outerSha=sha, uploads=artifacts, expectedError=null} = {}) {
     let retries=0, failed=false;
+    const outputs={};
     const github={rest:{actions:{listWorkflowRuns:async request => {
       assert.equal(request.head_sha,sha);
       assert.equal(request.event,'push');
@@ -40,9 +45,28 @@ fixture = <<~'JS'
     },listJobsForWorkflowRun:async request => {
       assert.equal(request.run_id,43);
       return {data:{jobs}};
-    }}}};
-    await execute(github,{repo:{owner:'fixture',repo:'dockervault'},sha:other},
-      {setFailed:()=>{failed=true;},info:()=>{}}, {env:{SOURCE_SHA:sha,SOURCE_REF:ref}}, callback=>{retries++;callback();});
+    },listWorkflowRunArtifacts:Symbol('artifact list')}},request:async (route, request) => {
+      assert.equal(route,'GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}/jobs');
+      assert.equal(request.run_id,43);
+      assert.equal(request.attempt_number,2);
+      return {data:{jobs}};
+    },paginate:async (method, request) => {
+      assert.equal(method,github.rest.actions.listWorkflowRunArtifacts);
+      assert.equal(request.run_id,43);
+      return uploads.filter(value=>value.name===request.name);
+    }};
+    const result=execute(github,{repo:{owner:'fixture',repo:'dockervault'},eventName,ref:outerRef,sha:outerSha},
+      {setFailed:()=>{failed=true;},info:()=>{},setOutput:(key,value)=>{outputs[key]=value;}},
+      {env:{SOURCE_SHA:sha,SOURCE_REF:ref}},callback=>{retries++;callback();});
+    if (expectedError) {
+      await assert.rejects(result, expectedError);
+      assert.equal(outputs.native_run,undefined);
+      return false;
+    }
+    await result;
+    if (!failed && ref==='refs/heads/develop') {
+      assert.deepEqual(outputs,{native_run:43,native_attempt:2,native_amd64:`51:${digest}`,native_arm64:`52:${digest}`});
+    } else assert.deepEqual(outputs,{});
     return !failed;
   }
   (async()=>{
@@ -56,6 +80,15 @@ fixture = <<~'JS'
       {native:nativeRun({head_sha:other})}, {tests:run({head_sha:other})}, {tests:run({head_branch:'main'})},
       {jobs:[matrix[0]]}, {jobs:[matrix[0],{...matrix[1],conclusion:'skipped'}]},
       {jobs:[matrix[0],{...matrix[1],head_sha:other}]}, {jobs:[...matrix,matrix[1]]},
+      {native:nativeRun({event:'pull_request'})},
+      {eventName:'workflow_run',expectedError:/direct source push/},
+      {outerRef:'refs/heads/main',expectedError:/direct source push/},
+      {outerSha:other,expectedError:/direct source push/},
+      {uploads:[artifacts[0]],expectedError:/unique authenticated artifact/},
+      {uploads:[...artifacts,artifacts[0]],expectedError:/unique authenticated artifact/},
+      {uploads:[{...artifacts[0],expired:true},artifacts[1]],expectedError:/unique authenticated artifact/},
+      {uploads:[{...artifacts[0],digest:'bad'},artifacts[1]],expectedError:/unique authenticated artifact/},
+      {uploads:[{...artifacts[0],id:0},artifacts[1]],expectedError:/unique authenticated artifact/},
     ]) assert.equal(await trial(settings),false,JSON.stringify(settings));
     console.log('PASS: exact-SHA release admission, both native architectures, no publication');
   })().catch(error=>{console.error(error);process.exitCode=1;});

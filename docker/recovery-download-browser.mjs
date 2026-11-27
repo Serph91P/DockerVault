@@ -59,6 +59,7 @@ try {
         export: command(savedInstructions),
         frontend: command((await dialog.locator('pre').allTextContents()).join('\n')),
         sha256: manifest.sha256,
+        manifest_sha256: createHash('sha256').update(raw).digest('hex'),
       }), { mode: 0o600, flag: 'wx' })
     }
   } else {

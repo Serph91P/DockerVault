@@ -49,10 +49,14 @@ jobs:
           if-no-files-found: error
 
   native-workspace:
-    name: Native workspace and offline recovery (${{ matrix.arch }})
+    name: Native workspace and offline recovery (${{ matrix.arch }})${{ github.event_name == 'push' && github.ref == 'refs/heads/develop' && matrix.profile == 'production' && ' [production profile]' || '' }}
+    env:
+      DV_TESTED_OCI: ${{ (matrix.profile == 'development' || (github.event_name == 'pull_request' && github.base_ref == 'develop')) && 'true' || 'false' }}
     strategy:
       fail-fast: false
       matrix:
+        arch: [amd64, arm64]
+        profile: ${{ fromJSON(github.event_name == 'push' && github.ref == 'refs/heads/develop' && '["production","development"]' || '["production"]') }}
         include:
           - runner: ubuntu-24.04
             arch: amd64
@@ -82,12 +86,32 @@ jobs:
           docker build --platform 'linux/${{ matrix.arch }}' \
             -f backend/tests/browser.Dockerfile -t dockervault-native-browser-ci .
           test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' dockervault-native-browser-ci)" = 'linux/${{ matrix.arch }}'
+      - uses: docker/setup-buildx-action@v4
+        if: env.DV_TESTED_OCI == 'true'
+      - name: Build the tested OCI package once and load its native platform
+        if: env.DV_TESTED_OCI == 'true'
+        env:
+          ARCH: ${{ matrix.arch }}
+          DV_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+          DV_BUILD_ENV: ${{ matrix.profile }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$DV_SOURCE_REVISION"
+          command -v skopeo >/dev/null || { sudo apt-get update && sudo apt-get install -y skopeo; }
+          dir="$RUNNER_TEMP/dv-native-dev"
+          mkdir "$dir"
+          docker buildx build --platform "linux/$ARCH" --build-arg "COMMIT_SHA=$DV_SOURCE_REVISION" \
+            --build-arg "BUILD_ENV=$DV_BUILD_ENV" --provenance=mode=min --sbom=true \
+            --output "type=oci,dest=$dir/application.oci.tar,compression=gzip" .
+          bash docker/native-dev-oci.sh load "$dir" "$ARCH" dockervault-native-candidate-ci
       - name: Build and start the default application image (no target)
         run: |
           sha=$(git rev-parse HEAD)
           image=dockervault-native-candidate-ci
-          docker build --platform 'linux/${{ matrix.arch }}' \
-            --build-arg "COMMIT_SHA=$sha" -t "$image" .
+          if [[ $DV_TESTED_OCI != true ]]; then
+            docker build --platform 'linux/${{ matrix.arch }}' \
+              --build-arg "COMMIT_SHA=$sha" -t "$image" .
+          fi
           test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = 'linux/${{ matrix.arch }}'
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$sha"
           sh docker/test-native-candidate.sh "$image" dockervault-native-browser-ci
@@ -170,6 +194,8 @@ jobs:
       - name: Verify embedded dependencies in shipped native binaries
         run: sh docker/test-native-rust-inventory.sh dockervault-native-candidate-ci dockervault-recovery-ci
       - name: Execute the downloaded tool with all three documented recovery commands offline
+        env:
+          DV_BROWSER_RECEIPT: ${{ env.DV_TESTED_OCI == 'true' && format('{0}/dv-browser.json', runner.temp) || '' }}
         run: bash docker/test-native-policy-browser.sh dockervault-native-candidate-ci dockervault-native-browser-ci native dockervault-recovery-ci dockervault-rust-ci
       - name: Recover original v1 and legacy bytes without network or Python
         shell: bash
@@ -229,10 +255,34 @@ jobs:
           bash docker/test-native-ftp-restart.sh dockervault-native-candidate-ci "$fixture"
           bash docker/test-native-ftp-restart.sh dockervault-native-candidate-ci "$fixture" \
             dockervault-r14-python-ref:39124ea
+      - name: Bind the tested downloads to the OCI package
+        if: env.DV_TESTED_OCI == 'true'
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/dv-native-dev"
+          bash docker/native-dev-oci.sh receipt "$dir" "$ARCH" "$RUNNER_TEMP/dv-browser.json" > "$dir/receipt.json"
+      - uses: actions/upload-artifact@v7
+        if: github.event_name == 'push' && github.ref == 'refs/heads/develop' && matrix.profile == 'development'
+        with:
+          name: native-dev-${{ matrix.arch }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dv-native-dev/
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@v7
+        if: github.event_name == 'pull_request' && github.base_ref == 'develop'
+        with:
+          name: native-pr-tested-${{ matrix.arch }}-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dv-native-dev/
+          if-no-files-found: error
+          compression-level: 0
 
   candidate-oci:
     name: Unpublished native OCI attestations (${{ matrix.arch }})
     needs: native-workspace
+    env:
+      DV_TESTED_OCI: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/develop') || (github.event_name == 'pull_request' && github.base_ref == 'develop')) && 'true' || 'false' }}
     strategy:
       fail-fast: false
       matrix:
@@ -248,7 +298,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: docker/setup-buildx-action@v4
-      - name: Export and check both images without a registry push
+      - name: Export and check remaining images without a registry push
         env:
           ARCH: ${{ matrix.arch }}
         run: |
@@ -256,8 +306,10 @@ jobs:
           sha=$(git rev-parse HEAD)
           mkdir -p "$RUNNER_TEMP/dv-oci"
           dir="$RUNNER_TEMP/dv-oci"
-          docker buildx build --platform "linux/$ARCH" --build-arg "COMMIT_SHA=$sha" \
-            --provenance=mode=min --sbom=true --output "type=oci,dest=$dir/application.oci.tar" .
+          if [[ $DV_TESTED_OCI != true ]]; then
+            docker buildx build --platform "linux/$ARCH" --build-arg "COMMIT_SHA=$sha" \
+              --provenance=mode=min --sbom=true --output "type=oci,dest=$dir/application.oci.tar" .
+          fi
           docker buildx build --platform "linux/$ARCH" --build-arg "VCS_REF=$sha" \
             --provenance=mode=min --sbom=true --output "type=oci,dest=$dir/recovery.oci.tar" \
             -f docker/recover.Dockerfile .
@@ -267,7 +319,7 @@ jobs:
           (cd "$dir" && sha256sum ./*.oci.tar > SHA256SUMS)
       - uses: actions/upload-artifact@v7
         with:
-          name: native-oci-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}
+          name: ${{ env.DV_TESTED_OCI == 'true' && 'native-recovery-oci' || 'native-oci' }}-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}
           path: ${{ runner.temp }}/dv-oci/
           if-no-files-found: error
           compression-level: 0

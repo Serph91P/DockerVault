@@ -77,4 +77,8 @@ docker stop --time 15 "$app" >/dev/null
 if [[ -n "$offline_image" ]]; then
     test "$(docker inspect -f '{{.State.Running}}:{{.State.ExitCode}}' "$app")" = false:0
     bash "$(dirname "$0")/test-native-recovery-instructions.sh" "$browser" "$offline_image" "${5:?Rust development image required}" "$rev"
+    if [[ -n ${DV_BROWSER_RECEIPT:-} ]]; then
+        docker cp "$browser:/tmp/dockervault-recovery-evidence.json" - | tar -xO | \
+            jq -e --arg config "$id" '{binary_sha256:.sha256, manifest_sha256, $config}' > "$DV_BROWSER_RECEIPT"
+    fi
 fi

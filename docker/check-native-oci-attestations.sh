@@ -8,7 +8,11 @@ revision=${3:?Expected source revision required}
 blob() {
     local digest=$1
     [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
-    tar -xOf "$archive" "blobs/sha256/${digest#sha256:}"
+    if [[ -d $archive ]]; then
+        cat "$archive/blobs/sha256/${digest#sha256:}"
+    else
+        tar -xOf "$archive" "blobs/sha256/${digest#sha256:}"
+    fi
 }
 verify_digest() {
     local sum
@@ -19,7 +23,11 @@ verified_blob() {
     verify_digest "$1" || return 1
     blob "$1"
 }
-index=$(tar -xOf "$archive" index.json)
+if [[ -d $archive ]]; then
+    index=$(<"$archive/index.json")
+else
+    index=$(tar -xOf "$archive" index.json)
+fi
 if [[ $(jq -r '.manifests[0].mediaType' <<< "$index") == application/vnd.oci.image.index.v1+json ]]; then
     nested=$(jq -er '.manifests | select(length==1) | .[0].digest' <<< "$index")
     index=$(verified_blob "$nested")
